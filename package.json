@@ -36,12 +36,12 @@
     "@types/netmask": "^2.0.6",
     "@types/node": "^20.14.2",
     "@types/supertest": "^6.0.2",
-    "@vitest/coverage-v8": "^1.6.0",
+    "@vitest/coverage-v8": "^4.1.4",
     "prisma": "^5.14.0",
     "supertest": "^7.0.0",
     "tsx": "^4.15.6",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.4"
   },
   "engines": {
     "node": ">=20.0.0"
