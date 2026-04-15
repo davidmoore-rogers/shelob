@@ -2,7 +2,7 @@
  * public/js/dashboard.js — Dashboard overview page logic
  */
 
-var STATUS_COLORS = { available: "#1D9E75", reserved: "#378ADD", deprecated: "#888780" };
+var STATUS_COLORS = { available: "#00c853", reserved: "#4fc3f7", deprecated: "#757575" };
 
 document.addEventListener("DOMContentLoaded", async function () {
   try {
@@ -53,8 +53,8 @@ function renderDonut(data) {
   arcs.forEach(function (arc) {
     svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + arc.color + '" stroke-width="14" stroke-dasharray="' + arc.dash + ' ' + arc.gap + '" stroke-dashoffset="' + -(arc.offset * circ - circ / 4) + '"/>';
   });
-  svg += '<text x="' + cx + '" y="' + (cy - 6) + '" text-anchor="middle" font-size="22" font-weight="500" fill="var(--color-text-primary)">' + usedPct + '%</text>';
-  svg += '<text x="' + cx + '" y="' + (cy + 14) + '" text-anchor="middle" font-size="11" fill="var(--color-text-tertiary)">in use</text>';
+  svg += '<text x="' + cx + '" y="' + (cy - 6) + '" text-anchor="middle" font-size="22" font-weight="700" font-family="Roboto Mono,monospace" fill="#fff">' + usedPct + '%</text>';
+  svg += '<text x="' + cx + '" y="' + (cy + 14) + '" text-anchor="middle" font-size="11" fill="#8888a0">in use</text>';
   svg += '</svg>';
 
   var legend = slices.map(function (d) {
@@ -99,7 +99,7 @@ function renderBlockUtil(data) {
     var used = b.reservedSubnets + b.deprecatedSubnets;
     var total = b.totalSubnets;
     var pct = total === 0 ? 0 : Math.round((used / total) * 100);
-    var color = pct > 75 ? "#E24B4A" : pct > 50 ? "#EF9F27" : "#378ADD";
+    var color = pct > 75 ? "#ff1744" : pct > 50 ? "#ffd600" : "#4fc3f7";
     return '<div class="block-util-item">' +
       '<div class="block-util-header"><div class="block-util-name"><span>' + escapeHtml(b.name) + '</span><code>' + escapeHtml(b.cidr) + '</code></div><span class="block-util-count">' + used + '/' + total + ' subnets</span></div>' +
       '<div class="util-row"><div class="util-bar-track"><div class="util-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div><span style="font-size:0.82rem;color:var(--color-text-secondary);min-width:32px;text-align:right">' + pct + '%</span></div></div>';

@@ -56,7 +56,11 @@ const api = {
     list:          ()       => request("GET", "/users"),
     create:        (body)   => request("POST", "/users", body),
     resetPassword: (id, b)  => request("PUT", `/users/${id}/password`, b),
+    updateRole:    (id, b)  => request("PUT", `/users/${id}/role`, b),
     delete:        (id)     => request("DELETE", `/users/${id}`),
+  },
+  auth: {
+    me: () => request("GET", "/auth/me"),
   },
 };
 

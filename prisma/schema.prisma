@@ -29,6 +29,11 @@ enum ReservationStatus {
   released
 }
 
+enum UserRole {
+  admin
+  user
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 model IpBlock {
@@ -99,6 +104,7 @@ model User {
   id           String   @id @default(uuid())
   username     String   @unique
   passwordHash String   @map("password_hash")
+  role         UserRole @default(user)
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

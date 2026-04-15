@@ -13,17 +13,22 @@ const router = Router();
 const CreateUserSchema = z.object({
   username: z.string().min(1).max(64),
   password: z.string().min(4),
+  role:     z.enum(["admin", "user"]).optional(),
 });
 
 const ResetPasswordSchema = z.object({
   password: z.string().min(4),
 });
 
+const UpdateRoleSchema = z.object({
+  role: z.enum(["admin", "user"]),
+});
+
 // GET /api/v1/users
 router.get("/", async (_req, res, next) => {
   try {
     const users = await prisma.user.findMany({
-      select: { id: true, username: true, createdAt: true, updatedAt: true },
+      select: { id: true, username: true, role: true, createdAt: true, updatedAt: true },
       orderBy: { username: "asc" },
     });
     res.json(users);
@@ -35,15 +40,15 @@ router.get("/", async (_req, res, next) => {
 // POST /api/v1/users
 router.post("/", async (req, res, next) => {
   try {
-    const { username, password } = CreateUserSchema.parse(req.body);
+    const { username, password, role } = CreateUserSchema.parse(req.body);
 
     const existing = await prisma.user.findUnique({ where: { username } });
     if (existing) throw new AppError(409, `User "${username}" already exists`);
 
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { username, passwordHash },
-      select: { id: true, username: true, createdAt: true },
+      data: { username, passwordHash, role: role || "user" },
+      select: { id: true, username: true, role: true, createdAt: true },
     });
     res.status(201).json(user);
   } catch (err) {
@@ -64,6 +69,28 @@ router.put("/:id/password", async (req, res, next) => {
       data: { passwordHash },
     });
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/v1/users/:id/role
+router.put("/:id/role", async (req, res, next) => {
+  try {
+    const { role } = UpdateRoleSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!user) throw new AppError(404, "User not found");
+
+    // Prevent demoting yourself
+    if (req.session?.userId === user.id) {
+      throw new AppError(400, "You cannot change your own role");
+    }
+
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { role },
+    });
+    res.json({ ok: true, role });
   } catch (err) {
     next(err);
   }

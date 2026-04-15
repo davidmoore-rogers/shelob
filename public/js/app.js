@@ -2,6 +2,22 @@
  * public/js/app.js — Shared UI utilities: nav, toasts, modals, helpers
  */
 
+// ─── Current User ────────────────────────────────────────────────────────────
+
+var currentUserRole = null;
+
+async function fetchCurrentUser() {
+  try {
+    var data = await fetch("/api/v1/auth/me").then(function (r) { return r.json(); });
+    if (data.authenticated) {
+      currentUserRole = data.role;
+    }
+  } catch (_) {}
+  return currentUserRole;
+}
+
+function isAdmin() { return currentUserRole === "admin"; }
+
 // ─── Sidebar Navigation ──────────────────────────────────────────────────────
 
 const NAV_ITEMS = [
@@ -9,7 +25,7 @@ const NAV_ITEMS = [
   { href: "/blocks.html",     label: "IP Blocks",    icon: "box" },
   { href: "/subnets.html",    label: "Subnets",      icon: "layers" },
   { href: "/reservations.html", label: "Reservations", icon: "bookmark" },
-  { href: "/users.html",        label: "Users",        icon: "users" },
+  { href: "/users.html",        label: "Users",        icon: "users", adminOnly: true },
 ];
 
 const ICONS = {
@@ -26,19 +42,23 @@ function renderNav() {
   const sidebar = document.getElementById("sidebar");
   if (!sidebar) return;
 
+  const visibleItems = NAV_ITEMS.filter(function (item) {
+    return !item.adminOnly || isAdmin();
+  });
+
   sidebar.innerHTML = `
     <div class="sidebar-brand">
       <img src="/logo.png" alt="Rogers Group" class="sidebar-logo">
       <p>IP Address Management</p>
     </div>
     <ul class="sidebar-nav">
-      ${NAV_ITEMS.map(item => {
+      ${visibleItems.map(item => {
         const isActive = current === item.href || (item.href === "/" && (current === "/index.html" || current === "/"));
         return `<li><a href="${item.href}" class="${isActive ? "active" : ""}">${ICONS[item.icon]}<span>${item.label}</span></a></li>`;
       }).join("")}
     </ul>
     <div style="margin-top:auto;padding:0.75rem 0.5rem;border-top:1px solid var(--color-border-light)">
-      <a href="#" id="btn-logout" style="display:flex;align-items:center;gap:10px;padding:0.5rem 0.75rem;border-radius:var(--radius-md);color:var(--color-text-secondary);font-size:0.9rem;font-weight:450;text-decoration:none;transition:background 0.15s,color 0.15s">${ICONS.logout}<span>Logout</span></a>
+      <a href="#" id="btn-logout" style="display:flex;align-items:center;gap:10px;padding:0.5rem 0.75rem;border-radius:var(--radius-md);color:var(--color-text-secondary);font-size:0.9rem;font-weight:450;text-decoration:none;transition:background 0.15s,color 0.15s" onmouseover="this.style.background='rgba(255,23,68,0.08)';this.style.color='#ff1744'" onmouseout="this.style.background='';this.style.color='var(--color-text-secondary)'">${ICONS.logout}<span>Logout</span></a>
     </div>
   `;
 
@@ -147,8 +167,18 @@ function tagsToString(arr) {
   return (arr || []).join(", ");
 }
 
+// ─── Admin-only UI ───────────────────────────────────────────────────────────
+
+function hideAdminOnlyElements() {
+  document.querySelectorAll("[data-admin-only]").forEach(function (el) {
+    if (!isAdmin()) el.style.display = "none";
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
-document.addEventListener("DOMContentLoaded", function () {
+document.addEventListener("DOMContentLoaded", async function () {
+  await fetchCurrentUser();
   renderNav();
+  hideAdminOnlyElements();
 });

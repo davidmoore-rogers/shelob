@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as subnetService from "../../services/subnetService.js";
+import { requireAdmin } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -49,7 +50,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // POST /subnets/next-available  (must come before /:id)
-router.post("/next-available", async (req, res, next) => {
+router.post("/next-available", requireAdmin, async (req, res, next) => {
   try {
     const { blockId, prefixLength, ...metadata } = AllocateNextSchema.parse(req.body);
     const subnet = await subnetService.allocateNextSubnet(blockId, prefixLength, metadata);
@@ -69,7 +70,7 @@ router.get("/:id", async (req, res, next) => {
 });
 
 // POST /subnets
-router.post("/", async (req, res, next) => {
+router.post("/", requireAdmin, async (req, res, next) => {
   try {
     const input = CreateSubnetSchema.parse(req.body);
     const subnet = await subnetService.createSubnet(input);
@@ -90,7 +91,7 @@ router.put("/:id", async (req, res, next) => {
 });
 
 // DELETE /subnets/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", requireAdmin, async (req, res, next) => {
   try {
     await subnetService.deleteSubnet(req.params.id);
     res.status(204).send();

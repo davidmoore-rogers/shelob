@@ -9,7 +9,7 @@ import subnetsRouter from "./routes/subnets.js";
 import reservationsRouter from "./routes/reservations.js";
 import utilizationRouter from "./routes/utilization.js";
 import usersRouter from "./routes/users.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, requireAdmin } from "./middleware/auth.js";
 
 export const router = Router();
 
@@ -22,4 +22,4 @@ router.use("/blocks", blocksRouter);
 router.use("/subnets", subnetsRouter);
 router.use("/reservations", reservationsRouter);
 router.use("/utilization", utilizationRouter);
-router.use("/users", usersRouter);
+router.use("/users", requireAdmin, usersRouter);

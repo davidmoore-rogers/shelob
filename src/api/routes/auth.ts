@@ -27,8 +27,9 @@ router.post("/login", async (req, res, next) => {
 
     req.session.userId = user.id;
     req.session.username = user.username;
+    req.session.role = user.role;
 
-    res.json({ ok: true, username: user.username });
+    res.json({ ok: true, username: user.username, role: user.role });
   } catch (err) {
     next(err);
   }
@@ -46,7 +47,7 @@ router.post("/logout", (req, res, next) => {
 // GET /api/v1/auth/me
 router.get("/me", (req, res) => {
   if (req.session?.userId) {
-    res.json({ authenticated: true, username: req.session.username });
+    res.json({ authenticated: true, username: req.session.username, role: req.session.role });
   } else {
     res.json({ authenticated: false });
   }

@@ -30,10 +30,14 @@ app.use(
 
 // Protect dashboard pages — redirect unauthenticated users to login
 const protectedPages = ["/", "/index.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html"];
+const adminOnlyPages = ["/users.html"];
 app.use((req, res, next) => {
   if (!protectedPages.includes(req.path)) return next();
-  if (req.session?.userId) return next();
-  return res.redirect("/login.html");
+  if (!req.session?.userId) return res.redirect("/login.html");
+  if (adminOnlyPages.includes(req.path) && req.session.role !== "admin") {
+    return res.redirect("/");
+  }
+  return next();
 });
 
 app.use(express.static(path.resolve(import.meta.dirname, "..", "public")));

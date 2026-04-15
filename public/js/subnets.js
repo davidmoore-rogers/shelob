@@ -8,8 +8,10 @@ document.addEventListener("DOMContentLoaded", async function () {
   await loadBlockOptions();
   loadSubnets();
 
-  document.getElementById("btn-add-subnet").addEventListener("click", openCreateModal);
-  document.getElementById("btn-auto-alloc").addEventListener("click", openAllocateModal);
+  var addBtn = document.getElementById("btn-add-subnet");
+  if (addBtn) addBtn.addEventListener("click", openCreateModal);
+  var allocBtn = document.getElementById("btn-auto-alloc");
+  if (allocBtn) allocBtn.addEventListener("click", openAllocateModal);
   document.getElementById("filter-block").addEventListener("change", loadSubnets);
   document.getElementById("filter-status").addEventListener("change", loadSubnets);
   document.getElementById("filter-tag").addEventListener("input", debounce(loadSubnets, 300));
@@ -64,8 +66,8 @@ async function loadSubnets() {
         '<td>' + (tags || '<span style="color:var(--color-text-tertiary)">-</span>') + '</td>' +
         '<td>' + (s._count ? s._count.reservations : 0) + '</td>' +
         '<td class="actions">' +
-          '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
-          '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\')">Del</button>' +
+          (isAdmin() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\')">Del</button>' : '') +
         '</td></tr>';
     }).join("");
   } catch (err) {

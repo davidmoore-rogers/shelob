@@ -5,7 +5,8 @@
 document.addEventListener("DOMContentLoaded", function () {
   loadBlocks();
 
-  document.getElementById("btn-add-block").addEventListener("click", openCreateModal);
+  var addBtn = document.getElementById("btn-add-block");
+  if (addBtn) addBtn.addEventListener("click", openCreateModal);
   document.getElementById("filter-version").addEventListener("change", loadBlocks);
   document.getElementById("filter-tag").addEventListener("input", debounce(loadBlocks, 300));
 });
@@ -33,8 +34,8 @@ async function loadBlocks() {
         '<td>' + (b._count ? b._count.subnets : 0) + '</td>' +
         '<td>' + formatDate(b.createdAt) + '</td>' +
         '<td class="actions">' +
-          '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + b.id + '\')">Edit</button>' +
-          '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + b.id + '\', \'' + escapeHtml(b.cidr) + '\')">Del</button>' +
+          (isAdmin() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + b.id + '\')">Edit</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + b.id + '\', \'' + escapeHtml(b.cidr) + '\')">Del</button>' : '') +
         '</td></tr>';
     }).join("");
   } catch (err) {

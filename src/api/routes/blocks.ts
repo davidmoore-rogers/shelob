@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as blockService from "../../services/blockService.js";
+import { requireAdmin } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -42,7 +43,7 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", requireAdmin, async (req, res, next) => {
   try {
     const input = CreateBlockSchema.parse(req.body);
     res.status(201).json(await blockService.createBlock(input));
@@ -51,7 +52,7 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", requireAdmin, async (req, res, next) => {
   try {
     const input = UpdateBlockSchema.parse(req.body);
     res.json(await blockService.updateBlock(req.params.id, input));
@@ -60,7 +61,7 @@ router.put("/:id", async (req, res, next) => {
   }
 });
 
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", requireAdmin, async (req, res, next) => {
   try {
     await blockService.deleteBlock(req.params.id);
     res.status(204).send();
