@@ -77,6 +77,80 @@ The dashboard is available at `http://localhost:3000` and the API at `http://loc
 
 See `CLAUDE.md` for full endpoint documentation and domain model.
 
+## Production Deployment (RHEL / Rocky / Alma Linux)
+
+An automated deployment script is included that sets up everything on a fresh RHEL 9 server.
+
+### Automated setup
+
+```bash
+# As root on the target server:
+git clone https://github.com/davidmoore-rogers/ip-management.git
+cd ip-management
+bash deploy/setup-rhel.sh
+```
+
+The script will:
+- Install Node.js 20 and PostgreSQL 15
+- Create a dedicated `ipam` system user (the app never runs as root)
+- Create the PostgreSQL database and role
+- Clone the repo to `/opt/ipam`, install dependencies, build, and migrate
+- Generate a random `SESSION_SECRET` in `.env`
+- Install and enable a systemd service with security hardening
+- Open port 3000 in the firewall
+
+After it finishes, the app is live at `http://<server-ip>:3000` — log in with `admin` / `admin`.
+
+### Manual setup
+
+If you prefer to set things up by hand:
+
+```bash
+# 1. Create a service account (never run the app as root)
+useradd --system --shell /bin/false --home-dir /opt/ipam ipam
+
+# 2. Deploy the code
+mkdir -p /opt/ipam
+git clone https://github.com/davidmoore-rogers/ip-management.git /opt/ipam
+chown -R ipam:ipam /opt/ipam
+cd /opt/ipam
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env — set DATABASE_URL, generate a real SESSION_SECRET, set NODE_ENV=production
+
+# 4. Install, build, migrate
+sudo -u ipam npm ci
+sudo -u ipam npx tsc
+sudo -u ipam npx prisma migrate deploy
+sudo -u ipam node --env-file=.env --import tsx/esm prisma/seed.ts
+
+# 5. Install the systemd service
+cp deploy/ipam.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now ipam
+```
+
+### Managing the service
+
+```bash
+systemctl status ipam          # check status
+systemctl restart ipam         # restart after config changes
+journalctl -u ipam -f          # tail logs
+journalctl -u ipam --since today  # today's logs
+```
+
+### Updating
+
+```bash
+cd /opt/ipam
+sudo -u ipam git pull --ff-only
+sudo -u ipam npm ci
+sudo -u ipam npx tsc
+sudo -u ipam npx prisma migrate deploy
+systemctl restart ipam
+```
+
 ## Running Tests
 
 ```bash
