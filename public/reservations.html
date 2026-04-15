@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reservations - IPAM</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main">
+      <div class="page-header">
+        <h2>Reservations</h2>
+        <div class="page-header-actions">
+          <button class="btn btn-primary" id="btn-add-reservation">+ Add Reservation</button>
+        </div>
+      </div>
+
+      <div class="filter-bar">
+        <label>Status</label>
+        <select id="filter-status" style="width:auto">
+          <option value="">All</option>
+          <option value="active">Active</option>
+          <option value="expired">Expired</option>
+          <option value="released">Released</option>
+        </select>
+        <label>Owner</label>
+        <input type="text" id="filter-owner" placeholder="e.g. platform-team" style="width:160px">
+        <label>Project</label>
+        <input type="text" id="filter-project" placeholder="e.g. INFRA-001" style="width:140px">
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Subnet</th>
+              <th>IP Address</th>
+              <th>Hostname</th>
+              <th>Owner</th>
+              <th>Project</th>
+              <th>Status</th>
+              <th>Expires</th>
+              <th>Created</th>
+              <th style="width:110px">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="reservations-tbody">
+            <tr><td colspan="9" class="empty-state">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/reservations.js"></script>
+</body>
+</html>

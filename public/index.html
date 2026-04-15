@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IPAM Dashboard</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main">
+      <div class="page-header"><h2>Dashboard</h2></div>
+
+      <div class="kpi-grid" id="kpi-grid"></div>
+
+      <div class="overview-grid">
+        <div class="card" id="donut-card">
+          <p class="card-title">Subnet status</p>
+          <div id="donut-chart"></div>
+        </div>
+        <div class="card" id="bar-card">
+          <p class="card-title">Subnets per block</p>
+          <div id="bar-chart-legend" style="display:flex;gap:12px;margin-bottom:10px"></div>
+          <div id="bar-chart"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:1.5rem">
+        <p class="card-title">Block utilization</p>
+        <div id="block-util"></div>
+      </div>
+
+      <div class="card">
+        <p class="card-title">Recently reserved</p>
+        <div id="recent-reservations"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>
