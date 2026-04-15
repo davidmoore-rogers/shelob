@@ -49,7 +49,7 @@ function renderNav() {
   sidebar.innerHTML = `
     <div class="sidebar-brand">
       <img src="/logo.png" alt="Rogers Group" class="sidebar-logo">
-      <p>IP Address Management</p>
+      <p>IP Management Tool</p>
     </div>
     <ul class="sidebar-nav">
       ${visibleItems.map(item => {

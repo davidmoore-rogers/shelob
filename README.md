@@ -1,6 +1,6 @@
-# IP Management (IPAM)
+# Shelob
 
-A central IP Address Management service for reserving and tracking IPv4/IPv6 space across infrastructure projects.
+An IP management tool for reserving and tracking IPv4/IPv6 space across infrastructure projects. Named after Tolkien's great spider — because subnets are webs, and Shelob spins them.
 
 ## Prerequisites
 
@@ -33,8 +33,8 @@ sudo -u postgres psql
 ```
 
 ```sql
-CREATE USER ipam WITH PASSWORD 'ipam';
-CREATE DATABASE ipam OWNER ipam;
+CREATE USER shelob WITH PASSWORD 'shelob';
+CREATE DATABASE shelob OWNER shelob;
 \q
 ```
 
@@ -52,7 +52,7 @@ npm install
 
 # 2. Configure environment
 cp .env.example .env
-# Edit .env with your database credentials (default: postgresql://ipam:ipam@localhost:5432/ipam)
+# Edit .env with your database credentials (default: postgresql://shelob:shelob@localhost:5432/shelob)
 
 # 3. Run database migrations
 npx prisma migrate dev --name init
@@ -85,16 +85,16 @@ An automated deployment script is included that sets up everything on a fresh RH
 
 ```bash
 # As root on the target server:
-git clone https://github.com/davidmoore-rogers/ip-management.git
-cd ip-management
+git clone https://github.com/davidmoore-rogers/shelob.git
+cd shelob
 bash deploy/setup-rhel.sh
 ```
 
 The script will:
 - Install Node.js 20 and PostgreSQL 15
-- Create a dedicated `ipam` system user (the app never runs as root)
+- Create a dedicated `shelob` system user (the app never runs as root)
 - Create the PostgreSQL database and role
-- Clone the repo to `/opt/ipam`, install dependencies, build, and migrate
+- Clone the repo to `/opt/shelob`, install dependencies, build, and migrate
 - Generate a random `SESSION_SECRET` in `.env`
 - Install and enable a systemd service with security hardening
 - Open port 3000 in the firewall
@@ -107,48 +107,48 @@ If you prefer to set things up by hand:
 
 ```bash
 # 1. Create a service account (never run the app as root)
-useradd --system --shell /bin/false --home-dir /opt/ipam ipam
+useradd --system --shell /bin/false --home-dir /opt/shelob shelob
 
 # 2. Deploy the code
-mkdir -p /opt/ipam
-git clone https://github.com/davidmoore-rogers/ip-management.git /opt/ipam
-chown -R ipam:ipam /opt/ipam
-cd /opt/ipam
+mkdir -p /opt/shelob
+git clone https://github.com/davidmoore-rogers/shelob.git /opt/shelob
+chown -R shelob:shelob /opt/shelob
+cd /opt/shelob
 
 # 3. Configure environment
 cp .env.example .env
 # Edit .env — set DATABASE_URL, generate a real SESSION_SECRET, set NODE_ENV=production
 
 # 4. Install, build, migrate
-sudo -u ipam npm ci
-sudo -u ipam npx tsc
-sudo -u ipam npx prisma migrate deploy
-sudo -u ipam node --env-file=.env --import tsx/esm prisma/seed.ts
+sudo -u shelob npm ci
+sudo -u shelob npx tsc
+sudo -u shelob npx prisma migrate deploy
+sudo -u shelob node --env-file=.env --import tsx/esm prisma/seed.ts
 
 # 5. Install the systemd service
-cp deploy/ipam.service /etc/systemd/system/
+cp deploy/shelob.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now ipam
+systemctl enable --now shelob
 ```
 
 ### Managing the service
 
 ```bash
-systemctl status ipam          # check status
-systemctl restart ipam         # restart after config changes
-journalctl -u ipam -f          # tail logs
-journalctl -u ipam --since today  # today's logs
+systemctl status shelob          # check status
+systemctl restart shelob         # restart after config changes
+journalctl -u shelob -f          # tail logs
+journalctl -u shelob --since today  # today's logs
 ```
 
 ### Updating
 
 ```bash
-cd /opt/ipam
-sudo -u ipam git pull --ff-only
-sudo -u ipam npm ci
-sudo -u ipam npx tsc
-sudo -u ipam npx prisma migrate deploy
-systemctl restart ipam
+cd /opt/shelob
+sudo -u shelob git pull --ff-only
+sudo -u shelob npm ci
+sudo -u shelob npx tsc
+sudo -u shelob npx prisma migrate deploy
+systemctl restart shelob
 ```
 
 ## Running Tests

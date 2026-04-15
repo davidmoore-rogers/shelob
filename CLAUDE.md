@@ -1,15 +1,15 @@
-# IP Management Solution — Claude Code Project
+# Shelob — Claude Code Project
 
 ## Project Overview
 
-This project is an **IP Address Management (IPAM)** system that allows users to reserve and manage IP address space (IPv4 and IPv6) for use across other infrastructure projects. It provides a central registry for subnets, individual IPs, and reservations — preventing conflicts and giving teams visibility into IP utilization.
+**Shelob** is an IP management tool that allows users to reserve and manage IP address space (IPv4 and IPv6) for use across other infrastructure projects. Named after Tolkien's great spider — because subnets are webs, and Shelob spins them. It provides a central registry for subnets, individual IPs, and reservations — preventing conflicts and giving teams visibility into IP utilization.
 
 ---
 
 ## Architecture
 
 ```
-ip-management/
+shelob/
 ├── CLAUDE.md                    # This file
 ├── README.md
 ├── .env.example
@@ -161,7 +161,7 @@ Reservation
 
 ```env
 # Database
-DATABASE_URL=postgresql://user:password@localhost:5432/ipam
+DATABASE_URL=postgresql://user:password@localhost:5432/shelob
 
 # App
 PORT=3000

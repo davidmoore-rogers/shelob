@@ -1,7 +1,7 @@
 {
-  "name": "ip-management",
+  "name": "shelob",
   "version": "1.0.0",
-  "description": "IP Address Management (IPAM) — reserve and manage IP space across projects",
+  "description": "Shelob — subnet & IP address management, spinning your network into a web",
   "main": "dist/index.js",
   "scripts": {
     "dev": "node --env-file=.env --import tsx/esm --watch src/index.ts",

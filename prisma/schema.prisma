@@ -1,4 +1,4 @@
-// Prisma Schema — IP Address Management (IPAM)
+// Prisma Schema — Shelob (Subnet & IP Address Management)
 // Run: npx prisma migrate dev --name init
 
 generator client {

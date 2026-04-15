@@ -1,16 +1,16 @@
 [Unit]
-Description=IP Address Management (IPAM)
-Documentation=https://github.com/davidmoore-rogers/ip-management
+Description=Shelob — IP Management Tool
+Documentation=https://github.com/davidmoore-rogers/shelob
 After=network.target postgresql.service
 Requires=postgresql.service
 
 [Service]
 Type=simple
-User=ipam
-Group=ipam
-WorkingDirectory=/opt/ipam
+User=shelob
+Group=shelob
+WorkingDirectory=/opt/shelob
 ExecStart=/usr/bin/node dist/index.js
-EnvironmentFile=/opt/ipam/.env
+EnvironmentFile=/opt/shelob/.env
 Restart=on-failure
 RestartSec=5
 
@@ -18,13 +18,13 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/ipam
+ReadWritePaths=/opt/shelob
 PrivateTmp=true
 
 # Logging — stdout/stderr go to journald
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=ipam
+SyslogIdentifier=shelob
 
 [Install]
 WantedBy=multi-user.target

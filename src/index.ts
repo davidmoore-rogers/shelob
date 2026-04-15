@@ -17,7 +17,7 @@ app.use(express.json());
 // Session middleware (MemoryStore is fine for single-process / internal use)
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "ipam-dev-secret-change-in-production",
+    secret: process.env.SESSION_SECRET || "shelob-dev-secret-change-in-production",
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -47,7 +47,7 @@ app.use("/api/v1", router);
 app.use(errorHandler);
 
 app.listen(PORT, () => {
-  logger.info({ port: PORT }, "IPAM server listening");
+  logger.info({ port: PORT }, "Shelob server listening");
 });
 
 export { app };

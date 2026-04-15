@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# deploy/setup-rhel.sh — IPAM deployment script for RHEL / Rocky / Alma Linux 9
+# deploy/setup-rhel.sh — Shelob deployment script for RHEL / Rocky / Alma Linux 9
 #
 # Run as root:  bash deploy/setup-rhel.sh
 #
 # What this script does:
 #   1. Installs Node.js 20 and PostgreSQL 15 (if not already installed)
-#   2. Creates a dedicated 'ipam' system user
+#   2. Creates a dedicated 'shelob' system user
 #   3. Creates the PostgreSQL database and role
-#   4. Clones or copies the application to /opt/ipam
+#   4. Clones or copies the application to /opt/shelob
 #   5. Installs dependencies and runs migrations
 #   6. Installs and enables a systemd service
 #
@@ -15,13 +15,13 @@
 
 set -euo pipefail
 
-APP_DIR="/opt/ipam"
-APP_USER="ipam"
-APP_GROUP="ipam"
-DB_NAME="ipam"
-DB_USER="ipam"
-DB_PASS="ipam"
-REPO_URL="https://github.com/davidmoore-rogers/ip-management.git"
+APP_DIR="/opt/shelob"
+APP_USER="shelob"
+APP_GROUP="shelob"
+DB_NAME="shelob"
+DB_USER="shelob"
+DB_PASS="shelob"
+REPO_URL="https://github.com/davidmoore-rogers/shelob.git"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -34,7 +34,7 @@ if [[ $EUID -ne 0 ]]; then
   error "This script must be run as root"
 fi
 
-info "Starting IPAM deployment on $(hostname)"
+info "Starting Shelob deployment on $(hostname)"
 
 # ─── 1. Install Node.js 20 ───────────────────────────────────────────────────
 if command -v node &>/dev/null && [[ "$(node -v)" == v20* || "$(node -v)" == v22* ]]; then
@@ -79,11 +79,10 @@ sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" |
 
 info "Database '$DB_NAME' ready"
 
-# Ensure pg_hba.conf allows password auth for the ipam user
+# Ensure pg_hba.conf allows password auth for the shelob user
 PG_HBA=$(sudo -u postgres psql -tc "SHOW hba_file;" | tr -d ' ')
 if ! grep -q "$DB_USER" "$PG_HBA" 2>/dev/null; then
   warn "Adding md5 auth entry for '$DB_USER' to pg_hba.conf"
-  # Insert before the first local/host line
   sed -i "/^# TYPE/a local   $DB_NAME   $DB_USER   md5\nhost    $DB_NAME   $DB_USER   127.0.0.1/32   md5\nhost    $DB_NAME   $DB_USER   ::1/128        md5" "$PG_HBA"
   systemctl reload postgresql
 fi
@@ -95,7 +94,6 @@ if [[ -d "$APP_DIR/.git" ]]; then
   sudo -u "$APP_USER" git pull --ff-only
 else
   info "Cloning repository to $APP_DIR..."
-  # Remove the directory if it exists but isn't a git repo
   rm -rf "$APP_DIR"
   git clone "$REPO_URL" "$APP_DIR"
   chown -R "$APP_USER:$APP_GROUP" "$APP_DIR"
@@ -141,17 +139,17 @@ sudo -u "$APP_USER" node --env-file=.env --import tsx/esm prisma/seed.ts
 
 # ─── 8. Install systemd service ──────────────────────────────────────────────
 info "Installing systemd service..."
-cp "$APP_DIR/deploy/ipam.service" /etc/systemd/system/ipam.service
+cp "$APP_DIR/deploy/shelob.service" /etc/systemd/system/shelob.service
 systemctl daemon-reload
-systemctl enable --now ipam
+systemctl enable --now shelob
 
 info "Waiting for service to start..."
 sleep 2
 
-if systemctl is-active --quiet ipam; then
-  info "IPAM service is running"
+if systemctl is-active --quiet shelob; then
+  info "Shelob service is running"
 else
-  warn "Service may not have started — check: journalctl -u ipam -f"
+  warn "Service may not have started — check: journalctl -u shelob -f"
 fi
 
 # ─── 9. Firewall ─────────────────────────────────────────────────────────────
@@ -164,10 +162,10 @@ fi
 # ─── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 info "============================================"
-info "  IPAM deployment complete!"
+info "  Shelob deployment complete!"
 info "  URL:   http://$(hostname -I | awk '{print $1}'):3000"
 info "  Login: admin / admin"
-info "  Logs:  journalctl -u ipam -f"
+info "  Logs:  journalctl -u shelob -f"
 info "============================================"
 echo ""
 warn "Change the default admin password after first login!"
