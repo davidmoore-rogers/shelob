@@ -59,6 +59,22 @@ const api = {
     updateRole:    (id, b)  => request("PUT", `/users/${id}/role`, b),
     delete:        (id)     => request("DELETE", `/users/${id}`),
   },
+  assets: {
+    list:   (params) => request("GET", "/assets" + toQuery(params)),
+    get:    (id)     => request("GET", `/assets/${id}`),
+    create: (body)   => request("POST", "/assets", body),
+    update: (id, b)  => request("PUT", `/assets/${id}`, b),
+    delete: (id)     => request("DELETE", `/assets/${id}`),
+  },
+  integrations: {
+    list:   ()       => request("GET", "/integrations"),
+    get:    (id)     => request("GET", `/integrations/${id}`),
+    create: (body)   => request("POST", "/integrations", body),
+    update: (id, b)  => request("PUT", `/integrations/${id}`, b),
+    delete: (id)     => request("DELETE", `/integrations/${id}`),
+    test:   (id)     => request("POST", `/integrations/${id}/test`),
+    testNew:(body)   => request("POST", "/integrations/test", body),
+  },
   auth: {
     me: () => request("GET", "/auth/me"),
   },

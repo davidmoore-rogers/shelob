@@ -29,8 +29,8 @@ app.use(
 );
 
 // Protect dashboard pages — redirect unauthenticated users to login
-const protectedPages = ["/", "/index.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html"];
-const adminOnlyPages = ["/users.html"];
+const protectedPages = ["/", "/index.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html", "/integrations.html", "/assets.html"];
+const adminOnlyPages = ["/users.html", "/integrations.html"];
 app.use((req, res, next) => {
   if (!protectedPages.includes(req.path)) return next();
   if (!req.session?.userId) return res.redirect("/login.html");

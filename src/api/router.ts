@@ -9,6 +9,8 @@ import subnetsRouter from "./routes/subnets.js";
 import reservationsRouter from "./routes/reservations.js";
 import utilizationRouter from "./routes/utilization.js";
 import usersRouter from "./routes/users.js";
+import integrationsRouter from "./routes/integrations.js";
+import assetsRouter from "./routes/assets.js";
 import { requireAuth, requireAdmin } from "./middleware/auth.js";
 
 export const router = Router();
@@ -23,3 +25,5 @@ router.use("/subnets", subnetsRouter);
 router.use("/reservations", reservationsRouter);
 router.use("/utilization", utilizationRouter);
 router.use("/users", requireAdmin, usersRouter);
+router.use("/integrations", integrationsRouter);
+router.use("/assets", assetsRouter);

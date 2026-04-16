@@ -100,6 +100,72 @@ model Reservation {
   @@map("reservations")
 }
 
+model Integration {
+  id        String   @id @default(uuid())
+  type      String                         // e.g. "fortimanager"
+  name      String                         // Human-readable label
+  config    Json     @default("{}")         // Connection settings (host, port, adom, etc.)
+  enabled   Boolean  @default(true)
+  lastTestAt  DateTime?
+  lastTestOk  Boolean?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("integrations")
+}
+
+enum AssetStatus {
+  active
+  maintenance
+  decommissioned
+  storage
+}
+
+enum AssetType {
+  server
+  switch
+  router
+  firewall
+  workstation
+  printer
+  access_point
+  other
+}
+
+model Asset {
+  id             String      @id @default(uuid())
+  ipAddress      String?                           // IPv4 or IPv6
+  macAddress     String?                           // e.g. "AA:BB:CC:DD:EE:FF"
+  hostname       String?
+  dnsName        String?                           // FQDN, e.g. "server01.corp.local"
+  assetTag       String?     @unique               // Internal tracking tag, e.g. "RGI-00421"
+  serialNumber   String?
+  manufacturer   String?
+  model          String?
+  assetType      AssetType   @default(other)
+  status         AssetStatus @default(active)
+  location       String?                           // Building, rack, room
+  department     String?                           // Owning department or team
+  assignedTo     String?                           // Person or team responsible
+  os             String?                           // Operating system
+  acquiredAt     DateTime?                         // Acquisition / purchase date
+  warrantyExpiry DateTime?                         // Warranty end date
+  purchaseOrder  String?                           // PO or invoice reference
+  notes          String?     @db.Text
+  tags           String[]    @default([])
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([ipAddress])
+  @@index([macAddress])
+  @@index([hostname])
+  @@index([assetType])
+  @@index([status])
+  @@index([department])
+  @@map("assets")
+}
+
 model User {
   id           String   @id @default(uuid())
   username     String   @unique

@@ -328,6 +328,240 @@ const USERS = [
   { id: "u4", username: "dmoore", role: "admin", createdAt: "2026-03-01T08:00:00.000Z", updatedAt: "2026-03-01T08:00:00.000Z" },
 ];
 
+const INTEGRATIONS = [
+  {
+    id: "i1000000-0000-0000-0000-000000000001",
+    type: "fortimanager",
+    name: "Production FortiManager",
+    config: {
+      host: "fmg.rogersgroupinc.com",
+      port: 443,
+      username: "api-readonly",
+      password: "••••••••",
+      adom: "root",
+      verifySsl: true,
+    },
+    enabled: true,
+    lastTestAt: "2026-04-10T14:30:00.000Z",
+    lastTestOk: true,
+    createdAt: "2026-03-15T09:00:00.000Z",
+    updatedAt: "2026-04-10T14:30:00.000Z",
+  },
+  {
+    id: "i2000000-0000-0000-0000-000000000002",
+    type: "fortimanager",
+    name: "Lab FortiManager",
+    config: {
+      host: "192.168.100.10",
+      port: 8443,
+      username: "admin",
+      password: "••••••••",
+      adom: "lab",
+      verifySsl: false,
+    },
+    enabled: false,
+    lastTestAt: "2026-02-28T11:00:00.000Z",
+    lastTestOk: false,
+    createdAt: "2026-02-01T10:00:00.000Z",
+    updatedAt: "2026-02-28T11:00:00.000Z",
+  },
+];
+
+const ASSETS = [
+  {
+    id: "a1000000-0000-0000-0000-000000000001",
+    ipAddress: "10.0.1.10",
+    macAddress: "00:1A:2B:3C:4D:01",
+    hostname: "k8s-worker-01",
+    dnsName: "k8s-worker-01.corp.rogersgroupinc.com",
+    assetTag: "RGI-00101",
+    serialNumber: "SN-DELL-R740-001",
+    manufacturer: "Dell",
+    model: "PowerEdge R740",
+    assetType: "server",
+    status: "active",
+    location: "DC1 Rack A3",
+    department: "Platform Engineering",
+    assignedTo: "platform-team",
+    os: "RHEL 9.3",
+    acquiredAt: "2025-06-15T00:00:00.000Z",
+    warrantyExpiry: "2028-06-15T00:00:00.000Z",
+    purchaseOrder: "PO-2025-0042",
+    notes: "Primary K8s worker node, 256GB RAM, 2x Xeon Gold",
+    tags: ["kubernetes", "prod", "critical"],
+    createdAt: "2025-11-16T10:00:00.000Z",
+    updatedAt: "2026-01-10T09:00:00.000Z",
+  },
+  {
+    id: "a2000000-0000-0000-0000-000000000002",
+    ipAddress: "10.0.1.11",
+    macAddress: "00:1A:2B:3C:4D:02",
+    hostname: "k8s-worker-02",
+    dnsName: "k8s-worker-02.corp.rogersgroupinc.com",
+    assetTag: "RGI-00102",
+    serialNumber: "SN-DELL-R740-002",
+    manufacturer: "Dell",
+    model: "PowerEdge R740",
+    assetType: "server",
+    status: "active",
+    location: "DC1 Rack A3",
+    department: "Platform Engineering",
+    assignedTo: "platform-team",
+    os: "RHEL 9.3",
+    acquiredAt: "2025-06-15T00:00:00.000Z",
+    warrantyExpiry: "2028-06-15T00:00:00.000Z",
+    purchaseOrder: "PO-2025-0042",
+    notes: "Secondary K8s worker node",
+    tags: ["kubernetes", "prod"],
+    createdAt: "2025-11-16T10:05:00.000Z",
+    updatedAt: "2026-01-10T09:00:00.000Z",
+  },
+  {
+    id: "a3000000-0000-0000-0000-000000000003",
+    ipAddress: "10.0.2.10",
+    macAddress: "00:1A:2B:3C:4D:10",
+    hostname: "postgres-primary",
+    dnsName: "postgres-primary.corp.rogersgroupinc.com",
+    assetTag: "RGI-00200",
+    serialNumber: "SN-DELL-R750-010",
+    manufacturer: "Dell",
+    model: "PowerEdge R750",
+    assetType: "server",
+    status: "active",
+    location: "DC1 Rack B1",
+    department: "Data Engineering",
+    assignedTo: "data-team",
+    os: "RHEL 9.3",
+    acquiredAt: "2025-08-01T00:00:00.000Z",
+    warrantyExpiry: "2028-08-01T00:00:00.000Z",
+    purchaseOrder: "PO-2025-0078",
+    notes: "Primary PostgreSQL instance — 512GB RAM, NVMe storage",
+    tags: ["database", "prod", "critical"],
+    createdAt: "2025-11-17T08:00:00.000Z",
+    updatedAt: "2025-11-17T08:00:00.000Z",
+  },
+  {
+    id: "a4000000-0000-0000-0000-000000000004",
+    ipAddress: "10.0.3.10",
+    macAddress: "00:1A:2B:3C:4D:20",
+    hostname: "grafana-01",
+    dnsName: "grafana-01.corp.rogersgroupinc.com",
+    assetTag: "RGI-00305",
+    serialNumber: "SN-HP-DL380-005",
+    manufacturer: "HPE",
+    model: "ProLiant DL380 Gen10",
+    assetType: "server",
+    status: "active",
+    location: "DC1 Rack C2",
+    department: "SRE",
+    assignedTo: "sre-team",
+    os: "Ubuntu 22.04 LTS",
+    acquiredAt: "2025-03-20T00:00:00.000Z",
+    warrantyExpiry: "2028-03-20T00:00:00.000Z",
+    purchaseOrder: "PO-2025-0015",
+    notes: "Monitoring stack — Grafana, Prometheus, Loki",
+    tags: ["monitoring", "prod"],
+    createdAt: "2026-01-12T13:00:00.000Z",
+    updatedAt: "2026-01-12T13:00:00.000Z",
+  },
+  {
+    id: "a5000000-0000-0000-0000-000000000005",
+    ipAddress: "172.16.0.1",
+    macAddress: "00:50:56:AA:BB:01",
+    hostname: "core-sw-01",
+    dnsName: "core-sw-01.mgmt.rogersgroupinc.com",
+    assetTag: "RGI-00500",
+    serialNumber: "SN-CISCO-9300-001",
+    manufacturer: "Cisco",
+    model: "Catalyst 9300-48P",
+    assetType: "switch",
+    status: "active",
+    location: "DC1 MDF",
+    department: "Network Operations",
+    assignedTo: "network-team",
+    os: "IOS-XE 17.9",
+    acquiredAt: "2024-11-01T00:00:00.000Z",
+    warrantyExpiry: "2029-11-01T00:00:00.000Z",
+    purchaseOrder: "PO-2024-0230",
+    notes: "Core distribution switch — 48 PoE+ ports",
+    tags: ["network", "core", "critical"],
+    createdAt: "2025-11-15T09:10:00.000Z",
+    updatedAt: "2025-11-15T09:10:00.000Z",
+  },
+  {
+    id: "a6000000-0000-0000-0000-000000000006",
+    ipAddress: "192.168.1.1",
+    macAddress: "00:50:56:CC:DD:01",
+    hostname: "fw-edge-01",
+    dnsName: "fw-edge-01.mgmt.rogersgroupinc.com",
+    assetTag: "RGI-00600",
+    serialNumber: "SN-FG-3700F-001",
+    manufacturer: "Fortinet",
+    model: "FortiGate 3700F",
+    assetType: "firewall",
+    status: "active",
+    location: "DC1 Security Rack",
+    department: "Network Security",
+    assignedTo: "network-team",
+    os: "FortiOS 7.4.3",
+    acquiredAt: "2025-01-15T00:00:00.000Z",
+    warrantyExpiry: "2028-01-15T00:00:00.000Z",
+    purchaseOrder: "PO-2025-0005",
+    notes: "Edge firewall — AWS VPN termination",
+    tags: ["firewall", "edge", "critical"],
+    createdAt: "2026-01-20T15:30:00.000Z",
+    updatedAt: "2026-01-20T15:30:00.000Z",
+  },
+  {
+    id: "a7000000-0000-0000-0000-000000000007",
+    ipAddress: "10.0.4.50",
+    macAddress: "00:1A:2B:3C:4D:50",
+    hostname: "ci-runner-old",
+    dnsName: "ci-runner-old.corp.rogersgroupinc.com",
+    assetTag: "RGI-00410",
+    serialNumber: "SN-DELL-R630-010",
+    manufacturer: "Dell",
+    model: "PowerEdge R630",
+    assetType: "server",
+    status: "decommissioned",
+    location: "DC1 Rack D4",
+    department: "DevOps",
+    assignedTo: "devops-team",
+    os: "RHEL 8.6",
+    acquiredAt: "2022-03-01T00:00:00.000Z",
+    warrantyExpiry: "2025-03-01T00:00:00.000Z",
+    purchaseOrder: "PO-2022-0088",
+    notes: "Decommissioned CI runner — warranty expired, replaced by cloud runners",
+    tags: ["ci", "decommissioned"],
+    createdAt: "2025-12-01T08:00:00.000Z",
+    updatedAt: "2026-02-15T16:00:00.000Z",
+  },
+  {
+    id: "a8000000-0000-0000-0000-000000000008",
+    ipAddress: null,
+    macAddress: "00:1A:2B:3C:4D:99",
+    hostname: "spare-r740-01",
+    dnsName: null,
+    assetTag: "RGI-00999",
+    serialNumber: "SN-DELL-R740-099",
+    manufacturer: "Dell",
+    model: "PowerEdge R740",
+    assetType: "server",
+    status: "storage",
+    location: "Warehouse B",
+    department: "IT Operations",
+    assignedTo: null,
+    os: null,
+    acquiredAt: "2025-06-15T00:00:00.000Z",
+    warrantyExpiry: "2028-06-15T00:00:00.000Z",
+    purchaseOrder: "PO-2025-0042",
+    notes: "Spare server — available for deployment",
+    tags: ["spare", "inventory"],
+    createdAt: "2026-03-01T10:00:00.000Z",
+    updatedAt: "2026-03-01T10:00:00.000Z",
+  },
+];
+
 // ─── Utilization ─────────────────────────────────────────────────────────────
 
 function buildUtilization() {
@@ -541,6 +775,116 @@ function routeAPI(method, path, params, body, res) {
     return json(res, { ok: true, role: body.role });
   }
   if (path.match(/^\/api\/v1\/users\/[\w-]+$/) && method === "DELETE") {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  // Assets
+  if (path === "/api/v1/assets" && method === "GET") {
+    let result = [...ASSETS];
+    const status = params.get("status");
+    const assetType = params.get("assetType");
+    const search = params.get("search");
+    if (status) result = result.filter((a) => a.status === status);
+    if (assetType) result = result.filter((a) => a.assetType === assetType);
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter((a) =>
+        (a.hostname && a.hostname.toLowerCase().includes(q)) ||
+        (a.dnsName && a.dnsName.toLowerCase().includes(q)) ||
+        (a.ipAddress && a.ipAddress.toLowerCase().includes(q)) ||
+        (a.macAddress && a.macAddress.toLowerCase().includes(q)) ||
+        (a.assetTag && a.assetTag.toLowerCase().includes(q)) ||
+        (a.assignedTo && a.assignedTo.toLowerCase().includes(q))
+      );
+    }
+    return json(res, result);
+  }
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "GET") {
+    const id = path.split("/").pop();
+    const asset = ASSETS.find((a) => a.id === id);
+    return asset ? json(res, asset) : json(res, { error: "Not found" }, 404);
+  }
+  if (path === "/api/v1/assets" && method === "POST") {
+    const now = new Date().toISOString();
+    return json(res, { id: crypto.randomUUID(), ...body, createdAt: now, updatedAt: now }, 201);
+  }
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "PUT") {
+    const id = path.split("/").pop();
+    const asset = ASSETS.find((a) => a.id === id);
+    if (!asset) return json(res, { error: "Not found" }, 404);
+    return json(res, { ...asset, ...body, updatedAt: new Date().toISOString() });
+  }
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "DELETE") {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  // Integrations
+  if (path === "/api/v1/integrations" && method === "GET") {
+    // Strip passwords from list response
+    return json(res, INTEGRATIONS.map((i) => ({
+      ...i,
+      config: { ...i.config, password: undefined },
+    })));
+  }
+  if (path === "/api/v1/integrations/test" && method === "POST") {
+    // Test a new (unsaved) integration config
+    const delay = 800 + Math.random() * 400;
+    return setTimeout(() => {
+      json(res, { ok: true, message: "Connected — FortiManager v7.4.3 (demo)" });
+    }, delay);
+  }
+  if (path.match(/^\/api\/v1\/integrations\/[\w-]+\/test$/) && method === "POST") {
+    // Test a saved integration
+    const id = path.split("/")[4];
+    const intg = INTEGRATIONS.find((i) => i.id === id);
+    if (!intg) return json(res, { error: "Not found" }, 404);
+    const delay = 800 + Math.random() * 400;
+    return setTimeout(() => {
+      json(res, {
+        ok: intg.enabled,
+        message: intg.enabled
+          ? "Connected — FortiManager v7.4.3 (demo)"
+          : "Connection failed — integration is disabled",
+      });
+    }, delay);
+  }
+  if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "GET") {
+    const id = path.split("/").pop();
+    const intg = INTEGRATIONS.find((i) => i.id === id);
+    if (!intg) return json(res, { error: "Not found" }, 404);
+    // Strip password from response
+    return json(res, { ...intg, config: { ...intg.config, password: undefined } });
+  }
+  if (path === "/api/v1/integrations" && method === "POST") {
+    const now = new Date().toISOString();
+    const newIntg = {
+      id: crypto.randomUUID(),
+      type: body.type || "fortimanager",
+      name: body.name,
+      config: { ...body.config, password: undefined },
+      enabled: body.enabled !== false,
+      lastTestAt: null,
+      lastTestOk: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    return json(res, newIntg, 201);
+  }
+  if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "PUT") {
+    const id = path.split("/").pop();
+    const intg = INTEGRATIONS.find((i) => i.id === id);
+    if (!intg) return json(res, { error: "Not found" }, 404);
+    const updated = {
+      ...intg,
+      ...body,
+      config: { ...intg.config, ...(body.config || {}), password: undefined },
+      updatedAt: new Date().toISOString(),
+    };
+    return json(res, updated);
+  }
+  if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "DELETE") {
     res.writeHead(204);
     return res.end();
   }
