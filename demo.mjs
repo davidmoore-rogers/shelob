@@ -447,6 +447,7 @@ const ASSETS = [
     osVersion: null,
     lastSeenSwitch: "FS-248E-DC1-01/port15",
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2025-06-15T00:00:00.000Z",
     warrantyExpiry: "2028-06-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0042",
@@ -479,6 +480,7 @@ const ASSETS = [
     osVersion: null,
     lastSeenSwitch: "FS-248E-DC1-01/port16",
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2025-06-15T00:00:00.000Z",
     warrantyExpiry: "2028-06-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0042",
@@ -510,6 +512,7 @@ const ASSETS = [
     osVersion: null,
     lastSeenSwitch: "FS-248E-DC1-02/port1",
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2025-08-01T00:00:00.000Z",
     warrantyExpiry: "2028-08-01T00:00:00.000Z",
     purchaseOrder: "PO-2025-0078",
@@ -538,6 +541,7 @@ const ASSETS = [
     osVersion: null,
     lastSeenSwitch: null,
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2025-03-20T00:00:00.000Z",
     warrantyExpiry: "2028-03-20T00:00:00.000Z",
     purchaseOrder: "PO-2025-0015",
@@ -570,6 +574,7 @@ const ASSETS = [
     osVersion: "17.9.4",
     lastSeenSwitch: null,
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2024-11-01T00:00:00.000Z",
     warrantyExpiry: "2029-11-01T00:00:00.000Z",
     purchaseOrder: "PO-2024-0230",
@@ -598,6 +603,7 @@ const ASSETS = [
     osVersion: "7.4.3",
     lastSeenSwitch: null,
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2025-01-15T00:00:00.000Z",
     warrantyExpiry: "2028-01-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0005",
@@ -626,6 +632,7 @@ const ASSETS = [
     osVersion: null,
     lastSeenSwitch: null,
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2022-03-01T00:00:00.000Z",
     warrantyExpiry: "2025-03-01T00:00:00.000Z",
     purchaseOrder: "PO-2022-0088",
@@ -654,6 +661,7 @@ const ASSETS = [
     osVersion: null,
     lastSeenSwitch: null,
     lastSeenAp: null,
+    associatedUsers: [],
     acquiredAt: "2025-06-15T00:00:00.000Z",
     warrantyExpiry: "2028-06-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0042",
@@ -997,24 +1005,24 @@ const MOCK_DHCP_ENTRIES = [
 const MOCK_DEVICE_INVENTORY = [
   // Devices on FGT-DC1-01 — some overlap with DHCP entries, some are new
   // k8s-worker-01 already in DHCP leases (port5) — inventory fills in OS, switch info
-  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:01", ip: "10.0.10.100", hostname: "k8s-worker-01", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "15", apName: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
+  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:01", ip: "10.0.10.100", hostname: "k8s-worker-01", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "15", apName: "", user: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
   // k8s-worker-02 in DHCP leases — inventory fills in OS, switch info
-  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:02", ip: "10.0.10.101", hostname: "k8s-worker-02", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "16", apName: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
+  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:02", ip: "10.0.10.101", hostname: "k8s-worker-02", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "16", apName: "", user: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
   // k8s-worker-03 in DHCP leases — inventory fills in details
-  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:03", ip: "10.0.10.102", hostname: "k8s-worker-03", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "17", apName: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
+  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:03", ip: "10.0.10.102", hostname: "k8s-worker-03", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "17", apName: "", user: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
   // db-primary in DHCP reservations (port6) — inventory adds switch info
-  { device: "FGT-DC1-01", iface: "port6", mac: "AA:BB:CC:01:11:0A", ip: "10.0.11.10", hostname: "db-primary", os: "Linux", osVersion: "Ubuntu 22.04.3 LTS", vendor: "Dell Inc.", switchName: "FS-248E-DC1-02", switchPort: "1", apName: "", online: true, lastSeen: "2026-04-16T09:00:00.000Z" },
+  { device: "FGT-DC1-01", iface: "port6", mac: "AA:BB:CC:01:11:0A", ip: "10.0.11.10", hostname: "db-primary", os: "Linux", osVersion: "Ubuntu 22.04.3 LTS", vendor: "Dell Inc.", switchName: "FS-248E-DC1-02", switchPort: "1", apName: "", user: "ROGERS\\svc-postgres", online: true, lastSeen: "2026-04-16T09:00:00.000Z" },
   // Entirely new device — printer not in DHCP at all, on port5
-  { device: "FGT-DC1-01", iface: "port5", mac: "00:1E:8F:AA:BB:01", ip: "10.0.10.200", hostname: "hp-printer-dc1", os: "Embedded", osVersion: "HP FutureSmart 5.6", vendor: "HP Inc.", switchName: "FS-248E-DC1-01", switchPort: "24", apName: "", online: true, lastSeen: "2026-04-16T07:15:00.000Z" },
+  { device: "FGT-DC1-01", iface: "port5", mac: "00:1E:8F:AA:BB:01", ip: "10.0.10.200", hostname: "hp-printer-dc1", os: "Embedded", osVersion: "HP FutureSmart 5.6", vendor: "HP Inc.", switchName: "FS-248E-DC1-01", switchPort: "24", apName: "", user: "", online: true, lastSeen: "2026-04-16T07:15:00.000Z" },
   // Wireless laptop on port5 — connected via FortiAP
-  { device: "FGT-DC1-01", iface: "port5", mac: "F8:FF:C2:01:02:03", ip: "10.0.10.201", hostname: "laptop-jsmith", os: "Windows", osVersion: "Windows 11 23H2", vendor: "Lenovo", switchName: "", switchPort: "", apName: "FAP-431F-DC1-01", online: true, lastSeen: "2026-04-16T10:00:00.000Z" },
+  { device: "FGT-DC1-01", iface: "port5", mac: "F8:FF:C2:01:02:03", ip: "10.0.10.201", hostname: "laptop-jsmith", os: "Windows", osVersion: "Windows 11 23H2", vendor: "Lenovo", switchName: "", switchPort: "", apName: "FAP-431F-DC1-01", user: "ROGERS\\jsmith", online: true, lastSeen: "2026-04-16T10:00:00.000Z" },
   // Devices on FGT-DC1-02
   // dev-laptop-01 in DHCP leases (port3)
-  { device: "FGT-DC1-02", iface: "port3", mac: "DE:AD:BE:EF:03:01", ip: "10.0.20.100", hostname: "dev-laptop-01", os: "macOS", osVersion: "macOS 15.2 Sequoia", vendor: "Apple Inc.", switchName: "", switchPort: "", apName: "FAP-431F-DC1-02", online: true, lastSeen: "2026-04-16T09:45:00.000Z" },
+  { device: "FGT-DC1-02", iface: "port3", mac: "DE:AD:BE:EF:03:01", ip: "10.0.20.100", hostname: "dev-laptop-01", os: "macOS", osVersion: "macOS 15.2 Sequoia", vendor: "Apple Inc.", switchName: "", switchPort: "", apName: "FAP-431F-DC1-02", user: "ROGERS\\tchen", online: true, lastSeen: "2026-04-16T09:45:00.000Z" },
   // New: IP phone on port3
-  { device: "FGT-DC1-02", iface: "port3", mac: "00:04:F2:CC:DD:01", ip: "10.0.20.202", hostname: "phone-conf-room-a", os: "Embedded", osVersion: "Polycom UC 7.1", vendor: "Poly", switchName: "FS-124E-DC1-01", switchPort: "8", apName: "", online: true, lastSeen: "2026-04-16T06:00:00.000Z" },
+  { device: "FGT-DC1-02", iface: "port3", mac: "00:04:F2:CC:DD:01", ip: "10.0.20.202", hostname: "phone-conf-room-a", os: "Embedded", osVersion: "Polycom UC 7.1", vendor: "Poly", switchName: "FS-124E-DC1-01", switchPort: "8", apName: "", user: "", online: true, lastSeen: "2026-04-16T06:00:00.000Z" },
   // New: security camera on port7 (excluded interface if user excludes port7)
-  { device: "FGT-DC1-02", iface: "port7", mac: "70:B3:D5:01:02:03", ip: "10.0.21.200", hostname: "cam-lobby-01", os: "Embedded", osVersion: "Hikvision 4.30", vendor: "Hikvision", switchName: "FS-124E-DC1-01", switchPort: "20", apName: "", online: true, lastSeen: "2026-04-16T08:00:00.000Z" },
+  { device: "FGT-DC1-02", iface: "port7", mac: "70:B3:D5:01:02:03", ip: "10.0.21.200", hostname: "cam-lobby-01", os: "Embedded", osVersion: "Hikvision 4.30", vendor: "Hikvision", switchName: "FS-124E-DC1-01", switchPort: "20", apName: "", user: "", online: true, lastSeen: "2026-04-16T08:00:00.000Z" },
 ];
 
 const MOCK_WIN_DHCP_SCOPES = [
@@ -1147,6 +1155,7 @@ function discoverDhcpDemo(config, log) {
       switchName: d.switchName,
       switchPort: d.switchPort,
       apName: d.apName,
+      user: d.user || "",
       isOnline: d.online,
       lastSeen: d.lastSeen,
     }));
@@ -1280,6 +1289,7 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
           osVersion: null,
           lastSeenSwitch: null,
           lastSeenAp: null,
+          associatedUsers: [],
           acquiredAt: null,
           warrantyExpiry: null,
           purchaseOrder: null,
@@ -1454,6 +1464,18 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
         if (normalizedMac && !handledByDhcp) {
           _addMacToAsset(existingAsset, inv.macAddress, "device-inventory", now);
         }
+        // Track associated user
+        if (inv.user) {
+          const userList = Array.isArray(existingAsset.associatedUsers) ? [...existingAsset.associatedUsers] : [];
+          const parts = inv.user.includes("\\") ? inv.user.split("\\") : [null, inv.user];
+          const domain = parts[0] || undefined;
+          const username = parts[1] || inv.user;
+          const existing = userList.find((u) => u.user === username && u.domain === domain);
+          if (existing) { existing.lastSeen = now; existing.source = "device-inventory"; }
+          else { userList.push({ user: username, domain, lastSeen: now, source: "device-inventory" }); }
+          userList.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+          existingAsset.associatedUsers = userList;
+        }
         existingAsset.updatedAt = now;
         inventoryDeviceCount++;
       } else {
@@ -1478,6 +1500,7 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
           osVersion: inv.osVersion || null,
           lastSeenSwitch: switchConn,
           lastSeenAp: apConn,
+          associatedUsers: inv.user ? [{ user: inv.user.includes("\\") ? inv.user.split("\\")[1] : inv.user, domain: inv.user.includes("\\") ? inv.user.split("\\")[0] : undefined, lastSeen: now, source: "device-inventory" }] : [],
           acquiredAt: null,
           warrantyExpiry: null,
           purchaseOrder: null,

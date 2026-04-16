@@ -628,6 +628,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   transition: transform 0.2s;
 }
 .modal-overlay.open .modal { transform: translateY(0); }
+.modal.modal-wide { max-width: 672px; }
 .modal-header {
   display: flex;
   justify-content: space-between;

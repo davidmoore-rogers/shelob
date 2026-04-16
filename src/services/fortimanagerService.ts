@@ -181,6 +181,7 @@ export interface DiscoveredInventoryDevice {
   switchName: string;       // FortiSwitch name (if behind a managed switch)
   switchPort: string;       // FortiSwitch port (if behind a managed switch)
   apName: string;           // FortiAP name (if connected wirelessly)
+  user: string;             // Logged-in / registered user (if available)
   isOnline: boolean;
   lastSeen: string;         // ISO timestamp
 }
@@ -471,6 +472,7 @@ export async function discoverDhcpSubnets(
               switchName: client.switch_fortilink || client.fortiswitch || "",
               switchPort: client.switch_port != null ? String(client.switch_port) : "",
               apName: client.ap_name || client.fortiap || "",
+              user: client.user || client.detected_user || "",
               isOnline: !!client.is_online,
               lastSeen: client.last_seen ? new Date(client.last_seen * 1000).toISOString() : new Date().toISOString(),
             });

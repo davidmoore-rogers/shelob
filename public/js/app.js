@@ -227,7 +227,7 @@ function showToast(message, type) {
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
-function openModal(title, bodyHTML, footerHTML) {
+function openModal(title, bodyHTML, footerHTML, options) {
   let overlay = document.getElementById("modal-overlay");
   if (!overlay) {
     overlay = document.createElement("div");
@@ -240,6 +240,9 @@ function openModal(title, bodyHTML, footerHTML) {
     });
     overlay.querySelector(".modal-close").addEventListener("click", closeModal);
   }
+  var modal = overlay.querySelector(".modal");
+  modal.classList.remove("modal-wide");
+  if (options && options.wide) modal.classList.add("modal-wide");
   overlay.querySelector(".modal-header h3").textContent = title;
   overlay.querySelector(".modal-body").innerHTML = bodyHTML;
   overlay.querySelector(".modal-footer").innerHTML = footerHTML || "";

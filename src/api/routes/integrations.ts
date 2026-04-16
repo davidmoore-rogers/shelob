@@ -845,6 +845,23 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         if (switchConn) updateData.lastSeenSwitch = switchConn;
         if (apConn) updateData.lastSeenAp = apConn;
 
+        // Add user if reported by inventory
+        if (inv.user) {
+          const userList: Array<{user: string; domain?: string; lastSeen: string; source: string}> = Array.isArray(existingAsset.associatedUsers) ? [...(existingAsset.associatedUsers as any)] : [];
+          const parts = inv.user.includes("\\") ? inv.user.split("\\") : [null, inv.user];
+          const domain = parts[0] || undefined;
+          const username = parts[1] || inv.user;
+          const existingUser = userList.find((u) => u.user === username && u.domain === domain);
+          if (existingUser) {
+            existingUser.lastSeen = now;
+            existingUser.source = "device-inventory";
+          } else {
+            userList.push({ user: username, domain, lastSeen: now, source: "device-inventory" });
+          }
+          userList.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+          updateData.associatedUsers = userList;
+        }
+
         // Add MAC if not already tracked
         if (normalizedMac && !handledByDhcp) {
           const macList: Array<{mac: string; lastSeen: string; source: string}> = Array.isArray(existingAsset.macAddresses) ? [...(existingAsset.macAddresses as any)] : [];
@@ -873,6 +890,11 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       } else {
         // Create new asset from device inventory
         try {
+          const userList: Array<{user: string; domain?: string; lastSeen: string; source: string}> = [];
+          if (inv.user) {
+            const parts = inv.user.includes("\\") ? inv.user.split("\\") : [null, inv.user];
+            userList.push({ user: parts[1] || inv.user, domain: parts[0] || undefined, lastSeen: now, source: "device-inventory" });
+          }
           const newAsset = await prisma.asset.create({
             data: {
               ipAddress: inv.ipAddress || null,
@@ -886,6 +908,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
               osVersion: inv.osVersion || null,
               lastSeenSwitch: switchConn,
               lastSeenAp: apConn,
+              associatedUsers: userList,
               notes: `Auto-discovered from FortiGate device inventory (${inv.device})`,
               tags: ["device-inventory", "auto-discovered"],
             },

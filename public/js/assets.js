@@ -349,6 +349,7 @@ async function openViewModal(id) {
       viewRow("OS / Firmware Version", a.osVersion) +
       viewRow("Last Seen Switch", a.lastSeenSwitch) +
       viewRow("Last Seen AP", a.lastSeenAp) +
+      associatedUsersViewHTML(a.associatedUsers) +
       viewRow("Acquired", a.acquiredAt ? formatDate(a.acquiredAt) : null) +
       viewRow("Warranty Expires", a.warrantyExpiry ? formatDate(a.warrantyExpiry) : null) +
       viewRow("Purchase Order", a.purchaseOrder) +
@@ -360,7 +361,7 @@ async function openViewModal(id) {
     var footer = isAdmin()
       ? '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
       : '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
-    openModal("Asset Details", body, footer);
+    openModal("Asset Details", body, footer, { wide: true });
   } catch (err) {
     showToast(err.message, "error");
   }
@@ -383,6 +384,22 @@ function macAddressesViewHTML(macAddresses) {
     '</div>';
   }).join("");
   return '<div class="detail-row"><span class="detail-label">All MACs (' + macAddresses.length + ')</span>' +
+    '<span class="detail-value">' + rows + '</span></div>';
+}
+
+function associatedUsersViewHTML(users) {
+  if (!users || users.length === 0) return '';
+  var rows = users.map(function (u) {
+    var display = u.domain ? escapeHtml(u.domain) + '\\' + escapeHtml(u.user) : escapeHtml(u.user);
+    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
+      '<span style="font-size:0.85rem">' + display + '</span>' +
+      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
+        (u.source ? escapeHtml(u.source) : '') +
+        (u.lastSeen ? ' &middot; ' + formatDate(u.lastSeen) : '') +
+      '</span>' +
+    '</div>';
+  }).join("");
+  return '<div class="detail-row"><span class="detail-label">Associated Users (' + users.length + ')</span>' +
     '<span class="detail-value">' + rows + '</span></div>';
 }
 
