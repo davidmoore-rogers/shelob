@@ -54,24 +54,29 @@ model IpBlock {
 }
 
 model Subnet {
-  id          String       @id @default(uuid())
-  blockId     String
-  block       IpBlock      @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  id              String       @id @default(uuid())
+  blockId         String
+  block           IpBlock      @relation(fields: [blockId], references: [id], onDelete: Cascade)
 
-  cidr        String       @unique
-  name        String
-  purpose     String?      @db.Text
-  status      SubnetStatus @default(available)
-  vlan        Int?
-  tags        String[]     @default([])
+  cidr            String       @unique
+  name            String
+  purpose         String?      @db.Text
+  status          SubnetStatus @default(available)
+  vlan            Int?
+  tags            String[]     @default([])
 
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  discoveredBy    String?
+  integration     Integration? @relation(fields: [discoveredBy], references: [id], onDelete: SetNull)
+  fortigateDevice String?
 
-  reservations Reservation[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  reservations    Reservation[]
 
   @@index([blockId])
   @@index([status])
+  @@index([discoveredBy])
   @@map("subnets")
 }
 
@@ -105,13 +110,35 @@ model Integration {
   type      String                         // e.g. "fortimanager"
   name      String                         // Human-readable label
   config    Json     @default("{}")         // Connection settings (host, port, adom, etc.)
-  enabled   Boolean  @default(true)
-  lastTestAt  DateTime?
-  lastTestOk  Boolean?
+  enabled       Boolean  @default(true)
+  pollInterval  Int      @default(4)    // Auto-discovery interval in hours (1–24)
+  lastTestAt    DateTime?
+  lastTestOk    Boolean?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  subnets   Subnet[]
+
   @@map("integrations")
+}
+
+model Event {
+  id           String   @id @default(uuid())
+  timestamp    DateTime @default(now())
+  level        String   @default("info")        // info, warning, error
+  action       String                            // e.g. "block.created", "integration.discover.started"
+  resourceType String?                           // e.g. "block", "subnet", "integration"
+  resourceId   String?
+  resourceName String?
+  actor        String?                           // username that triggered the event
+  message      String   @db.Text
+  details      Json?                             // Optional extra context (error stack, diff, etc.)
+
+  @@index([timestamp])
+  @@index([action])
+  @@index([resourceType])
+  @@index([level])
+  @@map("events")
 }
 
 enum AssetStatus {

@@ -48,6 +48,7 @@ export async function listSubnets(filter: ListSubnetsFilter = {}) {
     },
     include: {
       block: { select: { name: true, cidr: true } },
+      integration: { select: { id: true, name: true } },
       _count: { select: { reservations: true } },
     },
     orderBy: { cidr: "asc" },
@@ -62,6 +63,7 @@ export async function getSubnet(id: string) {
     where: { id },
     include: {
       block: true,
+      integration: { select: { id: true, name: true } },
       reservations: { orderBy: { createdAt: "desc" } },
     },
   });

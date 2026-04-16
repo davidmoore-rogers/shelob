@@ -33,7 +33,7 @@ async function loadAssets() {
     };
     var assets = await api.assets.list(filters);
     if (assets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No assets found. Add one to get started.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No assets found. Add one to get started.</td></tr>';
       return;
     }
     tbody.innerHTML = assets.map(function (a) {
@@ -43,6 +43,7 @@ async function loadAssets() {
         '</td>' +
         '<td class="mono">' + escapeHtml(a.ipAddress || "-") + '</td>' +
         '<td class="mono" style="font-size:0.8rem">' + escapeHtml(a.macAddress || "-") + '</td>' +
+        '<td>' + escapeHtml(a.serialNumber || "-") + '</td>' +
         '<td>' + escapeHtml(a.dnsName || "-") + '</td>' +
         '<td>' + assetTypeBadge(a.assetType) + '</td>' +
         '<td>' + assetStatusBadge(a.status) + '</td>' +
@@ -56,7 +57,7 @@ async function loadAssets() {
         '</td></tr>';
     }).join("");
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
 }
 

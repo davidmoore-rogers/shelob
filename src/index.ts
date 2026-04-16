@@ -8,6 +8,7 @@ import session from "express-session";
 import { router } from "./api/router.js";
 import { errorHandler } from "./api/middleware/errorHandler.js";
 import { logger } from "./utils/logger.js";
+import "./jobs/pruneEvents.js";
 
 const PORT = process.env.PORT ?? 3000;
 
@@ -29,7 +30,7 @@ app.use(
 );
 
 // Protect dashboard pages — redirect unauthenticated users to login
-const protectedPages = ["/", "/index.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html", "/integrations.html", "/assets.html"];
+const protectedPages = ["/", "/index.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html", "/integrations.html", "/assets.html", "/events.html"];
 const adminOnlyPages = ["/users.html", "/integrations.html"];
 app.use((req, res, next) => {
   if (!protectedPages.includes(req.path)) return next();

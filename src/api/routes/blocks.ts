@@ -6,6 +6,7 @@ import { Router } from "express";
 import { z } from "zod";
 import * as blockService from "../../services/blockService.js";
 import { requireAdmin } from "../middleware/auth.js";
+import { logEvent } from "./events.js";
 
 const router = Router();
 
@@ -46,7 +47,9 @@ router.get("/:id", async (req, res, next) => {
 router.post("/", requireAdmin, async (req, res, next) => {
   try {
     const input = CreateBlockSchema.parse(req.body);
-    res.status(201).json(await blockService.createBlock(input));
+    const block = await blockService.createBlock(input);
+    logEvent({ action: "block.created", resourceType: "block", resourceId: block.id, resourceName: input.name, actor: (req as any).user?.username, message: `Block "${input.name}" (${input.cidr}) created` });
+    res.status(201).json(block);
   } catch (err) {
     next(err);
   }
@@ -55,7 +58,9 @@ router.post("/", requireAdmin, async (req, res, next) => {
 router.put("/:id", requireAdmin, async (req, res, next) => {
   try {
     const input = UpdateBlockSchema.parse(req.body);
-    res.json(await blockService.updateBlock(req.params.id, input));
+    const block = await blockService.updateBlock(req.params.id, input);
+    logEvent({ action: "block.updated", resourceType: "block", resourceId: req.params.id, resourceName: input.name || block.name, actor: (req as any).user?.username, message: `Block "${input.name || block.name}" updated` });
+    res.json(block);
   } catch (err) {
     next(err);
   }
@@ -64,6 +69,7 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
 router.delete("/:id", requireAdmin, async (req, res, next) => {
   try {
     await blockService.deleteBlock(req.params.id);
+    logEvent({ action: "block.deleted", resourceType: "block", resourceId: req.params.id, actor: (req as any).user?.username, message: `Block deleted` });
     res.status(204).send();
   } catch (err) {
     next(err);

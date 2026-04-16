@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as reservationService from "../../services/reservationService.js";
+import { logEvent } from "./events.js";
 
 const router = Router();
 
@@ -57,6 +58,7 @@ router.post("/", async (req, res, next) => {
   try {
     const input = CreateReservationSchema.parse(req.body);
     const reservation = await reservationService.createReservation(input);
+    logEvent({ action: "reservation.created", resourceType: "reservation", resourceId: reservation.id, resourceName: input.hostname || input.ipAddress, actor: (req as any).user?.username, message: `Reservation created for ${input.ipAddress || "subnet"} (${input.owner})` });
     res.status(201).json(reservation);
   } catch (err) {
     next(err);
@@ -66,7 +68,9 @@ router.post("/", async (req, res, next) => {
 router.put("/:id", async (req, res, next) => {
   try {
     const input = UpdateReservationSchema.parse(req.body);
-    res.json(await reservationService.updateReservation(req.params.id, input));
+    const reservation = await reservationService.updateReservation(req.params.id, input);
+    logEvent({ action: "reservation.updated", resourceType: "reservation", resourceId: req.params.id, resourceName: input.hostname, actor: (req as any).user?.username, message: `Reservation updated` });
+    res.json(reservation);
   } catch (err) {
     next(err);
   }
@@ -75,6 +79,7 @@ router.put("/:id", async (req, res, next) => {
 router.delete("/:id", async (req, res, next) => {
   try {
     await reservationService.releaseReservation(req.params.id);
+    logEvent({ action: "reservation.released", resourceType: "reservation", resourceId: req.params.id, actor: (req as any).user?.username, message: `Reservation released` });
     res.status(204).send();
   } catch (err) {
     next(err);

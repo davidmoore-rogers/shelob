@@ -74,6 +74,9 @@ const SUBNETS = [
     status: "available",
     vlan: 100,
     tags: ["kubernetes", "prod"],
+    discoveredBy: "i1000000-0000-0000-0000-000000000001",
+    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager" },
+    fortigateDevice: "FGT-DC1-01",
     createdAt: "2025-11-15T09:00:00.000Z",
     updatedAt: "2025-11-15T09:00:00.000Z",
     _count: { reservations: 3 },
@@ -88,6 +91,9 @@ const SUBNETS = [
     status: "reserved",
     vlan: 200,
     tags: ["database", "prod"],
+    discoveredBy: "i1000000-0000-0000-0000-000000000001",
+    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager" },
+    fortigateDevice: "FGT-DC1-01",
     createdAt: "2025-11-15T09:05:00.000Z",
     updatedAt: "2025-11-15T09:05:00.000Z",
     _count: { reservations: 2 },
@@ -102,6 +108,9 @@ const SUBNETS = [
     status: "available",
     vlan: 300,
     tags: ["monitoring", "prod"],
+    discoveredBy: "i1000000-0000-0000-0000-000000000001",
+    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager" },
+    fortigateDevice: "FGT-DC1-02",
     createdAt: "2026-01-10T11:00:00.000Z",
     updatedAt: "2026-01-10T11:00:00.000Z",
     _count: { reservations: 1 },
@@ -116,6 +125,9 @@ const SUBNETS = [
     status: "deprecated",
     vlan: 400,
     tags: ["ci", "internal"],
+    discoveredBy: null,
+    integration: null,
+    fortigateDevice: null,
     createdAt: "2025-12-01T08:00:00.000Z",
     updatedAt: "2026-02-15T16:00:00.000Z",
     _count: { reservations: 0 },
@@ -130,6 +142,9 @@ const SUBNETS = [
     status: "available",
     vlan: 999,
     tags: ["management", "bmc"],
+    discoveredBy: null,
+    integration: null,
+    fortigateDevice: null,
     createdAt: "2025-11-15T09:10:00.000Z",
     updatedAt: "2025-11-15T09:10:00.000Z",
     _count: { reservations: 1 },
@@ -144,6 +159,9 @@ const SUBNETS = [
     status: "reserved",
     vlan: 501,
     tags: ["aws", "vpn"],
+    discoveredBy: null,
+    integration: null,
+    fortigateDevice: null,
     createdAt: "2026-01-20T15:00:00.000Z",
     updatedAt: "2026-01-20T15:00:00.000Z",
     _count: { reservations: 1 },
@@ -158,6 +176,9 @@ const SUBNETS = [
     status: "available",
     vlan: 502,
     tags: ["azure", "vpn"],
+    discoveredBy: null,
+    integration: null,
+    fortigateDevice: null,
     createdAt: "2026-02-05T09:30:00.000Z",
     updatedAt: "2026-02-05T09:30:00.000Z",
     _count: { reservations: 0 },
@@ -172,6 +193,9 @@ const SUBNETS = [
     status: "available",
     vlan: null,
     tags: ["ipv6", "web"],
+    discoveredBy: null,
+    integration: null,
+    fortigateDevice: null,
     createdAt: "2026-03-01T10:30:00.000Z",
     updatedAt: "2026-03-01T10:30:00.000Z",
     _count: { reservations: 1 },
@@ -345,6 +369,7 @@ const INTEGRATIONS = [
       dhcpExclude: [],
     },
     enabled: true,
+    pollInterval: 4,
     lastTestAt: "2026-04-10T14:30:00.000Z",
     lastTestOk: true,
     createdAt: "2026-03-15T09:00:00.000Z",
@@ -355,7 +380,7 @@ const INTEGRATIONS = [
     type: "fortimanager",
     name: "Lab FortiManager",
     config: {
-      host: "192.168.100.10",
+      host: "10.0.1.10",
       port: 8443,
       apiUser: "admin",
       apiToken: "••••••••",
@@ -366,10 +391,32 @@ const INTEGRATIONS = [
       dhcpExclude: ["lab-test-dhcp"],
     },
     enabled: false,
+    pollInterval: 12,
     lastTestAt: "2026-02-28T11:00:00.000Z",
     lastTestOk: false,
     createdAt: "2026-02-01T10:00:00.000Z",
     updatedAt: "2026-02-28T11:00:00.000Z",
+  },
+  {
+    id: "i3000000-0000-0000-0000-000000000003",
+    type: "windowsserver",
+    name: "DC1 DHCP Server",
+    config: {
+      host: "10.0.1.50",
+      port: 5985,
+      username: "Administrator",
+      password: "••••••••",
+      useSsl: false,
+      domain: "CORP",
+      dhcpInclude: [],
+      dhcpExclude: [],
+    },
+    enabled: true,
+    pollInterval: 6,
+    lastTestAt: "2026-04-12T10:00:00.000Z",
+    lastTestOk: true,
+    createdAt: "2026-04-01T09:00:00.000Z",
+    updatedAt: "2026-04-12T10:00:00.000Z",
   },
 ];
 
@@ -568,6 +615,47 @@ const ASSETS = [
   },
 ];
 
+// ─── Events ─────────────────────────────────────────────────────────────────
+
+const EVENTS = [
+  { id: "ev01", timestamp: "2026-04-16T08:00:00.000Z", level: "info", action: "block.created", resourceType: "block", resourceId: BLOCKS[0].id, resourceName: "Corporate Datacenter", actor: "admin", message: 'Block "Corporate Datacenter" (10.0.0.0/8) created' },
+  { id: "ev02", timestamp: "2026-04-16T08:01:00.000Z", level: "info", action: "block.created", resourceType: "block", resourceId: BLOCKS[1].id, resourceName: "Management Network", actor: "admin", message: 'Block "Management Network" (172.16.0.0/12) created' },
+  { id: "ev03", timestamp: "2026-04-16T08:05:00.000Z", level: "info", action: "subnet.created", resourceType: "subnet", resourceId: SUBNETS[0].id, resourceName: "K8s Node Pool", actor: "admin", message: 'Subnet "K8s Node Pool" (10.0.1.0/24) created' },
+  { id: "ev04", timestamp: "2026-04-16T08:06:00.000Z", level: "info", action: "subnet.created", resourceType: "subnet", resourceId: SUBNETS[1].id, resourceName: "Database Tier", actor: "admin", message: 'Subnet "Database Tier" (10.0.2.0/24) created' },
+  { id: "ev05", timestamp: "2026-04-16T08:10:00.000Z", level: "info", action: "reservation.created", resourceType: "reservation", resourceId: RESERVATIONS[0].id, resourceName: "k8s-worker-01", actor: "admin", message: 'Reservation created for 10.0.1.10 (platform-team)' },
+  { id: "ev06", timestamp: "2026-04-16T08:11:00.000Z", level: "info", action: "reservation.created", resourceType: "reservation", resourceId: RESERVATIONS[3].id, resourceName: "postgres-primary", actor: "dmoore", message: 'Reservation created for 10.0.2.10 (data-team)' },
+  { id: "ev07", timestamp: "2026-04-16T09:00:00.000Z", level: "info", action: "integration.created", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Integration "Production FortiManager" (fortimanager) created' },
+  { id: "ev08", timestamp: "2026-04-16T09:01:00.000Z", level: "info", action: "integration.discover.started", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'DHCP discovery started for "Production FortiManager"' },
+  { id: "ev09", timestamp: "2026-04-16T09:01:30.000Z", level: "info", action: "integration.discover.completed", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'DHCP discovery completed for "Production FortiManager" \u2014 2 created, 0 updated, 0 skipped' },
+  { id: "ev10", timestamp: "2026-04-16T09:15:00.000Z", level: "info", action: "integration.test.started", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Connection test started for "Production FortiManager"' },
+  { id: "ev11", timestamp: "2026-04-16T09:15:02.000Z", level: "info", action: "integration.test.completed", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Connection test succeeded for "Production FortiManager": Connected \u2014 FortiManager v7.4.3' },
+  { id: "ev12", timestamp: "2026-04-16T10:00:00.000Z", level: "info", action: "asset.created", resourceType: "asset", resourceId: ASSETS[0].id, resourceName: "k8s-worker-01", actor: "dmoore", message: 'Asset "k8s-worker-01" created' },
+  { id: "ev13", timestamp: "2026-04-16T10:05:00.000Z", level: "info", action: "asset.updated", resourceType: "asset", resourceId: ASSETS[0].id, resourceName: "k8s-worker-01", actor: "dmoore", message: 'Asset "k8s-worker-01" updated' },
+  { id: "ev14", timestamp: "2026-04-16T11:00:00.000Z", level: "info", action: "integration.created", resourceType: "integration", resourceId: INTEGRATIONS[2].id, resourceName: "DC1 DHCP Server", actor: "admin", message: 'Integration "DC1 DHCP Server" (windowsserver) created' },
+  { id: "ev15", timestamp: "2026-04-16T11:01:00.000Z", level: "info", action: "integration.discover.started", resourceType: "integration", resourceId: INTEGRATIONS[2].id, resourceName: "DC1 DHCP Server", actor: "admin", message: 'DHCP discovery started for "DC1 DHCP Server"' },
+  { id: "ev16", timestamp: "2026-04-16T11:01:15.000Z", level: "info", action: "integration.discover.completed", resourceType: "integration", resourceId: INTEGRATIONS[2].id, resourceName: "DC1 DHCP Server", actor: "admin", message: 'DHCP discovery completed for "DC1 DHCP Server" \u2014 4 created, 0 updated, 0 skipped' },
+  { id: "ev17", timestamp: "2026-04-16T12:00:00.000Z", level: "warning", action: "integration.test.completed", resourceType: "integration", resourceId: INTEGRATIONS[1].id, resourceName: "Lab FortiManager", actor: "jsmith", message: 'Connection test failed for "Lab FortiManager": Connection refused' },
+  { id: "ev18", timestamp: "2026-04-16T12:30:00.000Z", level: "error", action: "integration.discover.error", resourceType: "integration", resourceId: INTEGRATIONS[1].id, resourceName: "Lab FortiManager", actor: "jsmith", message: 'DHCP discovery failed for "Lab FortiManager": Connection timeout after 30s' },
+  { id: "ev19", timestamp: "2026-04-16T13:00:00.000Z", level: "info", action: "subnet.updated", resourceType: "subnet", resourceId: SUBNETS[3].id, resourceName: "CI/CD Runners", actor: "dmoore", message: 'Subnet "CI/CD Runners" updated' },
+  { id: "ev20", timestamp: "2026-04-16T13:30:00.000Z", level: "info", action: "reservation.released", resourceType: "reservation", resourceId: RESERVATIONS[8].id, resourceName: "k8s-temp-node", actor: "admin", message: 'Reservation released' },
+  { id: "ev21", timestamp: "2026-04-16T14:00:00.000Z", level: "info", action: "block.updated", resourceType: "block", resourceId: BLOCKS[2].id, resourceName: "Cloud VPN", actor: "dmoore", message: 'Block "Cloud VPN" updated' },
+  { id: "ev22", timestamp: "2026-04-16T14:30:00.000Z", level: "info", action: "integration.updated", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Integration "Production FortiManager" updated' },
+];
+
+function logEventDemo(input) {
+  EVENTS.push({
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    level: input.level || "info",
+    action: input.action,
+    resourceType: input.resourceType || null,
+    resourceId: input.resourceId || null,
+    resourceName: input.resourceName || null,
+    actor: input.actor || "admin",
+    message: input.message,
+  });
+}
+
 // ─── Utilization ─────────────────────────────────────────────────────────────
 
 function buildUtilization() {
@@ -611,6 +699,233 @@ function buildUtilization() {
   };
 }
 
+// ─── Auto-register FortiManager IP ──────────────────────────────────────────
+
+function isPrivateIp(ip) {
+  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [, a, b] = m.map(Number);
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+function buildProposed(host, name) {
+  const hostname = name.toLowerCase().replace(/\s+/g, "-");
+  return {
+    reservation: {
+      ipAddress: host,
+      hostname,
+      owner: "network-team",
+      projectRef: "FortiManager Integration",
+      notes: `Auto-registered from FortiManager integration: ${name}`,
+      status: "active",
+    },
+    asset: {
+      ipAddress: host,
+      hostname,
+      manufacturer: "Fortinet",
+      model: "FortiManager",
+      assetType: "server",
+      status: "active",
+      department: "Network Security",
+      notes: `Auto-registered from FortiManager integration: ${name}`,
+    },
+  };
+}
+
+function registerFortiManagerDemo(host, name, force, fields) {
+  if (!host || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) {
+    return { conflicts: [], created: [] };
+  }
+
+  const subnet = SUBNETS.find((s) => {
+    const subnetPrefix = s.cidr.replace(/\.\d+\/\d+$/, "");
+    return host.startsWith(subnetPrefix + ".");
+  });
+
+  if (!subnet && !isPrivateIp(host)) return { conflicts: [], created: [] };
+
+  const conflicts = [];
+  const created = [];
+  const proposed = buildProposed(host, name);
+  const now = new Date().toISOString();
+
+  // ── Reservation ──
+  if (subnet) {
+    const existIdx = RESERVATIONS.findIndex((r) => r.ipAddress === host && r.status === "active");
+    if (existIdx !== -1) {
+      if (force) {
+        // Only overwrite admin-selected fields
+        const allowedFields = ["hostname", "owner", "projectRef", "notes", "status"];
+        const selectedFields = Array.isArray(fields) ? fields : [];
+        selectedFields.forEach((f) => {
+          if (allowedFields.includes(f) && f in proposed.reservation) {
+            RESERVATIONS[existIdx][f] = proposed.reservation[f];
+          }
+        });
+        RESERVATIONS[existIdx].updatedAt = now;
+        created.push("reservation");
+      } else {
+        const e = RESERVATIONS[existIdx];
+        conflicts.push({
+          type: "reservation",
+          existing: { id: e.id, ipAddress: e.ipAddress, hostname: e.hostname, owner: e.owner, projectRef: e.projectRef, notes: e.notes, status: e.status, subnetCidr: subnet.cidr },
+          proposed: { ...proposed.reservation, subnetCidr: subnet.cidr },
+        });
+      }
+    } else {
+      RESERVATIONS.push({
+        id: crypto.randomUUID(),
+        subnetId: subnet.id,
+        subnet: { name: subnet.name, cidr: subnet.cidr },
+        ...proposed.reservation,
+        expiresAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      created.push("reservation");
+    }
+  }
+
+  // ── Asset (always create — multiple assets may share an IP) ──
+  ASSETS.push({
+    id: crypto.randomUUID(),
+    ...proposed.asset,
+    macAddress: null, dnsName: null, assetTag: null, serialNumber: null,
+    location: null, assignedTo: null, os: null, acquiredAt: null,
+    warrantyExpiry: null, purchaseOrder: null,
+    tags: ["fortimanager", "auto-registered"],
+    createdAt: now, updatedAt: now,
+  });
+  created.push("asset");
+
+  return { conflicts, created };
+}
+
+// ─── DHCP Discovery (mock) ───────────────────────────────────────────────────
+
+const MOCK_DHCP_SERVERS = [
+  { device: "FGT-DC1-01", iface: "port5",  id: "1", cidr: "10.0.10.0/24", name: "dhcp-prod-01" },
+  { device: "FGT-DC1-01", iface: "port6",  id: "2", cidr: "10.0.11.0/24", name: "dhcp-prod-02" },
+  { device: "FGT-DC1-02", iface: "port3",  id: "1", cidr: "10.0.20.0/24", name: "dhcp-lab-01" },
+  { device: "FGT-DC1-02", iface: "port7",  id: "2", cidr: "10.0.21.0/24", name: "lab-test-dhcp" },
+];
+
+const MOCK_WIN_DHCP_SCOPES = [
+  { scopeId: "10.0.30.0", subnetMask: "255.255.255.0", name: "Office-Floor1" },
+  { scopeId: "10.0.31.0", subnetMask: "255.255.255.0", name: "Office-Floor2" },
+  { scopeId: "10.0.32.0", subnetMask: "255.255.255.0", name: "Guest-WiFi" },
+  { scopeId: "10.0.33.0", subnetMask: "255.255.255.0", name: "VoIP-Phones" },
+];
+
+function discoverWinDhcpDemo(config) {
+  let scopes = [...MOCK_WIN_DHCP_SCOPES];
+  const include = config.dhcpInclude || [];
+  const exclude = config.dhcpExclude || [];
+
+  if (include.length > 0) {
+    scopes = scopes.filter((s) =>
+      include.some((p) => s.name.toLowerCase().includes(p.toLowerCase()) || s.scopeId.includes(p))
+    );
+  }
+  if (exclude.length > 0) {
+    scopes = scopes.filter((s) =>
+      !exclude.some((p) => s.name.toLowerCase().includes(p.toLowerCase()) || s.scopeId.includes(p))
+    );
+  }
+
+  return scopes.map((s) => ({
+    cidr: s.scopeId + "/24",
+    name: s.name,
+    fortigateDevice: config.host,
+    dhcpServerId: s.scopeId,
+  }));
+}
+
+function discoverDhcpDemo(config) {
+  let servers = [...MOCK_DHCP_SERVERS];
+
+  const include = config.dhcpInclude || [];
+  const exclude = config.dhcpExclude || [];
+
+  if (include.length > 0) {
+    servers = servers.filter((s) =>
+      include.some((p) => s.name.toLowerCase().includes(p.toLowerCase()) || s.id === p)
+    );
+  }
+  if (exclude.length > 0) {
+    servers = servers.filter((s) =>
+      !exclude.some((p) => s.name.toLowerCase().includes(p.toLowerCase()) || s.id === p)
+    );
+  }
+
+  return servers.map((s) => ({
+    cidr: s.cidr,
+    name: s.iface,
+    fortigateDevice: s.device,
+    dhcpServerId: s.id,
+  }));
+}
+
+function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, discovered) {
+  const created = [];
+  const updated = [];
+  const skipped = [];
+  const now = new Date().toISOString();
+
+  for (const entry of discovered) {
+    // Check if subnet already exists
+    const existing = SUBNETS.find((s) => s.cidr === entry.cidr);
+    if (existing) {
+      existing.discoveredBy = integrationId;
+      existing.integration = { id: integrationId, name: integrationName };
+      existing.fortigateDevice = entry.fortigateDevice;
+      existing.updatedAt = now;
+      updated.push(entry.cidr);
+      continue;
+    }
+
+    // Find parent block
+    const block = BLOCKS.find((b) => {
+      const blockPrefix = b.cidr.replace(/\.\d+\/\d+$/, "");
+      return entry.cidr.startsWith(blockPrefix.split(".").slice(0, -1).join(".") + ".") ||
+        entry.cidr.startsWith(blockPrefix + ".");
+    });
+
+    if (!block) {
+      skipped.push(`${entry.cidr} (no matching parent block)`);
+      continue;
+    }
+
+    // Check for overlaps
+    const overlap = SUBNETS.find((s) => s.blockId === block.id && s.cidr === entry.cidr);
+    if (overlap) {
+      skipped.push(`${entry.cidr} (overlaps ${overlap.cidr})`);
+      continue;
+    }
+
+    SUBNETS.push({
+      id: crypto.randomUUID(),
+      blockId: block.id,
+      block: { name: block.name, cidr: block.cidr },
+      cidr: entry.cidr,
+      name: `DHCP: ${entry.name} (${entry.fortigateDevice})`,
+      purpose: `Discovered from ${integrationType === "windowsserver" ? "Windows Server" : "FortiManager"} DHCP`,
+      status: "available",
+      vlan: null,
+      tags: ["dhcp-discovered", integrationType || "fortimanager"],
+      discoveredBy: integrationId,
+      integration: { id: integrationId, name: integrationName },
+      fortigateDevice: entry.fortigateDevice,
+      createdAt: now,
+      updatedAt: now,
+      _count: { reservations: 0 },
+    });
+    created.push(entry.cidr);
+  }
+
+  return { created, updated, skipped };
+}
+
 // ─── MIME types ──────────────────────────────────────────────────────────────
 
 const MIME = {
@@ -622,6 +937,7 @@ const MIME = {
   ".jpg": "image/jpeg",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
+  ".webp": "image/webp",
 };
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -695,12 +1011,19 @@ function routeAPI(method, path, params, body, res) {
     return block ? json(res, block) : json(res, { error: "Not found" }, 404);
   }
   if (path === "/api/v1/blocks" && method === "POST") {
-    return json(res, { id: crypto.randomUUID(), ...body, ipVersion: "v4", _count: { subnets: 0 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
+    const newId = crypto.randomUUID();
+    logEventDemo({ action: "block.created", resourceType: "block", resourceId: newId, resourceName: body.name, message: `Block "${body.name}" (${body.cidr}) created` });
+    return json(res, { id: newId, ...body, ipVersion: "v4", _count: { subnets: 0 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
   }
   if (path.match(/^\/api\/v1\/blocks\/[\w-]+$/) && method === "PUT") {
+    const id = path.split("/").pop();
+    logEventDemo({ action: "block.updated", resourceType: "block", resourceId: id, resourceName: body.name, message: `Block "${body.name || "unknown"}" updated` });
     return json(res, { ...body, updatedAt: new Date().toISOString() });
   }
   if (path.match(/^\/api\/v1\/blocks\/[\w-]+$/) && method === "DELETE") {
+    const id = path.split("/").pop();
+    const block = BLOCKS.find((b) => b.id === id);
+    logEventDemo({ action: "block.deleted", resourceType: "block", resourceId: id, resourceName: block?.name, message: `Block "${block?.name || "unknown"}" deleted` });
     res.writeHead(204);
     return res.end();
   }
@@ -722,15 +1045,24 @@ function routeAPI(method, path, params, body, res) {
     return subnet ? json(res, subnet) : json(res, { error: "Not found" }, 404);
   }
   if (path === "/api/v1/subnets" && method === "POST") {
-    return json(res, { id: crypto.randomUUID(), ...body, status: "available", _count: { reservations: 0 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
+    const newId = crypto.randomUUID();
+    logEventDemo({ action: "subnet.created", resourceType: "subnet", resourceId: newId, resourceName: body.name, message: `Subnet "${body.name}" (${body.cidr}) created` });
+    return json(res, { id: newId, ...body, status: "available", _count: { reservations: 0 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
   }
   if (path === "/api/v1/subnets/next-available" && method === "POST") {
-    return json(res, { id: crypto.randomUUID(), cidr: "10.0.99.0/24", ...body, status: "available", _count: { reservations: 0 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
+    const newId = crypto.randomUUID();
+    logEventDemo({ action: "subnet.created", resourceType: "subnet", resourceId: newId, resourceName: body.name, message: `Subnet "${body.name}" (10.0.99.0/24) auto-allocated` });
+    return json(res, { id: newId, cidr: "10.0.99.0/24", ...body, status: "available", _count: { reservations: 0 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
   }
   if (path.match(/^\/api\/v1\/subnets\/[\w-]+$/) && method === "PUT") {
+    const id = path.split("/").pop();
+    logEventDemo({ action: "subnet.updated", resourceType: "subnet", resourceId: id, resourceName: body.name, message: `Subnet "${body.name || "unknown"}" updated` });
     return json(res, { ...body, updatedAt: new Date().toISOString() });
   }
   if (path.match(/^\/api\/v1\/subnets\/[\w-]+$/) && method === "DELETE") {
+    const id = path.split("/").pop();
+    const subnet = SUBNETS.find((s) => s.id === id);
+    logEventDemo({ action: "subnet.deleted", resourceType: "subnet", resourceId: id, resourceName: subnet?.name, message: `Subnet "${subnet?.name || "unknown"}" deleted` });
     res.writeHead(204);
     return res.end();
   }
@@ -752,12 +1084,18 @@ function routeAPI(method, path, params, body, res) {
     return r ? json(res, r) : json(res, { error: "Not found" }, 404);
   }
   if (path === "/api/v1/reservations" && method === "POST") {
-    return json(res, { id: crypto.randomUUID(), ...body, status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
+    const newId = crypto.randomUUID();
+    logEventDemo({ action: "reservation.created", resourceType: "reservation", resourceId: newId, resourceName: body.hostname, message: `Reservation created for ${body.ipAddress || "subnet"} (${body.owner})` });
+    return json(res, { id: newId, ...body, status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "PUT") {
+    const id = path.split("/").pop();
+    logEventDemo({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: body.hostname, message: `Reservation updated` });
     return json(res, { ...body, updatedAt: new Date().toISOString() });
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "DELETE") {
+    const id = path.split("/").pop();
+    logEventDemo({ action: "reservation.released", resourceType: "reservation", resourceId: id, message: `Reservation released` });
     res.writeHead(204);
     return res.end();
   }
@@ -813,85 +1151,206 @@ function routeAPI(method, path, params, body, res) {
   }
   if (path === "/api/v1/assets" && method === "POST") {
     const now = new Date().toISOString();
-    return json(res, { id: crypto.randomUUID(), ...body, createdAt: now, updatedAt: now }, 201);
+    const newId = crypto.randomUUID();
+    logEventDemo({ action: "asset.created", resourceType: "asset", resourceId: newId, resourceName: body.hostname || body.ipAddress, message: `Asset "${body.hostname || body.ipAddress || "unknown"}" created` });
+    return json(res, { id: newId, ...body, createdAt: now, updatedAt: now }, 201);
   }
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "PUT") {
     const id = path.split("/").pop();
     const asset = ASSETS.find((a) => a.id === id);
     if (!asset) return json(res, { error: "Not found" }, 404);
+    logEventDemo({ action: "asset.updated", resourceType: "asset", resourceId: id, resourceName: body.hostname || asset.hostname, message: `Asset "${body.hostname || asset.hostname || "unknown"}" updated` });
     return json(res, { ...asset, ...body, updatedAt: new Date().toISOString() });
   }
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "DELETE") {
+    const id = path.split("/").pop();
+    const asset = ASSETS.find((a) => a.id === id);
+    logEventDemo({ action: "asset.deleted", resourceType: "asset", resourceId: id, resourceName: asset?.hostname || asset?.ipAddress, message: `Asset "${asset?.hostname || asset?.ipAddress || "unknown"}" deleted` });
     res.writeHead(204);
     return res.end();
   }
 
   // Integrations
   if (path === "/api/v1/integrations" && method === "GET") {
-    // Strip passwords from list response
-    return json(res, INTEGRATIONS.map((i) => ({
-      ...i,
-      config: { ...i.config, apiToken: undefined },
-    })));
+    // Strip secrets from list response
+    return json(res, INTEGRATIONS.map((i) => {
+      const c = { ...i.config };
+      if (c.apiToken) c.apiToken = "••••••••";
+      if (c.password) c.password = "••••••••";
+      return { ...i, config: c };
+    }));
   }
   if (path === "/api/v1/integrations/test" && method === "POST") {
-    // Mock test for demo — use scripts/test-fmg.mjs for real testing
     const delay = 800 + Math.random() * 400;
+    const isWin = body.type === "windowsserver";
     return setTimeout(() => {
-      json(res, { ok: true, message: "Connected — FortiManager v7.4.3 (demo)" });
+      const msg = isWin
+        ? "Connected — DHCP Server is running on " + (body.config?.host || "server") + " (demo)"
+        : "Connected — FortiManager v7.4.3 (demo)";
+      logEventDemo({ action: "integration.test.completed", resourceType: "integration", resourceName: body.name, message: `Connection test succeeded for "${body.name || "new integration"}": ${msg}` });
+      json(res, { ok: true, message: msg });
     }, delay);
   }
   if (path.match(/^\/api\/v1\/integrations\/[\w-]+\/test$/) && method === "POST") {
     const id = path.split("/")[4];
     const intg = INTEGRATIONS.find((i) => i.id === id);
     if (!intg) return json(res, { error: "Not found" }, 404);
+    const isWin = intg.type === "windowsserver";
     const delay = 800 + Math.random() * 400;
+    logEventDemo({ action: "integration.test.started", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `Connection test started for "${intg.name}"` });
     return setTimeout(() => {
-      json(res, {
-        ok: intg.enabled,
-        message: intg.enabled
-          ? "Connected — FortiManager v7.4.3 (demo)"
-          : "Connection failed — integration is disabled",
-      });
+      const ok = intg.enabled;
+      const msg = ok
+        ? (isWin
+            ? "Connected — DHCP Server is running on " + (intg.config?.host || "server") + " (demo)"
+            : "Connected — FortiManager v7.4.3 (demo)")
+        : "Connection failed — integration is disabled";
+      logEventDemo({ action: "integration.test.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, level: ok ? "info" : "warning", message: `Connection test ${ok ? "succeeded" : "failed"} for "${intg.name}": ${msg}` });
+      json(res, { ok, message: msg });
     }, delay);
+  }
+  if (path.match(/^\/api\/v1\/integrations\/[\w-]+\/register$/) && method === "POST") {
+    const id = path.split("/")[4];
+    const intg = INTEGRATIONS.find((i) => i.id === id);
+    if (!intg) return json(res, { error: "Not found" }, 404);
+    const host = intg.config?.host;
+    if (!host) return json(res, { error: "Integration has no host configured" }, 400);
+    const fields = Array.isArray(body?.fields) ? body.fields : [];
+    const result = registerFortiManagerDemo(host, intg.name, true, fields);
+    return json(res, result);
+  }
+  if (path.match(/^\/api\/v1\/integrations\/[\w-]+\/discover$/) && method === "POST") {
+    const id = path.split("/")[4];
+    const intg = INTEGRATIONS.find((i) => i.id === id);
+    if (!intg) return json(res, { error: "Not found" }, 404);
+    if (!intg.config?.host) return json(res, { error: "Integration has no host configured" }, 400);
+    logEventDemo({ action: "integration.discover.started", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `Manual DHCP discovery started for "${intg.name}"` });
+    const discovered = intg.type === "windowsserver"
+      ? discoverWinDhcpDemo(intg.config)
+      : discoverDhcpDemo(intg.config);
+    const result = syncDhcpSubnetsDemo(intg.id, intg.name, intg.type, discovered);
+    logEventDemo({ action: "integration.discover.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `DHCP discovery completed for "${intg.name}" — ${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped` });
+    return json(res, result);
   }
   if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "GET") {
     const id = path.split("/").pop();
     const intg = INTEGRATIONS.find((i) => i.id === id);
     if (!intg) return json(res, { error: "Not found" }, 404);
-    // Strip password from response
-    return json(res, { ...intg, config: { ...intg.config, apiToken: undefined } });
+    const c = { ...intg.config };
+    if (c.apiToken) c.apiToken = "••••••••";
+    if (c.password) c.password = "••••••••";
+    return json(res, { ...intg, config: c });
   }
   if (path === "/api/v1/integrations" && method === "POST") {
     const now = new Date().toISOString();
+    const intgType = body.type || "fortimanager";
+    const isWin = intgType === "windowsserver";
+    const safeConfig = { ...body.config };
+    if (safeConfig.apiToken) safeConfig.apiToken = "••••••••";
+    if (safeConfig.password) safeConfig.password = "••••••••";
+    const pollInterval = Math.min(24, Math.max(1, parseInt(body.pollInterval, 10) || 4));
     const newIntg = {
       id: crypto.randomUUID(),
-      type: body.type || "fortimanager",
+      type: intgType,
       name: body.name,
-      config: { ...body.config, apiToken: undefined },
+      config: safeConfig,
       enabled: body.enabled !== false,
+      pollInterval,
       lastTestAt: null,
       lastTestOk: null,
       createdAt: now,
       updatedAt: now,
     };
-    return json(res, newIntg, 201);
+    INTEGRATIONS.push({ ...newIntg, config: { ...body.config } });
+    logEventDemo({ action: "integration.created", resourceType: "integration", resourceId: newIntg.id, resourceName: body.name, message: `Integration "${body.name}" (${intgType}) created` });
+    const response = { ...newIntg };
+    // Auto-register FortiManager IP
+    if (!isWin && body.config?.host) {
+      const registration = registerFortiManagerDemo(body.config.host, body.name || "FortiManager", false);
+      if (registration.conflicts.length) response.conflicts = registration.conflicts;
+    }
+    // DHCP discovery
+    const canDiscover = newIntg.enabled && body.config?.host &&
+      (isWin ? body.config?.username : body.config?.apiToken);
+    if (canDiscover) {
+      const discovered = isWin
+        ? discoverWinDhcpDemo(body.config)
+        : discoverDhcpDemo(body.config);
+      const syncResult = syncDhcpSubnetsDemo(newIntg.id, body.name || newIntg.type, intgType, discovered);
+      response.dhcpDiscovery = syncResult;
+    }
+    return json(res, response, 201);
   }
   if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "PUT") {
     const id = path.split("/").pop();
     const intg = INTEGRATIONS.find((i) => i.id === id);
     if (!intg) return json(res, { error: "Not found" }, 404);
+    const isWin = intg.type === "windowsserver";
+    const mergedConfig = { ...intg.config, ...(body.config || {}) };
+    // Preserve secrets if not re-submitted
+    if (!body.config?.apiToken && intg.config.apiToken) mergedConfig.apiToken = intg.config.apiToken;
+    if (!body.config?.password && intg.config.password) mergedConfig.password = intg.config.password;
+    const safeConfig = { ...mergedConfig };
+    if (safeConfig.apiToken) safeConfig.apiToken = "••••••••";
+    if (safeConfig.password) safeConfig.password = "••••••••";
     const updated = {
       ...intg,
       ...body,
-      config: { ...intg.config, ...(body.config || {}), apiToken: undefined },
+      config: safeConfig,
+      pollInterval: body.pollInterval !== undefined
+        ? Math.min(24, Math.max(1, parseInt(body.pollInterval, 10) || 4))
+        : intg.pollInterval,
       updatedAt: new Date().toISOString(),
     };
-    return json(res, updated);
+    logEventDemo({ action: "integration.updated", resourceType: "integration", resourceId: intg.id, resourceName: updated.name || intg.name, message: `Integration "${updated.name || intg.name}" updated` });
+    const response = { ...updated };
+    // Auto-register FortiManager IP
+    if (!isWin && mergedConfig.host) {
+      const registration = registerFortiManagerDemo(mergedConfig.host, updated.name || intg.name, false);
+      if (registration.conflicts.length) response.conflicts = registration.conflicts;
+    }
+    // DHCP discovery
+    const canDiscover = updated.enabled !== false && mergedConfig.host &&
+      (isWin ? mergedConfig.username : mergedConfig.apiToken);
+    if (canDiscover) {
+      const discovered = isWin
+        ? discoverWinDhcpDemo(mergedConfig)
+        : discoverDhcpDemo(mergedConfig);
+      const syncResult = syncDhcpSubnetsDemo(intg.id, updated.name || intg.name, intg.type, discovered);
+      response.dhcpDiscovery = syncResult;
+    }
+    return json(res, response);
   }
   if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "DELETE") {
+    const id = path.split("/").pop();
+    const intg = INTEGRATIONS.find((i) => i.id === id);
+    if (intg) {
+      logEventDemo({ action: "integration.deleted", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `Integration "${intg.name}" deleted` });
+    }
     res.writeHead(204);
     return res.end();
+  }
+
+  // Events
+  if (path === "/api/v1/events" && method === "GET") {
+    const limit = Math.min(parseInt(params.get("limit")) || 50, 200);
+    const offset = parseInt(params.get("offset")) || 0;
+    const level = params.get("level");
+    const action = params.get("action");
+    const resourceType = params.get("resourceType");
+
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    let filtered = EVENTS.filter((e) => e.timestamp >= cutoff);
+    if (level) filtered = filtered.filter((e) => e.level === level);
+    if (action) filtered = filtered.filter((e) => e.action && e.action.includes(action));
+    if (resourceType) filtered = filtered.filter((e) => e.resourceType === resourceType);
+
+    // Sort newest first
+    filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const total = filtered.length;
+    const events = filtered.slice(offset, offset + limit);
+
+    return json(res, { events, total, limit, offset });
   }
 
   json(res, { error: "Not found" }, 404);

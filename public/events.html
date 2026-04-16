@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shelob — Events</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main">
+      <div class="page-header">
+        <h2>Events</h2>
+      </div>
+
+      <div class="filter-bar">
+        <label>Level</label>
+        <select id="filter-level" style="width:auto">
+          <option value="">All</option>
+          <option value="info">Info</option>
+          <option value="warning">Warning</option>
+          <option value="error">Error</option>
+        </select>
+        <label>Resource</label>
+        <select id="filter-resource" style="width:auto">
+          <option value="">All</option>
+          <option value="block">Blocks</option>
+          <option value="subnet">Subnets</option>
+          <option value="reservation">Reservations</option>
+          <option value="asset">Assets</option>
+          <option value="integration">Integrations</option>
+        </select>
+        <label>Action</label>
+        <input type="text" id="filter-action" placeholder="e.g. created, deleted, discover..." style="width:180px">
+        <label style="margin-left:auto">Show</label>
+        <select id="filter-pagesize" style="width:auto">
+          <option value="15" selected>15</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+        <button class="btn btn-secondary" id="btn-refresh">Refresh</button>
+      </div>
+
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:160px">Timestamp</th>
+              <th style="width:70px">Level</th>
+              <th style="width:140px">Action</th>
+              <th style="width:100px">Resource</th>
+              <th>Message</th>
+              <th style="width:100px">Actor</th>
+            </tr>
+          </thead>
+          <tbody id="events-tbody">
+            <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination" id="pagination" style="display:flex;align-items:center;gap:12px;justify-content:center;padding:1rem 0">
+      </div>
+    </main>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/events.js"></script>
+</body>
+</html>

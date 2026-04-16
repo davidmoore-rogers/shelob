@@ -6,6 +6,7 @@ import { Router } from "express";
 import { z } from "zod";
 import * as subnetService from "../../services/subnetService.js";
 import { requireAdmin } from "../middleware/auth.js";
+import { logEvent } from "./events.js";
 
 const router = Router();
 
@@ -54,6 +55,7 @@ router.post("/next-available", requireAdmin, async (req, res, next) => {
   try {
     const { blockId, prefixLength, ...metadata } = AllocateNextSchema.parse(req.body);
     const subnet = await subnetService.allocateNextSubnet(blockId, prefixLength, metadata);
+    logEvent({ action: "subnet.created", resourceType: "subnet", resourceId: subnet.id, resourceName: metadata.name, actor: (req as any).user?.username, message: `Subnet "${metadata.name}" (${subnet.cidr}) auto-allocated` });
     res.status(201).json(subnet);
   } catch (err) {
     next(err);
@@ -74,6 +76,7 @@ router.post("/", requireAdmin, async (req, res, next) => {
   try {
     const input = CreateSubnetSchema.parse(req.body);
     const subnet = await subnetService.createSubnet(input);
+    logEvent({ action: "subnet.created", resourceType: "subnet", resourceId: subnet.id, resourceName: input.name, actor: (req as any).user?.username, message: `Subnet "${input.name}" (${input.cidr}) created` });
     res.status(201).json(subnet);
   } catch (err) {
     next(err);
@@ -84,7 +87,9 @@ router.post("/", requireAdmin, async (req, res, next) => {
 router.put("/:id", async (req, res, next) => {
   try {
     const input = UpdateSubnetSchema.parse(req.body);
-    res.json(await subnetService.updateSubnet(req.params.id, input));
+    const subnet = await subnetService.updateSubnet(req.params.id, input);
+    logEvent({ action: "subnet.updated", resourceType: "subnet", resourceId: req.params.id, resourceName: input.name || subnet.name, actor: (req as any).user?.username, message: `Subnet "${input.name || subnet.name}" updated` });
+    res.json(subnet);
   } catch (err) {
     next(err);
   }
@@ -94,6 +99,7 @@ router.put("/:id", async (req, res, next) => {
 router.delete("/:id", requireAdmin, async (req, res, next) => {
   try {
     await subnetService.deleteSubnet(req.params.id);
+    logEvent({ action: "subnet.deleted", resourceType: "subnet", resourceId: req.params.id, actor: (req as any).user?.username, message: `Subnet deleted` });
     res.status(204).send();
   } catch (err) {
     next(err);

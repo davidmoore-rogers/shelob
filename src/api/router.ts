@@ -11,6 +11,7 @@ import utilizationRouter from "./routes/utilization.js";
 import usersRouter from "./routes/users.js";
 import integrationsRouter from "./routes/integrations.js";
 import assetsRouter from "./routes/assets.js";
+import eventsRouter from "./routes/events.js";
 import { requireAuth, requireAdmin } from "./middleware/auth.js";
 
 export const router = Router();
@@ -27,3 +28,4 @@ router.use("/utilization", utilizationRouter);
 router.use("/users", requireAdmin, usersRouter);
 router.use("/integrations", integrationsRouter);
 router.use("/assets", assetsRouter);
+router.use("/events", eventsRouter);

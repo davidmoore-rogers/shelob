@@ -4,12 +4,36 @@
 
 const API_BASE = "/api/v1";
 
-async function request(method, path, body) {
+// ─── Active Query Tracker ───────────────────────────────────────────────────
+
+var activeQueries = [];
+var _onQueriesChanged = null;
+
+function _registerQuery(label, controller) {
+  var entry = { id: Date.now() + Math.random(), label: label, controller: controller };
+  activeQueries.push(entry);
+  if (_onQueriesChanged) _onQueriesChanged();
+  return entry.id;
+}
+
+function _unregisterQuery(id) {
+  activeQueries = activeQueries.filter(function (q) { return q.id !== id; });
+  if (_onQueriesChanged) _onQueriesChanged();
+}
+
+function abortAllQueries() {
+  activeQueries.forEach(function (q) { q.controller.abort(); });
+  activeQueries = [];
+  if (_onQueriesChanged) _onQueriesChanged();
+}
+
+async function request(method, path, body, signal) {
   const opts = {
     method,
     headers: { "Content-Type": "application/json" },
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
+  if (signal) opts.signal = signal;
 
   const res = await fetch(API_BASE + path, opts);
 
@@ -22,6 +46,13 @@ async function request(method, path, body) {
     throw new Error(msg);
   }
   return data;
+}
+
+function trackedRequest(label, method, path, body) {
+  var controller = new AbortController();
+  var qid = _registerQuery(label, controller);
+  return request(method, path, body, controller.signal)
+    .finally(function () { _unregisterQuery(qid); });
 }
 
 const api = {
@@ -72,8 +103,13 @@ const api = {
     create: (body)   => request("POST", "/integrations", body),
     update: (id, b)  => request("PUT", `/integrations/${id}`, b),
     delete: (id)     => request("DELETE", `/integrations/${id}`),
-    test:   (id)     => request("POST", `/integrations/${id}/test`),
-    testNew:(body)   => request("POST", "/integrations/test", body),
+    test:   (id, name) => trackedRequest("Testing " + (name || "integration"), "POST", `/integrations/${id}/test`),
+    register:(id, b) => request("POST", `/integrations/${id}/register`, b),
+    discover:(id, name) => trackedRequest("Discovering " + (name || "DHCP"), "POST", `/integrations/${id}/discover`),
+    testNew:(body)   => trackedRequest("Testing connection", "POST", "/integrations/test", body),
+  },
+  events: {
+    list: (params) => request("GET", "/events" + toQuery(params)),
   },
   auth: {
     me: () => request("GET", "/auth/me"),

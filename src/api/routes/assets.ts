@@ -9,6 +9,7 @@ import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireAdmin } from "../middleware/auth.js";
+import { logEvent } from "./events.js";
 
 const router = Router();
 
@@ -99,6 +100,7 @@ router.post("/", requireAdmin, async (req, res, next) => {
     if (input.acquiredAt) data.acquiredAt = new Date(input.acquiredAt);
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     const asset = await prisma.asset.create({ data: data as any });
+    logEvent({ action: "asset.created", resourceType: "asset", resourceId: asset.id, resourceName: input.hostname || input.ipAddress, actor: (req as any).user?.username, message: `Asset "${input.hostname || input.ipAddress || "unknown"}" created` });
     res.status(201).json(asset);
   } catch (err) {
     next(err);
@@ -118,6 +120,7 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     else if (input.warrantyExpiry === undefined) delete data.warrantyExpiry;
     const asset = await prisma.asset.update({ where: { id: req.params.id }, data: data as any });
+    logEvent({ action: "asset.updated", resourceType: "asset", resourceId: req.params.id, resourceName: asset.hostname || asset.ipAddress, actor: (req as any).user?.username, message: `Asset "${asset.hostname || asset.ipAddress || "unknown"}" updated` });
     res.json(asset);
   } catch (err) {
     next(err);
@@ -130,6 +133,7 @@ router.delete("/:id", requireAdmin, async (req, res, next) => {
     const existing = await prisma.asset.findUnique({ where: { id: req.params.id } });
     if (!existing) throw new AppError(404, "Asset not found");
     await prisma.asset.delete({ where: { id: req.params.id } });
+    logEvent({ action: "asset.deleted", resourceType: "asset", resourceId: req.params.id, resourceName: existing.hostname || existing.ipAddress, actor: (req as any).user?.username, message: `Asset "${existing.hostname || existing.ipAddress || "unknown"}" deleted` });
     res.status(204).send();
   } catch (err) {
     next(err);

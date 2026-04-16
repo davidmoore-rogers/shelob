@@ -26,6 +26,7 @@ const NAV_ITEMS = [
   { href: "/subnets.html",    label: "Subnets",      icon: "layers" },
   { href: "/reservations.html", label: "Reservations", icon: "bookmark" },
   { href: "/assets.html",         label: "Assets",       icon: "monitor" },
+  { href: "/events.html",         label: "Events",       icon: "activity" },
   { href: "/integrations.html",  label: "Integrations", icon: "plug", adminOnly: true },
   { href: "/users.html",        label: "Users",        icon: "users", adminOnly: true },
 ];
@@ -36,6 +37,7 @@ const ICONS = {
   layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
   bookmark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>',
   monitor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+  activity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
   plug: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a6 6 0 01-12 0V8h12z"/></svg>',
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
   logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
@@ -52,8 +54,9 @@ function renderNav() {
 
   sidebar.innerHTML = `
     <div class="sidebar-brand">
-      <img src="/logo.png" alt="Rogers Group" class="sidebar-logo">
-      <p>IP Management Tool</p>
+      <img src="/logo.webp" alt="Rogers Group" class="sidebar-logo">
+      <h1 style="font-size:1.1rem;font-weight:600;margin:0.5rem 0 0;color:var(--color-text-primary);text-align:center">Shelob</h1>
+      <p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.15rem 0 0;text-align:center">Network Management Tool</p>
     </div>
     <ul class="sidebar-nav">
       ${visibleItems.map(item => {
@@ -61,8 +64,11 @@ function renderNav() {
         return `<li><a href="${item.href}" class="${isActive ? "active" : ""}">${ICONS[item.icon]}<span>${item.label}</span></a></li>`;
       }).join("")}
     </ul>
-    <div style="margin-top:auto;padding:0.75rem 0.5rem;border-top:1px solid var(--color-border-light)">
-      <a href="#" id="btn-logout" style="display:flex;align-items:center;gap:10px;padding:0.5rem 0.75rem;border-radius:var(--radius-md);color:var(--color-text-secondary);font-size:0.9rem;font-weight:450;text-decoration:none;transition:background 0.15s,color 0.15s" onmouseover="this.style.background='rgba(255,23,68,0.08)';this.style.color='#ff1744'" onmouseout="this.style.background='';this.style.color='var(--color-text-secondary)'">${ICONS.logout}<span>Logout</span></a>
+    <div style="margin-top:auto">
+      <div id="query-status" class="query-status" style="display:none"></div>
+      <div style="padding:0.75rem 0.5rem;border-top:1px solid var(--color-border-light)">
+        <a href="#" id="btn-logout" style="display:flex;align-items:center;gap:10px;padding:0.5rem 0.75rem;border-radius:var(--radius-md);color:var(--color-text-secondary);font-size:0.9rem;font-weight:450;text-decoration:none;transition:background 0.15s,color 0.15s" onmouseover="this.style.background='rgba(255,23,68,0.08)';this.style.color='#ff1744'" onmouseout="this.style.background='';this.style.color='var(--color-text-secondary)'">${ICONS.logout}<span>Logout</span></a>
+      </div>
     </div>
   `;
 
@@ -71,6 +77,54 @@ function renderNav() {
     try { await fetch("/api/v1/auth/logout", { method: "POST" }); } catch (_) {}
     window.location.href = "/login.html";
   });
+
+  // Wire up query status indicator
+  _onQueriesChanged = renderQueryStatus;
+}
+
+function renderQueryStatus() {
+  var container = document.getElementById("query-status");
+  if (!container) return;
+
+  if (!activeQueries.length) {
+    container.style.display = "none";
+    container.innerHTML = "";
+    return;
+  }
+
+  container.style.display = "block";
+  container.innerHTML =
+    '<div class="query-status-header">' +
+      '<span class="query-spinner"></span>' +
+      '<span class="query-status-label">' + activeQueries.length + ' quer' + (activeQueries.length === 1 ? 'y' : 'ies') + ' running</span>' +
+    '</div>' +
+    '<ul class="query-status-list">' +
+      activeQueries.map(function (q) {
+        return '<li>' +
+          '<span class="query-status-name">' + escapeHtml(q.label) + '</span>' +
+          '<button class="query-abort-btn" data-qid="' + q.id + '" title="Abort">&#x2715;</button>' +
+        '</li>';
+      }).join("") +
+    '</ul>' +
+    (activeQueries.length > 1
+      ? '<button class="query-abort-all-btn" id="abort-all-btn">Abort All</button>'
+      : '');
+
+  container.querySelectorAll(".query-abort-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var qid = parseFloat(btn.getAttribute("data-qid"));
+      var q = activeQueries.find(function (x) { return x.id === qid; });
+      if (q) {
+        q.controller.abort();
+        _unregisterQuery(qid);
+      }
+    });
+  });
+
+  var abortAllBtn = document.getElementById("abort-all-btn");
+  if (abortAllBtn) {
+    abortAllBtn.addEventListener("click", abortAllQueries);
+  }
 }
 
 // ─── Toasts ───────────────────────────────────────────────────────────────────

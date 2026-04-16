@@ -50,12 +50,16 @@ async function loadSubnets() {
     };
     var subnets = await api.subnets.list(filters);
     if (subnets.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No subnets found. Create one to get started.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No subnets found. Create one to get started.</td></tr>';
       return;
     }
     tbody.innerHTML = subnets.map(function (s) {
       var tags = (s.tags || []).map(function (t) { return escapeHtml(t); }).join(", ");
       var blockName = s.block ? escapeHtml(s.block.name) : "-";
+      var fgtDevice = s.fortigateDevice ? escapeHtml(s.fortigateDevice) : "-";
+      var source = s.integration
+        ? escapeHtml(s.integration.name)
+        : '<span style="color:var(--color-text-tertiary)">Manual</span>';
       return '<tr>' +
         '<td><strong>' + escapeHtml(s.name) + '</strong></td>' +
         '<td class="mono">' + escapeHtml(s.cidr) + '</td>' +
@@ -64,6 +68,8 @@ async function loadSubnets() {
         '<td>' + (s.vlan ? '<span class="badge badge-vlan">VLAN ' + s.vlan + '</span>' : '-') + '</td>' +
         '<td>' + statusBadge(s.status) + '</td>' +
         '<td>' + (tags || '<span style="color:var(--color-text-tertiary)">-</span>') + '</td>' +
+        '<td>' + fgtDevice + '</td>' +
+        '<td>' + source + '</td>' +
         '<td>' + (s._count ? s._count.reservations : 0) + '</td>' +
         '<td class="actions">' +
           (isAdmin() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
@@ -71,7 +77,7 @@ async function loadSubnets() {
         '</td></tr>';
     }).join("");
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
 }
 
