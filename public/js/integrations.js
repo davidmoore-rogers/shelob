@@ -374,6 +374,7 @@ async function runDiscovery(id, btn) {
     if (result.created && result.created.length) parts.push(result.created.length + " subnets created");
     if (result.updated && result.updated.length) parts.push(result.updated.length + " updated");
     if (result.skipped && result.skipped.length) parts.push(result.skipped.length + " skipped");
+    if (result.deprecated && result.deprecated.length) parts.push(result.deprecated.length + " deprecated");
     if (result.dhcpReservations) parts.push(result.dhcpReservations + " DHCP reservations");
     if (result.dhcpLeases) parts.push(result.dhcpLeases + " DHCP leases");
     if (result.inventoryDevices) parts.push(result.inventoryDevices + " inventory devices");

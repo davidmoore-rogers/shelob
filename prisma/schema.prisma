@@ -58,7 +58,7 @@ model Subnet {
   blockId         String
   block           IpBlock      @relation(fields: [blockId], references: [id], onDelete: Cascade)
 
-  cidr            String       @unique
+  cidr            String
   name            String
   purpose         String?      @db.Text
   status          SubnetStatus @default(available)
@@ -75,6 +75,7 @@ model Subnet {
   reservations    Reservation[]
 
   @@index([blockId])
+  @@index([cidr])
   @@index([status])
   @@index([discoveredBy])
   @@map("subnets")

@@ -368,7 +368,7 @@ const INTEGRATIONS = [
       adom: "root",
       verifySsl: true,
       mgmtInterface: "port1",
-      dhcpInclude: ["dhcp-prod-01", "dhcp-prod-02"],
+      dhcpInclude: ["dhcp-prod-01", "dhcp-prod-02", "dhcp-monitor"],
       dhcpExclude: [],
     },
     enabled: true,
@@ -966,8 +966,9 @@ const MOCK_DEVICES = [
 const MOCK_DHCP_SERVERS = [
   { device: "FGT-DC1-01", iface: "port5",  id: "1", cidr: "10.0.10.0/24", name: "dhcp-prod-01", ifaceIp: "10.0.10.1" },
   { device: "FGT-DC1-01", iface: "port6",  id: "2", cidr: "10.0.11.0/24", name: "dhcp-prod-02", ifaceIp: "10.0.11.1" },
-  { device: "FGT-DC1-02", iface: "port3",  id: "1", cidr: "10.0.20.0/24", name: "dhcp-lab-01", ifaceIp: "10.0.20.1" },
-  { device: "FGT-DC1-02", iface: "port7",  id: "2", cidr: "10.0.21.0/24", name: "lab-test-dhcp", ifaceIp: "10.0.21.1" },
+  { device: "FGT-DC1-02", iface: "port2",  id: "1", cidr: "10.0.3.0/24",  name: "dhcp-monitor", ifaceIp: "10.0.3.1" },
+  { device: "FGT-DC1-02", iface: "port3",  id: "2", cidr: "10.0.20.0/24", name: "dhcp-lab-01", ifaceIp: "10.0.20.1" },
+  { device: "FGT-DC1-02", iface: "port7",  id: "3", cidr: "10.0.21.0/24", name: "lab-test-dhcp", ifaceIp: "10.0.21.1" },
 ];
 
 // Mock DHCP entries: static reservations and dynamic leases
@@ -1143,15 +1144,19 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
   const created = [];
   const updated = [];
   const skipped = [];
+  const deprecated = [];
   const assets = [];
   const reservations = [];
   const now = new Date().toISOString();
 
   const discovered = result.subnets || result;
 
+  // Collect device names from this discovery
+  const discoveredDeviceNames = new Set((result.devices || []).map((d) => d.name));
+
   for (const entry of discovered) {
-    // Check if subnet already exists
-    const existing = SUBNETS.find((s) => s.cidr === entry.cidr);
+    // Check if a non-deprecated subnet with this CIDR already exists
+    const existing = SUBNETS.find((s) => s.cidr === entry.cidr && s.status !== "deprecated");
     if (existing) {
       existing.discoveredBy = integrationId;
       existing.integration = { id: integrationId, name: integrationName };
@@ -1173,8 +1178,8 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
       continue;
     }
 
-    // Check for overlaps
-    const overlap = SUBNETS.find((s) => s.blockId === block.id && s.cidr === entry.cidr);
+    // Check for overlaps with non-deprecated siblings
+    const overlap = SUBNETS.find((s) => s.blockId === block.id && s.cidr === entry.cidr && s.status !== "deprecated");
     if (overlap) {
       skipped.push(`${entry.cidr} (overlaps ${overlap.cidr})`);
       continue;
@@ -1198,6 +1203,22 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
       _count: { reservations: 0 },
     });
     created.push(entry.cidr);
+  }
+
+  // ── Deprecate subnets from FortiGates no longer in the device list ──
+  if (discoveredDeviceNames.size > 0) {
+    for (const subnet of SUBNETS) {
+      if (
+        subnet.discoveredBy === integrationId &&
+        subnet.status !== "deprecated" &&
+        subnet.fortigateDevice &&
+        !discoveredDeviceNames.has(subnet.fortigateDevice)
+      ) {
+        subnet.status = "deprecated";
+        subnet.updatedAt = now;
+        deprecated.push(subnet.cidr);
+      }
+    }
   }
 
   // ── Create FortiGate assets ──
@@ -1446,7 +1467,7 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
     }
   }
 
-  return { created, updated, skipped, assets, reservations, dhcpLeases: dhcpLeaseCount, dhcpReservations: dhcpReservationCount, inventoryDevices: inventoryDeviceCount };
+  return { created, updated, skipped, deprecated, assets, reservations, dhcpLeases: dhcpLeaseCount, dhcpReservations: dhcpReservationCount, inventoryDevices: inventoryDeviceCount };
 }
 
 function _addMacToAsset(asset, mac, source, now) {
@@ -1702,8 +1723,17 @@ async function routeAPI(method, path, params, body, res) {
   }
   if (path.match(/^\/api\/v1\/subnets\/[\w-]+$/) && method === "PUT") {
     const id = path.split("/").pop();
-    logEventDemo({ action: "subnet.updated", resourceType: "subnet", resourceId: id, resourceName: body.name, message: `Subnet "${body.name || "unknown"}" updated` });
-    return json(res, { ...body, updatedAt: new Date().toISOString() });
+    const subnet = SUBNETS.find((s) => s.id === id);
+    if (subnet) {
+      if (body.name !== undefined) subnet.name = body.name;
+      if (body.purpose !== undefined) subnet.purpose = body.purpose;
+      if (body.status !== undefined) subnet.status = body.status;
+      if (body.vlan !== undefined) subnet.vlan = body.vlan;
+      if (body.tags !== undefined) subnet.tags = body.tags;
+      subnet.updatedAt = new Date().toISOString();
+    }
+    logEventDemo({ action: "subnet.updated", resourceType: "subnet", resourceId: id, resourceName: body.name || subnet?.name, message: `Subnet "${body.name || subnet?.name || "unknown"}" updated` });
+    return json(res, subnet || { ...body, updatedAt: new Date().toISOString() });
   }
   if (path.match(/^\/api\/v1\/subnets\/[\w-]+$/) && method === "DELETE") {
     const id = path.split("/").pop();

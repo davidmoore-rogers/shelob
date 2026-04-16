@@ -510,6 +510,9 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
 
   const blocks = await prisma.ipBlock.findMany();
 
+  // Collect the set of FortiGate device names in this discovery
+  const discoveredDeviceNames = new Set(result.devices.map((d) => d.name));
+
   // ── Sync subnets ──
   for (const entry of result.subnets) {
     let cidr: string;
@@ -520,8 +523,10 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
       continue;
     }
 
-    // Check if subnet already exists
-    const existing = await prisma.subnet.findUnique({ where: { cidr } });
+    // Check if a non-deprecated subnet with this CIDR already exists
+    const existing = await prisma.subnet.findFirst({
+      where: { cidr, status: { not: "deprecated" } },
+    });
     if (existing) {
       await prisma.subnet.update({
         where: { id: existing.id },
@@ -545,9 +550,9 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
       continue;
     }
 
-    // Check for overlaps with sibling subnets
+    // Check for overlaps with non-deprecated sibling subnets
     const siblings = await prisma.subnet.findMany({
-      where: { blockId: matchingBlock.id },
+      where: { blockId: matchingBlock.id, status: { not: "deprecated" } },
       select: { cidr: true },
     });
     const overlap = siblings.find((s) => cidrOverlaps(s.cidr, cidr));
@@ -556,7 +561,7 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
       continue;
     }
 
-    // Create the subnet
+    // Create the subnet (a deprecated entry with the same CIDR may exist — that's fine)
     try {
       await prisma.subnet.create({
         data: {
@@ -572,16 +577,26 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
       });
       created.push(cidr);
     } catch {
-      // Unique constraint race — treat as update
-      try {
-        await prisma.subnet.update({
-          where: { cidr },
-          data: { discoveredBy: integrationId, fortigateDevice: entry.fortigateDevice },
-        });
-        updated.push(cidr);
-      } catch {
-        skipped.push(`${cidr} (create failed)`);
-      }
+      skipped.push(`${cidr} (create failed)`);
+    }
+  }
+
+  // ── Deprecate subnets from FortiGates no longer in the device list ──
+  const deprecated: string[] = [];
+  if (discoveredDeviceNames.size > 0) {
+    const staleSubnets = await prisma.subnet.findMany({
+      where: {
+        discoveredBy: integrationId,
+        status: { not: "deprecated" },
+        fortigateDevice: { notIn: [...discoveredDeviceNames] },
+      },
+    });
+    for (const subnet of staleSubnets) {
+      await prisma.subnet.update({
+        where: { id: subnet.id },
+        data: { status: "deprecated" },
+      });
+      deprecated.push(subnet.cidr);
     }
   }
 
@@ -870,7 +885,7 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
     }
   }
 
-  return { created, updated, skipped, assets, reservations, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length };
+  return { created, updated, skipped, deprecated, assets, reservations, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length };
 }
 
 function stripSecret(integration: Record<string, any>) {
