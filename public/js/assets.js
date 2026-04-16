@@ -201,17 +201,23 @@ function macCellHTML(asset) {
 
 function assetFormHTML(defaults) {
   var d = defaults || {};
-  return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
-    '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(d.hostname || "") + '" placeholder="e.g. server-01"></div>' +
-    '<div class="form-group"><label>DNS Name</label><input type="text" id="f-dnsName" value="' + escapeHtml(d.dnsName || "") + '" placeholder="e.g. server-01.corp.local"></div>' +
-    '<div class="form-group"><label>IP Address</label><input type="text" id="f-ipAddress" value="' + escapeHtml(d.ipAddress || "") + '" placeholder="e.g. 10.0.1.50"></div>' +
-    '<div class="form-group"><label>MAC Address</label><input type="text" id="f-macAddress" value="' + escapeHtml(d.macAddress || "") + '" placeholder="e.g. AA:BB:CC:DD:EE:FF"></div>' +
-  '</div>' +
+  var identitySection = d._editing
+    ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
+        '<div class="form-group"><label>Hostname</label><div class="form-value">' + escapeHtml(d.hostname || "-") + '</div></div>' +
+        '<div class="form-group"><label>DNS Name</label><div class="form-value">' + escapeHtml(d.dnsName || "-") + '</div></div>' +
+      '</div>'
+    : '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
+        '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(d.hostname || "") + '" placeholder="e.g. server-01"></div>' +
+        '<div class="form-group"><label>DNS Name</label><input type="text" id="f-dnsName" value="' + escapeHtml(d.dnsName || "") + '" placeholder="e.g. server-01.corp.local"></div>' +
+        '<div class="form-group"><label>IP Address</label><input type="text" id="f-ipAddress" value="' + escapeHtml(d.ipAddress || "") + '" placeholder="e.g. 10.0.1.50"></div>' +
+        '<div class="form-group"><label>MAC Address</label><input type="text" id="f-macAddress" value="' + escapeHtml(d.macAddress || "") + '" placeholder="e.g. 00:1A:2B:3C:4D:5E"></div>' +
+        '<div class="form-group"><label>Serial Number</label><input type="text" id="f-serialNumber" value="' + escapeHtml(d.serialNumber || "") + '" placeholder="e.g. SN-DELL-001"></div>' +
+      '</div>';
+  return identitySection +
   '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
   '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Asset Details</p>' +
   '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
     '<div class="form-group"><label>Asset Tag</label><input type="text" id="f-assetTag" value="' + escapeHtml(d.assetTag || "") + '" placeholder="e.g. RGI-00421"></div>' +
-    '<div class="form-group"><label>Serial Number</label><input type="text" id="f-serialNumber" value="' + escapeHtml(d.serialNumber || "") + '" placeholder="e.g. SN12345678"></div>' +
     '<div class="form-group"><label>Manufacturer</label><input type="text" id="f-manufacturer" value="' + escapeHtml(d.manufacturer || "") + '" placeholder="e.g. Dell, Cisco, HP"></div>' +
     '<div class="form-group"><label>Model</label><input type="text" id="f-model" value="' + escapeHtml(d.model || "") + '" placeholder="e.g. PowerEdge R740"></div>' +
     '<div class="form-group"><label>Type</label><select id="f-assetType">' +
@@ -253,13 +259,8 @@ function assetFormHTML(defaults) {
 function getAssetFormData() {
   var acq = document.getElementById("f-acquiredAt").value;
   var war = document.getElementById("f-warrantyExpiry").value;
-  return {
-    hostname:      val("f-hostname") || undefined,
-    dnsName:       val("f-dnsName") || undefined,
-    ipAddress:     val("f-ipAddress") || undefined,
-    macAddress:    val("f-macAddress") || undefined,
+  var data = {
     assetTag:      val("f-assetTag") || undefined,
-    serialNumber:  val("f-serialNumber") || undefined,
     manufacturer:  val("f-manufacturer") || undefined,
     model:         val("f-model") || undefined,
     assetType:     document.getElementById("f-assetType").value,
@@ -274,6 +275,13 @@ function getAssetFormData() {
     notes:         val("f-notes") || undefined,
     tags:          getTagFieldValue(),
   };
+  // These fields are only editable on create, not edit
+  if (document.getElementById("f-hostname"))     data.hostname     = val("f-hostname") || undefined;
+  if (document.getElementById("f-dnsName"))      data.dnsName      = val("f-dnsName") || undefined;
+  if (document.getElementById("f-ipAddress"))    data.ipAddress    = val("f-ipAddress") || undefined;
+  if (document.getElementById("f-macAddress"))   data.macAddress   = val("f-macAddress") || undefined;
+  if (document.getElementById("f-serialNumber")) data.serialNumber = val("f-serialNumber") || undefined;
+  return data;
 }
 
 async function openCreateModal() {
@@ -303,10 +311,12 @@ async function openEditModal(id) {
   try {
     var results = await Promise.all([api.assets.get(id), _ensureTagCache()]);
     var asset = results[0];
+    asset._editing = true;
     var body = assetFormHTML(asset);
     var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
-    openModal("Edit Asset", body, footer);
+    var title = "Edit Asset" + (asset.hostname ? " — " + asset.hostname : "");
+    openModal(title, body, footer);
     wireTagPicker();
     document.getElementById("btn-save").addEventListener("click", async function () {
       var btn = this;
@@ -345,8 +355,7 @@ async function openViewModal(id) {
       viewRow("Location", a.location) +
       viewRow("Department", a.department) +
       viewRow("Assigned To", a.assignedTo) +
-      viewRow("Operating System", a.os) +
-      viewRow("OS / Firmware Version", a.osVersion) +
+      viewRow("OS / Firmware", a.osVersion || a.os) +
       viewRow("Last Seen Switch", a.lastSeenSwitch) +
       viewRow("Last Seen AP", a.lastSeenAp) +
       associatedUsersViewHTML(a.associatedUsers) +
@@ -428,4 +437,138 @@ function debounce(fn, ms) {
     clearTimeout(timer);
     timer = setTimeout(fn, ms);
   };
+}
+
+/* ─── Export (PDF / CSV) ──────────────────────────────────────────────────── */
+
+(function () {
+  var menu = document.getElementById("export-menu");
+  var btn  = document.getElementById("btn-export");
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    menu.classList.toggle("open");
+  });
+
+  document.addEventListener("click", function () { menu.classList.remove("open"); });
+  menu.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  menu.querySelectorAll("button[data-export]").forEach(function (item) {
+    item.addEventListener("click", async function () {
+      menu.classList.remove("open");
+      var mode = this.getAttribute("data-export");
+      var fmt  = this.getAttribute("data-fmt");
+      await handleAssetExport(mode, fmt);
+    });
+  });
+})();
+
+function _hasActiveFilters() {
+  var status = document.getElementById("filter-status").value;
+  var type   = document.getElementById("filter-type").value;
+  var search = document.getElementById("filter-search").value.trim();
+  return !!(type || search || (status && status !== "hide-decommissioned"));
+}
+
+async function handleAssetExport(mode, fmt) {
+  var assets, label, ok;
+
+  if (mode === "page") {
+    assets = _assetsData.slice((_assetsPage - 1) * _assetsPageSize, _assetsPage * _assetsPageSize);
+    label = "page " + _assetsPage;
+  } else if (mode === "filtered") {
+    assets = _assetsData;
+    label = assets.length + " filtered assets";
+    if (assets.length > 100) {
+      ok = await showConfirm("This will export " + assets.length + " assets. Continue?");
+      if (!ok) return;
+    }
+  } else if (mode === "all") {
+    ok = await showConfirm("Export the entire asset list? This may take a moment.");
+    if (!ok) return;
+  }
+
+  await trackedPdfExport("Exporting assets " + fmt.toUpperCase(), async function (signal) {
+    if (mode === "all") {
+      assets = await request("GET", "/assets", undefined, signal);
+      label = "all " + assets.length + " assets";
+    }
+    if (signal.aborted) return;
+    if (!assets || assets.length === 0) { showToast("No assets to export", "error"); return; }
+    if (fmt === "csv") generateAssetCsv(assets);
+    else generateAssetPdf(assets, label);
+  });
+}
+
+function generateAssetPdf(assets, label) {
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+
+  var now = new Date();
+  var timestamp = now.toLocaleDateString() + " " + now.toLocaleTimeString();
+
+  // Title
+  doc.setFontSize(16);
+  doc.setTextColor(40, 40, 40);
+  doc.text("Shelob — Asset Report", 40, 36);
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text("Generated: " + timestamp + "  |  Scope: " + label + "  |  Count: " + assets.length, 40, 52);
+
+  var head = [["Hostname", "IP Address", "MAC Address", "DNS Name", "Type", "Status", "Location", "Assigned To"]];
+  var body = assets.map(function (a) {
+    return [
+      a.hostname || "-",
+      a.ipAddress || "-",
+      a.macAddress || "-",
+      a.dnsName || "-",
+      ASSET_TYPE_LABELS[a.assetType] || a.assetType || "-",
+      a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : "-",
+      a.location || "-",
+      a.assignedTo || "-",
+    ];
+  });
+
+  doc.autoTable({
+    startY: 64,
+    head: head,
+    body: body,
+    theme: "grid",
+    styles: { fontSize: 8, cellPadding: 4, overflow: "linebreak" },
+    headStyles: { fillColor: [30, 30, 54], textColor: [230, 230, 230], fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [245, 245, 250] },
+    margin: { left: 40, right: 40 },
+    didDrawPage: function (data) {
+      // Footer on each page
+      var pageNum = doc.internal.getNumberOfPages();
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(
+        "Page " + data.pageNumber + " of " + pageNum + "  |  Shelob Asset Report",
+        doc.internal.pageSize.getWidth() / 2,
+        doc.internal.pageSize.getHeight() - 20,
+        { align: "center" }
+      );
+    },
+  });
+
+  var filename = "shelob-assets-" + now.toISOString().slice(0, 10) + ".pdf";
+  doc.save(filename);
+  showToast("Exported " + assets.length + " assets to " + filename);
+}
+
+function generateAssetCsv(assets) {
+  var headers = ["Hostname", "IP Address", "MAC Address", "DNS Name", "Type", "Status", "Location", "Assigned To", "Serial Number", "Manufacturer", "Model", "OS", "Asset Tag"];
+  var rows = assets.map(function (a) {
+    return [
+      a.hostname || "", a.ipAddress || "", a.macAddress || "", a.dnsName || "",
+      ASSET_TYPE_LABELS[a.assetType] || a.assetType || "", a.status || "",
+      a.location || "", a.assignedTo || "", a.serialNumber || "",
+      a.manufacturer || "", a.model || "", a.osVersion || a.os || "", a.assetTag || "",
+    ];
+  });
+  var filename = "shelob-assets-" + new Date().toISOString().slice(0, 10) + ".csv";
+  downloadCsv(headers, rows, filename);
+  showToast("Exported " + assets.length + " assets to " + filename);
 }

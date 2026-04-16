@@ -83,10 +83,17 @@ function _renderPanelHeader(data) {
   if (s.purpose) meta += '<span style="color:var(--color-text-tertiary)">' + escapeHtml(s.purpose) + '</span>';
   if (data.ipv6) meta += '<span style="color:var(--color-warning);font-size:0.75rem">IPv6 — showing reservations only</span>';
 
-  var reserveBtn = isAdmin()
-    ? '<button class="btn btn-sm btn-primary" id="ip-panel-reserve-btn" style="margin-left:auto">+ Reserve IP</button>'
-    : '';
-  meta += reserveBtn;
+  var headerBtns = '<span style="margin-left:auto;display:flex;gap:6px">' +
+    '<div class="btn-dropdown-wrap">' +
+      '<button class="btn btn-sm btn-secondary" id="ip-panel-export-btn">Export &#9662;</button>' +
+      '<div class="btn-dropdown-menu" id="ip-panel-export-menu">' +
+        '<button data-fmt="pdf">Export as PDF</button>' +
+        '<button data-fmt="csv">Export as CSV</button>' +
+      '</div>' +
+    '</div>' +
+    (isAdmin() ? '<button class="btn btn-sm btn-primary" id="ip-panel-reserve-btn">+ Reserve IP</button>' : '') +
+    '</span>';
+  meta += headerBtns;
 
   document.getElementById("ip-panel-meta").innerHTML = meta;
 
@@ -94,6 +101,21 @@ function _renderPanelHeader(data) {
   if (btn) {
     btn.addEventListener("click", function () {
       _openReserveModal(_ipPanelSubnetId, null);
+    });
+  }
+  var exportBtn = document.getElementById("ip-panel-export-btn");
+  var exportMenu = document.getElementById("ip-panel-export-menu");
+  if (exportBtn && exportMenu) {
+    exportBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      exportMenu.classList.toggle("open");
+    });
+    exportMenu.addEventListener("click", function (e) { e.stopPropagation(); });
+    exportMenu.querySelectorAll("button[data-fmt]").forEach(function (item) {
+      item.addEventListener("click", function () {
+        exportMenu.classList.remove("open");
+        _exportIpPanel(item.getAttribute("data-fmt"));
+      });
     });
   }
 }
@@ -354,4 +376,175 @@ function _toDatetimeLocal(isoStr) {
   var d = new Date(isoStr);
   var pad = function (n) { return String(n).padStart(2, "0"); };
   return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
+/* ─── Export (PDF / CSV) ──────────────────────────────────────────────────── */
+
+async function _exportIpPanel(fmt) {
+  if (!_ipPanelData) {
+    showToast("No data to export", "error");
+    return;
+  }
+
+  var data = _ipPanelData;
+  var s = data.subnet;
+  var totalPages = Math.max(1, Math.ceil(data.totalIps / data.pageSize));
+
+  // If multi-page, confirm first
+  var allIps = data.ips;
+  if (totalPages > 1) {
+    var ok = await showConfirm(
+      "This network has " + data.totalIps + " IPs across " + totalPages + " pages. Export all?"
+    );
+    if (!ok) return;
+  }
+
+  await trackedPdfExport("Exporting " + s.name + " " + fmt.toUpperCase(), async function (signal) {
+    if (totalPages > 1) {
+      var qs = toQuery({ page: 1, pageSize: data.totalIps });
+      var full = await request("GET", "/subnets/" + _ipPanelSubnetId + "/ips" + qs, undefined, signal);
+      allIps = full.ips;
+    }
+    if (signal.aborted) return;
+    if (fmt === "csv") _generateIpPanelCsv(s, allIps);
+    else _generateIpPanelPdf(s, allIps);
+  });
+}
+
+function _generateIpPanelPdf(s, allIps) {
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+
+  var now = new Date();
+  var timestamp = now.toLocaleDateString() + " " + now.toLocaleTimeString();
+
+  // Header
+  doc.setFontSize(16);
+  doc.setTextColor(40, 40, 40);
+  doc.text("Shelob \u2014 Network Detail", 40, 36);
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text("Generated: " + timestamp, 40, 52);
+
+  // Subnet info
+  var yPos = 70;
+  doc.setFontSize(12);
+  doc.setTextColor(40, 40, 40);
+  doc.text(s.name + "  (" + s.cidr + ")", 40, yPos);
+  yPos += 16;
+  doc.setFontSize(9);
+  doc.setTextColor(100, 100, 100);
+  var details = [];
+  if (s.status) details.push("Status: " + s.status.charAt(0).toUpperCase() + s.status.slice(1));
+  if (s.vlan) details.push("VLAN: " + s.vlan);
+  if (s.purpose) details.push("Purpose: " + s.purpose);
+  details.push("Total IPs: " + allIps.length);
+  doc.text(details.join("  |  "), 40, yPos);
+  yPos += 18;
+
+  // Table
+  var head = [["IP Address", "Hostname", "Owner", "Status"]];
+  var body = allIps.map(function (ip) {
+    var isSpecial = ip.type === "network" || ip.type === "broadcast";
+    var r = ip.reservation;
+    var statusLabel;
+    if (isSpecial) {
+      statusLabel = ip.type === "network" ? "Network" : "Broadcast";
+    } else if (r && r.status === "active" && r.owner === "dhcp-reservation") {
+      statusLabel = "DHCP Reservation";
+    } else if (r && r.status === "active" && r.owner === "dhcp-lease") {
+      statusLabel = "DHCP Lease";
+    } else if (r && r.status === "active") {
+      statusLabel = "Active";
+    } else if (r && r.status === "expired") {
+      statusLabel = "Expired";
+    } else if (r && r.status === "released") {
+      statusLabel = "Released";
+    } else {
+      statusLabel = "Available";
+    }
+
+    var owner = "-";
+    if (r) {
+      if (r.owner === "dhcp-reservation" || r.owner === "dhcp-lease") {
+        var macMatch = r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
+        owner = macMatch ? macMatch[1] : r.owner;
+      } else {
+        owner = r.owner || "-";
+      }
+    }
+
+    return [
+      ip.address,
+      r ? (r.hostname || "-") : "-",
+      owner,
+      statusLabel,
+    ];
+  });
+
+  doc.autoTable({
+    startY: yPos,
+    head: head,
+    body: body,
+    theme: "grid",
+    styles: { fontSize: 7.5, cellPadding: 3, overflow: "linebreak" },
+    headStyles: { fillColor: [30, 30, 54], textColor: [230, 230, 230], fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [245, 245, 250] },
+    margin: { left: 40, right: 40 },
+    columnStyles: {
+      0: { cellWidth: 100, font: "courier" },
+    },
+    didDrawPage: function (pgData) {
+      var pageNum = doc.internal.getNumberOfPages();
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(
+        "Page " + pgData.pageNumber + " of " + pageNum + "  |  " + s.name + " (" + s.cidr + ")",
+        doc.internal.pageSize.getWidth() / 2,
+        doc.internal.pageSize.getHeight() - 20,
+        { align: "center" }
+      );
+    },
+  });
+
+  var filename = "shelob-network-" + s.cidr.replace(/[\/]/g, "_") + "-" + now.toISOString().slice(0, 10) + ".pdf";
+  doc.save(filename);
+  showToast("Exported " + allIps.length + " IPs to " + filename);
+}
+
+function _generateIpPanelCsv(s, allIps) {
+  var headers = ["IP Address", "Hostname", "Owner", "Status"];
+  var rows = allIps.map(function (ip) {
+    var isSpecial = ip.type === "network" || ip.type === "broadcast";
+    var r = ip.reservation;
+    var statusLabel;
+    if (isSpecial) {
+      statusLabel = ip.type === "network" ? "Network" : "Broadcast";
+    } else if (r && r.status === "active" && r.owner === "dhcp-reservation") {
+      statusLabel = "DHCP Reservation";
+    } else if (r && r.status === "active" && r.owner === "dhcp-lease") {
+      statusLabel = "DHCP Lease";
+    } else if (r && r.status === "active") {
+      statusLabel = "Active";
+    } else if (r && r.status === "expired") {
+      statusLabel = "Expired";
+    } else if (r && r.status === "released") {
+      statusLabel = "Released";
+    } else {
+      statusLabel = "Available";
+    }
+    var owner = "";
+    if (r) {
+      if (r.owner === "dhcp-reservation" || r.owner === "dhcp-lease") {
+        var macMatch = r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
+        owner = macMatch ? macMatch[1] : r.owner;
+      } else {
+        owner = r.owner || "";
+      }
+    }
+    return [ip.address, r ? (r.hostname || "") : "", owner, statusLabel];
+  });
+  var filename = "shelob-network-" + s.cidr.replace(/[\/]/g, "_") + "-" + new Date().toISOString().slice(0, 10) + ".csv";
+  downloadCsv(headers, rows, filename);
+  showToast("Exported " + allIps.length + " IPs to " + filename);
 }

@@ -2,8 +2,13 @@
  * public/js/events.js — Events page logic
  */
 
+var _eventsPageSize = 15;
+var _eventsCurrentOffset = 0;
+var _eventsCurrentTotal = 0;
+var _eventsCurrentPage = [];
+
 (function () {
-  var pageSize = 15;
+  var pageSize = _eventsPageSize;
   var currentOffset = 0;
   var currentTotal = 0;
 
@@ -23,6 +28,10 @@
 
       var events = data.events || [];
       currentTotal = data.total || 0;
+      _eventsPageSize = pageSize;
+      _eventsCurrentOffset = currentOffset;
+      _eventsCurrentTotal = currentTotal;
+      _eventsCurrentPage = events;
       renderTable(events);
       renderPagination();
     } catch (err) {
@@ -414,4 +423,154 @@ function getSyslogFormData() {
     tlsCertPath: document.getElementById("f-syslog-tlscert").value.trim(),
     tlsKeyPath: document.getElementById("f-syslog-tlskey").value.trim(),
   };
+}
+
+/* ─── PDF Export ──────────────────────────────────────────────────────────── */
+
+(function () {
+  var menu = document.getElementById("export-menu");
+  var btn  = document.getElementById("btn-export");
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    menu.classList.toggle("open");
+  });
+  document.addEventListener("click", function () { menu.classList.remove("open"); });
+  menu.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  menu.querySelectorAll("button[data-export]").forEach(function (item) {
+    item.addEventListener("click", async function () {
+      menu.classList.remove("open");
+      await handleEventExport(this.getAttribute("data-export"), this.getAttribute("data-fmt"));
+    });
+  });
+})();
+
+function _getEventFilters() {
+  return {
+    level: document.getElementById("filter-level").value || undefined,
+    resourceType: document.getElementById("filter-resource").value || undefined,
+    action: document.getElementById("filter-action").value.trim() || undefined,
+  };
+}
+
+async function handleEventExport(mode, fmt) {
+  var events, label, ok;
+
+  if (mode === "page") {
+    events = _eventsCurrentPage;
+    var pageNum = Math.floor(_eventsCurrentOffset / _eventsPageSize) + 1;
+    label = "page " + pageNum;
+  } else if (mode === "filtered") {
+    var total = _eventsCurrentTotal;
+    label = total + " filtered events";
+    if (total > 100) {
+      ok = await showConfirm("This will export " + total + " events. Continue?");
+      if (!ok) return;
+    }
+  } else if (mode === "all") {
+    ok = await showConfirm("Export the entire event log? This may take a moment.");
+    if (!ok) return;
+  }
+
+  await trackedPdfExport("Exporting events " + fmt.toUpperCase(), async function (signal) {
+    if (mode === "filtered") {
+      var filters = _getEventFilters();
+      filters.limit = 10000;
+      filters.offset = 0;
+      var data = await request("GET", "/events" + toQuery(filters), undefined, signal);
+      events = (data.events || []);
+      label = events.length + " filtered events";
+    } else if (mode === "all") {
+      var data = await request("GET", "/events" + toQuery({ limit: 10000, offset: 0 }), undefined, signal);
+      events = (data.events || []);
+      label = "all " + events.length + " events";
+    }
+    if (signal.aborted) return;
+    if (!events || events.length === 0) { showToast("No events to export", "error"); return; }
+    if (fmt === "csv") generateEventCsv(events);
+    else generateEventPdf(events, label);
+  });
+}
+
+function generateEventPdf(events, label) {
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+
+  var now = new Date();
+  var timestamp = now.toLocaleDateString() + " " + now.toLocaleTimeString();
+
+  doc.setFontSize(16);
+  doc.setTextColor(40, 40, 40);
+  doc.text("Shelob \u2014 Event Log", 40, 36);
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text("Generated: " + timestamp + "  |  Scope: " + label + "  |  Count: " + events.length, 40, 52);
+
+  var head = [["Timestamp", "Level", "Action", "Resource", "Message", "Actor"]];
+  var body = events.map(function (ev) {
+    var ts = new Date(ev.timestamp);
+    var timeStr = ts.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+      " " + ts.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    var resource = ev.resourceType || "-";
+    if (ev.resourceName) resource += " (" + ev.resourceName + ")";
+    return [
+      timeStr,
+      (ev.level || "info").toUpperCase(),
+      ev.action || "-",
+      resource,
+      ev.message || "-",
+      ev.actor || "-",
+    ];
+  });
+
+  doc.autoTable({
+    startY: 64,
+    head: head,
+    body: body,
+    theme: "grid",
+    styles: { fontSize: 7.5, cellPadding: 4, overflow: "linebreak" },
+    headStyles: { fillColor: [30, 30, 54], textColor: [230, 230, 230], fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [245, 245, 250] },
+    margin: { left: 40, right: 40 },
+    columnStyles: {
+      0: { cellWidth: 100 },
+      1: { cellWidth: 42 },
+      2: { cellWidth: 90 },
+      3: { cellWidth: 80 },
+      5: { cellWidth: 60 },
+    },
+    didDrawPage: function (data) {
+      var pageNum = doc.internal.getNumberOfPages();
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(
+        "Page " + data.pageNumber + " of " + pageNum + "  |  Shelob Event Log",
+        doc.internal.pageSize.getWidth() / 2,
+        doc.internal.pageSize.getHeight() - 20,
+        { align: "center" }
+      );
+    },
+  });
+
+  var filename = "shelob-events-" + now.toISOString().slice(0, 10) + ".pdf";
+  doc.save(filename);
+  showToast("Exported " + events.length + " events to " + filename);
+}
+
+function generateEventCsv(events) {
+  var headers = ["Timestamp", "Level", "Action", "Resource Type", "Resource Name", "Message", "Actor"];
+  var rows = events.map(function (ev) {
+    var ts = new Date(ev.timestamp);
+    var timeStr = ts.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+      " " + ts.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return [
+      timeStr, (ev.level || "info").toUpperCase(), ev.action || "",
+      ev.resourceType || "", ev.resourceName || "", ev.message || "", ev.actor || "",
+    ];
+  });
+  var filename = "shelob-events-" + new Date().toISOString().slice(0, 10) + ".csv";
+  downloadCsv(headers, rows, filename);
+  showToast("Exported " + events.length + " events to " + filename);
 }

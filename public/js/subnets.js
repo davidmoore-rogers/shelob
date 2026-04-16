@@ -248,3 +248,127 @@ function debounce(fn, ms) {
     timer = setTimeout(fn, ms);
   };
 }
+
+/* ─── PDF Export ──────────────────────────────────────────────────────────── */
+
+(function () {
+  var menu = document.getElementById("export-menu");
+  var btn  = document.getElementById("btn-export");
+  if (!btn || !menu) return;
+
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    menu.classList.toggle("open");
+  });
+  document.addEventListener("click", function () { menu.classList.remove("open"); });
+  menu.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  menu.querySelectorAll("button[data-export]").forEach(function (item) {
+    item.addEventListener("click", async function () {
+      menu.classList.remove("open");
+      await handleNetworkExport(this.getAttribute("data-export"), this.getAttribute("data-fmt"));
+    });
+  });
+})();
+
+async function handleNetworkExport(mode, fmt) {
+  var networks, label, ok;
+
+  if (mode === "page") {
+    networks = _subnetsData.slice((_subnetsPage - 1) * _subnetsPageSize, _subnetsPage * _subnetsPageSize);
+    label = "page " + _subnetsPage;
+  } else if (mode === "filtered") {
+    networks = _subnetsData;
+    label = networks.length + " filtered networks";
+    if (networks.length > 100) {
+      ok = await showConfirm("This will export " + networks.length + " networks. Continue?");
+      if (!ok) return;
+    }
+  } else if (mode === "all") {
+    ok = await showConfirm("Export the entire network list? This may take a moment.");
+    if (!ok) return;
+  }
+
+  await trackedPdfExport("Exporting networks " + fmt.toUpperCase(), async function (signal) {
+    if (mode === "all") {
+      networks = await request("GET", "/subnets", undefined, signal);
+      label = "all " + networks.length + " networks";
+    }
+    if (signal.aborted) return;
+    if (!networks || networks.length === 0) { showToast("No networks to export", "error"); return; }
+    if (fmt === "csv") generateNetworkCsv(networks);
+    else generateNetworkPdf(networks, label);
+  });
+}
+
+function generateNetworkPdf(networks, label) {
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+
+  var now = new Date();
+  var timestamp = now.toLocaleDateString() + " " + now.toLocaleTimeString();
+
+  doc.setFontSize(16);
+  doc.setTextColor(40, 40, 40);
+  doc.text("Shelob \u2014 Network Report", 40, 36);
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text("Generated: " + timestamp + "  |  Scope: " + label + "  |  Count: " + networks.length, 40, 52);
+
+  var head = [["Name", "Network", "Block", "Purpose", "VLAN", "Status", "Server", "Integration", "Reservations"]];
+  var body = networks.map(function (s) {
+    return [
+      s.name || "-",
+      s.cidr || "-",
+      s.block ? s.block.name : "-",
+      s.purpose || "-",
+      s.vlan ? "VLAN " + s.vlan : "-",
+      s.status ? s.status.charAt(0).toUpperCase() + s.status.slice(1) : "-",
+      s.fortigateDevice || "-",
+      s.integration ? s.integration.name : "Manual",
+      s._count ? String(s._count.reservations) : "0",
+    ];
+  });
+
+  doc.autoTable({
+    startY: 64,
+    head: head,
+    body: body,
+    theme: "grid",
+    styles: { fontSize: 8, cellPadding: 4, overflow: "linebreak" },
+    headStyles: { fillColor: [30, 30, 54], textColor: [230, 230, 230], fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [245, 245, 250] },
+    margin: { left: 40, right: 40 },
+    didDrawPage: function (data) {
+      var pageNum = doc.internal.getNumberOfPages();
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+      doc.text(
+        "Page " + data.pageNumber + " of " + pageNum + "  |  Shelob Network Report",
+        doc.internal.pageSize.getWidth() / 2,
+        doc.internal.pageSize.getHeight() - 20,
+        { align: "center" }
+      );
+    },
+  });
+
+  var filename = "shelob-networks-" + now.toISOString().slice(0, 10) + ".pdf";
+  doc.save(filename);
+  showToast("Exported " + networks.length + " networks to " + filename);
+}
+
+function generateNetworkCsv(networks) {
+  var headers = ["Name", "Network", "Block", "Purpose", "VLAN", "Status", "Tags", "Server", "Integration", "Reservations"];
+  var rows = networks.map(function (s) {
+    return [
+      s.name || "", s.cidr || "", s.block ? s.block.name : "",
+      s.purpose || "", s.vlan ? String(s.vlan) : "", s.status || "",
+      (s.tags || []).join("; "), s.fortigateDevice || "",
+      s.integration ? s.integration.name : "Manual",
+      s._count ? String(s._count.reservations) : "0",
+    ];
+  });
+  var filename = "shelob-networks-" + new Date().toISOString().slice(0, 10) + ".csv";
+  downloadCsv(headers, rows, filename);
+  showToast("Exported " + networks.length + " networks to " + filename);
+}

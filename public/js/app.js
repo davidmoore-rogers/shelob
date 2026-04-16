@@ -155,20 +155,71 @@ function renderQueryStatus() {
       : '');
 
   container.querySelectorAll(".query-abort-btn").forEach(function (btn) {
-    btn.addEventListener("click", function () {
+    btn.addEventListener("click", async function () {
       var qid = parseFloat(btn.getAttribute("data-qid"));
       var q = activeQueries.find(function (x) { return x.id === qid; });
-      if (q) {
-        q.controller.abort();
-        _unregisterQuery(qid);
-      }
+      if (!q) return;
+      var ok = await showConfirm('Abort "' + q.label + '"?');
+      if (!ok) return;
+      q.controller.abort();
+      _unregisterQuery(qid);
     });
   });
 
   var abortAllBtn = document.getElementById("abort-all-btn");
   if (abortAllBtn) {
-    abortAllBtn.addEventListener("click", abortAllQueries);
+    abortAllBtn.addEventListener("click", async function () {
+      var ok = await showConfirm("Abort all running operations?");
+      if (ok) abortAllQueries();
+    });
   }
+}
+
+// ─── Tracked PDF Export ─────────────────────────────────────────────────────
+// Wraps a PDF export workflow in the query status tracker so it appears in the
+// sidebar with an abort button.  `fn` receives an AbortSignal and must throw or
+// return early when the signal fires.
+
+async function trackedPdfExport(label, fn) {
+  var controller = new AbortController();
+  var qid = _registerQuery(label, controller);
+  try {
+    await fn(controller.signal);
+  } catch (err) {
+    if (err.name === "AbortError" || controller.signal.aborted) {
+      showToast("PDF export aborted", "error");
+    } else {
+      throw err;
+    }
+  } finally {
+    _unregisterQuery(qid);
+  }
+}
+
+// ─── CSV Export Utility ─────────────────────────────────────────────────────
+
+function downloadCsv(headers, rows, filename) {
+  var csvContent = _csvRow(headers) + "\n" +
+    rows.map(function (r) { return _csvRow(r); }).join("\n");
+  var blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function _csvRow(cells) {
+  return cells.map(function (c) {
+    var s = String(c == null ? "" : c);
+    if (s.indexOf(",") !== -1 || s.indexOf('"') !== -1 || s.indexOf("\n") !== -1) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }).join(",");
 }
 
 // ─── Mock Heartbeat (demo only) ─────────────────────────────────────────────
@@ -187,6 +238,15 @@ function startMockHeartbeat() {
       setTimeout(function () { _unregisterQuery(qid); }, duration);
     });
   }
+
+  // Fire a mock "Generating PDF" entry shortly after load so the user can see it
+  setTimeout(function () {
+    var controller = new AbortController();
+    var qid = _registerQuery("Generating PDF \u2014 Asset Report", controller);
+    setTimeout(function () {
+      if (!controller.signal.aborted) _unregisterQuery(qid);
+    }, 8000);
+  }, 2000);
 
   // Fetch integrations list, then start the cycle
   setTimeout(function () {

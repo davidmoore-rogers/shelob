@@ -456,6 +456,55 @@ code {
 }
 .btn-icon:hover { color: var(--color-text-primary); background: var(--color-surface); }
 
+/* ─── Button dropdown ─────────────────────────────────────────────────────── */
+.btn-dropdown-wrap {
+  position: relative;
+  display: inline-block;
+}
+.btn-dropdown-menu {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  min-width: 180px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 200;
+  padding: 4px 0;
+}
+.btn-dropdown-menu.open { display: block; }
+.btn-dropdown-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.85rem;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--color-text-primary);
+  font-size: 0.84rem;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.btn-dropdown-menu button:hover {
+  background: var(--color-bg-secondary);
+}
+.btn-dropdown-menu .dropdown-heading {
+  padding: 0.35rem 0.85rem 0.15rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-tertiary);
+}
+.btn-dropdown-menu .dropdown-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 4px 0;
+}
+
 /* ─── Tables ───────────────────────────────────────────────────────────────── */
 .table-wrapper {
   background: var(--color-bg-primary);
@@ -532,6 +581,11 @@ td.actions {
   font-size: 0.72rem;
   color: var(--color-text-tertiary);
   margin-top: 3px;
+}
+.form-group .form-value {
+  padding: 0.45rem 0;
+  font-size: 0.85rem;
+  color: var(--color-text-primary);
 }
 input[type="text"],
 input[type="password"],
