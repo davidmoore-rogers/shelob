@@ -428,6 +428,10 @@ const ASSETS = [
     id: "a1000000-0000-0000-0000-000000000001",
     ipAddress: "10.0.1.10",
     macAddress: "00:1A:2B:3C:4D:01",
+    macAddresses: [
+      { mac: "00:1A:2B:3C:4D:01", lastSeen: "2026-04-15T12:00:00.000Z", source: "manual" },
+      { mac: "00:1A:2B:3C:4E:01", lastSeen: "2026-04-10T08:30:00.000Z", source: "dhcp-lease" },
+    ],
     hostname: "k8s-worker-01",
     dnsName: "k8s-worker-01.corp.example.com",
     assetTag: "RGI-00101",
@@ -440,6 +444,9 @@ const ASSETS = [
     department: "Platform Engineering",
     assignedTo: "platform-team",
     os: "RHEL 9.3",
+    osVersion: null,
+    lastSeenSwitch: "FS-248E-DC1-01/port15",
+    lastSeenAp: null,
     acquiredAt: "2025-06-15T00:00:00.000Z",
     warrantyExpiry: "2028-06-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0042",
@@ -452,6 +459,11 @@ const ASSETS = [
     id: "a2000000-0000-0000-0000-000000000002",
     ipAddress: "10.0.1.11",
     macAddress: "00:1A:2B:3C:4D:02",
+    macAddresses: [
+      { mac: "00:1A:2B:3C:4D:02", lastSeen: "2026-04-15T12:00:00.000Z", source: "manual" },
+      { mac: "00:1A:2B:3C:4E:02", lastSeen: "2026-04-14T09:00:00.000Z", source: "dhcp-lease" },
+      { mac: "00:1A:2B:3C:4F:02", lastSeen: "2026-03-20T14:00:00.000Z", source: "dhcp-lease" },
+    ],
     hostname: "k8s-worker-02",
     dnsName: "k8s-worker-02.corp.example.com",
     assetTag: "RGI-00102",
@@ -464,6 +476,9 @@ const ASSETS = [
     department: "Platform Engineering",
     assignedTo: "platform-team",
     os: "RHEL 9.3",
+    osVersion: null,
+    lastSeenSwitch: "FS-248E-DC1-01/port16",
+    lastSeenAp: null,
     acquiredAt: "2025-06-15T00:00:00.000Z",
     warrantyExpiry: "2028-06-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0042",
@@ -476,6 +491,10 @@ const ASSETS = [
     id: "a3000000-0000-0000-0000-000000000003",
     ipAddress: "10.0.2.10",
     macAddress: "00:1A:2B:3C:4D:10",
+    macAddresses: [
+      { mac: "00:1A:2B:3C:4D:10", lastSeen: "2026-04-15T11:00:00.000Z", source: "manual" },
+      { mac: "00:1A:2B:3C:4E:10", lastSeen: "2026-04-15T11:00:00.000Z", source: "manual" },
+    ],
     hostname: "postgres-primary",
     dnsName: "postgres-primary.corp.example.com",
     assetTag: "RGI-00200",
@@ -488,6 +507,9 @@ const ASSETS = [
     department: "Data Engineering",
     assignedTo: "data-team",
     os: "RHEL 9.3",
+    osVersion: null,
+    lastSeenSwitch: "FS-248E-DC1-02/port1",
+    lastSeenAp: null,
     acquiredAt: "2025-08-01T00:00:00.000Z",
     warrantyExpiry: "2028-08-01T00:00:00.000Z",
     purchaseOrder: "PO-2025-0078",
@@ -500,6 +522,7 @@ const ASSETS = [
     id: "a4000000-0000-0000-0000-000000000004",
     ipAddress: "10.0.3.10",
     macAddress: "00:1A:2B:3C:4D:20",
+    macAddresses: [{ mac: "00:1A:2B:3C:4D:20", lastSeen: "2026-04-15T10:00:00.000Z", source: "manual" }],
     hostname: "grafana-01",
     dnsName: "grafana-01.corp.example.com",
     assetTag: "RGI-00305",
@@ -512,6 +535,9 @@ const ASSETS = [
     department: "SRE",
     assignedTo: "sre-team",
     os: "Ubuntu 22.04 LTS",
+    osVersion: null,
+    lastSeenSwitch: null,
+    lastSeenAp: null,
     acquiredAt: "2025-03-20T00:00:00.000Z",
     warrantyExpiry: "2028-03-20T00:00:00.000Z",
     purchaseOrder: "PO-2025-0015",
@@ -524,6 +550,11 @@ const ASSETS = [
     id: "a5000000-0000-0000-0000-000000000005",
     ipAddress: "172.16.0.1",
     macAddress: "00:50:56:AA:BB:01",
+    macAddresses: [
+      { mac: "00:50:56:AA:BB:01", lastSeen: "2026-04-15T12:00:00.000Z", source: "manual" },
+      { mac: "00:50:56:AA:BB:02", lastSeen: "2026-04-15T12:00:00.000Z", source: "manual" },
+      { mac: "00:50:56:AA:BB:03", lastSeen: "2026-04-12T08:00:00.000Z", source: "manual" },
+    ],
     hostname: "core-sw-01",
     dnsName: "core-sw-01.mgmt.example.com",
     assetTag: "RGI-00500",
@@ -535,7 +566,10 @@ const ASSETS = [
     location: "DC1 MDF",
     department: "Network Operations",
     assignedTo: "network-team",
-    os: "IOS-XE 17.9",
+    os: "IOS-XE",
+    osVersion: "17.9.4",
+    lastSeenSwitch: null,
+    lastSeenAp: null,
     acquiredAt: "2024-11-01T00:00:00.000Z",
     warrantyExpiry: "2029-11-01T00:00:00.000Z",
     purchaseOrder: "PO-2024-0230",
@@ -548,6 +582,7 @@ const ASSETS = [
     id: "a6000000-0000-0000-0000-000000000006",
     ipAddress: "192.168.1.1",
     macAddress: "00:50:56:CC:DD:01",
+    macAddresses: [{ mac: "00:50:56:CC:DD:01", lastSeen: "2026-04-15T10:00:00.000Z", source: "manual" }],
     hostname: "fw-edge-01",
     dnsName: "fw-edge-01.mgmt.example.com",
     assetTag: "RGI-00600",
@@ -559,7 +594,10 @@ const ASSETS = [
     location: "DC1 Security Rack",
     department: "Network Security",
     assignedTo: "network-team",
-    os: "FortiOS 7.4.3",
+    os: "FortiOS",
+    osVersion: "7.4.3",
+    lastSeenSwitch: null,
+    lastSeenAp: null,
     acquiredAt: "2025-01-15T00:00:00.000Z",
     warrantyExpiry: "2028-01-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0005",
@@ -572,6 +610,7 @@ const ASSETS = [
     id: "a7000000-0000-0000-0000-000000000007",
     ipAddress: "10.0.4.50",
     macAddress: "00:1A:2B:3C:4D:50",
+    macAddresses: [{ mac: "00:1A:2B:3C:4D:50", lastSeen: "2026-02-15T16:00:00.000Z", source: "manual" }],
     hostname: "ci-runner-old",
     dnsName: "ci-runner-old.corp.example.com",
     assetTag: "RGI-00410",
@@ -584,6 +623,9 @@ const ASSETS = [
     department: "DevOps",
     assignedTo: "devops-team",
     os: "RHEL 8.6",
+    osVersion: null,
+    lastSeenSwitch: null,
+    lastSeenAp: null,
     acquiredAt: "2022-03-01T00:00:00.000Z",
     warrantyExpiry: "2025-03-01T00:00:00.000Z",
     purchaseOrder: "PO-2022-0088",
@@ -596,6 +638,7 @@ const ASSETS = [
     id: "a8000000-0000-0000-0000-000000000008",
     ipAddress: null,
     macAddress: "00:1A:2B:3C:4D:99",
+    macAddresses: [{ mac: "00:1A:2B:3C:4D:99", lastSeen: "2026-03-01T10:00:00.000Z", source: "manual" }],
     hostname: "spare-r740-01",
     dnsName: null,
     assetTag: "RGI-00999",
@@ -608,6 +651,9 @@ const ASSETS = [
     department: "IT Operations",
     assignedTo: null,
     os: null,
+    osVersion: null,
+    lastSeenSwitch: null,
+    lastSeenAp: null,
     acquiredAt: "2025-06-15T00:00:00.000Z",
     warrantyExpiry: "2028-06-15T00:00:00.000Z",
     purchaseOrder: "PO-2025-0042",
@@ -617,6 +663,32 @@ const ASSETS = [
     updatedAt: "2026-03-01T10:00:00.000Z",
   },
 ];
+
+// ─── Tags ───────────────────────────────────────────────────────────────────
+
+const TAGS = [
+  { id: "tag-001", name: "prod",           category: "Environment", color: "#4caf50", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-002", name: "staging",        category: "Environment", color: "#ff9800", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-003", name: "dev",            category: "Environment", color: "#2196f3", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-004", name: "critical",       category: "Priority",    color: "#f44336", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-005", name: "kubernetes",     category: "Function",    color: "#326ce5", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-006", name: "database",       category: "Function",    color: "#e91e63", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-007", name: "monitoring",     category: "Function",    color: "#9c27b0", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-008", name: "network",        category: "Function",    color: "#00bcd4", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-009", name: "firewall",       category: "Function",    color: "#ff5722", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-010", name: "ci",             category: "Function",    color: "#795548", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-011", name: "internal",       category: "Network",     color: "#607d8b", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-012", name: "vpn",            category: "Network",     color: "#3f51b5", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-013", name: "datacenter",     category: "Location",    color: "#009688", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-014", name: "cloud",          category: "Location",    color: "#03a9f4", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-015", name: "dhcp-discovered",category: "System",      color: "#78909c", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-016", name: "auto-registered",category: "System",      color: "#78909c", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-017", name: "auto-discovered",category: "System",      color: "#78909c", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-018", name: "spare",          category: "Status",      color: "#bdbdbd", createdAt: "2026-01-10T09:00:00.000Z" },
+  { id: "tag-019", name: "decommissioned", category: "Status",      color: "#9e9e9e", createdAt: "2026-01-10T09:00:00.000Z" },
+];
+
+const TAG_SETTINGS = { enforce: false };
 
 // ─── Events ─────────────────────────────────────────────────────────────────
 
@@ -886,11 +958,62 @@ function registerFortiManagerDemo(host, name, force, fields) {
 
 // ─── DHCP Discovery (mock) ───────────────────────────────────────────────────
 
+const MOCK_DEVICES = [
+  { name: "FGT-DC1-01", hostname: "FGT-DC1-01", serial: "FGT60F0000000001", model: "FortiGate 60F", mgmtIp: "10.0.1.1" },
+  { name: "FGT-DC1-02", hostname: "FGT-DC1-02", serial: "FGT60F0000000002", model: "FortiGate 60F", mgmtIp: "10.0.1.2" },
+];
+
 const MOCK_DHCP_SERVERS = [
-  { device: "FGT-DC1-01", iface: "port5",  id: "1", cidr: "10.0.10.0/24", name: "dhcp-prod-01" },
-  { device: "FGT-DC1-01", iface: "port6",  id: "2", cidr: "10.0.11.0/24", name: "dhcp-prod-02" },
-  { device: "FGT-DC1-02", iface: "port3",  id: "1", cidr: "10.0.20.0/24", name: "dhcp-lab-01" },
-  { device: "FGT-DC1-02", iface: "port7",  id: "2", cidr: "10.0.21.0/24", name: "lab-test-dhcp" },
+  { device: "FGT-DC1-01", iface: "port5",  id: "1", cidr: "10.0.10.0/24", name: "dhcp-prod-01", ifaceIp: "10.0.10.1" },
+  { device: "FGT-DC1-01", iface: "port6",  id: "2", cidr: "10.0.11.0/24", name: "dhcp-prod-02", ifaceIp: "10.0.11.1" },
+  { device: "FGT-DC1-02", iface: "port3",  id: "1", cidr: "10.0.20.0/24", name: "dhcp-lab-01", ifaceIp: "10.0.20.1" },
+  { device: "FGT-DC1-02", iface: "port7",  id: "2", cidr: "10.0.21.0/24", name: "lab-test-dhcp", ifaceIp: "10.0.21.1" },
+];
+
+// Mock DHCP entries: static reservations and dynamic leases
+const MOCK_DHCP_ENTRIES = [
+  // Static reservations on FGT-DC1-01
+  { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.10", mac: "AA:BB:CC:01:10:0A", hostname: "k8s-master-01", type: "dhcp-reservation" },
+  { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.11", mac: "AA:BB:CC:01:10:0B", hostname: "k8s-master-02", type: "dhcp-reservation" },
+  { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.12", mac: "AA:BB:CC:01:10:0C", hostname: "k8s-master-03", type: "dhcp-reservation" },
+  { device: "FGT-DC1-01", iface: "port6", ip: "10.0.11.10", mac: "AA:BB:CC:01:11:0A", hostname: "db-primary", type: "dhcp-reservation" },
+  { device: "FGT-DC1-01", iface: "port6", ip: "10.0.11.11", mac: "AA:BB:CC:01:11:0B", hostname: "db-replica-01", type: "dhcp-reservation" },
+  // Dynamic leases on FGT-DC1-01
+  { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.100", mac: "DE:AD:BE:EF:01:01", hostname: "k8s-worker-01", type: "dhcp-lease" },
+  { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.101", mac: "DE:AD:BE:EF:01:02", hostname: "k8s-worker-02", type: "dhcp-lease" },
+  { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.102", mac: "DE:AD:BE:EF:01:03", hostname: "k8s-worker-03", type: "dhcp-lease" },
+  { device: "FGT-DC1-01", iface: "port6", ip: "10.0.11.100", mac: "DE:AD:BE:EF:02:01", hostname: "cache-01", type: "dhcp-lease" },
+  // Static reservations on FGT-DC1-02
+  { device: "FGT-DC1-02", iface: "port3", ip: "10.0.20.10", mac: "AA:BB:CC:02:20:0A", hostname: "lab-server-01", type: "dhcp-reservation" },
+  { device: "FGT-DC1-02", iface: "port3", ip: "10.0.20.11", mac: "AA:BB:CC:02:20:0B", hostname: "lab-server-02", type: "dhcp-reservation" },
+  // Dynamic leases on FGT-DC1-02
+  { device: "FGT-DC1-02", iface: "port3", ip: "10.0.20.100", mac: "DE:AD:BE:EF:03:01", hostname: "dev-laptop-01", type: "dhcp-lease" },
+  { device: "FGT-DC1-02", iface: "port3", ip: "10.0.20.101", mac: "DE:AD:BE:EF:03:02", hostname: "dev-laptop-02", type: "dhcp-lease" },
+  { device: "FGT-DC1-02", iface: "port7", ip: "10.0.21.100", mac: "DE:AD:BE:EF:04:01", hostname: "test-vm-01", type: "dhcp-lease" },
+  { device: "FGT-DC1-02", iface: "port7", ip: "10.0.21.101", mac: "DE:AD:BE:EF:04:02", hostname: "", type: "dhcp-lease" },
+];
+
+const MOCK_DEVICE_INVENTORY = [
+  // Devices on FGT-DC1-01 — some overlap with DHCP entries, some are new
+  // k8s-worker-01 already in DHCP leases (port5) — inventory fills in OS, switch info
+  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:01", ip: "10.0.10.100", hostname: "k8s-worker-01", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "15", apName: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
+  // k8s-worker-02 in DHCP leases — inventory fills in OS, switch info
+  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:02", ip: "10.0.10.101", hostname: "k8s-worker-02", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "16", apName: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
+  // k8s-worker-03 in DHCP leases — inventory fills in details
+  { device: "FGT-DC1-01", iface: "port5", mac: "DE:AD:BE:EF:01:03", ip: "10.0.10.102", hostname: "k8s-worker-03", os: "Linux", osVersion: "RHEL 9.3", vendor: "Dell Inc.", switchName: "FS-248E-DC1-01", switchPort: "17", apName: "", online: true, lastSeen: "2026-04-16T08:30:00.000Z" },
+  // db-primary in DHCP reservations (port6) — inventory adds switch info
+  { device: "FGT-DC1-01", iface: "port6", mac: "AA:BB:CC:01:11:0A", ip: "10.0.11.10", hostname: "db-primary", os: "Linux", osVersion: "Ubuntu 22.04.3 LTS", vendor: "Dell Inc.", switchName: "FS-248E-DC1-02", switchPort: "1", apName: "", online: true, lastSeen: "2026-04-16T09:00:00.000Z" },
+  // Entirely new device — printer not in DHCP at all, on port5
+  { device: "FGT-DC1-01", iface: "port5", mac: "00:1E:8F:AA:BB:01", ip: "10.0.10.200", hostname: "hp-printer-dc1", os: "Embedded", osVersion: "HP FutureSmart 5.6", vendor: "HP Inc.", switchName: "FS-248E-DC1-01", switchPort: "24", apName: "", online: true, lastSeen: "2026-04-16T07:15:00.000Z" },
+  // Wireless laptop on port5 — connected via FortiAP
+  { device: "FGT-DC1-01", iface: "port5", mac: "F8:FF:C2:01:02:03", ip: "10.0.10.201", hostname: "laptop-jsmith", os: "Windows", osVersion: "Windows 11 23H2", vendor: "Lenovo", switchName: "", switchPort: "", apName: "FAP-431F-DC1-01", online: true, lastSeen: "2026-04-16T10:00:00.000Z" },
+  // Devices on FGT-DC1-02
+  // dev-laptop-01 in DHCP leases (port3)
+  { device: "FGT-DC1-02", iface: "port3", mac: "DE:AD:BE:EF:03:01", ip: "10.0.20.100", hostname: "dev-laptop-01", os: "macOS", osVersion: "macOS 15.2 Sequoia", vendor: "Apple Inc.", switchName: "", switchPort: "", apName: "FAP-431F-DC1-02", online: true, lastSeen: "2026-04-16T09:45:00.000Z" },
+  // New: IP phone on port3
+  { device: "FGT-DC1-02", iface: "port3", mac: "00:04:F2:CC:DD:01", ip: "10.0.20.202", hostname: "phone-conf-room-a", os: "Embedded", osVersion: "Polycom UC 7.1", vendor: "Poly", switchName: "FS-124E-DC1-01", switchPort: "8", apName: "", online: true, lastSeen: "2026-04-16T06:00:00.000Z" },
+  // New: security camera on port7 (excluded interface if user excludes port7)
+  { device: "FGT-DC1-02", iface: "port7", mac: "70:B3:D5:01:02:03", ip: "10.0.21.200", hostname: "cam-lobby-01", os: "Embedded", osVersion: "Hikvision 4.30", vendor: "Hikvision", switchName: "FS-124E-DC1-01", switchPort: "20", apName: "", online: true, lastSeen: "2026-04-16T08:00:00.000Z" },
 ];
 
 const MOCK_WIN_DHCP_SCOPES = [
@@ -916,12 +1039,14 @@ function discoverWinDhcpDemo(config) {
     );
   }
 
-  return scopes.map((s) => ({
+  const subnets = scopes.map((s) => ({
     cidr: s.scopeId + "/24",
     name: s.name,
     fortigateDevice: config.host,
     dhcpServerId: s.scopeId,
   }));
+
+  return { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
 }
 
 function discoverDhcpDemo(config) {
@@ -941,19 +1066,88 @@ function discoverDhcpDemo(config) {
     );
   }
 
-  return servers.map((s) => ({
+  const subnets = servers.map((s) => ({
     cidr: s.cidr,
     name: s.iface,
     fortigateDevice: s.device,
     dhcpServerId: s.id,
   }));
+
+  // Build device list and interface IPs
+  const devices = MOCK_DEVICES.map((d) => ({ ...d }));
+
+  const interfaceIps = [];
+  // Management IPs
+  for (const d of MOCK_DEVICES) {
+    if (d.mgmtIp) {
+      interfaceIps.push({
+        device: d.name,
+        interfaceName: config.mgmtInterface || "mgmt",
+        ipAddress: d.mgmtIp,
+        role: "management",
+      });
+    }
+  }
+  // DHCP server interface IPs (only for included/filtered servers)
+  for (const s of servers) {
+    if (s.ifaceIp) {
+      interfaceIps.push({
+        device: s.device,
+        interfaceName: s.iface,
+        ipAddress: s.ifaceIp,
+        role: "dhcp-server",
+      });
+    }
+  }
+
+  // Filter DHCP entries to only include those from filtered servers
+  const includedIfaces = new Set(servers.map((s) => s.device + "/" + s.iface));
+  const dhcpEntries = MOCK_DHCP_ENTRIES.filter((e) => includedIfaces.has(e.device + "/" + e.iface)).map((e) => ({
+    device: e.device,
+    interfaceName: e.iface,
+    ipAddress: e.ip,
+    macAddress: e.mac,
+    hostname: e.hostname,
+    type: e.type,
+  }));
+
+  // Filter device inventory: drop devices on excluded DHCP interfaces
+  // All DHCP interfaces we discovered (before filtering)
+  const allDhcpIfaces = new Set(MOCK_DHCP_SERVERS.map((s) => s.device + "/" + s.iface));
+  const excludedIfaces = new Set();
+  for (const key of allDhcpIfaces) {
+    if (!includedIfaces.has(key)) excludedIfaces.add(key);
+  }
+  const deviceInventory = MOCK_DEVICE_INVENTORY
+    .filter((d) => !excludedIfaces.has(d.device + "/" + d.iface))
+    .map((d) => ({
+      device: d.device,
+      macAddress: d.mac,
+      ipAddress: d.ip,
+      hostname: d.hostname,
+      os: d.os,
+      osVersion: d.osVersion,
+      hardwareVendor: d.vendor,
+      interfaceName: d.iface,
+      switchName: d.switchName,
+      switchPort: d.switchPort,
+      apName: d.apName,
+      isOnline: d.online,
+      lastSeen: d.lastSeen,
+    }));
+
+  return { subnets, devices, interfaceIps, dhcpEntries, deviceInventory };
 }
 
-function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, discovered) {
+function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, result) {
   const created = [];
   const updated = [];
   const skipped = [];
+  const assets = [];
+  const reservations = [];
   const now = new Date().toISOString();
+
+  const discovered = result.subnets || result;
 
   for (const entry of discovered) {
     // Check if subnet already exists
@@ -1006,7 +1200,269 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, di
     created.push(entry.cidr);
   }
 
-  return { created, updated, skipped };
+  // ── Create FortiGate assets ──
+  if (result.devices) {
+    for (const device of result.devices) {
+      // Check if asset already exists by serial number
+      const existingAsset = device.serial
+        ? ASSETS.find((a) => a.serialNumber === device.serial)
+        : null;
+
+      if (existingAsset) {
+        existingAsset.ipAddress = device.mgmtIp || existingAsset.ipAddress;
+        existingAsset.hostname = device.hostname || existingAsset.hostname;
+        existingAsset.model = device.model || existingAsset.model;
+        existingAsset.updatedAt = now;
+        assets.push(`${device.name} (updated)`);
+      } else {
+        ASSETS.push({
+          id: crypto.randomUUID(),
+          ipAddress: device.mgmtIp || null,
+          macAddress: null,
+          macAddresses: [],
+          hostname: device.hostname || device.name,
+          dnsName: null,
+          assetTag: null,
+          serialNumber: device.serial || null,
+          manufacturer: "Fortinet",
+          model: device.model || "FortiGate",
+          assetType: "firewall",
+          status: "active",
+          location: null,
+          department: "Network Security",
+          assignedTo: null,
+          os: null,
+          osVersion: null,
+          lastSeenSwitch: null,
+          lastSeenAp: null,
+          acquiredAt: null,
+          warrantyExpiry: null,
+          purchaseOrder: null,
+          notes: "Auto-discovered from FortiManager integration",
+          tags: ["fortigate", "auto-discovered"],
+          createdAt: now,
+          updatedAt: now,
+        });
+        assets.push(device.name);
+      }
+    }
+  }
+
+  // ── Create reservations for interface IPs ──
+  if (result.interfaceIps) {
+    for (const ifaceIp of result.interfaceIps) {
+      if (!ifaceIp.ipAddress) continue;
+
+      // Find which subnet this IP belongs to
+      const matchingSubnet = SUBNETS.find((s) => {
+        const subnetBase = s.cidr.replace(/\/\d+$/, "").replace(/\.\d+$/, "");
+        return ifaceIp.ipAddress.startsWith(subnetBase + ".");
+      });
+      if (!matchingSubnet) continue;
+
+      // Check for existing active reservation
+      const existingRes = RESERVATIONS.find(
+        (r) => r.ipAddress === ifaceIp.ipAddress && r.status === "active"
+      );
+      if (existingRes) continue;
+
+      RESERVATIONS.push({
+        id: crypto.randomUUID(),
+        subnetId: matchingSubnet.id,
+        subnet: { name: matchingSubnet.name, cidr: matchingSubnet.cidr },
+        ipAddress: ifaceIp.ipAddress,
+        hostname: ifaceIp.device,
+        owner: "network-team",
+        projectRef: "FortiManager Integration",
+        notes: `${ifaceIp.role === "management" ? "Management" : "DHCP server"} interface (${ifaceIp.interfaceName}) on ${ifaceIp.device}`,
+        status: "active",
+        expiresAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Update subnet reservation count
+      matchingSubnet._count = matchingSubnet._count || { reservations: 0 };
+      matchingSubnet._count.reservations++;
+
+      reservations.push(`${ifaceIp.ipAddress} (${ifaceIp.device}/${ifaceIp.interfaceName})`);
+    }
+  }
+
+  // ── Create reservations for DHCP leases and static reservations ──
+  let dhcpLeaseCount = 0;
+  let dhcpReservationCount = 0;
+  if (result.dhcpEntries) {
+    for (const entry of result.dhcpEntries) {
+      if (!entry.ipAddress) continue;
+
+      const matchingSubnet = SUBNETS.find((s) => {
+        const subnetBase = s.cidr.replace(/\/\d+$/, "").replace(/\.\d+$/, "");
+        return entry.ipAddress.startsWith(subnetBase + ".");
+      });
+      if (!matchingSubnet) continue;
+
+      const existingRes = RESERVATIONS.find(
+        (r) => r.ipAddress === entry.ipAddress && r.status === "active"
+      );
+      if (existingRes) continue;
+
+      const isDhcpReservation = entry.type === "dhcp-reservation";
+      RESERVATIONS.push({
+        id: crypto.randomUUID(),
+        subnetId: matchingSubnet.id,
+        subnet: { name: matchingSubnet.name, cidr: matchingSubnet.cidr },
+        ipAddress: entry.ipAddress,
+        hostname: entry.hostname || null,
+        owner: isDhcpReservation ? "dhcp-reservation" : "dhcp-lease",
+        projectRef: "FortiManager Integration",
+        notes: `${isDhcpReservation ? "DHCP reservation" : "DHCP lease"} on ${entry.device} (${entry.interfaceName})${entry.macAddress ? " — MAC: " + entry.macAddress : ""}`,
+        status: "active",
+        expiresAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      matchingSubnet._count = matchingSubnet._count || { reservations: 0 };
+      matchingSubnet._count.reservations++;
+
+      if (isDhcpReservation) dhcpReservationCount++;
+      else dhcpLeaseCount++;
+    }
+  }
+
+  // ── Associate DHCP entry MACs with matching assets & cross-update ──
+  if (result.dhcpEntries) {
+    for (const entry of result.dhcpEntries) {
+      if (!entry.macAddress || !entry.ipAddress) continue;
+      const normalized = entry.macAddress.toUpperCase().replace(/-/g, ":");
+
+      // Match asset by MAC address, hostname, or IP
+      const asset = ASSETS.find((a) => {
+        if (a.macAddress && a.macAddress.toUpperCase() === normalized) return true;
+        if (Array.isArray(a.macAddresses) && a.macAddresses.some((m) => m.mac === normalized)) return true;
+        if (entry.hostname && a.hostname && a.hostname.toLowerCase() === entry.hostname.toLowerCase()) return true;
+        if (a.ipAddress && a.ipAddress === entry.ipAddress) return true;
+        return false;
+      });
+      if (!asset) continue;
+
+      // Update asset MAC list
+      _addMacToAsset(asset, entry.macAddress, entry.type, now);
+
+      // Update asset IP address from DHCP entry
+      asset.ipAddress = entry.ipAddress;
+
+      // Update the reservation hostname to match the asset's hostname
+      if (asset.hostname) {
+        const res = RESERVATIONS.find(
+          (r) => r.ipAddress === entry.ipAddress && r.status === "active"
+        );
+        if (res && res.hostname !== asset.hostname) {
+          res.hostname = asset.hostname;
+          res.updatedAt = now;
+        }
+      }
+    }
+  }
+
+  // ── Process device inventory — fill in gaps not covered by DHCP ──
+  let inventoryDeviceCount = 0;
+  if (result.deviceInventory) {
+    // Collect MACs already handled by DHCP
+    const dhcpMacs = new Set();
+    if (result.dhcpEntries) {
+      for (const e of result.dhcpEntries) {
+        if (e.macAddress) dhcpMacs.add(e.macAddress.toUpperCase().replace(/-/g, ":"));
+      }
+    }
+
+    for (const inv of result.deviceInventory) {
+      if (!inv.macAddress && !inv.ipAddress) continue;
+      const normalizedMac = inv.macAddress ? inv.macAddress.toUpperCase().replace(/-/g, ":") : "";
+      const handledByDhcp = normalizedMac && dhcpMacs.has(normalizedMac);
+
+      // Find existing asset by MAC, hostname, or IP
+      const existingAsset = ASSETS.find((a) => {
+        if (normalizedMac) {
+          if (a.macAddress && a.macAddress.toUpperCase() === normalizedMac) return true;
+          if (Array.isArray(a.macAddresses) && a.macAddresses.some((m) => m.mac === normalizedMac)) return true;
+        }
+        if (inv.hostname && a.hostname && a.hostname.toLowerCase() === inv.hostname.toLowerCase()) return true;
+        if (inv.ipAddress && a.ipAddress && a.ipAddress === inv.ipAddress) return true;
+        return false;
+      });
+
+      const switchConn = inv.switchName
+        ? (inv.switchPort ? `${inv.switchName}/port${inv.switchPort}` : inv.switchName)
+        : null;
+      const apConn = inv.apName || null;
+
+      if (existingAsset) {
+        // Update existing asset — DHCP fields take precedence
+        if (!handledByDhcp && inv.ipAddress) existingAsset.ipAddress = inv.ipAddress;
+        if (inv.os && !existingAsset.os) existingAsset.os = inv.os;
+        if (inv.osVersion) existingAsset.osVersion = inv.osVersion;
+        if (inv.hardwareVendor && !existingAsset.manufacturer) existingAsset.manufacturer = inv.hardwareVendor;
+        if (switchConn) existingAsset.lastSeenSwitch = switchConn;
+        if (apConn) existingAsset.lastSeenAp = apConn;
+        if (normalizedMac && !handledByDhcp) {
+          _addMacToAsset(existingAsset, inv.macAddress, "device-inventory", now);
+        }
+        existingAsset.updatedAt = now;
+        inventoryDeviceCount++;
+      } else {
+        // Create new asset from inventory
+        ASSETS.push({
+          id: crypto.randomUUID(),
+          ipAddress: inv.ipAddress || null,
+          macAddress: normalizedMac || null,
+          macAddresses: normalizedMac ? [{ mac: normalizedMac, lastSeen: now, source: "device-inventory" }] : [],
+          hostname: inv.hostname || null,
+          dnsName: null,
+          assetTag: null,
+          serialNumber: null,
+          manufacturer: inv.hardwareVendor || null,
+          model: null,
+          assetType: "other",
+          status: "active",
+          location: null,
+          department: null,
+          assignedTo: null,
+          os: inv.os || null,
+          osVersion: inv.osVersion || null,
+          lastSeenSwitch: switchConn,
+          lastSeenAp: apConn,
+          acquiredAt: null,
+          warrantyExpiry: null,
+          purchaseOrder: null,
+          notes: `Auto-discovered from FortiGate device inventory (${inv.device})`,
+          tags: ["device-inventory", "auto-discovered"],
+          createdAt: now,
+          updatedAt: now,
+        });
+        inventoryDeviceCount++;
+      }
+    }
+  }
+
+  return { created, updated, skipped, assets, reservations, dhcpLeases: dhcpLeaseCount, dhcpReservations: dhcpReservationCount, inventoryDevices: inventoryDeviceCount };
+}
+
+function _addMacToAsset(asset, mac, source, now) {
+  const normalized = mac.toUpperCase().replace(/-/g, ":");
+  if (!asset.macAddresses) asset.macAddresses = [];
+  const existing = asset.macAddresses.find((m) => m.mac === normalized);
+  if (existing) {
+    existing.lastSeen = now;
+    existing.source = source;
+  } else {
+    asset.macAddresses.push({ mac: normalized, lastSeen: now, source: source });
+  }
+  // Update primary macAddress to most recently seen
+  asset.macAddresses.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+  asset.macAddress = asset.macAddresses[0].mac;
+  asset.updatedAt = now;
 }
 
 // ─── MIME types ──────────────────────────────────────────────────────────────
@@ -1022,6 +1478,35 @@ const MIME = {
   ".ico": "image/x-icon",
   ".webp": "image/webp",
 };
+
+// ─── IP Helpers ─────────────────────────────────────────────────────────────
+
+function _estimateSize(arr) {
+  const bytes = JSON.stringify(arr).length;
+  return _formatBytes(bytes);
+}
+function _formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " kB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+function _parseSize(sizeStr) {
+  const m = sizeStr.match(/([\d.]+)\s*(B|kB|MB|GB)/);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  if (m[2] === "B") return n;
+  if (m[2] === "kB") return n * 1024;
+  if (m[2] === "MB") return n * 1024 * 1024;
+  if (m[2] === "GB") return n * 1024 * 1024 * 1024;
+  return 0;
+}
+
+function _ipToInt(ip) {
+  return ip.split(".").reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+}
+function _intToIp(int) {
+  return [(int >>> 24) & 255, (int >>> 16) & 255, (int >>> 8) & 255, int & 255].join(".");
+}
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 
@@ -1168,6 +1653,38 @@ async function routeAPI(method, path, params, body, res) {
     if (tag) result = result.filter((s) => s.tags.includes(tag));
     return json(res, result);
   }
+  if (path.match(/^\/api\/v1\/subnets\/[\w-]+\/ips$/) && method === "GET") {
+    const id = path.split("/").slice(-2, -1)[0];
+    const subnet = SUBNETS.find((s) => s.id === id);
+    if (!subnet) return json(res, { error: "Not found" }, 404);
+    const page = parseInt(params.get("page")) || 1;
+    const pageSize = Math.min(parseInt(params.get("pageSize")) || 256, 1024);
+    const isV6 = subnet.cidr.includes(":");
+    const subnetReservations = RESERVATIONS.filter((r) => r.subnetId === id && r.status !== "released");
+    if (isV6) {
+      return json(res, { subnet, totalIps: 0, page: 1, pageSize, ipv6: true, ips: subnetReservations.map((r) => ({ address: r.ipAddress, type: "host", reservation: r })) });
+    }
+    const cidrParts = subnet.cidr.split("/");
+    const prefix = parseInt(cidrParts[1]);
+    const baseInt = _ipToInt(cidrParts[0]);
+    const size = Math.pow(2, 32 - prefix);
+    const networkAddr = baseInt;
+    const broadcastAddr = baseInt + size - 1;
+    const totalIps = size;
+    const resMap = {};
+    subnetReservations.forEach((r) => { if (r.ipAddress) resMap[r.ipAddress] = r; });
+    const startIdx = (page - 1) * pageSize;
+    const endIdx = Math.min(startIdx + pageSize, totalIps);
+    const ips = [];
+    for (let i = startIdx; i < endIdx; i++) {
+      const addr = _intToIp(networkAddr + i);
+      var type = "host";
+      if (i === 0) type = "network";
+      else if (i === size - 1) type = "broadcast";
+      ips.push({ address: addr, type, reservation: resMap[addr] || null });
+    }
+    return json(res, { subnet, totalIps, page, pageSize, ipv6: false, ips });
+  }
   if (path.match(/^\/api\/v1\/subnets\/[\w-]+$/) && method === "GET") {
     const id = path.split("/").pop();
     const subnet = SUBNETS.find((s) => s.id === id);
@@ -1213,18 +1730,56 @@ async function routeAPI(method, path, params, body, res) {
     return r ? json(res, r) : json(res, { error: "Not found" }, 404);
   }
   if (path === "/api/v1/reservations" && method === "POST") {
+    const now = new Date().toISOString();
     const newId = crypto.randomUUID();
-    logEventDemo({ action: "reservation.created", resourceType: "reservation", resourceId: newId, resourceName: body.hostname, message: `Reservation created for ${body.ipAddress || "subnet"} (${body.owner})` });
-    return json(res, { id: newId, ...body, status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, 201);
+    const subnet = SUBNETS.find((s) => s.id === body.subnetId);
+    const newRes = {
+      id: newId,
+      subnetId: body.subnetId,
+      subnet: subnet ? { name: subnet.name, cidr: subnet.cidr } : null,
+      ipAddress: body.ipAddress || null,
+      hostname: body.hostname || null,
+      owner: body.owner || "",
+      projectRef: body.projectRef || "",
+      notes: body.notes || null,
+      expiresAt: body.expiresAt || null,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    RESERVATIONS.push(newRes);
+    if (subnet) {
+      subnet._count = subnet._count || { reservations: 0 };
+      subnet._count.reservations++;
+    }
+    logEventDemo({ action: "reservation.created", resourceType: "reservation", resourceId: newId, resourceName: body.hostname || body.ipAddress, message: `Reservation created for ${body.ipAddress || "subnet"} (${body.owner})` });
+    return json(res, newRes, 201);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "PUT") {
     const id = path.split("/").pop();
-    logEventDemo({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: body.hostname, message: `Reservation updated` });
-    return json(res, { ...body, updatedAt: new Date().toISOString() });
+    const existing = RESERVATIONS.find((r) => r.id === id);
+    if (!existing) return json(res, { error: "Not found" }, 404);
+    if (body.hostname !== undefined) existing.hostname = body.hostname;
+    if (body.owner !== undefined) existing.owner = body.owner;
+    if (body.projectRef !== undefined) existing.projectRef = body.projectRef;
+    if (body.expiresAt !== undefined) existing.expiresAt = body.expiresAt;
+    if (body.notes !== undefined) existing.notes = body.notes;
+    existing.updatedAt = new Date().toISOString();
+    logEventDemo({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: existing.hostname || existing.ipAddress, message: `Reservation updated for ${existing.ipAddress || "subnet"}` });
+    return json(res, existing);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "DELETE") {
     const id = path.split("/").pop();
-    logEventDemo({ action: "reservation.released", resourceType: "reservation", resourceId: id, message: `Reservation released` });
+    const existing = RESERVATIONS.find((r) => r.id === id);
+    if (existing) {
+      existing.status = "released";
+      existing.updatedAt = new Date().toISOString();
+      const subnet = SUBNETS.find((s) => s.id === existing.subnetId);
+      if (subnet && subnet._count && subnet._count.reservations > 0) {
+        subnet._count.reservations--;
+      }
+      logEventDemo({ action: "reservation.released", resourceType: "reservation", resourceId: id, resourceName: existing.hostname || existing.ipAddress, message: `Reservation released for ${existing.ipAddress || "subnet"}` });
+    }
     res.writeHead(204);
     return res.end();
   }
@@ -1281,15 +1836,26 @@ async function routeAPI(method, path, params, body, res) {
   if (path === "/api/v1/assets" && method === "POST") {
     const now = new Date().toISOString();
     const newId = crypto.randomUUID();
+    const macAddresses = body.macAddress
+      ? [{ mac: body.macAddress.toUpperCase().replace(/-/g, ":"), lastSeen: now, source: "manual" }]
+      : [];
+    const newAsset = { id: newId, ...body, macAddresses, createdAt: now, updatedAt: now };
+    ASSETS.push(newAsset);
     logEventDemo({ action: "asset.created", resourceType: "asset", resourceId: newId, resourceName: body.hostname || body.ipAddress, message: `Asset "${body.hostname || body.ipAddress || "unknown"}" created` });
-    return json(res, { id: newId, ...body, createdAt: now, updatedAt: now }, 201);
+    return json(res, newAsset, 201);
   }
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "PUT") {
     const id = path.split("/").pop();
     const asset = ASSETS.find((a) => a.id === id);
     if (!asset) return json(res, { error: "Not found" }, 404);
+    const now = new Date().toISOString();
+    // If MAC changed, update macAddresses list
+    if (body.macAddress && body.macAddress !== asset.macAddress) {
+      _addMacToAsset(asset, body.macAddress, "manual", now);
+    }
+    Object.assign(asset, body, { updatedAt: now });
     logEventDemo({ action: "asset.updated", resourceType: "asset", resourceId: id, resourceName: body.hostname || asset.hostname, message: `Asset "${body.hostname || asset.hostname || "unknown"}" updated` });
-    return json(res, { ...asset, ...body, updatedAt: new Date().toISOString() });
+    return json(res, asset);
   }
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "DELETE") {
     const id = path.split("/").pop();
@@ -1358,7 +1924,7 @@ async function routeAPI(method, path, params, body, res) {
       ? discoverWinDhcpDemo(intg.config)
       : discoverDhcpDemo(intg.config);
     const result = syncDhcpSubnetsDemo(intg.id, intg.name, intg.type, discovered);
-    logEventDemo({ action: "integration.discover.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `DHCP discovery completed for "${intg.name}" — ${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped` });
+    logEventDemo({ action: "integration.discover.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `DHCP discovery completed for "${intg.name}" — ${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped, ${(result.assets || []).length} assets, ${(result.reservations || []).length} reservations` });
     return json(res, result);
   }
   if (path.match(/^\/api\/v1\/integrations\/[\w-]+$/) && method === "GET") {
@@ -1520,6 +2086,74 @@ async function routeAPI(method, path, params, body, res) {
     return setTimeout(() => {
       json(res, { ok: true, message: "Synchronized with " + servers[0] + " (offset: +0.003s, " + (body.mode || "NTP").toUpperCase() + ")" });
     }, delay);
+  }
+
+  // Server Settings — Database
+  if (path === "/api/v1/server-settings/database" && method === "GET") {
+    const totalRows = BLOCKS.length + SUBNETS.length + RESERVATIONS.length + ASSETS.length +
+      INTEGRATIONS.length + EVENTS.length + USERS.length + CERTIFICATES.length;
+    const tables = [
+      { name: "ip_blocks",     rows: BLOCKS.length,       size: _estimateSize(BLOCKS) },
+      { name: "subnets",       rows: SUBNETS.length,      size: _estimateSize(SUBNETS) },
+      { name: "reservations",  rows: RESERVATIONS.length,  size: _estimateSize(RESERVATIONS) },
+      { name: "assets",        rows: ASSETS.length,        size: _estimateSize(ASSETS) },
+      { name: "integrations",  rows: INTEGRATIONS.length,  size: _estimateSize(INTEGRATIONS) },
+      { name: "events",        rows: EVENTS.length,        size: _estimateSize(EVENTS) },
+      { name: "users",         rows: USERS.length,         size: _estimateSize(USERS) },
+      { name: "certificates",  rows: CERTIFICATES.length,  size: _estimateSize(CERTIFICATES) },
+      { name: "_prisma_migrations", rows: 12,              size: "48 kB" },
+    ];
+    const totalSize = tables.reduce((sum, t) => sum + _parseSize(t.size), 0);
+    return json(res, {
+      type: "PostgreSQL",
+      version: "15.4",
+      host: "localhost",
+      port: 5432,
+      database: "shelob",
+      ssl: "Disabled",
+      databaseSize: _formatBytes(totalSize),
+      tableCount: tables.length,
+      tables: tables.sort((a, b) => b.rows - a.rows),
+      activeConnections: 3,
+      maxConnections: 100,
+      uptime: "14 days, 7 hours",
+    });
+  }
+
+  // Server Settings — Tags
+  if (path === "/api/v1/server-settings/tags" && method === "GET") {
+    return json(res, [...TAGS].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)));
+  }
+  if (path === "/api/v1/server-settings/tags" && method === "POST") {
+    const name = (body.name || "").trim().toLowerCase().replace(/\s+/g, "-");
+    if (!name) return json(res, { error: "Tag name is required" }, 400);
+    if (TAGS.find((t) => t.name === name)) return json(res, { error: `Tag "${name}" already exists` }, 409);
+    const newTag = {
+      id: crypto.randomUUID(),
+      name,
+      category: body.category || "General",
+      color: body.color || "#4fc3f7",
+      createdAt: new Date().toISOString(),
+    };
+    TAGS.push(newTag);
+    logEventDemo({ action: "tag.created", resourceType: "tag", resourceId: newTag.id, resourceName: name, message: `Tag "${name}" created in category "${newTag.category}"` });
+    return json(res, newTag, 201);
+  }
+  if (path === "/api/v1/server-settings/tags/settings" && method === "GET") {
+    return json(res, TAG_SETTINGS);
+  }
+  if (path === "/api/v1/server-settings/tags/settings" && method === "PUT") {
+    TAG_SETTINGS.enforce = body.enforce === true;
+    return json(res, TAG_SETTINGS);
+  }
+  if (path.match(/^\/api\/v1\/server-settings\/tags\/[\w-]+$/) && method === "DELETE") {
+    const id = path.split("/").pop();
+    const idx = TAGS.findIndex((t) => t.id === id);
+    if (idx === -1) return json(res, { error: "Tag not found" }, 404);
+    const removed = TAGS.splice(idx, 1)[0];
+    logEventDemo({ action: "tag.deleted", resourceType: "tag", resourceId: id, resourceName: removed.name, message: `Tag "${removed.name}" deleted` });
+    res.writeHead(204);
+    return res.end();
   }
 
   // Server Settings — Certificates

@@ -1,5 +1,5 @@
 /**
- * public/js/server-settings.js — Server Settings page (NTP + Certificates)
+ * public/js/server-settings.js — Server Settings page (NTP + Certificates + Database)
  */
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -11,16 +11,23 @@ document.addEventListener("DOMContentLoaded", function () {
       document.querySelectorAll(".page-tab-panel").forEach(function (p) { p.classList.remove("active"); });
       tab.classList.add("active");
       document.getElementById("tab-" + target).classList.add("active");
+      // Lazy-load tabs on first click
+      if (target === "ntp" && !_ntpLoaded) loadNtpSettings();
+      if (target === "certificates" && !_certsLoaded) loadCertificates();
+      if (target === "database" && !_dbLoaded) loadDatabaseInfo();
+      if (target === "identification" && !_tagsLoaded) loadIdentificationTab();
     });
   });
 
-  loadNtpSettings();
-  loadCertificates();
+  loadIdentificationTab();
 });
 
 // ─── NTP Tab ────────────────────────────────────────────────────────────────
 
+var _ntpLoaded = false;
+
 async function loadNtpSettings() {
+  _ntpLoaded = true;
   var container = document.getElementById("tab-ntp");
   var defaults = {
     enabled: false,
@@ -142,10 +149,12 @@ async function testNtpSync() {
 
 // ─── Certificates Tab ───────────────────────────────────────────────────────
 
+var _certsLoaded = false;
 var _certData = { trustedCAs: [], serverCerts: [] };
 var _httpsSettings = { enabled: false, port: 3443, httpPort: 3000, certId: null, keyId: null, redirectHttp: false, running: false };
 
 async function loadCertificates() {
+  _certsLoaded = true;
   var container = document.getElementById("tab-certificates");
 
   // Load HTTPS settings in parallel with cert data
@@ -472,6 +481,351 @@ async function deleteServerCert(id, name) {
     await api.serverSettings.deleteCert(id);
     showToast("Certificate removed");
     await refreshCertLists();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+// ─── Database Tab ──────────────────────────────────────────────────────────
+
+var _dbLoaded = false;
+
+async function loadDatabaseInfo() {
+  var container = document.getElementById("tab-database");
+  container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading database information...</p></div>';
+
+  try {
+    var db = await api.serverSettings.getDatabase();
+    _dbLoaded = true;
+
+    var connParts = [];
+    if (db.host) connParts.push(escapeHtml(db.host) + (db.port ? ":" + db.port : ""));
+    if (db.database) connParts.push(escapeHtml(db.database));
+
+    container.innerHTML =
+      '<div class="settings-card">' +
+        '<h4>Database Engine</h4>' +
+        '<div class="db-info-grid">' +
+          dbInfoRow("Type", db.type || "Unknown") +
+          dbInfoRow("Version", db.version || "Unknown") +
+          (db.host ? dbInfoRow("Host", db.host + (db.port ? ":" + db.port : "")) : "") +
+          (db.database ? dbInfoRow("Database", db.database) : "") +
+          (db.ssl ? dbInfoRow("SSL", db.ssl) : "") +
+        '</div>' +
+      '</div>' +
+      '<div class="settings-card">' +
+        '<h4>Storage</h4>' +
+        '<div class="db-info-grid">' +
+          dbInfoRow("Database Size", db.databaseSize || "Unknown") +
+          (db.tableCount !== undefined ? dbInfoRow("Tables", db.tableCount) : "") +
+        '</div>' +
+        (db.tables && db.tables.length > 0
+          ? '<div style="margin-top:1rem">' +
+              '<table class="ip-table"><thead><tr>' +
+                '<th>Table</th><th style="text-align:right">Rows</th><th style="text-align:right">Size</th>' +
+              '</tr></thead><tbody>' +
+              db.tables.map(function (t) {
+                return '<tr>' +
+                  '<td class="mono" style="font-size:0.82rem">' + escapeHtml(t.name) + '</td>' +
+                  '<td style="text-align:right">' + formatNumber(t.rows) + '</td>' +
+                  '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(t.size) + '</td>' +
+                '</tr>';
+              }).join("") +
+            '</tbody></table></div>'
+          : '') +
+      '</div>' +
+      (db.uptime || db.activeConnections !== undefined || db.maxConnections !== undefined
+        ? '<div class="settings-card">' +
+            '<h4>Connection Pool</h4>' +
+            '<div class="db-info-grid">' +
+              (db.activeConnections !== undefined ? dbInfoRow("Active Connections", db.activeConnections) : "") +
+              (db.maxConnections !== undefined ? dbInfoRow("Max Connections", db.maxConnections) : "") +
+              (db.uptime ? dbInfoRow("Uptime", db.uptime) : "") +
+            '</div>' +
+          '</div>'
+        : '') +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<button class="btn btn-secondary" id="btn-db-refresh">Refresh</button>' +
+      '</div>';
+
+    document.getElementById("btn-db-refresh").addEventListener("click", function () {
+      _dbLoaded = false;
+      loadDatabaseInfo();
+    });
+  } catch (err) {
+    container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
+  }
+}
+
+function dbInfoRow(label, value) {
+  return '<div class="db-info-label">' + escapeHtml(label) + '</div>' +
+         '<div class="db-info-value">' + escapeHtml(String(value)) + '</div>';
+}
+
+function formatNumber(n) {
+  if (n === undefined || n === null) return "-";
+  return Number(n).toLocaleString();
+}
+
+// ─── Identification Tab ────────────────────────────────────────────────────
+
+var _tagsLoaded = false;
+var _tagsData = [];
+var _emptyCategories = [];
+var _tagSettings = { enforce: false };
+
+async function loadIdentificationTab() {
+  var container = document.getElementById("tab-identification");
+  container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading...</p></div>';
+
+  try {
+    var results = await Promise.all([
+      api.serverSettings.listTags(),
+      api.serverSettings.getTagSettings(),
+    ]);
+    _tagsData = results[0];
+    _tagSettings = results[1] || { enforce: false };
+    _tagsLoaded = true;
+    renderIdentificationTab();
+  } catch (err) {
+    container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
+  }
+}
+
+function _currentCategories() {
+  var cats = {};
+  _tagsData.forEach(function (t) { cats[t.category || "General"] = true; });
+  return Object.keys(cats);
+}
+
+function renderIdentificationTab() {
+  var container = document.getElementById("tab-identification");
+
+  // Group tags by category
+  var categories = {};
+  _tagsData.forEach(function (t) {
+    var cat = t.category || "General";
+    if (!categories[cat]) categories[cat] = [];
+    categories[cat].push(t);
+  });
+
+  // Include tracked empty categories
+  _emptyCategories.forEach(function (cat) {
+    if (!categories[cat]) categories[cat] = [];
+  });
+
+  var catNames = Object.keys(categories).sort();
+
+  var html =
+    '<div class="settings-card">' +
+      '<h4>Tags</h4>' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+        'Define tags used to classify assets, networks, and blocks. Tags can be organized by category for easier filtering.' +
+      '</p>' +
+      '<div class="form-group" style="margin-bottom:1rem">' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
+          '<input type="checkbox" id="f-enforce-tags"' + (_tagSettings.enforce ? ' checked' : '') + '>' +
+          '<span>Force predefined tags</span>' +
+        '</label>' +
+        '<p class="hint">When enabled, users can only select from predefined tags when creating or editing networks and assets. Free-text tag entry will be disabled.</p>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:1rem">' +
+        '<button class="btn btn-primary" id="btn-add-tag">+ Add Tag</button>' +
+      '</div>';
+
+  if (_tagsData.length === 0 && _emptyCategories.length === 0) {
+    html += '<p class="empty-state">No tags defined yet. Add one to get started.</p>';
+  } else {
+    catNames.forEach(function (cat) {
+      var tags = categories[cat];
+      var isEmpty = tags.length === 0;
+      html += '<div class="tag-category-section">' +
+        '<div class="tag-category-header">' +
+          '<h5 style="font-size:0.82rem;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.05em;margin:0">' + escapeHtml(cat) + '</h5>' +
+          (isEmpty && isAdmin()
+            ? '<button class="tag-category-remove" data-cat="' + escapeHtml(cat) + '" title="Remove empty category">&times;</button>'
+            : '') +
+        '</div>';
+      if (isEmpty) {
+        html += '<p style="font-size:0.82rem;color:var(--color-text-tertiary);font-style:italic;margin:0.25rem 0 0">No tags — category will be removed on save</p>';
+      } else {
+        html += '<div class="tag-chip-list">';
+        tags.forEach(function (t) {
+          var colorStyle = t.color ? ' style="background:' + escapeHtml(t.color) + '22;border-color:' + escapeHtml(t.color) + ';color:' + escapeHtml(t.color) + '"' : '';
+          html += '<span class="tag-chip"' + colorStyle + '>' +
+            escapeHtml(t.name) +
+            (isAdmin() ? '<button class="tag-chip-delete" data-tag-id="' + t.id + '" title="Delete">&times;</button>' : '') +
+          '</span>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+  }
+
+  if (_emptyCategories.length > 0) {
+    html += '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin-top:1rem;font-style:italic">' +
+      'Empty categories are shown until dismissed. Click the &times; next to an empty category to remove it.' +
+    '</p>';
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+
+  document.getElementById("btn-add-tag").addEventListener("click", openAddTagModal);
+
+  container.querySelectorAll(".tag-chip-delete").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      deleteTag(btn.getAttribute("data-tag-id"));
+    });
+  });
+
+  container.querySelectorAll(".tag-category-remove").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var cat = btn.getAttribute("data-cat");
+      _emptyCategories = _emptyCategories.filter(function (c) { return c !== cat; });
+      renderIdentificationTab();
+    });
+  });
+
+  document.getElementById("f-enforce-tags").addEventListener("change", async function () {
+    var cb = this;
+    var newVal = cb.checked;
+    cb.disabled = true;
+    try {
+      await api.serverSettings.updateTagSettings({ enforce: newVal });
+      _tagSettings.enforce = newVal;
+      // Invalidate the shared tag cache so forms pick up the new mode
+      if (typeof _tagCache !== "undefined") _tagCache.loaded = false;
+      showToast(newVal ? "Predefined tags enforced" : "Free-text tags enabled");
+    } catch (err) {
+      cb.checked = !newVal; // revert on failure
+      showToast(err.message, "error");
+    } finally {
+      cb.disabled = false;
+    }
+  });
+}
+
+async function openAddTagModal() {
+  // Collect existing categories (including empty tracked ones) for the dropdown
+  var existingCats = [];
+  _tagsData.forEach(function (t) {
+    var cat = t.category || "General";
+    if (existingCats.indexOf(cat) === -1) existingCats.push(cat);
+  });
+  _emptyCategories.forEach(function (cat) {
+    if (existingCats.indexOf(cat) === -1) existingCats.push(cat);
+  });
+  existingCats.sort();
+
+  var catOptions = '<option value="">General</option>';
+  existingCats.forEach(function (c) {
+    if (c !== "General") {
+      catOptions += '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>';
+    }
+  });
+
+  var body =
+    '<div class="form-group"><label>Tag Name *</label>' +
+      '<input type="text" id="f-tag-name" placeholder="e.g. prod, critical, kubernetes">' +
+    '</div>' +
+    '<div class="form-group"><label>Category</label>' +
+      '<div style="display:flex;gap:8px">' +
+        '<select id="f-tag-category-select" style="flex:1">' + catOptions +
+          '<option value="__new__">+ New category...</option>' +
+        '</select>' +
+        '<input type="text" id="f-tag-category-new" placeholder="Category name" style="flex:1;display:none">' +
+      '</div>' +
+      '<p class="hint">Group related tags together. e.g. Environment, Function, Location</p>' +
+    '</div>' +
+    '<div class="form-group"><label>Color</label>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="color" id="f-tag-color" value="#4fc3f7" style="width:40px;height:32px;padding:2px;border:1px solid var(--color-border);border-radius:4px;background:transparent;cursor:pointer">' +
+        '<span id="f-tag-color-hex" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--color-text-secondary)">#4fc3f7</span>' +
+      '</div>' +
+    '</div>';
+
+  var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" id="btn-save-tag">Add Tag</button>';
+  openModal("Add Tag", body, footer);
+
+  // Toggle new category input
+  var catSelect = document.getElementById("f-tag-category-select");
+  var catNew = document.getElementById("f-tag-category-new");
+  catSelect.addEventListener("change", function () {
+    if (catSelect.value === "__new__") {
+      catNew.style.display = "";
+      catNew.focus();
+    } else {
+      catNew.style.display = "none";
+    }
+  });
+
+  // Update hex preview
+  var colorInput = document.getElementById("f-tag-color");
+  var hexLabel = document.getElementById("f-tag-color-hex");
+  colorInput.addEventListener("input", function () {
+    hexLabel.textContent = colorInput.value;
+  });
+
+  document.getElementById("btn-save-tag").addEventListener("click", async function () {
+    var btn = this;
+    var name = document.getElementById("f-tag-name").value.trim();
+    if (!name) { showToast("Tag name is required", "error"); return; }
+
+    var category;
+    if (catSelect.value === "__new__") {
+      category = catNew.value.trim() || "General";
+    } else {
+      category = catSelect.value || "General";
+    }
+
+    btn.disabled = true;
+    try {
+      await api.serverSettings.createTag({
+        name: name,
+        category: category,
+        color: colorInput.value,
+      });
+      closeModal();
+      showToast('Tag "' + name + '" created');
+      // Remove from empty categories if a tag was added to it
+      _emptyCategories = _emptyCategories.filter(function (c) { return c !== category; });
+      _tagsData = await api.serverSettings.listTags();
+      renderIdentificationTab();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+async function deleteTag(id) {
+  var tag = _tagsData.find(function (t) { return t.id === id; });
+  var name = tag ? tag.name : "this tag";
+  var ok = await showConfirm('Delete tag "' + name + '"? This will not remove it from existing assets or networks.');
+  if (!ok) return;
+
+  // Snapshot categories before delete
+  var catsBefore = _currentCategories();
+
+  try {
+    await api.serverSettings.deleteTag(id);
+    showToast('Tag "' + name + '" deleted');
+    _tagsData = await api.serverSettings.listTags();
+
+    // Detect categories that became empty after this delete
+    var catsAfter = _currentCategories();
+    catsBefore.forEach(function (cat) {
+      if (catsAfter.indexOf(cat) === -1 && _emptyCategories.indexOf(cat) === -1) {
+        _emptyCategories.push(cat);
+      }
+    });
+
+    renderIdentificationTab();
   } catch (err) {
     showToast(err.message, "error");
   }

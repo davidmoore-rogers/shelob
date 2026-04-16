@@ -35,20 +35,93 @@ var ASSET_TYPE_LABELS = {
 async function loadAssets() {
   var tbody = document.getElementById("assets-tbody");
   try {
+    var statusVal = document.getElementById("filter-status").value;
+    var apiStatus = (statusVal === "hide-decommissioned" || !statusVal) ? undefined : statusVal;
     var filters = {
-      status: document.getElementById("filter-status").value || undefined,
+      status: apiStatus,
       assetType: document.getElementById("filter-type").value || undefined,
       search: document.getElementById("filter-search").value || undefined,
     };
     _assetsData = await api.assets.list(filters);
+    if (statusVal === "hide-decommissioned") {
+      _assetsData = _assetsData.filter(function (a) { return a.status !== "decommissioned"; });
+    }
     renderAssetsPage();
   } catch (err) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
 }
 
+function _copyableCell(value) {
+  if (!value) return '-';
+  return '<span class="copy-cell" title="Click to copy" data-copy="' + escapeHtml(value) + '">' + escapeHtml(value) + '</span>';
+}
+
+var _macTooltipTimer = null;
+
+function _showMacTooltip(trigger) {
+  clearTimeout(_macTooltipTimer);
+  // Hide any other visible tooltip first
+  document.querySelectorAll('.mac-tooltip-visible').forEach(function (t) {
+    t.classList.remove('mac-tooltip-visible');
+  });
+  var tooltip = trigger.querySelector('.mac-tooltip');
+  if (!tooltip) return;
+  // Measure offscreen
+  tooltip.style.visibility = 'hidden';
+  tooltip.style.display = 'block';
+  var triggerRect = trigger.getBoundingClientRect();
+  var tipH = tooltip.offsetHeight;
+  tooltip.style.display = '';
+  tooltip.style.visibility = '';
+  // Position: prefer above, flip below if not enough room
+  var above = triggerRect.top - tipH - 8;
+  if (above < 8) {
+    tooltip.style.top = (triggerRect.bottom + 8) + 'px';
+  } else {
+    tooltip.style.top = above + 'px';
+  }
+  tooltip.style.left = triggerRect.left + 'px';
+  tooltip.classList.add('mac-tooltip-visible');
+
+  // Wire mouseleave on tooltip itself (once)
+  if (!tooltip._wired) {
+    tooltip._wired = true;
+    tooltip.addEventListener('mouseenter', function () { clearTimeout(_macTooltipTimer); });
+    tooltip.addEventListener('mouseleave', function () { _scheduleMacHide(tooltip); });
+  }
+}
+
+function _scheduleMacHide(tooltip) {
+  _macTooltipTimer = setTimeout(function () {
+    tooltip.classList.remove('mac-tooltip-visible');
+  }, 100);
+}
+
+function _handleMacEnter(e) {
+  _showMacTooltip(e.currentTarget);
+}
+
+function _handleMacLeave(e) {
+  var tooltip = e.currentTarget.querySelector('.mac-tooltip');
+  if (tooltip) _scheduleMacHide(tooltip);
+}
+
+function _handleCopyClick(e) {
+  var el = e.target.closest('.copy-cell');
+  if (!el) return;
+  var text = el.getAttribute('data-copy');
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(function () {
+    el.classList.add('copy-cell-flash');
+    setTimeout(function () { el.classList.remove('copy-cell-flash'); }, 600);
+  });
+}
+
 function renderAssetsPage() {
   var tbody = document.getElementById("assets-tbody");
+  tbody.removeEventListener("click", _handleCopyClick);
+  tbody.addEventListener("click", _handleCopyClick);
   if (_assetsData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No assets found. Add one to get started.</td></tr>';
     document.getElementById("pagination").innerHTML = "";
@@ -61,10 +134,10 @@ function renderAssetsPage() {
       '<td><strong>' + escapeHtml(a.hostname || "-") + '</strong>' +
         (a.assetTag ? '<br><span class="asset-tag-label">' + escapeHtml(a.assetTag) + '</span>' : '') +
       '</td>' +
-      '<td class="mono">' + escapeHtml(a.ipAddress || "-") + '</td>' +
-      '<td class="mono" style="font-size:0.8rem">' + escapeHtml(a.macAddress || "-") + '</td>' +
-      '<td>' + escapeHtml(a.serialNumber || "-") + '</td>' +
-      '<td>' + escapeHtml(a.dnsName || "-") + '</td>' +
+      '<td class="mono">' + _copyableCell(a.ipAddress) + '</td>' +
+      '<td class="mono" style="font-size:0.8rem">' + macCellHTML(a) + '</td>' +
+      '<td>' + _copyableCell(a.serialNumber) + '</td>' +
+      '<td>' + _copyableCell(a.dnsName) + '</td>' +
       '<td>' + assetTypeBadge(a.assetType) + '</td>' +
       '<td>' + assetStatusBadge(a.status) + '</td>' +
       '<td>' + escapeHtml(a.location || "-") + '</td>' +
@@ -76,6 +149,10 @@ function renderAssetsPage() {
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + a.id + '\', \'' + escapeHtml(a.hostname || a.assetTag || a.ipAddress || "this asset") + '\')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
+  tbody.querySelectorAll('.mac-hover-trigger').forEach(function (el) {
+    el.addEventListener('mouseenter', _handleMacEnter);
+    el.addEventListener('mouseleave', _handleMacLeave);
+  });
   renderPageControls("pagination", _assetsData.length, _assetsPageSize, _assetsPage, function (p) {
     _assetsPage = p;
     renderAssetsPage();
@@ -91,6 +168,35 @@ function assetStatusBadge(status) {
   var cls = "badge-" + status;
   var label = status.charAt(0).toUpperCase() + status.slice(1);
   return '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+
+function macCellHTML(asset) {
+  var macs = asset.macAddresses || [];
+  var primary = asset.macAddress;
+  if (!primary && macs.length === 0) return '-';
+
+  var displayMac = primary || (macs.length > 0 ? macs[0].mac : "-");
+  if (macs.length <= 1) return '<span class="copy-cell" title="Click to copy" data-copy="' + escapeHtml(displayMac) + '">' + escapeHtml(displayMac) + '</span>';
+
+  // Multiple MACs — show primary with hover tooltip
+  var tooltipRows = macs.map(function (m) {
+    var isLatest = m.mac === displayMac;
+    return '<div class="mac-tooltip-row' + (isLatest ? ' mac-tooltip-latest' : '') + '">' +
+      '<span class="mono copy-cell" title="Click to copy" data-copy="' + escapeHtml(m.mac) + '">' + escapeHtml(m.mac) + '</span>' +
+      '<span class="mac-tooltip-meta">' + escapeHtml(m.source || "") +
+        (m.lastSeen ? ' &middot; ' + formatDate(m.lastSeen) : '') +
+      '</span>' +
+    '</div>';
+  }).join("");
+
+  return '<span class="mac-hover-trigger">' +
+    '<span class="copy-cell" title="Click to copy" data-copy="' + escapeHtml(displayMac) + '">' + escapeHtml(displayMac) + '</span>' +
+    '<span class="mac-badge-count">' + macs.length + '</span>' +
+    '<div class="mac-tooltip">' +
+      '<div class="mac-tooltip-header">Associated MACs</div>' +
+      tooltipRows +
+    '</div>' +
+  '</span>';
 }
 
 function assetFormHTML(defaults) {
@@ -141,7 +247,7 @@ function assetFormHTML(defaults) {
     '<div class="form-group"><label>Purchase Order</label><input type="text" id="f-purchaseOrder" value="' + escapeHtml(d.purchaseOrder || "") + '" placeholder="PO-12345"></div>' +
   '</div>' +
   '<div class="form-group"><label>Notes</label><textarea id="f-notes" rows="2" placeholder="Optional notes">' + escapeHtml(d.notes || "") + '</textarea></div>' +
-  '<div class="form-group"><label>Tags</label><input type="text" id="f-tags" value="' + escapeHtml(tagsToString(d.tags)) + '" placeholder="Comma-separated tags"><p class="hint">e.g. prod, rack-a3, critical</p></div>';
+  tagFieldHTML(d.tags || []);
 }
 
 function getAssetFormData() {
@@ -166,15 +272,17 @@ function getAssetFormData() {
     warrantyExpiry:war ? new Date(war).toISOString() : undefined,
     purchaseOrder: val("f-purchaseOrder") || undefined,
     notes:         val("f-notes") || undefined,
-    tags:          tagsToArray(val("f-tags")),
+    tags:          getTagFieldValue(),
   };
 }
 
-function openCreateModal() {
+async function openCreateModal() {
+  await _ensureTagCache();
   var body = assetFormHTML({});
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create Asset</button>';
   openModal("Add Asset", body, footer);
+  wireTagPicker();
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
     btn.disabled = true;
@@ -193,11 +301,13 @@ function openCreateModal() {
 
 async function openEditModal(id) {
   try {
-    var asset = await api.assets.get(id);
+    var results = await Promise.all([api.assets.get(id), _ensureTagCache()]);
+    var asset = results[0];
     var body = assetFormHTML(asset);
     var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Asset", body, footer);
+    wireTagPicker();
     document.getElementById("btn-save").addEventListener("click", async function () {
       var btn = this;
       btn.disabled = true;
@@ -225,6 +335,7 @@ async function openViewModal(id) {
       viewRow("DNS Name", a.dnsName) +
       viewRow("IP Address", a.ipAddress, true) +
       viewRow("MAC Address", a.macAddress, true) +
+      macAddressesViewHTML(a.macAddresses) +
       viewRow("Asset Tag", a.assetTag) +
       viewRow("Serial Number", a.serialNumber) +
       viewRow("Manufacturer", a.manufacturer) +
@@ -235,6 +346,9 @@ async function openViewModal(id) {
       viewRow("Department", a.department) +
       viewRow("Assigned To", a.assignedTo) +
       viewRow("Operating System", a.os) +
+      viewRow("OS / Firmware Version", a.osVersion) +
+      viewRow("Last Seen Switch", a.lastSeenSwitch) +
+      viewRow("Last Seen AP", a.lastSeenAp) +
       viewRow("Acquired", a.acquiredAt ? formatDate(a.acquiredAt) : null) +
       viewRow("Warranty Expires", a.warrantyExpiry ? formatDate(a.warrantyExpiry) : null) +
       viewRow("Purchase Order", a.purchaseOrder) +
@@ -255,6 +369,21 @@ async function openViewModal(id) {
 function viewRow(label, value, mono) {
   return '<div class="detail-row"><span class="detail-label">' + escapeHtml(label) + '</span>' +
     '<span class="detail-value' + (mono ? ' mono' : '') + '">' + escapeHtml(value || "-") + '</span></div>';
+}
+
+function macAddressesViewHTML(macAddresses) {
+  if (!macAddresses || macAddresses.length <= 1) return '';
+  var rows = macAddresses.map(function (m) {
+    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
+      '<code style="font-size:0.82rem">' + escapeHtml(m.mac) + '</code>' +
+      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
+        escapeHtml(m.source || "") +
+        (m.lastSeen ? ' &middot; ' + formatDate(m.lastSeen) : '') +
+      '</span>' +
+    '</div>';
+  }).join("");
+  return '<div class="detail-row"><span class="detail-label">All MACs (' + macAddresses.length + ')</span>' +
+    '<span class="detail-value">' + rows + '</span></div>';
 }
 
 async function confirmDelete(id, name) {

@@ -371,10 +371,13 @@ async function runDiscovery(id, btn) {
   try {
     var result = await api.integrations.discover(id, name);
     var parts = [];
-    if (result.created && result.created.length) parts.push(result.created.length + " created");
+    if (result.created && result.created.length) parts.push(result.created.length + " subnets created");
     if (result.updated && result.updated.length) parts.push(result.updated.length + " updated");
     if (result.skipped && result.skipped.length) parts.push(result.skipped.length + " skipped");
-    showToast("DHCP discovery complete: " + (parts.length ? parts.join(", ") : "no changes"), "success");
+    if (result.dhcpReservations) parts.push(result.dhcpReservations + " DHCP reservations");
+    if (result.dhcpLeases) parts.push(result.dhcpLeases + " DHCP leases");
+    if (result.inventoryDevices) parts.push(result.inventoryDevices + " inventory devices");
+    showToast("Discovery complete: " + (parts.length ? parts.join(", ") : "no changes"), "success");
   } catch (err) {
     if (err.name === "AbortError") { showToast("Discovery aborted", "error"); }
     else { showToast(err.message, "error"); }

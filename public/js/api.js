@@ -66,6 +66,7 @@ const api = {
   subnets: {
     list:          (params) => request("GET", "/subnets" + toQuery(params)),
     get:           (id)     => request("GET", `/subnets/${id}`),
+    ips:           (id, params) => request("GET", `/subnets/${id}/ips` + toQuery(params)),
     create:        (body)   => request("POST", "/subnets", body),
     nextAvailable: (body)   => request("POST", "/subnets/next-available", body),
     update:        (id, b)  => request("PUT", `/subnets/${id}`, b),
@@ -128,6 +129,12 @@ const api = {
     getHttps:    ()       => request("GET", "/server-settings/https"),
     updateHttps: (body)   => request("PUT", "/server-settings/https", body),
     applyHttps:  ()       => request("POST", "/server-settings/https/apply"),
+    getDatabase: ()       => request("GET", "/server-settings/database"),
+    listTags:    ()       => request("GET", "/server-settings/tags"),
+    createTag:   (body)   => request("POST", "/server-settings/tags", body),
+    deleteTag:   (id)     => request("DELETE", `/server-settings/tags/${id}`),
+    getTagSettings: ()    => request("GET", "/server-settings/tags/settings"),
+    updateTagSettings: (body) => request("PUT", "/server-settings/tags/settings", body),
   },
   auth: {
     me: () => request("GET", "/auth/me"),

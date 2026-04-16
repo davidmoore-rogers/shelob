@@ -2,6 +2,37 @@
  * public/js/app.js — Shared UI utilities: nav, toasts, modals, helpers
  */
 
+// ─── Theme ──────────────────────────────────────────────────────────────────
+
+(function () {
+  var saved = localStorage.getItem("shelob-theme") || "dark";
+  document.documentElement.setAttribute("data-theme", saved);
+})();
+
+function _getCurrentTheme() {
+  return document.documentElement.getAttribute("data-theme") || "dark";
+}
+
+function _setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem("shelob-theme", theme);
+  // Update toggle button label if it exists
+  var btn = document.getElementById("btn-theme-toggle");
+  if (btn) {
+    var isDark = theme === "dark";
+    btn.querySelector("svg").outerHTML = isDark ? _sunIcon() : _moonIcon();
+    btn.querySelector("span").textContent = isDark ? "Light Mode" : "Dark Mode";
+  }
+}
+
+function _sunIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+}
+
+function _moonIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>';
+}
+
 // ─── Current User ────────────────────────────────────────────────────────────
 
 var currentUserRole = null;
@@ -24,7 +55,6 @@ const NAV_ITEMS = [
   { href: "/",                label: "Dashboard",    icon: "grid" },
   { href: "/blocks.html",     label: "IP Blocks",    icon: "box" },
   { href: "/subnets.html",    label: "Networks",     icon: "layers" },
-  { href: "/reservations.html", label: "Reservations", icon: "bookmark" },
   { href: "/assets.html",         label: "Assets",       icon: "monitor" },
   { href: "/events.html",         label: "Events",       icon: "activity" },
   { href: "/integrations.html",  label: "Integrations", icon: "plug", adminOnly: true },
@@ -70,11 +100,18 @@ function renderNav() {
       ${isAdmin() ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
         <a href="/server-settings.html" class="sidebar-bottom-link${current === '/server-settings.html' ? ' active' : ''}">${ICONS.settings}<span>Server Settings</span></a>
       </div>` : ''}
-      <div style="padding:${isAdmin() ? '0.25rem' : '0.75rem'} 0.5rem 0.75rem;${isAdmin() ? '' : 'border-top:1px solid var(--color-border-light);'}">
+      <div style="padding:${isAdmin() ? '0.25rem' : '0.5rem'} 0.5rem 0;${isAdmin() ? '' : 'border-top:1px solid var(--color-border-light);'}">
+        <button id="btn-theme-toggle" class="theme-toggle">${_getCurrentTheme() === 'dark' ? _sunIcon() : _moonIcon()}<span>${_getCurrentTheme() === 'dark' ? 'Light Mode' : 'Dark Mode'}</span></button>
+      </div>
+      <div style="padding:0.25rem 0.5rem 0.75rem">
         <a href="#" id="btn-logout" class="sidebar-bottom-link sidebar-bottom-link-logout">${ICONS.logout}<span>Logout</span></a>
       </div>
     </div>
   `;
+
+  document.getElementById("btn-theme-toggle").addEventListener("click", function () {
+    _setTheme(_getCurrentTheme() === "dark" ? "light" : "dark");
+  });
 
   document.getElementById("btn-logout").addEventListener("click", async function (e) {
     e.preventDefault();
@@ -325,6 +362,111 @@ function tagsToArray(str) {
 
 function tagsToString(arr) {
   return (arr || []).join(", ");
+}
+
+// ─── Tag field (enforced or free-text) ─────────────────────────────────────
+
+var _tagCache = { loaded: false, enforce: false, tags: [] };
+
+function _ensureTagCache() {
+  if (_tagCache.loaded) return Promise.resolve();
+  return Promise.all([
+    api.serverSettings.getTagSettings(),
+    api.serverSettings.listTags(),
+  ]).then(function (results) {
+    _tagCache.enforce = results[0] && results[0].enforce === true;
+    _tagCache.tags = results[1] || [];
+    _tagCache.loaded = true;
+  }).catch(function () {
+    _tagCache.loaded = true;
+  });
+}
+
+/**
+ * Build tag field HTML. Call _ensureTagCache() before using this.
+ * selected: array of currently selected tag names
+ */
+function tagFieldHTML(selected) {
+  selected = selected || [];
+  if (!_tagCache.enforce) {
+    return '<div class="form-group"><label>Tags</label>' +
+      '<input type="text" id="f-tags" value="' + escapeHtml(tagsToString(selected)) + '" placeholder="Comma-separated tags">' +
+      '<p class="hint">e.g. prod, internal, critical</p></div>';
+  }
+
+  // Group tags by category for the enforced picker
+  var cats = {};
+  _tagCache.tags.forEach(function (t) {
+    var cat = t.category || "General";
+    if (!cats[cat]) cats[cat] = [];
+    cats[cat].push(t);
+  });
+  var catNames = Object.keys(cats).sort();
+
+  var html = '<div class="form-group"><label>Tags</label>' +
+    '<div class="tag-picker" id="f-tags-picker">';
+
+  if (_tagCache.tags.length === 0) {
+    html += '<p class="hint" style="margin:0">No tags defined. Add tags in Server Settings &gt; Identification.</p>';
+  } else {
+    catNames.forEach(function (cat) {
+      html += '<div class="tag-picker-category">' +
+        '<span class="tag-picker-cat-label">' + escapeHtml(cat) + '</span>';
+      cats[cat].forEach(function (t) {
+        var checked = selected.indexOf(t.name) !== -1;
+        var colorStyle = t.color
+          ? 'background:' + escapeHtml(t.color) + (checked ? '44' : '11') + ';border-color:' + escapeHtml(t.color) + ';color:' + escapeHtml(t.color)
+          : '';
+        html += '<label class="tag-picker-chip' + (checked ? ' selected' : '') + '" style="' + colorStyle + '">' +
+          '<input type="checkbox" name="f-tags-cb" value="' + escapeHtml(t.name) + '"' + (checked ? ' checked' : '') + '>' +
+          escapeHtml(t.name) +
+        '</label>';
+      });
+      html += '</div>';
+    });
+  }
+
+  html += '</div></div>';
+  return html;
+}
+
+/**
+ * Read selected tags from the form — works for both enforced and free-text modes.
+ */
+function getTagFieldValue() {
+  if (!_tagCache.enforce) {
+    var el = document.getElementById("f-tags");
+    return el ? tagsToArray(el.value) : [];
+  }
+  var checked = [];
+  document.querySelectorAll('input[name="f-tags-cb"]:checked').forEach(function (cb) {
+    checked.push(cb.value);
+  });
+  return checked;
+}
+
+/**
+ * Wire up tag picker toggle styling after the form is rendered.
+ */
+function wireTagPicker() {
+  if (!_tagCache.enforce) return;
+  var picker = document.getElementById("f-tags-picker");
+  if (!picker) return;
+  picker.querySelectorAll('.tag-picker-chip input').forEach(function (cb) {
+    cb.addEventListener("change", function () {
+      var label = cb.parentElement;
+      if (cb.checked) {
+        label.classList.add("selected");
+      } else {
+        label.classList.remove("selected");
+      }
+      // Update background opacity based on checked state
+      var tag = _tagCache.tags.find(function (t) { return t.name === cb.value; });
+      if (tag && tag.color) {
+        label.style.background = tag.color + (cb.checked ? '44' : '11');
+      }
+    });
+  });
 }
 
 // ─── Admin-only UI ───────────────────────────────────────────────────────────

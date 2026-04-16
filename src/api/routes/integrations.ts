@@ -10,7 +10,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import * as fortimanager from "../../services/fortimanagerService.js";
 import * as windowsServer from "../../services/windowsServerService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
-import type { DiscoveredSubnet } from "../../services/fortimanagerService.js";
+import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice } from "../../services/fortimanagerService.js";
 import { logEvent } from "./events.js";
 
 const router = Router();
@@ -138,13 +138,14 @@ router.post("/", async (req, res, next) => {
       activeDiscovery.set(integration.id, ac);
       logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, message: `DHCP discovery started for "${input.name}"` });
       try {
-        let discovered: DiscoveredSubnet[];
+        let discoveryResult: DiscoveryResult;
         if (input.type === "windowsserver") {
-          discovered = await windowsServer.discoverDhcpScopes(input.config as any, ac.signal);
+          const subnets = await windowsServer.discoverDhcpScopes(input.config as any, ac.signal);
+          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
         } else {
-          discovered = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal);
+          discoveryResult = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal);
         }
-        const syncResult = await syncDhcpSubnets(integration.id, input.type, discovered);
+        const syncResult = await syncDhcpSubnets(integration.id, input.type, discoveryResult);
         response.dhcpDiscovery = syncResult;
         logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, message: `DHCP discovery completed for "${input.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       } catch (err: any) {
@@ -219,13 +220,14 @@ router.put("/:id", async (req, res, next) => {
       activeDiscovery.set(req.params.id, ac);
       logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, message: `DHCP discovery started for "${updated.name}"` });
       try {
-        let discovered: DiscoveredSubnet[];
+        let discoveryResult: DiscoveryResult;
         if (existing.type === "windowsserver") {
-          discovered = await windowsServer.discoverDhcpScopes(finalConfig as any, ac.signal);
+          const subnets = await windowsServer.discoverDhcpScopes(finalConfig as any, ac.signal);
+          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
         } else {
-          discovered = await fortimanager.discoverDhcpSubnets(finalConfig as any, ac.signal);
+          discoveryResult = await fortimanager.discoverDhcpSubnets(finalConfig as any, ac.signal);
         }
-        const syncResult = await syncDhcpSubnets(updated.id, existing.type, discovered);
+        const syncResult = await syncDhcpSubnets(updated.id, existing.type, discoveryResult);
         response.dhcpDiscovery = syncResult;
         logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, message: `DHCP discovery completed for "${updated.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       } catch (err: any) {
@@ -341,13 +343,14 @@ router.post("/:id/discover", async (req, res, next) => {
     logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, message: `Manual DHCP discovery started for "${integration.name}"` });
 
     try {
-      let discovered: DiscoveredSubnet[];
+      let discoveryResult: DiscoveryResult;
       if (integration.type === "windowsserver") {
-        discovered = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
+        const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
+        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
       } else {
-        discovered = await fortimanager.discoverDhcpSubnets(config as any, ac.signal);
+        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal);
       }
-      const syncResult = await syncDhcpSubnets(integration.id, integration.type, discovered);
+      const syncResult = await syncDhcpSubnets(integration.id, integration.type, discoveryResult);
       logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, message: `Manual DHCP discovery completed for "${integration.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       res.json(syncResult);
     } catch (err: any) {
@@ -496,15 +499,19 @@ async function registerFortiManager(host: string, integrationName: string, force
 /**
  * Sync discovered DHCP subnets into the database.
  * Creates new subnets or updates existing ones with integration/device info.
+ * Also creates FortiGate assets and interface IP reservations.
  */
-async function syncDhcpSubnets(integrationId: string, integrationType: string, discovered: DiscoveredSubnet[]) {
+async function syncDhcpSubnets(integrationId: string, integrationType: string, result: DiscoveryResult) {
   const created: string[] = [];
   const updated: string[] = [];
   const skipped: string[] = [];
+  const assets: string[] = [];
+  const reservations: string[] = [];
 
   const blocks = await prisma.ipBlock.findMany();
 
-  for (const entry of discovered) {
+  // ── Sync subnets ──
+  for (const entry of result.subnets) {
     let cidr: string;
     try {
       cidr = normalizeCidr(entry.cidr);
@@ -578,7 +585,292 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, d
     }
   }
 
-  return { created, updated, skipped };
+  // ── Create FortiGate assets ──
+  for (const device of result.devices) {
+    try {
+      // Upsert by serial number if available, otherwise create
+      if (device.serial) {
+        const existingAsset = await prisma.asset.findFirst({
+          where: { serialNumber: device.serial },
+        });
+        if (existingAsset) {
+          await prisma.asset.update({
+            where: { id: existingAsset.id },
+            data: {
+              ipAddress: device.mgmtIp || existingAsset.ipAddress,
+              hostname: device.hostname || existingAsset.hostname,
+              model: device.model || existingAsset.model,
+            },
+          });
+          assets.push(`${device.name} (updated)`);
+          continue;
+        }
+      }
+
+      await prisma.asset.create({
+        data: {
+          ipAddress: device.mgmtIp || null,
+          hostname: device.hostname || device.name,
+          serialNumber: device.serial || null,
+          manufacturer: "Fortinet",
+          model: device.model || "FortiGate",
+          assetType: "firewall",
+          status: "active",
+          department: "Network Security",
+          notes: `Auto-discovered from FortiManager integration`,
+          tags: ["fortigate", "auto-discovered"],
+        },
+      });
+      assets.push(device.name);
+    } catch {
+      // Skip asset creation failures
+    }
+  }
+
+  // ── Create reservations for interface IPs ──
+  const allSubnets = await prisma.subnet.findMany();
+  for (const ifaceIp of result.interfaceIps) {
+    if (!ifaceIp.ipAddress) continue;
+
+    // Find which subnet this IP belongs to
+    const matchingSubnet = allSubnets.find((s) => ipInCidr(ifaceIp.ipAddress, s.cidr));
+    if (!matchingSubnet) continue;
+
+    // Check for existing active reservation on this IP
+    const existingRes = await prisma.reservation.findFirst({
+      where: { subnetId: matchingSubnet.id, ipAddress: ifaceIp.ipAddress, status: "active" },
+    });
+    if (existingRes) continue; // Don't overwrite existing reservations
+
+    try {
+      await prisma.reservation.create({
+        data: {
+          subnetId: matchingSubnet.id,
+          ipAddress: ifaceIp.ipAddress,
+          hostname: ifaceIp.device,
+          owner: "network-team",
+          projectRef: "FortiManager Integration",
+          notes: `${ifaceIp.role === "management" ? "Management" : "DHCP server"} interface (${ifaceIp.interfaceName}) on ${ifaceIp.device}`,
+          status: "active",
+        },
+      });
+      reservations.push(`${ifaceIp.ipAddress} (${ifaceIp.device}/${ifaceIp.interfaceName})`);
+    } catch {
+      // Skip reservation creation failures (e.g. duplicates)
+    }
+  }
+
+  // ── Create reservations for DHCP leases and static reservations ──
+  const dhcpLeases: string[] = [];
+  const dhcpReservations: string[] = [];
+  if (result.dhcpEntries && result.dhcpEntries.length > 0) {
+    // Refresh subnet list in case new ones were just created above
+    const currentSubnets = await prisma.subnet.findMany();
+    for (const entry of result.dhcpEntries) {
+      if (!entry.ipAddress) continue;
+
+      const matchingSubnet = currentSubnets.find((s) => ipInCidr(entry.ipAddress, s.cidr));
+      if (!matchingSubnet) continue;
+
+      // Check for existing active reservation on this IP
+      const existingRes = await prisma.reservation.findFirst({
+        where: { subnetId: matchingSubnet.id, ipAddress: entry.ipAddress, status: "active" },
+      });
+      if (existingRes) continue;
+
+      const isDhcpReservation = entry.type === "dhcp-reservation";
+      try {
+        await prisma.reservation.create({
+          data: {
+            subnetId: matchingSubnet.id,
+            ipAddress: entry.ipAddress,
+            hostname: entry.hostname || null,
+            owner: isDhcpReservation ? "dhcp-reservation" : "dhcp-lease",
+            projectRef: "FortiManager Integration",
+            notes: `${isDhcpReservation ? "DHCP reservation" : "DHCP lease"} on ${entry.device} (${entry.interfaceName})${entry.macAddress ? " — MAC: " + entry.macAddress : ""}`,
+            status: "active",
+          },
+        });
+        if (isDhcpReservation) {
+          dhcpReservations.push(`${entry.ipAddress} (${entry.hostname || entry.macAddress})`);
+        } else {
+          dhcpLeases.push(`${entry.ipAddress} (${entry.hostname || entry.macAddress})`);
+        }
+      } catch {
+        // Skip failures (duplicates, etc.)
+      }
+    }
+  }
+
+  // ── Associate DHCP entry MACs with matching assets & cross-update ──
+  if (result.dhcpEntries && result.dhcpEntries.length > 0) {
+    const allAssets = await prisma.asset.findMany();
+    const now = new Date().toISOString();
+    for (const entry of result.dhcpEntries) {
+      if (!entry.macAddress || !entry.ipAddress) continue;
+      const normalized = entry.macAddress.toUpperCase().replace(/-/g, ":");
+
+      // Match asset by MAC address, hostname, or IP
+      const asset = allAssets.find(
+        (a) => {
+          // MAC match — check primary and all associated MACs
+          if (a.macAddress && a.macAddress.toUpperCase() === normalized) return true;
+          if (Array.isArray(a.macAddresses)) {
+            if ((a.macAddresses as any[]).some((m: any) => m.mac === normalized)) return true;
+          }
+          // Hostname or IP match
+          if (entry.hostname && a.hostname && a.hostname.toLowerCase() === entry.hostname.toLowerCase()) return true;
+          if (a.ipAddress && a.ipAddress === entry.ipAddress) return true;
+          return false;
+        }
+      );
+      if (!asset) continue;
+
+      // Update MAC list
+      const macList: Array<{mac: string; lastSeen: string; source: string}> = Array.isArray(asset.macAddresses) ? [...(asset.macAddresses as any)] : [];
+      const existingMac = macList.find((m) => m.mac === normalized);
+      if (existingMac) {
+        existingMac.lastSeen = now;
+        existingMac.source = entry.type;
+      } else {
+        macList.push({ mac: normalized, lastSeen: now, source: entry.type });
+      }
+      macList.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+
+      try {
+        // Update asset: MAC list + IP address from DHCP entry
+        await prisma.asset.update({
+          where: { id: asset.id },
+          data: {
+            macAddress: macList[0].mac,
+            macAddresses: macList,
+            ipAddress: entry.ipAddress,
+          },
+        });
+
+        // Update the reservation hostname to match the asset's hostname
+        if (asset.hostname) {
+          const matchingSubnet = currentSubnets.find((s) => ipInCidr(entry.ipAddress, s.cidr));
+          if (matchingSubnet) {
+            const res = await prisma.reservation.findFirst({
+              where: { subnetId: matchingSubnet.id, ipAddress: entry.ipAddress, status: "active" },
+            });
+            if (res && res.hostname !== asset.hostname) {
+              await prisma.reservation.update({
+                where: { id: res.id },
+                data: { hostname: asset.hostname },
+              });
+            }
+          }
+        }
+      } catch {
+        // Skip update failures
+      }
+    }
+  }
+
+  // ── Process device inventory — fill in gaps not covered by DHCP ──
+  const inventoryAssets: string[] = [];
+  if (result.deviceInventory && result.deviceInventory.length > 0) {
+    // Collect MACs already handled by DHCP entries so we can skip them
+    const dhcpMacs = new Set<string>();
+    if (result.dhcpEntries) {
+      for (const e of result.dhcpEntries) {
+        if (e.macAddress) dhcpMacs.add(e.macAddress.toUpperCase().replace(/-/g, ":"));
+      }
+    }
+
+    const now = new Date().toISOString();
+    // Refresh asset list to include anything created during this sync
+    const refreshedAssets = await prisma.asset.findMany();
+
+    for (const inv of result.deviceInventory) {
+      if (!inv.macAddress && !inv.ipAddress) continue;
+      const normalizedMac = inv.macAddress ? inv.macAddress.toUpperCase().replace(/-/g, ":") : "";
+
+      // DHCP takes precedence — if this MAC was in DHCP entries, only update supplemental fields
+      const handledByDhcp = normalizedMac && dhcpMacs.has(normalizedMac);
+
+      // Find existing asset by MAC, hostname, or IP
+      const existingAsset = refreshedAssets.find((a) => {
+        if (normalizedMac) {
+          if (a.macAddress && a.macAddress.toUpperCase() === normalizedMac) return true;
+          if (Array.isArray(a.macAddresses) && (a.macAddresses as any[]).some((m: any) => m.mac === normalizedMac)) return true;
+        }
+        if (inv.hostname && a.hostname && a.hostname.toLowerCase() === inv.hostname.toLowerCase()) return true;
+        if (inv.ipAddress && a.ipAddress && a.ipAddress === inv.ipAddress) return true;
+        return false;
+      });
+
+      // Build connection strings
+      const switchConn = inv.switchName
+        ? (inv.switchPort ? `${inv.switchName}/port${inv.switchPort}` : inv.switchName)
+        : null;
+      const apConn = inv.apName || null;
+
+      if (existingAsset) {
+        // Update existing asset — DHCP-set fields (IP, MAC) not overwritten if already handled
+        const updateData: Record<string, unknown> = {};
+        if (!handledByDhcp && inv.ipAddress && inv.ipAddress !== existingAsset.ipAddress) {
+          updateData.ipAddress = inv.ipAddress;
+        }
+        if (inv.os && !existingAsset.os) updateData.os = inv.os;
+        if (inv.osVersion) updateData.osVersion = inv.osVersion;
+        if (inv.hardwareVendor && !existingAsset.manufacturer) updateData.manufacturer = inv.hardwareVendor;
+        if (switchConn) updateData.lastSeenSwitch = switchConn;
+        if (apConn) updateData.lastSeenAp = apConn;
+
+        // Add MAC if not already tracked
+        if (normalizedMac && !handledByDhcp) {
+          const macList: Array<{mac: string; lastSeen: string; source: string}> = Array.isArray(existingAsset.macAddresses) ? [...(existingAsset.macAddresses as any)] : [];
+          const existingMac = macList.find((m) => m.mac === normalizedMac);
+          if (existingMac) {
+            existingMac.lastSeen = now;
+            existingMac.source = "device-inventory";
+          } else {
+            macList.push({ mac: normalizedMac, lastSeen: now, source: "device-inventory" });
+          }
+          macList.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+          updateData.macAddress = macList[0].mac;
+          updateData.macAddresses = macList;
+        } else if (normalizedMac && handledByDhcp) {
+          // Still update switch/AP even when DHCP handled the IP/MAC
+        }
+
+        if (Object.keys(updateData).length > 0) {
+          try {
+            await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
+            inventoryAssets.push(`${existingAsset.hostname || normalizedMac} (updated)`);
+          } catch { /* skip */ }
+        }
+      } else {
+        // Create new asset from device inventory
+        try {
+          const newAsset = await prisma.asset.create({
+            data: {
+              ipAddress: inv.ipAddress || null,
+              macAddress: normalizedMac || null,
+              macAddresses: normalizedMac ? [{ mac: normalizedMac, lastSeen: now, source: "device-inventory" }] : [],
+              hostname: inv.hostname || null,
+              manufacturer: inv.hardwareVendor || null,
+              assetType: "other",
+              status: "active",
+              os: inv.os || null,
+              osVersion: inv.osVersion || null,
+              lastSeenSwitch: switchConn,
+              lastSeenAp: apConn,
+              notes: `Auto-discovered from FortiGate device inventory (${inv.device})`,
+              tags: ["device-inventory", "auto-discovered"],
+            },
+          });
+          refreshedAssets.push(newAsset);
+          inventoryAssets.push(inv.hostname || normalizedMac || inv.ipAddress);
+        } catch { /* skip duplicates */ }
+      }
+    }
+  }
+
+  return { created, updated, skipped, assets, reservations, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length };
 }
 
 function stripSecret(integration: Record<string, any>) {

@@ -15,6 +15,12 @@ document.addEventListener("DOMContentLoaded", async function () {
   if (addBtn) addBtn.addEventListener("click", openCreateModal);
   var allocBtn = document.getElementById("btn-auto-alloc");
   if (allocBtn) allocBtn.addEventListener("click", openAllocateModal);
+  document.getElementById("subnets-tbody").addEventListener("click", function (e) {
+    var link = e.target.closest(".subnet-name-link");
+    if (!link) return;
+    e.preventDefault();
+    openIpPanel(link.getAttribute("data-subnet-id"));
+  });
   document.getElementById("filter-block").addEventListener("change", function () { _subnetsPage = 1; loadSubnets(); });
   document.getElementById("filter-status").addEventListener("change", function () { _subnetsPage = 1; loadSubnets(); });
   document.getElementById("filter-tag").addEventListener("input", debounce(function () { _subnetsPage = 1; loadSubnets(); }, 300));
@@ -51,12 +57,17 @@ function blockSelectHTML(id, required) {
 async function loadSubnets() {
   var tbody = document.getElementById("subnets-tbody");
   try {
+    var statusVal = document.getElementById("filter-status").value;
+    var apiStatus = (statusVal === "hide-deprecated" || !statusVal) ? undefined : statusVal;
     var filters = {
       blockId: document.getElementById("filter-block").value || undefined,
-      status: document.getElementById("filter-status").value || undefined,
+      status: apiStatus,
       tag: document.getElementById("filter-tag").value || undefined,
     };
     _subnetsData = await api.subnets.list(filters);
+    if (statusVal === "hide-deprecated") {
+      _subnetsData = _subnetsData.filter(function (s) { return s.status !== "deprecated"; });
+    }
     renderSubnetsPage();
   } catch (err) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
@@ -80,7 +91,7 @@ function renderSubnetsPage() {
       ? escapeHtml(s.integration.name)
       : '<span style="color:var(--color-text-tertiary)">Manual</span>';
     return '<tr>' +
-      '<td><strong>' + escapeHtml(s.name) + '</strong></td>' +
+      '<td><a href="#" class="subnet-name-link" data-subnet-id="' + s.id + '"><strong>' + escapeHtml(s.name) + '</strong></a></td>' +
       '<td class="mono">' + escapeHtml(s.cidr) + '</td>' +
       '<td>' + blockName + '</td>' +
       '<td>' + escapeHtml(s.purpose || "-") + '</td>' +
@@ -101,15 +112,17 @@ function renderSubnetsPage() {
   });
 }
 
-function openCreateModal() {
+async function openCreateModal() {
+  await _ensureTagCache();
   var body = '<div class="form-group"><label>Block *</label>' + blockSelectHTML("f-blockId", true) + '</div>' +
     '<div class="form-group"><label>CIDR *</label><input type="text" id="f-cidr" placeholder="e.g. 10.0.3.0/24"></div>' +
     '<div class="form-group"><label>Name *</label><input type="text" id="f-name" placeholder="e.g. API Servers"></div>' +
     '<div class="form-group"><label>Purpose</label><textarea id="f-purpose" placeholder="What is this network for?"></textarea></div>' +
     '<div class="form-group"><label>VLAN</label><input type="number" id="f-vlan" min="1" max="4094" placeholder="1-4094"></div>' +
-    '<div class="form-group"><label>Tags</label><input type="text" id="f-tags" placeholder="e.g. prod, internal"><p class="hint">Comma-separated</p></div>';
+    tagFieldHTML([]);
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Create Network</button>';
   openModal("Add Network", body, footer);
+  wireTagPicker();
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
@@ -122,7 +135,7 @@ function openCreateModal() {
         name: val("f-name"),
         purpose: val("f-purpose") || undefined,
         vlan: vlan ? parseInt(vlan, 10) : undefined,
-        tags: tagsToArray(val("f-tags")),
+        tags: getTagFieldValue(),
       };
       await api.subnets.create(input);
       closeModal();
@@ -136,15 +149,17 @@ function openCreateModal() {
   });
 }
 
-function openAllocateModal() {
+async function openAllocateModal() {
+  await _ensureTagCache();
   var body = '<div class="form-group"><label>Block *</label>' + blockSelectHTML("f-blockId", true) + '</div>' +
     '<div class="form-group"><label>Prefix Length *</label><input type="number" id="f-prefix" min="8" max="32" placeholder="e.g. 24"><p class="hint">/8 to /32</p></div>' +
     '<div class="form-group"><label>Name *</label><input type="text" id="f-name" placeholder="e.g. New Subnet"></div>' +
     '<div class="form-group"><label>Purpose</label><textarea id="f-purpose" placeholder="What is this network for?"></textarea></div>' +
     '<div class="form-group"><label>VLAN</label><input type="number" id="f-vlan" min="1" max="4094" placeholder="1-4094"></div>' +
-    '<div class="form-group"><label>Tags</label><input type="text" id="f-tags" placeholder="e.g. prod, internal"><p class="hint">Comma-separated</p></div>';
+    tagFieldHTML([]);
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Allocate</button>';
   openModal("Auto-Allocate Next Network", body, footer);
+  wireTagPicker();
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
@@ -157,7 +172,7 @@ function openAllocateModal() {
         name: val("f-name"),
         purpose: val("f-purpose") || undefined,
         vlan: vlan ? parseInt(vlan, 10) : undefined,
-        tags: tagsToArray(val("f-tags")),
+        tags: getTagFieldValue(),
       };
       var subnet = await api.subnets.nextAvailable(input);
       closeModal();
@@ -173,15 +188,17 @@ function openAllocateModal() {
 
 async function openEditModal(id) {
   try {
-    var subnet = await api.subnets.get(id);
+    var results = await Promise.all([api.subnets.get(id), _ensureTagCache()]);
+    var subnet = results[0];
     var body = '<div class="form-group"><label>CIDR</label><input type="text" value="' + escapeHtml(subnet.cidr) + '" disabled></div>' +
       '<div class="form-group"><label>Name</label><input type="text" id="f-name" value="' + escapeHtml(subnet.name) + '"></div>' +
       '<div class="form-group"><label>Purpose</label><textarea id="f-purpose">' + escapeHtml(subnet.purpose || "") + '</textarea></div>' +
       '<div class="form-group"><label>Status</label><select id="f-status"><option value="available"' + (subnet.status === "available" ? " selected" : "") + '>Available</option><option value="reserved"' + (subnet.status === "reserved" ? " selected" : "") + '>Reserved</option><option value="deprecated"' + (subnet.status === "deprecated" ? " selected" : "") + '>Deprecated</option></select></div>' +
       '<div class="form-group"><label>VLAN</label><input type="number" id="f-vlan" min="1" max="4094" value="' + (subnet.vlan || "") + '" placeholder="Empty to clear"></div>' +
-      '<div class="form-group"><label>Tags</label><input type="text" id="f-tags" value="' + escapeHtml(tagsToString(subnet.tags)) + '"><p class="hint">Comma-separated</p></div>';
+      tagFieldHTML(subnet.tags || []);
     var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Network", body, footer);
+    wireTagPicker();
 
     document.getElementById("btn-save").addEventListener("click", async function () {
       var btn = this;
@@ -193,7 +210,7 @@ async function openEditModal(id) {
           purpose: val("f-purpose") || undefined,
           status: val("f-status"),
           vlan: vlanVal ? parseInt(vlanVal, 10) : null,
-          tags: tagsToArray(val("f-tags")),
+          tags: getTagFieldValue(),
         };
         await api.subnets.update(id, input);
         closeModal();
