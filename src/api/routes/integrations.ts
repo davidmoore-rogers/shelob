@@ -10,7 +10,7 @@ import { requireAdmin } from "../middleware/auth.js";
 import * as fortimanager from "../../services/fortimanagerService.js";
 import * as windowsServer from "../../services/windowsServerService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
-import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice } from "../../services/fortimanagerService.js";
+import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice, DiscoveryProgressCallback } from "../../services/fortimanagerService.js";
 import { logEvent } from "./events.js";
 
 const router = Router();
@@ -145,7 +145,7 @@ router.post("/", async (req, res, next) => {
         } else {
           discoveryResult = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal);
         }
-        const syncResult = await syncDhcpSubnets(integration.id, input.type, discoveryResult);
+        const syncResult = await syncDhcpSubnets(integration.id, input.name, input.type, discoveryResult, (req as any).user?.username);
         response.dhcpDiscovery = syncResult;
         logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, message: `DHCP discovery completed for "${input.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       } catch (err: any) {
@@ -227,7 +227,7 @@ router.put("/:id", async (req, res, next) => {
         } else {
           discoveryResult = await fortimanager.discoverDhcpSubnets(finalConfig as any, ac.signal);
         }
-        const syncResult = await syncDhcpSubnets(updated.id, existing.type, discoveryResult);
+        const syncResult = await syncDhcpSubnets(updated.id, updated.name, existing.type, discoveryResult, (req as any).user?.username);
         response.dhcpDiscovery = syncResult;
         logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, message: `DHCP discovery completed for "${updated.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       } catch (err: any) {
@@ -340,7 +340,13 @@ router.post("/:id/discover", async (req, res, next) => {
     const ac = new AbortController();
     activeDiscovery.set(req.params.id, ac);
 
-    logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, message: `Manual DHCP discovery started for "${integration.name}"` });
+    const actor = (req as any).user?.username;
+    logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor, message: `Manual DHCP discovery started for "${integration.name}"` });
+
+    // Progress callback — logs each Phase 2 step as an event
+    const onProgress: DiscoveryProgressCallback = (step, level, message) => {
+      logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor, level, message: `[${integration.name}] ${message}` });
+    };
 
     try {
       let discoveryResult: DiscoveryResult;
@@ -348,9 +354,9 @@ router.post("/:id/discover", async (req, res, next) => {
         const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
         discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
       } else {
-        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal);
+        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress);
       }
-      const syncResult = await syncDhcpSubnets(integration.id, integration.type, discoveryResult);
+      const syncResult = await syncDhcpSubnets(integration.id, integration.name, integration.type, discoveryResult, actor);
       logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, message: `Manual DHCP discovery completed for "${integration.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       res.json(syncResult);
     } catch (err: any) {
@@ -501,7 +507,10 @@ async function registerFortiManager(host: string, integrationName: string, force
  * Creates new subnets or updates existing ones with integration/device info.
  * Also creates FortiGate assets and interface IP reservations.
  */
-async function syncDhcpSubnets(integrationId: string, integrationType: string, result: DiscoveryResult) {
+async function syncDhcpSubnets(integrationId: string, integrationName: string, integrationType: string, result: DiscoveryResult, actor?: string) {
+  const syncLog = (level: "info" | "error", message: string) => {
+    logEvent({ action: "integration.sync", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
+  };
   const created: string[] = [];
   const updated: string[] = [];
   const skipped: string[] = [];
@@ -576,8 +585,9 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
         },
       });
       created.push(cidr);
-    } catch {
+    } catch (err: any) {
       skipped.push(`${cidr} (create failed)`);
+      syncLog("error", `Failed to create subnet ${cidr}: ${err.message || "Unknown error"}`);
     }
   }
 
@@ -637,8 +647,8 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
         },
       });
       assets.push(device.name);
-    } catch {
-      // Skip asset creation failures
+    } catch (err: any) {
+      syncLog("error", `Failed to create/update asset for device ${device.name}: ${err.message || "Unknown error"}`);
     }
   }
 
@@ -670,8 +680,8 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
         },
       });
       reservations.push(`${ifaceIp.ipAddress} (${ifaceIp.device}/${ifaceIp.interfaceName})`);
-    } catch {
-      // Skip reservation creation failures (e.g. duplicates)
+    } catch (err: any) {
+      syncLog("error", `Failed to create reservation for interface IP ${ifaceIp.ipAddress} on ${ifaceIp.device}/${ifaceIp.interfaceName}: ${err.message || "Unknown error"}`);
     }
   }
 
@@ -711,8 +721,8 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
         } else {
           dhcpLeases.push(`${entry.ipAddress} (${entry.hostname || entry.macAddress})`);
         }
-      } catch {
-        // Skip failures (duplicates, etc.)
+      } catch (err: any) {
+        syncLog("error", `Failed to create DHCP ${isDhcpReservation ? "reservation" : "lease"} for ${entry.ipAddress}: ${err.message || "Unknown error"}`);
       }
     }
   }
@@ -778,8 +788,8 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
             }
           }
         }
-      } catch {
-        // Skip update failures
+      } catch (err: any) {
+        syncLog("error", `Failed to update asset MAC/IP for ${entry.macAddress} (${entry.ipAddress}): ${err.message || "Unknown error"}`);
       }
     }
   }
@@ -856,7 +866,9 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
           try {
             await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
             inventoryAssets.push(`${existingAsset.hostname || normalizedMac} (updated)`);
-          } catch { /* skip */ }
+          } catch (err: any) {
+            syncLog("error", `Failed to update inventory asset ${existingAsset.hostname || normalizedMac}: ${err.message || "Unknown error"}`);
+          }
         }
       } else {
         // Create new asset from device inventory
@@ -880,7 +892,9 @@ async function syncDhcpSubnets(integrationId: string, integrationType: string, r
           });
           refreshedAssets.push(newAsset);
           inventoryAssets.push(inv.hostname || normalizedMac || inv.ipAddress);
-        } catch { /* skip duplicates */ }
+        } catch (err: any) {
+          syncLog("error", `Failed to create inventory asset ${inv.hostname || normalizedMac || inv.ipAddress}: ${err.message || "Unknown error"}`);
+        }
       }
     }
   }

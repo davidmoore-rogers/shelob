@@ -1050,7 +1050,8 @@ function discoverWinDhcpDemo(config) {
   return { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
 }
 
-function discoverDhcpDemo(config) {
+function discoverDhcpDemo(config, log) {
+  if (!log) log = () => {};
   let servers = [...MOCK_DHCP_SERVERS];
 
   const include = config.dhcpInclude || [];
@@ -1067,15 +1068,16 @@ function discoverDhcpDemo(config) {
     );
   }
 
+  // Build device list
+  const devices = MOCK_DEVICES.map((d) => ({ ...d }));
+  log("discover.devices", "info", `Found ${devices.length} managed device(s) in ADOM "${config.adom || "root"}"`);
+
   const subnets = servers.map((s) => ({
     cidr: s.cidr,
     name: s.iface,
     fortigateDevice: s.device,
     dhcpServerId: s.id,
   }));
-
-  // Build device list and interface IPs
-  const devices = MOCK_DEVICES.map((d) => ({ ...d }));
 
   const interfaceIps = [];
   // Management IPs
@@ -1112,6 +1114,18 @@ function discoverDhcpDemo(config) {
     type: e.type,
   }));
 
+  // Per-device step logging
+  const deviceNames = [...new Set(MOCK_DEVICES.map((d) => d.name))];
+  for (const devName of deviceNames) {
+    const devSubnets = subnets.filter((s) => s.fortigateDevice === devName);
+    const devReservations = dhcpEntries.filter((e) => e.device === devName && e.type === "dhcp-reservation");
+    const devLeases = dhcpEntries.filter((e) => e.device === devName && e.type === "dhcp-lease");
+    const devIfaceIps = interfaceIps.filter((ip) => ip.device === devName && ip.role === "dhcp-server");
+    log("discover.dhcp", "info", `${devName}: Found ${devSubnets.length} DHCP subnet(s) and ${devReservations.length} static reservation(s)`);
+    log("discover.leases", "info", `${devName}: Found ${devLeases.length} dynamic DHCP lease(s)`);
+    log("discover.interfaces", "info", `${devName}: Resolved ${devIfaceIps.length} DHCP interface IP(s)`);
+  }
+
   // Filter device inventory: drop devices on excluded DHCP interfaces
   // All DHCP interfaces we discovered (before filtering)
   const allDhcpIfaces = new Set(MOCK_DHCP_SERVERS.map((s) => s.device + "/" + s.iface));
@@ -1137,10 +1151,20 @@ function discoverDhcpDemo(config) {
       lastSeen: d.lastSeen,
     }));
 
+  // Per-device inventory logging
+  for (const devName of deviceNames) {
+    const devInventory = deviceInventory.filter((d) => d.device === devName);
+    log("discover.inventory", "info", `${devName}: Found ${devInventory.length} device inventory client(s)`);
+  }
+
+  const excluded = MOCK_DHCP_SERVERS.length - servers.length;
+  log("discover.filter", "info", `Filter complete: ${subnets.length} subnet(s) included, ${excluded} excluded, ${dhcpEntries.length} DHCP entries, ${deviceInventory.length} inventory device(s)`);
+
   return { subnets, devices, interfaceIps, dhcpEntries, deviceInventory };
 }
 
-function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, result) {
+function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, result, syncLog) {
+  if (!syncLog) syncLog = () => {};
   const created = [];
   const updated = [];
   const skipped = [];
@@ -1950,10 +1974,16 @@ async function routeAPI(method, path, params, body, res) {
     if (!intg) return json(res, { error: "Not found" }, 404);
     if (!intg.config?.host) return json(res, { error: "Integration has no host configured" }, 400);
     logEventDemo({ action: "integration.discover.started", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `Manual DHCP discovery started for "${intg.name}"` });
+    const progressLog = (step, level, message) => {
+      logEventDemo({ action: "integration." + step, resourceType: "integration", resourceId: id, resourceName: intg.name, level, message: "[" + intg.name + "] " + message });
+    };
+    const syncLog = (level, message) => {
+      logEventDemo({ action: "integration.sync", resourceType: "integration", resourceId: id, resourceName: intg.name, level, message: "[" + intg.name + "] " + message });
+    };
     const discovered = intg.type === "windowsserver"
       ? discoverWinDhcpDemo(intg.config)
-      : discoverDhcpDemo(intg.config);
-    const result = syncDhcpSubnetsDemo(intg.id, intg.name, intg.type, discovered);
+      : discoverDhcpDemo(intg.config, progressLog);
+    const result = syncDhcpSubnetsDemo(intg.id, intg.name, intg.type, discovered, syncLog);
     logEventDemo({ action: "integration.discover.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `DHCP discovery completed for "${intg.name}" — ${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped, ${(result.assets || []).length} assets, ${(result.reservations || []).length} reservations` });
     return json(res, result);
   }
@@ -1998,9 +2028,12 @@ async function routeAPI(method, path, params, body, res) {
     const canDiscover = newIntg.enabled && body.config?.host &&
       (isWin ? body.config?.username : body.config?.apiToken);
     if (canDiscover) {
+      const pLog = (step, level, message) => {
+        logEventDemo({ action: "integration." + step, resourceType: "integration", resourceId: newIntg.id, resourceName: body.name, level, message: "[" + body.name + "] " + message });
+      };
       const discovered = isWin
         ? discoverWinDhcpDemo(body.config)
-        : discoverDhcpDemo(body.config);
+        : discoverDhcpDemo(body.config, pLog);
       const syncResult = syncDhcpSubnetsDemo(newIntg.id, body.name || newIntg.type, intgType, discovered);
       response.dhcpDiscovery = syncResult;
     }
@@ -2038,9 +2071,12 @@ async function routeAPI(method, path, params, body, res) {
     const canDiscover = updated.enabled !== false && mergedConfig.host &&
       (isWin ? mergedConfig.username : mergedConfig.apiToken);
     if (canDiscover) {
+      const pLog = (step, level, message) => {
+        logEventDemo({ action: "integration." + step, resourceType: "integration", resourceId: intg.id, resourceName: updated.name || intg.name, level, message: "[" + (updated.name || intg.name) + "] " + message });
+      };
       const discovered = isWin
         ? discoverWinDhcpDemo(mergedConfig)
-        : discoverDhcpDemo(mergedConfig);
+        : discoverDhcpDemo(mergedConfig, pLog);
       const syncResult = syncDhcpSubnetsDemo(intg.id, updated.name || intg.name, intg.type, discovered);
       response.dhcpDiscovery = syncResult;
     }

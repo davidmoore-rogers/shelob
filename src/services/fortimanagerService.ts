@@ -193,6 +193,12 @@ export interface DiscoveryResult {
   deviceInventory: DiscoveredInventoryDevice[];
 }
 
+export type DiscoveryProgressCallback = (
+  step: string,
+  level: "info" | "error",
+  message: string,
+) => void;
+
 /**
  * Query FortiManager for DHCP servers across all managed FortiGate devices.
  * Returns discovered subnets, device metadata (for asset creation),
@@ -201,10 +207,12 @@ export interface DiscoveryResult {
 export async function discoverDhcpSubnets(
   config: FortiManagerConfig,
   signal?: AbortSignal,
+  onProgress?: DiscoveryProgressCallback,
 ): Promise<DiscoveryResult> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
   const adom = config.adom || "root";
   const { apiUser, apiToken, verifySsl } = config;
+  const log = onProgress || (() => {});
 
   // Step 1: List managed devices in the ADOM
   const devicesPayload: JsonRpcRequest = {
@@ -213,11 +221,19 @@ export async function discoverDhcpSubnets(
     params: [{ url: `/dvmdb/adom/${adom}/device` }],
   };
 
-  const devicesRes = await rpc(baseUrl, devicesPayload, apiUser, apiToken, verifySsl, signal);
+  let devicesRes: JsonRpcResponse;
+  try {
+    devicesRes = await rpc(baseUrl, devicesPayload, apiUser, apiToken, verifySsl, signal);
+  } catch (err: any) {
+    log("discover.devices", "error", `Failed to list managed devices: ${err.message || "Unknown error"}`);
+    throw err;
+  }
   const devicesData = devicesRes.result?.[0]?.data;
   if (!Array.isArray(devicesData) || devicesData.length === 0) {
+    log("discover.devices", "info", `No managed devices found in ADOM "${adom}"`);
     return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
   }
+  log("discover.devices", "info", `Found ${devicesData.length} managed device(s) in ADOM "${adom}"`);
 
   const discovered: DiscoveredSubnet[] = [];
   const devices: DiscoveredDevice[] = [];
@@ -265,8 +281,13 @@ export async function discoverDhcpSubnets(
 
       const dhcpRes = await rpc(baseUrl, dhcpPayload, apiUser, apiToken, verifySsl, signal);
       const dhcpData = dhcpRes.result?.[0]?.data;
-      if (!Array.isArray(dhcpData)) continue;
+      if (!Array.isArray(dhcpData)) {
+        log("discover.dhcp", "info", `${deviceName}: No DHCP servers configured`);
+        continue;
+      }
 
+      let deviceSubnetCount = 0;
+      let deviceReservationCount = 0;
       for (const server of dhcpData) {
         const iface = server.interface || "";
         const serverId = String(server.id || iface);
@@ -290,6 +311,7 @@ export async function discoverDhcpSubnets(
             dhcpServerId: serverId,
           });
 
+          deviceSubnetCount++;
           if (iface) dhcpInterfaceNames.push(iface);
         } catch {
           // Skip entries with invalid netmask/IP combinations
@@ -310,9 +332,11 @@ export async function discoverDhcpSubnets(
               hostname: entry.description || entry.action === 6 ? (entry.description || "") : "",
               type: "dhcp-reservation",
             });
+            deviceReservationCount++;
           }
         }
       }
+      log("discover.dhcp", "info", `${deviceName}: Found ${deviceSubnetCount} DHCP subnet(s) and ${deviceReservationCount} static reservation(s)`);
 
       // Step 3a: Query DHCP lease table for dynamic leases
       try {
@@ -337,6 +361,7 @@ export async function discoverDhcpSubnets(
           ? leaseData[0]?.response?.results
           : (leaseData as any)?.response?.results;
 
+        let deviceLeaseCount = 0;
         if (Array.isArray(results)) {
           for (const lease of results) {
             const leaseIp = lease.ip;
@@ -361,10 +386,12 @@ export async function discoverDhcpSubnets(
               hostname: lease.hostname || "",
               type: "dhcp-lease",
             });
+            deviceLeaseCount++;
           }
         }
-      } catch {
-        // Lease query failed — continue without lease data
+        log("discover.leases", "info", `${deviceName}: Found ${deviceLeaseCount} dynamic DHCP lease(s)`);
+      } catch (err: any) {
+        log("discover.leases", "error", `${deviceName}: Failed to query DHCP leases — ${err.message || "Unknown error"}`);
       }
 
       // Step 3: Query interfaces to get IPs for DHCP-serving interfaces
@@ -378,6 +405,7 @@ export async function discoverDhcpSubnets(
 
           const ifaceRes = await rpc(baseUrl, ifacePayload, apiUser, apiToken, verifySsl, signal);
           const ifaceData = ifaceRes.result?.[0]?.data;
+          let ifaceIpCount = 0;
           if (Array.isArray(ifaceData)) {
             for (const iface of ifaceData) {
               const ifaceName = iface.name || "";
@@ -392,11 +420,13 @@ export async function discoverDhcpSubnets(
                   ipAddress: ipArr[0],
                   role: "dhcp-server",
                 });
+                ifaceIpCount++;
               }
             }
           }
-        } catch {
-          // Interface query failed — continue without interface IPs
+          log("discover.interfaces", "info", `${deviceName}: Resolved ${ifaceIpCount} DHCP interface IP(s)`);
+        } catch (err: any) {
+          log("discover.interfaces", "error", `${deviceName}: Failed to query interfaces — ${err.message || "Unknown error"}`);
         }
       }
 
@@ -422,6 +452,7 @@ export async function discoverDhcpSubnets(
           ? inventoryData[0]?.response?.results
           : (inventoryData as any)?.response?.results;
 
+        let inventoryCount = 0;
         if (Array.isArray(results)) {
           for (const client of results) {
             const mac = client.mac || "";
@@ -443,13 +474,15 @@ export async function discoverDhcpSubnets(
               isOnline: !!client.is_online,
               lastSeen: client.last_seen ? new Date(client.last_seen * 1000).toISOString() : new Date().toISOString(),
             });
+            inventoryCount++;
           }
         }
-      } catch {
-        // Device inventory query failed — continue without inventory data
+        log("discover.inventory", "info", `${deviceName}: Found ${inventoryCount} device inventory client(s)`);
+      } catch (err: any) {
+        log("discover.inventory", "error", `${deviceName}: Failed to query device inventory — ${err.message || "Unknown error"}`);
       }
-    } catch {
-      // Device query failed (offline, permissions, etc.) — skip and continue
+    } catch (err: any) {
+      log("discover.device", "error", `${deviceName}: Failed to query device — ${err.message || "Unknown error"}`);
     }
   }
 
@@ -476,6 +509,9 @@ export async function discoverDhcpSubnets(
   const filteredInventory = deviceInventory.filter(
     (d) => !excludedIfaceNames.has(`${d.device}/${d.interfaceName}`)
   );
+
+  const excluded = discovered.length - filteredSubnets.length;
+  log("discover.filter", "info", `Filter complete: ${filteredSubnets.length} subnet(s) included, ${excluded} excluded, ${filteredDhcpEntries.length} DHCP entries, ${filteredInventory.length} inventory device(s)`);
 
   return { subnets: filteredSubnets, devices, interfaceIps: filteredIps, dhcpEntries: filteredDhcpEntries, deviceInventory: filteredInventory };
 }
