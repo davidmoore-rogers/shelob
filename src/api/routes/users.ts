@@ -66,14 +66,15 @@ router.post("/", async (req, res, next) => {
 // PUT /api/v1/users/:id/password
 router.put("/:id/password", async (req, res, next) => {
   try {
+    const id = req.params.id as string;
     const { password } = ResetPasswordSchema.parse(req.body);
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    const user = await prisma.user.findUnique({ where: { id } });
     if (!user) throw new AppError(404, "User not found");
     if (user.authProvider === "azure") throw new AppError(400, "Cannot reset password for Azure SSO users");
 
     const passwordHash = await bcrypt.hash(password, 10);
     await prisma.user.update({
-      where: { id: req.params.id },
+      where: { id },
       data: { passwordHash },
     });
     res.json({ ok: true });
@@ -85,8 +86,9 @@ router.put("/:id/password", async (req, res, next) => {
 // PUT /api/v1/users/:id/role
 router.put("/:id/role", async (req, res, next) => {
   try {
+    const id = req.params.id as string;
     const { role } = UpdateRoleSchema.parse(req.body);
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    const user = await prisma.user.findUnique({ where: { id } });
     if (!user) throw new AppError(404, "User not found");
 
     // Prevent demoting yourself
@@ -95,7 +97,7 @@ router.put("/:id/role", async (req, res, next) => {
     }
 
     await prisma.user.update({
-      where: { id: req.params.id },
+      where: { id },
       data: { role },
     });
     res.json({ ok: true, role });
@@ -107,7 +109,8 @@ router.put("/:id/role", async (req, res, next) => {
 // DELETE /api/v1/users/:id
 router.delete("/:id", async (req, res, next) => {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    const id = req.params.id as string;
+    const user = await prisma.user.findUnique({ where: { id } });
     if (!user) throw new AppError(404, "User not found");
 
     // Prevent deleting yourself
@@ -115,7 +118,7 @@ router.delete("/:id", async (req, res, next) => {
       throw new AppError(400, "You cannot delete your own account");
     }
 
-    await prisma.user.delete({ where: { id: req.params.id } });
+    await prisma.user.delete({ where: { id } });
     res.status(204).send();
   } catch (err) {
     next(err);

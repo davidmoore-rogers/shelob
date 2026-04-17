@@ -59,6 +59,14 @@ function openCreateModal() {
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
+    if (!val("f-username")) {
+      showToast("Username is required", "error");
+      return;
+    }
+    if (!checkPasswordField(val("f-password"), "f-pw-checks")) {
+      showToast("Password does not meet complexity requirements", "error");
+      return;
+    }
     btn.disabled = true;
     try {
       var input = {
@@ -115,9 +123,14 @@ function openResetPasswordModal(id, username) {
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
+    var pw = val("f-password");
+    if (!checkPasswordField(pw, "f-pw-checks")) {
+      showToast("Password does not meet complexity requirements", "error");
+      return;
+    }
     btn.disabled = true;
     try {
-      await api.users.resetPassword(id, { password: val("f-password") });
+      await api.users.resetPassword(id, { password: pw });
       closeModal();
       showToast("Password reset for " + username);
     } catch (err) {

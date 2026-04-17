@@ -134,7 +134,7 @@ function renderNav() {
   _onQueriesChanged = renderQueryStatus;
 
   // Demo: mock background query every 30s that runs for 10s
-  startMockHeartbeat();
+  // startMockHeartbeat();  // disabled — only useful for demo server
 }
 
 // ─── Branding ──────────────────────────────────────────────────────────────
