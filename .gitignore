@@ -4,8 +4,5 @@ dist/
 # Environment files with real credentials — never commit these
 .env
 
-# Prisma generated
-prisma/migrations/
-
 # Build artifacts
 *.js.map
