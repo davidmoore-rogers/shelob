@@ -146,7 +146,7 @@ info "Running database migrations..."
 sudo -u "$APP_USER" npx prisma migrate deploy
 
 # Only seed on first deploy (skip if users table already has rows)
-HAS_USERS=$(cd /tmp && sudo -u postgres psql -tc "SELECT count(*) FROM ${DB_NAME}.public.users" 2>/dev/null | tr -d ' ' || echo "")
+HAS_USERS=$(cd /tmp && sudo -u postgres psql -tc "SELECT count(*) FROM ${DB_NAME}.public.users" 2>/dev/null | tr -d ' ') || HAS_USERS=""
 if [[ "$HAS_USERS" == "" || "$HAS_USERS" == "0" ]]; then
   info "Seeding database (first deploy)..."
   sudo -u "$APP_USER" node --env-file=.env --import tsx/esm prisma/seed.ts
