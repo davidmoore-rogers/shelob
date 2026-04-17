@@ -148,6 +148,178 @@ async function testNtpSync() {
   }
 }
 
+// ─── DNS Settings ─────────────────────────────────────────────────────────
+
+var _dnsDefaults = { servers: [], mode: "standard", dohUrl: "" };
+
+function dnsCardsHTML() {
+  return '<div class="settings-card">' +
+    '<h4>DNS Configuration</h4>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+      'Configure custom DNS servers for reverse lookups (PTR records). These servers are used when resolving IP addresses ' +
+      'to hostnames — both for manual DNS lookups on the Assets page and during automated integration discovery.' +
+    '</p>' +
+    '<div class="form-group"><label>Protocol</label>' +
+      '<select id="f-dns-mode">' +
+        '<option value="standard"' + (_dnsDefaults.mode === "standard" ? ' selected' : '') + '>Standard (UDP/TCP)</option>' +
+        '<option value="dot"' + (_dnsDefaults.mode === "dot" ? ' selected' : '') + '>DNS over TLS (DoT)</option>' +
+        '<option value="doh"' + (_dnsDefaults.mode === "doh" ? ' selected' : '') + '>DNS over HTTPS (DoH)</option>' +
+      '</select>' +
+      '<p class="hint">Standard uses plain DNS on port 53. DoT encrypts queries via TLS on port 853. DoH sends queries over HTTPS.</p>' +
+    '</div>' +
+    '<div id="dns-servers-group" class="form-group"><label>DNS Servers</label>' +
+      '<textarea id="f-dns-servers" rows="5" placeholder="One server per line, e.g.:\n8.8.8.8\ndns.google\n2001:4860:4860::8888">' + escapeHtml(_dnsDefaults.servers.join("\n")) + '</textarea>' +
+      '<p class="hint" id="dns-servers-hint">Enter one server per line. IP addresses and hostnames are both supported. When empty, the system default resolver is used.</p>' +
+      '<div id="dns-servers-examples" style="margin-top:0.5rem;font-size:0.78rem;color:var(--color-text-tertiary)"></div>' +
+    '</div>' +
+    '<div id="dns-doh-group" class="form-group" style="display:none"><label>DoH URL</label>' +
+      '<input type="text" id="f-dns-doh-url" value="' + escapeHtml(_dnsDefaults.dohUrl) + '" placeholder="https://dns.google/resolve">' +
+      '<p class="hint">The HTTPS endpoint for DNS queries. Must support the JSON API (application/dns-json). Common providers:</p>' +
+      '<div style="margin-top:0.4rem;font-size:0.78rem;color:var(--color-text-tertiary)">' +
+        '<table style="border-collapse:collapse;width:100%">' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Google</td><td class="mono">https://dns.google/resolve</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Cloudflare</td><td class="mono">https://cloudflare-dns.com/dns-query</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Quad9</td><td class="mono">https://dns.quad9.net:5053/dns-query</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">AdGuard</td><td class="mono">https://dns.adguard-dns.com/dns-query</td></tr>' +
+        '</table>' +
+      '</div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center">' +
+      '<button class="btn btn-primary" id="btn-dns-save">Save DNS Settings</button>' +
+    '</div>' +
+  '</div>' +
+  '<div class="settings-card">' +
+    '<h4>Test DNS Lookup</h4>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+      'Verify that the configured DNS servers can perform reverse lookups by testing with a known IP address.' +
+    '</p>' +
+    '<div class="form-group"><label>Test IP Address</label>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<input type="text" id="f-dns-test-ip" value="8.8.8.8" placeholder="e.g. 8.8.8.8 or 2001:4860:4860::8888" style="width:320px">' +
+        '<button class="btn btn-secondary" id="btn-dns-test">Test Lookup</button>' +
+      '</div>' +
+      '<p class="hint">Enter an IPv4 or IPv6 address to perform a test PTR lookup against the configured servers.</p>' +
+      '<div id="dns-status" style="font-size:0.82rem;margin-top:0.4rem"></div>' +
+    '</div>' +
+  '</div>';
+}
+
+function wireDnsControls() {
+  var modeSelect = document.getElementById("f-dns-mode");
+  modeSelect.addEventListener("change", updateDnsFieldVisibility);
+  updateDnsFieldVisibility();
+  document.getElementById("btn-dns-save").addEventListener("click", saveDnsSettings);
+  document.getElementById("btn-dns-test").addEventListener("click", testDnsLookup);
+}
+
+function updateDnsFieldVisibility() {
+  var mode = document.getElementById("f-dns-mode").value;
+  var serversGroup = document.getElementById("dns-servers-group");
+  var dohGroup = document.getElementById("dns-doh-group");
+  var serversHint = document.getElementById("dns-servers-hint");
+  var serversExamples = document.getElementById("dns-servers-examples");
+
+  if (mode === "doh") {
+    serversGroup.style.display = "none";
+    dohGroup.style.display = "";
+  } else {
+    serversGroup.style.display = "";
+    dohGroup.style.display = "none";
+    if (mode === "dot") {
+      serversHint.textContent = "Enter one server per line. IP addresses and hostnames are both supported. Port 853 (TLS) is used automatically.";
+      serversExamples.innerHTML =
+        '<table style="border-collapse:collapse;width:100%">' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Google</td><td class="mono">dns.google</td><td class="mono" style="padding-left:12px">8.8.8.8</td><td class="mono" style="padding-left:12px">2001:4860:4860::8888</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Cloudflare</td><td class="mono">one.one.one.one</td><td class="mono" style="padding-left:12px">1.1.1.1</td><td class="mono" style="padding-left:12px">2606:4700:4700::1111</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Quad9</td><td class="mono">dns.quad9.net</td><td class="mono" style="padding-left:12px">9.9.9.9</td><td class="mono" style="padding-left:12px">2620:fe::fe</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">AdGuard</td><td class="mono">dns.adguard-dns.com</td><td class="mono" style="padding-left:12px">94.140.14.14</td><td class="mono" style="padding-left:12px">2a10:50c0::ad1:ff</td></tr>' +
+        '</table>';
+    } else {
+      serversHint.textContent = "Enter one server per line. IP addresses and hostnames are both supported. When empty, the system default resolver is used.";
+      serversExamples.innerHTML =
+        '<table style="border-collapse:collapse;width:100%">' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Google</td><td class="mono">dns.google</td><td class="mono" style="padding-left:12px">8.8.8.8</td><td class="mono" style="padding-left:12px">2001:4860:4860::8888</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Cloudflare</td><td class="mono">one.one.one.one</td><td class="mono" style="padding-left:12px">1.1.1.1</td><td class="mono" style="padding-left:12px">2606:4700:4700::1111</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">Quad9</td><td class="mono">dns.quad9.net</td><td class="mono" style="padding-left:12px">9.9.9.9</td><td class="mono" style="padding-left:12px">2620:fe::fe</td></tr>' +
+          '<tr><td style="padding:2px 12px 2px 0;font-weight:500">OpenDNS</td><td class="mono">dns.opendns.com</td><td class="mono" style="padding-left:12px">208.67.222.222</td><td class="mono" style="padding-left:12px">2620:119:35::35</td></tr>' +
+        '</table>';
+    }
+  }
+}
+
+function collectDnsForm() {
+  return {
+    mode: document.getElementById("f-dns-mode").value,
+    servers: document.getElementById("f-dns-servers").value
+      .split("\n").map(function (s) { return s.trim(); }).filter(Boolean),
+    dohUrl: (document.getElementById("f-dns-doh-url").value || "").trim(),
+  };
+}
+
+async function saveDnsSettings() {
+  var btn = document.getElementById("btn-dns-save");
+  btn.disabled = true;
+  try {
+    await api.serverSettings.updateDns(collectDnsForm());
+    showToast("DNS settings saved");
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function testDnsLookup() {
+  var btn = document.getElementById("btn-dns-test");
+  var statusEl = document.getElementById("dns-status");
+  btn.disabled = true;
+  statusEl.innerHTML = '<span style="color:var(--color-text-tertiary)">Testing...</span>';
+  try {
+    var form = collectDnsForm();
+    form.testIp = document.getElementById("f-dns-test-ip").value.trim() || "8.8.8.8";
+    var result = await api.serverSettings.testDns(form);
+    statusEl.innerHTML = result.ok
+      ? '<span style="color:var(--color-success)">' + escapeHtml(result.message) + '</span>'
+      : '<span style="color:var(--color-danger)">' + escapeHtml(result.message) + '</span>';
+  } catch (err) {
+    statusEl.innerHTML = '<span style="color:var(--color-danger)">' + escapeHtml(err.message) + '</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─── OUI Database ──────────────────────────────────────────────────────────
+
+async function loadOuiStatus() {
+  try {
+    var status = await api.serverSettings.getOui();
+    document.getElementById("oui-status-loaded").textContent = status.loaded ? "Loaded" : "Not downloaded";
+    document.getElementById("oui-status-entries").textContent = status.entries ? status.entries.toLocaleString() + " vendors" : "-";
+    document.getElementById("oui-status-refreshed").textContent = status.refreshedAt ? formatDate(status.refreshedAt) : "Never";
+  } catch (_) {
+    document.getElementById("oui-status-loaded").textContent = "Error loading status";
+  }
+}
+
+async function refreshOuiDatabase() {
+  var btn = document.getElementById("btn-oui-refresh");
+  var statusEl = document.getElementById("oui-refresh-status");
+  btn.disabled = true;
+  statusEl.innerHTML = '<span style="color:var(--color-text-tertiary)">Downloading IEEE OUI database...</span>';
+  try {
+    var result = await api.serverSettings.refreshOui();
+    statusEl.innerHTML = '<span style="color:var(--color-success)">' +
+      escapeHtml(result.entries.toLocaleString() + " entries loaded (" + result.sizeKb + " KB)") + '</span>';
+    showToast("OUI database refreshed — " + result.entries.toLocaleString() + " vendors", "success");
+    loadOuiStatus();
+  } catch (err) {
+    statusEl.innerHTML = '<span style="color:var(--color-danger)">' + escapeHtml(err.message) + '</span>';
+    showToast("OUI refresh failed: " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ─── Certificates Tab ───────────────────────────────────────────────────────
 
 var _certsLoaded = false;
@@ -1025,6 +1197,7 @@ var _tagsLoaded = false;
 var _tagsData = [];
 var _emptyCategories = [];
 var _tagSettings = { enforce: false };
+var _ouiOverrides = [];
 
 async function loadIdentificationTab() {
   var container = document.getElementById("tab-identification");
@@ -1034,9 +1207,17 @@ async function loadIdentificationTab() {
     var results = await Promise.all([
       api.serverSettings.listTags(),
       api.serverSettings.getTagSettings(),
+      api.serverSettings.getDns().catch(function () { return null; }),
+      api.serverSettings.getOuiOverrides().catch(function () { return []; }),
     ]);
     _tagsData = results[0];
     _tagSettings = results[1] || { enforce: false };
+    if (results[2]) {
+      _dnsDefaults.servers = results[2].servers || [];
+      _dnsDefaults.mode = results[2].mode || "standard";
+      _dnsDefaults.dohUrl = results[2].dohUrl || "";
+    }
+    _ouiOverrides = results[3] || [];
     _tagsLoaded = true;
     renderIdentificationTab();
   } catch (err) {
@@ -1052,7 +1233,70 @@ function _currentCategories() {
 
 function renderIdentificationTab() {
   var container = document.getElementById("tab-identification");
+  var html = '';
 
+  // ── 1. DNS Configuration ──
+  html += dnsCardsHTML();
+
+  // ── 2. OUI Overrides ──
+  html +=
+    '<div class="settings-card">' +
+      '<h4>OUI Overrides</h4>' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+        'Define static MAC prefix-to-manufacturer mappings that take priority over the IEEE OUI database. ' +
+        'Use this for custom hardware, internal devices, or to correct misidentified vendors.' +
+      '</p>';
+
+  if (_ouiOverrides.length > 0) {
+    html += '<table class="ip-table" style="margin-bottom:1rem"><thead><tr>' +
+      '<th>MAC Prefix</th><th>Manufacturer</th><th style="width:70px"></th>' +
+    '</tr></thead><tbody>';
+    _ouiOverrides.forEach(function (o) {
+      html += '<tr>' +
+        '<td class="mono" style="font-size:0.85rem">' + escapeHtml(o.prefix) + '</td>' +
+        '<td>' + escapeHtml(o.manufacturer) + '</td>' +
+        '<td class="actions"><button class="btn btn-sm btn-danger oui-override-del" data-prefix="' + escapeHtml(o.prefix) + '">Del</button></td>' +
+      '</tr>';
+    });
+    html += '</tbody></table>';
+  } else {
+    html += '<p class="empty-state" style="margin-bottom:1rem">No overrides defined. The IEEE OUI database is used for all lookups.</p>';
+  }
+
+  html +=
+      '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
+        '<div style="flex:0 0 140px">' +
+          '<label style="font-size:0.78rem;font-weight:500">MAC Prefix</label>' +
+          '<input type="text" id="f-oui-prefix" placeholder="AA:BB:CC" style="font-family:var(--font-mono);font-size:0.85rem">' +
+        '</div>' +
+        '<div style="flex:1;min-width:180px">' +
+          '<label style="font-size:0.78rem;font-weight:500">Manufacturer</label>' +
+          '<input type="text" id="f-oui-manufacturer" placeholder="e.g. Custom Switch Co.">' +
+        '</div>' +
+        '<button class="btn btn-primary" id="btn-add-oui-override">Add Override</button>' +
+      '</div>' +
+    '</div>';
+
+  // ── 3. OUI Database ──
+  html +=
+    '<div class="settings-card">' +
+      '<h4>MAC OUI Database</h4>' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+        'The IEEE OUI (Organizationally Unique Identifier) database maps MAC address prefixes to hardware manufacturers. ' +
+        'It is refreshed automatically every week. You can also trigger a manual refresh below.' +
+      '</p>' +
+      '<div id="oui-status" class="db-info-grid" style="margin-bottom:1rem">' +
+        '<div class="db-info-label">Status</div><div class="db-info-value" id="oui-status-loaded">Loading...</div>' +
+        '<div class="db-info-label">Entries</div><div class="db-info-value" id="oui-status-entries">-</div>' +
+        '<div class="db-info-label">Last Refreshed</div><div class="db-info-value" id="oui-status-refreshed">-</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<button class="btn btn-secondary" id="btn-oui-refresh">Refresh OUI Database</button>' +
+        '<span id="oui-refresh-status" style="font-size:0.82rem;margin-left:8px"></span>' +
+      '</div>' +
+    '</div>';
+
+  // ── 4. Tags (bottom) ──
   // Group tags by category
   var categories = {};
   _tagsData.forEach(function (t) {
@@ -1060,15 +1304,12 @@ function renderIdentificationTab() {
     if (!categories[cat]) categories[cat] = [];
     categories[cat].push(t);
   });
-
-  // Include tracked empty categories
   _emptyCategories.forEach(function (cat) {
     if (!categories[cat]) categories[cat] = [];
   });
-
   var catNames = Object.keys(categories).sort();
 
-  var html =
+  html +=
     '<div class="settings-card">' +
       '<h4>Tags</h4>' +
       '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
@@ -1122,8 +1363,25 @@ function renderIdentificationTab() {
   }
 
   html += '</div>';
+
+  // ── Set HTML and wire events ──
   container.innerHTML = html;
 
+  wireDnsControls();
+  loadOuiStatus();
+
+  // OUI override events
+  document.getElementById("btn-add-oui-override").addEventListener("click", addOuiOverride);
+  container.querySelectorAll(".oui-override-del").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      deleteOuiOverrideUI(btn.getAttribute("data-prefix"));
+    });
+  });
+
+  // OUI database refresh
+  document.getElementById("btn-oui-refresh").addEventListener("click", refreshOuiDatabase);
+
+  // Tags events
   document.getElementById("btn-add-tag").addEventListener("click", openAddTagModal);
 
   container.querySelectorAll(".tag-chip-delete").forEach(function (btn) {
@@ -1148,16 +1406,46 @@ function renderIdentificationTab() {
     try {
       await api.serverSettings.updateTagSettings({ enforce: newVal });
       _tagSettings.enforce = newVal;
-      // Invalidate the shared tag cache so forms pick up the new mode
       if (typeof _tagCache !== "undefined") _tagCache.loaded = false;
       showToast(newVal ? "Predefined tags enforced" : "Free-text tags enabled");
     } catch (err) {
-      cb.checked = !newVal; // revert on failure
+      cb.checked = !newVal;
       showToast(err.message, "error");
     } finally {
       cb.disabled = false;
     }
   });
+}
+
+async function addOuiOverride() {
+  var prefix = document.getElementById("f-oui-prefix").value.trim();
+  var manufacturer = document.getElementById("f-oui-manufacturer").value.trim();
+  if (!prefix || !manufacturer) { showToast("Both MAC prefix and manufacturer are required", "error"); return; }
+  try {
+    var result = await api.serverSettings.addOuiOverride({ prefix: prefix, manufacturer: manufacturer });
+    // Update local cache
+    var idx = _ouiOverrides.findIndex(function (o) { return o.prefix === result.prefix; });
+    if (idx >= 0) _ouiOverrides[idx] = result;
+    else _ouiOverrides.push(result);
+    _ouiOverrides.sort(function (a, b) { return a.prefix.localeCompare(b.prefix); });
+    showToast("OUI override added: " + result.prefix + " → " + result.manufacturer, "success");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function deleteOuiOverrideUI(prefix) {
+  var ok = await showConfirm('Remove OUI override for "' + prefix + '"?');
+  if (!ok) return;
+  try {
+    await api.serverSettings.deleteOuiOverride(prefix);
+    _ouiOverrides = _ouiOverrides.filter(function (o) { return o.prefix !== prefix; });
+    showToast("Override removed");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
 
 async function openAddTagModal() {

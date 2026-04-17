@@ -10,6 +10,8 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireAssetsAdmin } from "../middleware/auth.js";
 import { logEvent } from "./events.js";
+import { getConfiguredResolver } from "../../services/dnsService.js";
+import { lookupOui } from "../../services/ouiService.js";
 
 const router = Router();
 
@@ -129,6 +131,122 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
     const asset = await prisma.asset.update({ where: { id: req.params.id }, data: data as any });
     logEvent({ action: "asset.updated", resourceType: "asset", resourceId: req.params.id, resourceName: asset.hostname || asset.ipAddress, actor: (req as any).user?.username, message: `Asset "${asset.hostname || asset.ipAddress || "unknown"}" updated` });
     res.json(asset);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/v1/assets/dns-lookup — bulk reverse DNS lookup for assets missing dnsName
+router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const assets = await prisma.asset.findMany({
+      where: { ipAddress: { not: null }, dnsName: null, status: { not: "decommissioned" } },
+      select: { id: true, ipAddress: true, hostname: true },
+    });
+
+    const resolver = await getConfiguredResolver();
+    let resolved = 0;
+    let failed = 0;
+    const results: Array<{ id: string; ip: string; dnsName: string }> = [];
+
+    for (const asset of assets) {
+      if (!asset.ipAddress) continue;
+      try {
+        const hostnames = await resolver.reverse(asset.ipAddress);
+        if (hostnames.length > 0) {
+          const dnsName = hostnames[0];
+          await prisma.asset.update({ where: { id: asset.id }, data: { dnsName } });
+          results.push({ id: asset.id, ip: asset.ipAddress, dnsName });
+          resolved++;
+        } else {
+          failed++;
+        }
+      } catch {
+        failed++;
+      }
+    }
+
+    logEvent({ action: "asset.dns.bulk", resourceType: "asset", message: `Bulk DNS lookup: ${resolved} resolved, ${failed} failed out of ${assets.length} assets`, actor: (req as any).user?.username });
+    res.json({ total: assets.length, resolved, failed, results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/v1/assets/:id/dns-lookup — reverse DNS lookup for a single asset
+router.post("/:id/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const asset = await prisma.asset.findUnique({ where: { id: req.params.id } });
+    if (!asset) throw new AppError(404, "Asset not found");
+    if (!asset.ipAddress) throw new AppError(400, "Asset has no IP address");
+
+    const resolver = await getConfiguredResolver();
+    let dnsName: string | null = null;
+    try {
+      const hostnames = await resolver.reverse(asset.ipAddress);
+      if (hostnames.length > 0) dnsName = hostnames[0];
+    } catch {
+      // PTR lookup failed — no record
+    }
+
+    if (!dnsName) {
+      return res.json({ ok: false, message: `No PTR record found for ${asset.ipAddress}` });
+    }
+
+    await prisma.asset.update({ where: { id: asset.id }, data: { dnsName } });
+    logEvent({ action: "asset.dns.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress, actor: (req as any).user?.username, message: `DNS resolved: ${asset.ipAddress} → ${dnsName}` });
+    res.json({ ok: true, dnsName, message: `${asset.ipAddress} → ${dnsName}` });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/v1/assets/oui-lookup — bulk OUI manufacturer lookup
+router.post("/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const assets = await prisma.asset.findMany({
+      where: { macAddress: { not: null }, manufacturer: null, status: { not: "decommissioned" } },
+      select: { id: true, macAddress: true, hostname: true, ipAddress: true },
+    });
+
+    let resolved = 0;
+    let failed = 0;
+    const results: Array<{ id: string; mac: string; manufacturer: string }> = [];
+
+    for (const asset of assets) {
+      if (!asset.macAddress) continue;
+      const vendor = await lookupOui(asset.macAddress);
+      if (vendor) {
+        await prisma.asset.update({ where: { id: asset.id }, data: { manufacturer: vendor } });
+        results.push({ id: asset.id, mac: asset.macAddress, manufacturer: vendor });
+        resolved++;
+      } else {
+        failed++;
+      }
+    }
+
+    logEvent({ action: "asset.oui.bulk", resourceType: "asset", message: `Bulk OUI lookup: ${resolved} resolved, ${failed} unmatched out of ${assets.length} assets`, actor: (req as any).user?.username });
+    res.json({ total: assets.length, resolved, failed, results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/v1/assets/:id/oui-lookup — OUI manufacturer lookup for a single asset
+router.post("/:id/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const asset = await prisma.asset.findUnique({ where: { id: req.params.id } });
+    if (!asset) throw new AppError(404, "Asset not found");
+    if (!asset.macAddress) throw new AppError(400, "Asset has no MAC address");
+
+    const vendor = await lookupOui(asset.macAddress);
+    if (!vendor) {
+      return res.json({ ok: false, message: `No OUI match for ${asset.macAddress}` });
+    }
+
+    await prisma.asset.update({ where: { id: asset.id }, data: { manufacturer: vendor } });
+    logEvent({ action: "asset.oui.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress, actor: (req as any).user?.username, message: `OUI resolved: ${asset.macAddress} → ${vendor}` });
+    res.json({ ok: true, manufacturer: vendor, message: `${asset.macAddress} → ${vendor}` });
   } catch (err) {
     next(err);
   }

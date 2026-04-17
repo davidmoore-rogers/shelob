@@ -19,6 +19,7 @@ import { initHttps, httpsRedirectMiddleware } from "./httpsManager.js";
 import { getHttpsSettings } from "./services/serverSettingsService.js";
 import { isAzureSsoConfiguredAsync, getSsoSettings } from "./services/azureAuthService.js";
 import "./jobs/pruneEvents.js";
+import "./jobs/ouiRefresh.js";
 
 const app = express();
 

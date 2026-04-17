@@ -11,6 +11,10 @@ document.addEventListener("DOMContentLoaded", function () {
 
   var addBtn = document.getElementById("btn-add-asset");
   if (addBtn) addBtn.addEventListener("click", openCreateModal);
+  var dnsBtn = document.getElementById("btn-dns-lookup");
+  if (dnsBtn) dnsBtn.addEventListener("click", bulkDnsLookup);
+  var ouiBtn = document.getElementById("btn-oui-lookup");
+  if (ouiBtn) ouiBtn.addEventListener("click", bulkOuiLookup);
   document.getElementById("filter-status").addEventListener("change", function () { _assetsPage = 1; loadAssets(); });
   document.getElementById("filter-type").addEventListener("change", function () { _assetsPage = 1; loadAssets(); });
   document.getElementById("filter-search").addEventListener("input", debounce(function () { _assetsPage = 1; loadAssets(); }, 300));
@@ -147,6 +151,8 @@ function renderAssetsPage() {
       '<td class="actions">' +
         '<button class="btn btn-sm btn-secondary" onclick="openViewModal(\'' + a.id + '\')">View</button>' +
         (canManageAssets() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + a.id + '\')">Edit</button>' +
+        (a.ipAddress && !a.dnsName ? '<button class="btn btn-sm btn-secondary" onclick="singleDnsLookup(\'' + a.id + '\', \'' + escapeHtml(a.hostname || a.ipAddress) + '\')" title="Reverse DNS lookup">DNS</button>' : '') +
+        (a.macAddress && !a.manufacturer ? '<button class="btn btn-sm btn-secondary" onclick="singleOuiLookup(\'' + a.id + '\', \'' + escapeHtml(a.macAddress) + '\')" title="OUI manufacturer lookup">OUI</button>' : '') +
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + a.id + '\', \'' + escapeHtml(a.hostname || a.assetTag || a.ipAddress || "this asset") + '\')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
@@ -439,6 +445,74 @@ function debounce(fn, ms) {
     clearTimeout(timer);
     timer = setTimeout(fn, ms);
   };
+}
+
+/* ─── DNS Lookup ─────────────────────────────────────────────────────────── */
+
+async function bulkDnsLookup() {
+  var missing = _assetsData.filter(function (a) { return a.ipAddress && !a.dnsName; });
+  if (missing.length === 0) {
+    showToast("All assets with IPs already have DNS names", "success");
+    return;
+  }
+  var ok = await showConfirm("Run reverse DNS lookup for " + missing.length + " assets missing a DNS name?");
+  if (!ok) return;
+
+  try {
+    var result = await api.assets.dnsLookupAll();
+    showToast("DNS resolved " + result.resolved + " of " + result.total + " assets", "success");
+    if (result.resolved > 0) loadAssets();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function singleDnsLookup(id, name) {
+  try {
+    var result = await api.assets.dnsLookup(id);
+    if (result.ok) {
+      showToast(result.message, "success");
+      loadAssets();
+    } else {
+      showToast(result.message, "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+/* ─── OUI Lookup ────────────────────────────────────────────────────────── */
+
+async function bulkOuiLookup() {
+  var missing = _assetsData.filter(function (a) { return a.macAddress && !a.manufacturer; });
+  if (missing.length === 0) {
+    showToast("All assets with MACs already have a manufacturer", "success");
+    return;
+  }
+  var ok = await showConfirm("Run OUI manufacturer lookup for " + missing.length + " assets missing a manufacturer?");
+  if (!ok) return;
+
+  try {
+    var result = await api.assets.ouiLookupAll();
+    showToast("OUI resolved " + result.resolved + " of " + result.total + " assets", "success");
+    if (result.resolved > 0) loadAssets();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function singleOuiLookup(id, mac) {
+  try {
+    var result = await api.assets.ouiLookup(id);
+    if (result.ok) {
+      showToast(result.message, "success");
+      loadAssets();
+    } else {
+      showToast(result.message, "error");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
 
 /* ─── Export (PDF / CSV) ──────────────────────────────────────────────────── */

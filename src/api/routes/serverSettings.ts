@@ -27,6 +27,9 @@ import {
   updateHttpsSettings,
   generateSelfSignedCert,
 } from "../../services/serverSettingsService.js";
+import { getDnsSettings, updateDnsSettings, createResolver } from "../../services/dnsService.js";
+import type { DnsSettings } from "../../services/dnsService.js";
+import { getOuiStatus, refreshOuiDatabase, getOuiOverrides, setOuiOverride, deleteOuiOverride } from "../../services/ouiService.js";
 import { applyHttps, isHttpsRunning } from "../../httpsManager.js";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
@@ -423,6 +426,136 @@ router.post("/https/apply", async (_req, res, next) => {
   try {
     const result = await applyHttps();
     res.json({ ...result, running: isHttpsRunning() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── DNS ───────────────────────────────────────────────────────────────────
+
+router.get("/dns", async (_req, res, next) => {
+  try {
+    res.json(await getDnsSettings());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/dns", async (req, res, next) => {
+  try {
+    const servers: string[] = (req.body.servers || [])
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+    const mode = (req.body.mode || "standard") as DnsSettings["mode"];
+    const dohUrl = (req.body.dohUrl || "").trim();
+
+    // Validate server entries — allow IPs, hostnames, and host:port
+    if (mode !== "doh") {
+      for (const s of servers) {
+        if (!/^[\w.\-:[\]]+$/.test(s)) {
+          throw new AppError(400, `Invalid DNS server entry: "${s}". Use an IP address or hostname (e.g. 8.8.8.8, dns.google, or [2001:4860:4860::8888]).`);
+        }
+      }
+    }
+
+    // Validate DoH URL
+    if (mode === "doh") {
+      if (!dohUrl) throw new AppError(400, "A DoH URL is required when using DNS over HTTPS mode.");
+      if (!/^https:\/\/.+/.test(dohUrl)) throw new AppError(400, "DoH URL must start with https://");
+    }
+
+    const saved = await updateDnsSettings({ servers, mode, dohUrl });
+    res.json(saved);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/dns/test", async (req, res, next) => {
+  try {
+    const servers: string[] = (req.body.servers || [])
+      .map((s: string) => s.trim())
+      .filter(Boolean);
+    const mode = (req.body.mode || "standard") as DnsSettings["mode"];
+    const dohUrl = (req.body.dohUrl || "").trim();
+    const testIp = req.body.testIp || "8.8.8.8";
+
+    if (mode === "doh" && !dohUrl) {
+      return res.json({ ok: false, message: "No DoH URL configured" });
+    }
+    if (mode !== "doh" && servers.length === 0) {
+      return res.json({ ok: false, message: "No DNS servers configured" });
+    }
+
+    const resolver = await createResolver({ servers, mode, dohUrl });
+    const start = Date.now();
+    try {
+      const hostnames = await resolver.reverse(testIp);
+      const elapsed = Date.now() - start;
+      const via = mode === "doh" ? `DoH (${dohUrl})` : mode === "dot" ? `DoT (${servers[0]}:853)` : servers[0];
+      res.json({
+        ok: true,
+        message: `Resolved ${testIp} → ${hostnames[0] || "(no PTR)"} in ${elapsed}ms via ${via}`,
+      });
+    } catch (dnsErr: any) {
+      const elapsed = Date.now() - start;
+      if (dnsErr.code === "ENOTFOUND" || dnsErr.code === "ENODATA") {
+        res.json({ ok: true, message: `Server reachable but no PTR record for ${testIp} (${elapsed}ms)` });
+      } else {
+        res.json({ ok: false, message: `DNS query failed: ${dnsErr.code || dnsErr.message} (${elapsed}ms)` });
+      }
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── OUI Database ──────────────────────────────────────────────────────────
+
+router.get("/oui", async (_req, res, next) => {
+  try {
+    res.json(await getOuiStatus());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/oui/refresh", async (_req, res, next) => {
+  try {
+    const result = await refreshOuiDatabase();
+    res.json({ ok: true, ...result, message: `OUI database refreshed: ${result.entries.toLocaleString()} vendors loaded` });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── OUI Overrides ────────────────────────────────────────────────────────
+
+router.get("/oui/overrides", async (_req, res, next) => {
+  try {
+    res.json(await getOuiOverrides());
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/oui/overrides", async (req, res, next) => {
+  try {
+    const { prefix, manufacturer } = req.body;
+    if (!prefix || !manufacturer) throw new AppError(400, "prefix and manufacturer are required");
+    const clean = prefix.replace(/[:\-.\s]/g, "").toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(clean)) throw new AppError(400, "prefix must be 6 hex characters (e.g. AA:BB:CC)");
+    const result = await setOuiOverride(prefix, manufacturer.trim());
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/oui/overrides/:prefix", async (req, res, next) => {
+  try {
+    await deleteOuiOverride(req.params.prefix);
+    res.status(204).send();
   } catch (err) {
     next(err);
   }

@@ -12,6 +12,8 @@ import * as windowsServer from "../../services/windowsServerService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
 import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice, DiscoveryProgressCallback } from "../../services/fortimanagerService.js";
 import { logEvent } from "./events.js";
+import { getConfiguredResolver } from "../../services/dnsService.js";
+import { lookupOui } from "../../services/ouiService.js";
 
 const router = Router();
 
@@ -1002,6 +1004,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         if (inv.os && !existingAsset.os) updateData.os = inv.os;
         if (inv.osVersion) updateData.osVersion = inv.osVersion;
         if (inv.hardwareVendor && !existingAsset.manufacturer) updateData.manufacturer = inv.hardwareVendor;
+        if (inv.device && !existingAsset.learnedLocation) updateData.learnedLocation = inv.device;
         if (switchConn) updateData.lastSeenSwitch = switchConn;
         if (apConn) updateData.lastSeenAp = apConn;
 
@@ -1064,6 +1067,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
               status: "active",
               os: inv.os || null,
               osVersion: inv.osVersion || null,
+              learnedLocation: inv.device || null,
               lastSeenSwitch: switchConn,
               lastSeenAp: apConn,
               associatedUsers: userList,
@@ -1080,7 +1084,58 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
   }
 
-  return { created, updated, skipped, deprecated, assets: assetNames, reservations: reservationNames, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length };
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 8 — DNS reverse lookup for assets missing dnsName
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  let dnsResolved = 0;
+  const assetsNeedingDns = assetIdx.all().filter((a: any) => a.ipAddress && !a.dnsName);
+  if (assetsNeedingDns.length > 0) {
+    syncLog("info", `DNS lookup: resolving ${assetsNeedingDns.length} assets missing dnsName`);
+    const dnsResolver = await getConfiguredResolver();
+    const dnsResults = await batchSettled(assetsNeedingDns, async (asset: any) => {
+      const hostnames = await dnsResolver.reverse(asset.ipAddress);
+      if (hostnames.length > 0) {
+        await prisma.asset.update({ where: { id: asset.id }, data: { dnsName: hostnames[0] } });
+        asset.dnsName = hostnames[0];
+        return hostnames[0];
+      }
+      return null;
+    });
+    for (const r of dnsResults) {
+      if (r.status === "fulfilled" && r.value) dnsResolved++;
+    }
+    if (dnsResolved > 0) {
+      syncLog("info", `DNS lookup: resolved ${dnsResolved} of ${assetsNeedingDns.length} assets`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 9 — OUI manufacturer lookup for assets with MAC but no manufacturer
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  let ouiResolved = 0;
+  const assetsNeedingOui = assetIdx.all().filter((a: any) => a.macAddress && !a.manufacturer);
+  if (assetsNeedingOui.length > 0) {
+    syncLog("info", `OUI lookup: resolving ${assetsNeedingOui.length} assets missing manufacturer`);
+    const ouiResults = await batchSettled(assetsNeedingOui, async (asset: any) => {
+      const vendor = await lookupOui(asset.macAddress);
+      if (vendor) {
+        await prisma.asset.update({ where: { id: asset.id }, data: { manufacturer: vendor } });
+        asset.manufacturer = vendor;
+        return vendor;
+      }
+      return null;
+    });
+    for (const r of ouiResults) {
+      if (r.status === "fulfilled" && r.value) ouiResolved++;
+    }
+    if (ouiResolved > 0) {
+      syncLog("info", `OUI lookup: resolved ${ouiResolved} of ${assetsNeedingOui.length} assets`);
+    }
+  }
+
+  return { created, updated, skipped, deprecated, assets: assetNames, reservations: reservationNames, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length, dnsResolved, ouiResolved };
 }
 
 function stripSecret(integration: Record<string, any>) {

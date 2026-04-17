@@ -1031,6 +1031,33 @@ let SSO_SETTINGS = {
 
 let PG_TUNING_SNOOZE = { until: null };
 
+let DNS_SETTINGS = { servers: [], mode: "standard", dohUrl: "" };
+let OUI_STATUS = { loaded: true, entries: 31265, refreshedAt: new Date(Date.now() - 2 * 86400000).toISOString() };
+let OUI_OVERRIDES = [
+  { prefix: "AA:BB:CC", manufacturer: "Custom Internal Switch" },
+  { prefix: "DE:AD:BE", manufacturer: "Lab Test Device" },
+];
+
+// Mock OUI lookup table — maps common MAC prefixes to vendors
+const _MOCK_OUI_MAP = {
+  "00:1A:2B": "Ayecom Technology", "00:50:56": "VMware, Inc.", "00:0C:29": "VMware, Inc.",
+  "00:25:90": "Super Micro Computer", "3C:EC:EF": "Dell Technologies", "B4:96:91": "Intel Corporate",
+  "D8:9E:F3": "Dell Inc.", "98:90:96": "Dell Inc.", "F0:1F:AF": "Dell Inc.",
+  "00:1E:67": "Intel Corporate", "00:1B:21": "Intel Corporate", "A0:36:9F": "Intel Corporate",
+  "00:23:24": "Cisco Systems", "00:1A:A1": "Cisco Systems", "58:AC:78": "Cisco Systems",
+  "AC:17:C8": "Cisco Systems", "34:56:FE": "Cisco Systems",
+  "00:1A:6B": "Universal Global Scientific Ind.", "3C:D9:2B": "Hewlett Packard",
+  "00:17:A4": "Hewlett Packard", "94:57:A5": "Hewlett Packard Enterprise",
+  "1C:98:EC": "Hewlett Packard Enterprise",
+  "F8:75:A4": "LCFC(HeFei) Electronics",
+  "00:26:B9": "Dell Inc.",
+};
+function _mockOuiLookup(mac) {
+  if (!mac) return null;
+  const prefix = mac.toUpperCase().replace(/[-]/g, ":").slice(0, 8);
+  return _MOCK_OUI_MAP[prefix] || "Unknown Vendor Inc.";
+}
+
 let BRANDING = {
   appName: "Shelob",
   subtitle: "Network Management Tool",
@@ -2510,6 +2537,69 @@ async function routeAPI(method, path, params, body, res, req) {
     logEventDemo({ action: "asset.updated", resourceType: "asset", resourceId: id, resourceName: body.hostname || asset.hostname, message: `Asset "${body.hostname || asset.hostname || "unknown"}" updated` });
     return json(res, asset);
   }
+  // DNS Lookup — bulk
+  if (path === "/api/v1/assets/dns-lookup" && method === "POST") {
+    const missing = ASSETS.filter((a) => a.ipAddress && !a.dnsName && a.status !== "decommissioned");
+    let resolved = 0;
+    const results = [];
+    for (const asset of missing) {
+      // Mock: generate a plausible FQDN from hostname or IP
+      const dnsName = asset.hostname
+        ? asset.hostname + ".corp.example.com"
+        : asset.ipAddress.split(".").reverse().join(".") + ".in-addr.arpa";
+      asset.dnsName = dnsName;
+      asset.updatedAt = new Date().toISOString();
+      results.push({ id: asset.id, ip: asset.ipAddress, dnsName });
+      resolved++;
+    }
+    logEventDemo({ action: "asset.dns.bulk", resourceType: "asset", message: `Bulk DNS lookup: ${resolved} resolved, 0 failed out of ${missing.length} assets` });
+    return json(res, { total: missing.length, resolved, failed: 0, results });
+  }
+  // DNS Lookup — single asset
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+\/dns-lookup$/) && method === "POST") {
+    const id = path.split("/")[4];
+    const asset = ASSETS.find((a) => a.id === id);
+    if (!asset) return json(res, { error: "Not found" }, 404);
+    if (!asset.ipAddress) return json(res, { error: "Asset has no IP address" }, 400);
+    // Mock: generate FQDN from hostname
+    const dnsName = asset.hostname
+      ? asset.hostname + ".corp.example.com"
+      : asset.ipAddress.split(".").reverse().join(".") + ".in-addr.arpa";
+    asset.dnsName = dnsName;
+    asset.updatedAt = new Date().toISOString();
+    logEventDemo({ action: "asset.dns.resolved", resourceType: "asset", resourceId: id, resourceName: asset.hostname || asset.ipAddress, message: `DNS resolved: ${asset.ipAddress} → ${dnsName}` });
+    return json(res, { ok: true, dnsName, message: `${asset.ipAddress} → ${dnsName}` });
+  }
+  // OUI Lookup — bulk
+  if (path === "/api/v1/assets/oui-lookup" && method === "POST") {
+    const missing = ASSETS.filter((a) => a.macAddress && !a.manufacturer && a.status !== "decommissioned");
+    let resolved = 0;
+    const results = [];
+    for (const asset of missing) {
+      const vendor = _mockOuiLookup(asset.macAddress);
+      if (vendor) {
+        asset.manufacturer = vendor;
+        asset.updatedAt = new Date().toISOString();
+        results.push({ id: asset.id, mac: asset.macAddress, manufacturer: vendor });
+        resolved++;
+      }
+    }
+    logEventDemo({ action: "asset.oui.bulk", resourceType: "asset", message: `Bulk OUI lookup: ${resolved} resolved, ${missing.length - resolved} unmatched out of ${missing.length} assets` });
+    return json(res, { total: missing.length, resolved, failed: missing.length - resolved, results });
+  }
+  // OUI Lookup — single asset
+  if (path.match(/^\/api\/v1\/assets\/[\w-]+\/oui-lookup$/) && method === "POST") {
+    const id = path.split("/")[4];
+    const asset = ASSETS.find((a) => a.id === id);
+    if (!asset) return json(res, { error: "Not found" }, 404);
+    if (!asset.macAddress) return json(res, { error: "Asset has no MAC address" }, 400);
+    const vendor = _mockOuiLookup(asset.macAddress);
+    if (!vendor) return json(res, { ok: false, message: `No OUI match for ${asset.macAddress}` });
+    asset.manufacturer = vendor;
+    asset.updatedAt = new Date().toISOString();
+    logEventDemo({ action: "asset.oui.resolved", resourceType: "asset", resourceId: id, resourceName: asset.hostname || asset.ipAddress, message: `OUI resolved: ${asset.macAddress} → ${vendor}` });
+    return json(res, { ok: true, manufacturer: vendor, message: `${asset.macAddress} → ${vendor}` });
+  }
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "DELETE") {
     const id = path.split("/").pop();
     const asset = ASSETS.find((a) => a.id === id);
@@ -2823,6 +2913,69 @@ async function routeAPI(method, path, params, body, res, req) {
     return setTimeout(() => {
       json(res, { ok: true, message: "Synchronized with " + servers[0] + " (offset: +0.003s, " + (body.mode || "NTP").toUpperCase() + ")" });
     }, delay);
+  }
+
+  // Server Settings — DNS
+  if (path === "/api/v1/server-settings/dns" && method === "GET") {
+    return json(res, { ...DNS_SETTINGS });
+  }
+  if (path === "/api/v1/server-settings/dns" && method === "PUT") {
+    DNS_SETTINGS.servers = (body.servers || []).map(s => s.trim()).filter(Boolean);
+    DNS_SETTINGS.mode = body.mode || "standard";
+    DNS_SETTINGS.dohUrl = (body.dohUrl || "").trim();
+    return json(res, { ...DNS_SETTINGS });
+  }
+  if (path === "/api/v1/server-settings/dns/test" && method === "POST") {
+    const servers = (body.servers || []).filter(Boolean);
+    const mode = body.mode || "standard";
+    const dohUrl = (body.dohUrl || "").trim();
+    const testIp = body.testIp || "8.8.8.8";
+
+    if (mode === "doh" && !dohUrl) {
+      return json(res, { ok: false, message: "No DoH URL configured" });
+    }
+    if (mode !== "doh" && servers.length === 0) {
+      return json(res, { ok: false, message: "No DNS servers configured" });
+    }
+
+    const delay = 200 + Math.random() * 300;
+    const via = mode === "doh" ? "DoH (" + dohUrl + ")"
+              : mode === "dot" ? "DoT (" + servers[0] + ":853)"
+              : servers[0];
+    return setTimeout(() => {
+      json(res, { ok: true, message: "Resolved " + testIp + " → dns.google in " + Math.round(delay) + "ms via " + via });
+    }, delay);
+  }
+
+  // Server Settings — OUI Database
+  if (path === "/api/v1/server-settings/oui" && method === "GET") {
+    return json(res, { loaded: OUI_STATUS.loaded, entries: OUI_STATUS.entries, refreshedAt: OUI_STATUS.refreshedAt });
+  }
+  if (path === "/api/v1/server-settings/oui/refresh" && method === "POST") {
+    OUI_STATUS.loaded = true;
+    OUI_STATUS.entries = 31265;
+    OUI_STATUS.refreshedAt = new Date().toISOString();
+    return setTimeout(() => {
+      json(res, { entries: OUI_STATUS.entries, sizeKb: 2843 });
+    }, 800);
+  }
+  if (path === "/api/v1/server-settings/oui/overrides" && method === "GET") {
+    return json(res, OUI_OVERRIDES);
+  }
+  if (path === "/api/v1/server-settings/oui/overrides" && method === "POST") {
+    const clean = (body.prefix || "").replace(/[:\-.\s]/g, "").toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(clean)) return json(res, { error: "prefix must be 6 hex characters (e.g. AA:BB:CC)" }, 400);
+    if (!body.manufacturer) return json(res, { error: "manufacturer is required" }, 400);
+    const formatted = clean.match(/.{2}/g).join(":");
+    const existing = OUI_OVERRIDES.findIndex(o => o.prefix === formatted);
+    if (existing >= 0) OUI_OVERRIDES[existing].manufacturer = body.manufacturer.trim();
+    else OUI_OVERRIDES.push({ prefix: formatted, manufacturer: body.manufacturer.trim() });
+    return json(res, { prefix: formatted, manufacturer: body.manufacturer.trim() });
+  }
+  if (path.match(/^\/api\/v1\/server-settings\/oui\/overrides\/[\w:%]+$/) && method === "DELETE") {
+    const prefix = decodeURIComponent(path.split("/").pop());
+    OUI_OVERRIDES = OUI_OVERRIDES.filter(o => o.prefix !== prefix);
+    res.writeHead(204); return res.end();
   }
 
   // Server Settings — PostgreSQL Tuning Check
