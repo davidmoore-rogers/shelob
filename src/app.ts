@@ -39,6 +39,7 @@ app.use(
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'", "https://login.microsoftonline.com"],
+        upgradeInsecureRequests: null,
       },
     },
     hsts: { maxAge: 31536000, includeSubDomains: true, preload: false },
