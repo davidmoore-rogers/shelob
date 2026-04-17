@@ -184,6 +184,31 @@ code {
   text-transform: uppercase;
   letter-spacing: 1px;
 }
+.sidebar-update-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0.35rem 0.75rem 0.5rem;
+  font-size: 0.72rem;
+  color: var(--color-primary);
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+.sidebar-update-link:hover { opacity: 0.8; }
+.sidebar-update-success { color: var(--color-success); }
+.sidebar-update-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  flex-shrink: 0;
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 .sidebar-nav {
   list-style: none;
   display: flex;
@@ -276,6 +301,13 @@ code {
   flex-shrink: 0;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
 .query-status-list {
   list-style: none;
   padding: 0;

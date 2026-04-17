@@ -20,6 +20,17 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
 
+  // Check for ?tab= query parameter to open a specific tab
+  var urlParams = new URLSearchParams(window.location.search);
+  var requestedTab = urlParams.get("tab");
+  if (requestedTab) {
+    var tabBtn = document.querySelector('#settings-tabs .page-tab[data-tab="' + requestedTab + '"]');
+    if (tabBtn) {
+      tabBtn.click();
+      return;
+    }
+  }
+
   loadIdentificationTab();
 });
 
@@ -850,6 +861,23 @@ async function loadDatabaseInfo() {
     _dbLoaded = true;
 
     container.innerHTML =
+      // ── Application Updates card ──
+      '<div class="settings-card" id="update-card">' +
+        '<h4>Application Updates</h4>' +
+        '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+          'Check for new versions and apply updates directly from the browser. Updates include a pre-update database backup and automatic rollback on failure.' +
+        '</p>' +
+        '<div id="update-status-area">' +
+          '<div class="db-info-grid" style="margin-bottom:1rem">' +
+            '<div class="db-info-label">Current Version</div>' +
+            '<div class="db-info-value" id="update-current-version">v' + escapeHtml(_branding && _branding.version ? _branding.version : '?') + '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;align-items:center">' +
+            '<button class="btn btn-secondary" id="btn-check-updates">Check for Updates</button>' +
+            '<span id="update-check-status" style="font-size:0.82rem"></span>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
       '<div class="settings-card">' +
         '<h4>Database Engine</h4>' +
         '<div class="db-info-grid">' +
@@ -970,6 +998,7 @@ async function loadDatabaseInfo() {
     initBackupControls();
     initRestoreControls();
     loadBackupHistory();
+    initUpdateControls();
   } catch (err) {
     container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
   }
@@ -1242,6 +1271,335 @@ function dbInfoRow(label, value) {
 function formatNumber(n) {
   if (n === undefined || n === null) return "-";
   return Number(n).toLocaleString();
+}
+
+// ─── Application Updates ───────────────────────────────────────────────────
+
+var _updatePollTimer = null;
+
+function initUpdateControls() {
+  document.getElementById("btn-check-updates").addEventListener("click", checkForUpdatesUI);
+
+  // Check if there's a pending notification from a background check or previous restart
+  api.serverSettings.getUpdateStatus().then(function (status) {
+    if (status.state === "complete") {
+      renderUpdateComplete(status);
+    } else if (status.state === "failed") {
+      renderUpdateFailed(status);
+    } else if (status.state === "available") {
+      renderUpdateAvailable(status);
+    } else if (status.state === "applying" || status.state === "restarting") {
+      renderUpdateProgress();
+      renderSteps(status.steps);
+      startUpdatePolling();
+    }
+  }).catch(function () {});
+}
+
+async function checkForUpdatesUI() {
+  var btn = document.getElementById("btn-check-updates");
+  var statusEl = document.getElementById("update-check-status");
+  btn.disabled = true;
+  btn.textContent = "Checking...";
+  statusEl.innerHTML = '<span style="color:var(--color-text-tertiary)">Fetching latest version...</span>';
+
+  try {
+    var result = await api.serverSettings.checkForUpdates();
+
+    if (result.state === "up-to-date") {
+      statusEl.innerHTML = '<span style="color:var(--color-success)">Up to date (v' + escapeHtml(result.currentVersion) + ')</span>';
+      btn.textContent = "Check for Updates";
+      btn.disabled = false;
+      return;
+    }
+
+    if (result.state === "available") {
+      renderUpdateAvailable(result);
+      return;
+    }
+
+    if (result.state === "failed") {
+      statusEl.innerHTML = '<span style="color:var(--color-danger)">' + escapeHtml(result.error || "Check failed") + '</span>';
+    }
+  } catch (err) {
+    statusEl.innerHTML = '<span style="color:var(--color-danger)">' + escapeHtml(err.message) + '</span>';
+  }
+
+  btn.textContent = "Check for Updates";
+  btn.disabled = false;
+}
+
+function renderUpdateAvailable(result) {
+  var area = document.getElementById("update-status-area");
+
+  var changesHtml = "";
+  if (result.changes && result.changes.length > 0) {
+    changesHtml = '<div style="margin-top:0.75rem"><label style="font-size:0.78rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--color-text-tertiary)">Changes (' + result.commitsBehind + ' commit' + (result.commitsBehind === 1 ? '' : 's') + ')</label>' +
+      '<div style="max-height:160px;overflow-y:auto;margin-top:0.4rem;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-bg-secondary)">';
+    result.changes.forEach(function (c) {
+      var parts = c.match(/^(\w+)\s+(.*)$/);
+      if (parts) {
+        changesHtml += '<div style="padding:0.3rem 0.6rem;font-size:0.82rem;border-bottom:1px solid var(--color-border)">' +
+          '<span class="mono" style="color:var(--color-text-tertiary);margin-right:8px">' + escapeHtml(parts[1]) + '</span>' +
+          '<span>' + escapeHtml(parts[2]) + '</span></div>';
+      } else {
+        changesHtml += '<div style="padding:0.3rem 0.6rem;font-size:0.82rem;border-bottom:1px solid var(--color-border)">' + escapeHtml(c) + '</div>';
+      }
+    });
+    changesHtml += '</div></div>';
+  }
+
+  area.innerHTML =
+    '<div style="background:color-mix(in srgb, var(--color-primary) 10%, transparent);border:1px solid var(--color-primary);border-radius:6px;padding:1rem;margin-bottom:1rem">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<span style="color:var(--color-primary);font-weight:600;font-size:0.95rem">Update Available</span>' +
+      '</div>' +
+      '<div class="db-info-grid">' +
+        '<div class="db-info-label">Current</div><div class="db-info-value">v' + escapeHtml(result.currentVersion) + ' <span class="mono" style="color:var(--color-text-tertiary)">(' + escapeHtml(result.currentCommit) + ')</span></div>' +
+        '<div class="db-info-label">Latest</div><div class="db-info-value">v' + escapeHtml(result.latestVersion) + ' <span class="mono" style="color:var(--color-text-tertiary)">(' + escapeHtml(result.latestCommit) + ')</span></div>' +
+      '</div>' +
+      changesHtml +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center">' +
+      '<button class="btn btn-primary" id="btn-apply-update">Apply Update</button>' +
+      '<button class="btn btn-secondary" id="btn-check-updates">Check Again</button>' +
+      '<span id="update-check-status" style="font-size:0.82rem"></span>' +
+    '</div>';
+
+  document.getElementById("btn-apply-update").addEventListener("click", applyUpdateUI);
+  document.getElementById("btn-check-updates").addEventListener("click", checkForUpdatesUI);
+}
+
+async function applyUpdateUI() {
+  var confirmed = await showConfirm(
+    "Apply this update? The server will restart automatically when complete. " +
+    "A database backup will be created before updating."
+  );
+  if (!confirmed) return;
+
+  var btn = document.getElementById("btn-apply-update");
+  btn.disabled = true;
+  btn.textContent = "Starting update...";
+
+  try {
+    await api.serverSettings.applyUpdate();
+    renderUpdateProgress();
+    startUpdatePolling();
+  } catch (err) {
+    showToast("Failed to start update: " + err.message, "error");
+    btn.disabled = false;
+    btn.textContent = "Apply Update";
+  }
+}
+
+function renderUpdateProgress() {
+  var area = document.getElementById("update-status-area");
+  area.innerHTML =
+    '<div style="margin-bottom:1rem">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.75rem">' +
+        '<div class="spinner" style="width:18px;height:18px"></div>' +
+        '<span style="font-weight:600">Updating...</span>' +
+      '</div>' +
+      '<div id="update-steps-list"></div>' +
+    '</div>';
+}
+
+function renderSteps(steps) {
+  var el = document.getElementById("update-steps-list");
+  if (!el) return;
+
+  var html = '';
+  (steps || []).forEach(function (step) {
+    var icon = '';
+    var color = 'var(--color-text-tertiary)';
+    if (step.status === "done") { icon = '&#10003;'; color = 'var(--color-success)'; }
+    else if (step.status === "running") { icon = '&#9679;'; color = 'var(--color-primary)'; }
+    else if (step.status === "failed") { icon = '&#10007;'; color = 'var(--color-danger)'; }
+    else { icon = '&#9675;'; }
+
+    html += '<div style="display:flex;align-items:center;gap:8px;padding:0.35rem 0;font-size:0.88rem">' +
+      '<span style="color:' + color + ';font-size:1rem;width:20px;text-align:center;flex-shrink:0">' + icon + '</span>' +
+      '<span style="' + (step.status === "running" ? 'font-weight:600' : '') + '">' + escapeHtml(step.name) + '</span>' +
+      (step.message ? '<span style="color:var(--color-text-tertiary);font-size:0.78rem;margin-left:auto">' + escapeHtml(step.message) + '</span>' : '') +
+    '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function startUpdatePolling() {
+  if (_updatePollTimer) clearInterval(_updatePollTimer);
+  _updatePollTimer = setInterval(pollUpdateStatus, 2000);
+}
+
+function stopUpdatePolling() {
+  if (_updatePollTimer) { clearInterval(_updatePollTimer); _updatePollTimer = null; }
+}
+
+var _serverDownSince = null;
+
+async function pollUpdateStatus() {
+  try {
+    var status = await api.serverSettings.getUpdateStatus();
+    _serverDownSince = null;
+
+    if (status.state === "applying" || status.state === "restarting") {
+      renderSteps(status.steps);
+      if (status.state === "restarting") {
+        // Server is about to go down — switch to restart polling
+        stopUpdatePolling();
+        pollForRestart(status);
+      }
+      return;
+    }
+
+    if (status.state === "complete") {
+      stopUpdatePolling();
+      renderUpdateComplete(status);
+      return;
+    }
+
+    if (status.state === "failed") {
+      stopUpdatePolling();
+      renderUpdateFailed(status);
+      return;
+    }
+  } catch (err) {
+    // Server is down — it's probably restarting
+    if (!_serverDownSince) _serverDownSince = Date.now();
+    // If server has been down for more than 60s, show an error
+    if (Date.now() - _serverDownSince > 60000) {
+      stopUpdatePolling();
+      var area = document.getElementById("update-status-area");
+      if (area) {
+        area.innerHTML =
+          '<div style="background:color-mix(in srgb, var(--color-danger) 10%, transparent);border:1px solid var(--color-danger);border-radius:6px;padding:1rem">' +
+            '<strong style="color:var(--color-danger)">Server unreachable</strong>' +
+            '<p style="font-size:0.82rem;margin-top:0.5rem">The server has not responded for over 60 seconds. It may have failed to restart. Check the server logs.</p>' +
+          '</div>';
+      }
+    }
+  }
+}
+
+function pollForRestart(lastStatus) {
+  var area = document.getElementById("update-status-area");
+  if (area) {
+    renderSteps(lastStatus.steps);
+    var stepsEl = document.getElementById("update-steps-list");
+    if (stepsEl) {
+      stepsEl.innerHTML += '<div style="display:flex;align-items:center;gap:8px;padding:0.5rem 0;font-size:0.88rem">' +
+        '<div class="spinner" style="width:16px;height:16px"></div>' +
+        '<span>Waiting for server to restart...</span>' +
+      '</div>';
+    }
+  }
+
+  var attempts = 0;
+  var restartTimer = setInterval(async function () {
+    attempts++;
+    try {
+      var status = await api.serverSettings.getUpdateStatus();
+      if (status.state === "complete") {
+        clearInterval(restartTimer);
+        renderUpdateComplete(status);
+        return;
+      }
+      if (status.state === "failed") {
+        clearInterval(restartTimer);
+        renderUpdateFailed(status);
+        return;
+      }
+    } catch (_) {
+      // Server still down
+    }
+    if (attempts > 30) {
+      clearInterval(restartTimer);
+      if (area) {
+        area.innerHTML =
+          '<div style="background:color-mix(in srgb, var(--color-danger) 10%, transparent);border:1px solid var(--color-danger);border-radius:6px;padding:1rem">' +
+            '<strong style="color:var(--color-danger)">Server did not come back</strong>' +
+            '<p style="font-size:0.82rem;margin-top:0.5rem">The server has not responded after 60 seconds. Check the server logs for errors.</p>' +
+            '<button class="btn btn-secondary" style="margin-top:0.75rem" onclick="location.reload()">Retry</button>' +
+          '</div>';
+      }
+    }
+  }, 2000);
+}
+
+function renderUpdateComplete(status) {
+  var area = document.getElementById("update-status-area");
+  if (!area) return;
+
+  area.innerHTML =
+    '<div style="background:color-mix(in srgb, var(--color-success) 10%, transparent);border:1px solid var(--color-success);border-radius:6px;padding:1rem;margin-bottom:1rem">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<span style="color:var(--color-success);font-weight:600;font-size:0.95rem">&#10003; Update Complete</span>' +
+      '</div>' +
+      '<div class="db-info-grid">' +
+        (status.currentVersion ? '<div class="db-info-label">Previous</div><div class="db-info-value">v' + escapeHtml(status.currentVersion) + '</div>' : '') +
+        (status.latestVersion ? '<div class="db-info-label">Current</div><div class="db-info-value">v' + escapeHtml(status.latestVersion) + '</div>' : '') +
+      '</div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center">' +
+      '<button class="btn btn-secondary" id="btn-dismiss-update">Dismiss</button>' +
+      '<button class="btn btn-secondary" onclick="location.reload()">Reload Page</button>' +
+    '</div>';
+
+  document.getElementById("btn-dismiss-update").addEventListener("click", async function () {
+    await api.serverSettings.dismissUpdate();
+    // Reset to check state
+    var area2 = document.getElementById("update-status-area");
+    area2.innerHTML =
+      '<div class="db-info-grid" style="margin-bottom:1rem">' +
+        '<div class="db-info-label">Current Version</div>' +
+        '<div class="db-info-value">v' + escapeHtml(status.latestVersion || '?') + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;align-items:center">' +
+        '<button class="btn btn-secondary" id="btn-check-updates">Check for Updates</button>' +
+        '<span id="update-check-status" style="font-size:0.82rem"></span>' +
+      '</div>';
+    document.getElementById("btn-check-updates").addEventListener("click", checkForUpdatesUI);
+  });
+}
+
+function renderUpdateFailed(status) {
+  var area = document.getElementById("update-status-area");
+  if (!area) return;
+
+  var stepsHtml = '';
+  if (status.steps && status.steps.length > 0) {
+    stepsHtml = '<div style="margin-top:0.75rem">';
+    status.steps.forEach(function (step) {
+      var icon = step.status === "done" ? "&#10003;" : step.status === "failed" ? "&#10007;" : "&#9675;";
+      var color = step.status === "done" ? "var(--color-success)" : step.status === "failed" ? "var(--color-danger)" : "var(--color-text-tertiary)";
+      stepsHtml += '<div style="display:flex;align-items:center;gap:8px;padding:0.25rem 0;font-size:0.85rem">' +
+        '<span style="color:' + color + '">' + icon + '</span>' +
+        '<span>' + escapeHtml(step.name) + '</span>' +
+        (step.message ? '<span style="color:var(--color-text-tertiary);font-size:0.78rem;margin-left:auto">' + escapeHtml(step.message) + '</span>' : '') +
+      '</div>';
+    });
+    stepsHtml += '</div>';
+  }
+
+  area.innerHTML =
+    '<div style="background:color-mix(in srgb, var(--color-danger) 10%, transparent);border:1px solid var(--color-danger);border-radius:6px;padding:1rem;margin-bottom:1rem">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<span style="color:var(--color-danger);font-weight:600;font-size:0.95rem">&#10007; Update Failed</span>' +
+      '</div>' +
+      '<p style="font-size:0.85rem;margin:0.5rem 0">' + escapeHtml(status.error || 'Unknown error') + '</p>' +
+      stepsHtml +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center">' +
+      '<button class="btn btn-secondary" id="btn-dismiss-update">Dismiss</button>' +
+      '<button class="btn btn-secondary" id="btn-check-updates">Check Again</button>' +
+    '</div>';
+
+  document.getElementById("btn-dismiss-update").addEventListener("click", async function () {
+    await api.serverSettings.dismissUpdate();
+    _dbLoaded = false;
+    loadDatabaseInfo();
+  });
+  document.getElementById("btn-check-updates").addEventListener("click", checkForUpdatesUI);
 }
 
 // ─── Customization Tab ─────────────────────────────────────────────────────

@@ -277,6 +277,34 @@ systemctl daemon-reload
 systemctl enable --now shelob
 ```
 
+### Updating
+
+Automated update scripts handle backup, build, migration, and rollback on failure:
+
+**Linux (RHEL / Ubuntu / Debian):**
+
+```bash
+# As root on the production server:
+bash deploy/update-linux.sh
+```
+
+**Windows Server:**
+
+```powershell
+# As Administrator:
+powershell -ExecutionPolicy Bypass -File deploy\update-windows.ps1
+```
+
+The update scripts will:
+1. Record the current version and commit hash
+2. Create a database backup via `pg_dump` (kept in the `backups/` directory, last 10 retained)
+3. Pull the latest code (`git pull --ff-only`)
+4. Install dependencies (`npm ci`) and flag any high/critical vulnerabilities
+5. Build TypeScript (`npx tsc`) — done **before** stopping the service to minimize downtime
+6. Stop the service, run database migrations (`prisma migrate deploy`), and start the service
+7. Verify the service is running and responds to HTTP requests
+8. On failure at any step: automatically rollback code, rebuild, restore the database (if migration failed), and restart the previous version
+
 ### Managing the service
 
 **Linux (systemd):**
@@ -294,30 +322,6 @@ journalctl -u shelob --since today  # today's logs
 nssm status Shelob               # check status
 nssm restart Shelob               # restart after config changes
 Get-Content C:\shelob\logs\service-stdout.log -Tail 50   # tail logs
-```
-
-### Updating
-
-**Linux:**
-
-```bash
-cd /opt/shelob
-sudo -u shelob git pull --ff-only
-sudo -u shelob npm ci
-sudo -u shelob npx tsc
-sudo -u shelob npx prisma migrate deploy
-systemctl restart shelob
-```
-
-**Windows:**
-
-```powershell
-cd C:\shelob
-git pull --ff-only
-npm ci
-npx tsc
-npx prisma migrate deploy
-nssm restart Shelob
 ```
 
 ## Running Tests

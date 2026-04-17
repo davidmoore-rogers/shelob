@@ -178,12 +178,47 @@ function applyBranding(b) {
   if (versionEl && b.version) {
     versionEl.textContent = "v" + b.version;
   }
+
+  // Check for available updates (admin only)
+  if (isAdmin()) checkSidebarUpdate();
 }
 
 async function fetchBranding() {
   try {
     var b = await api.serverSettings.getBranding();
     applyBranding(b);
+  } catch (_) {}
+}
+
+async function checkSidebarUpdate() {
+  try {
+    var status = await api.serverSettings.getUpdateStatus();
+    var versionEl = document.getElementById("sidebar-version");
+    if (!versionEl) return;
+
+    // Remove any existing update badge
+    var existing = document.getElementById("sidebar-update-badge");
+    if (existing) existing.remove();
+
+    if (status.state === "available") {
+      var badge = document.createElement("div");
+      badge.id = "sidebar-update-badge";
+      badge.innerHTML =
+        '<a href="/server-settings.html?tab=database" class="sidebar-update-link">' +
+          '<span class="sidebar-update-dot"></span>' +
+          'Update available: v' + escapeHtml(status.latestVersion) +
+        '</a>';
+      versionEl.parentNode.insertBefore(badge, versionEl.nextSibling);
+    } else if (status.state === "complete") {
+      var badge = document.createElement("div");
+      badge.id = "sidebar-update-badge";
+      badge.innerHTML =
+        '<a href="/server-settings.html?tab=database" class="sidebar-update-link sidebar-update-success">' +
+          '<span class="sidebar-update-dot" style="background:var(--color-success)"></span>' +
+          'Updated to v' + escapeHtml(status.latestVersion) +
+        '</a>';
+      versionEl.parentNode.insertBefore(badge, versionEl.nextSibling);
+    }
   } catch (_) {}
 }
 

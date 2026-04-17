@@ -20,6 +20,7 @@ import { getHttpsSettings } from "./services/serverSettingsService.js";
 import { isAzureSsoConfiguredAsync, getSsoSettings } from "./services/azureAuthService.js";
 import "./jobs/pruneEvents.js";
 import "./jobs/ouiRefresh.js";
+import "./jobs/updateCheck.js";
 
 const app = express();
 

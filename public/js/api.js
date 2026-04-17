@@ -198,6 +198,10 @@ const api = {
     deleteOuiOverride:(pfx)  => request("DELETE", `/server-settings/oui/overrides/${encodeURIComponent(pfx)}`),
     getPgTuning: () => request("GET", "/server-settings/pg-tuning"),
     snoozePgTuning: (days) => request("POST", "/server-settings/pg-tuning/snooze", { days: days || 7 }),
+    checkForUpdates: () => request("GET", "/server-settings/updates/check"),
+    getUpdateStatus: () => request("GET", "/server-settings/updates/status"),
+    applyUpdate:     () => request("POST", "/server-settings/updates/apply"),
+    dismissUpdate:   () => request("POST", "/server-settings/updates/dismiss"),
   },
   auth: {
     me: () => request("GET", "/auth/me"),

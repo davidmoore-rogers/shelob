@@ -30,6 +30,13 @@ import {
 import { getDnsSettings, updateDnsSettings, createResolver } from "../../services/dnsService.js";
 import type { DnsSettings } from "../../services/dnsService.js";
 import { getOuiStatus, refreshOuiDatabase, getOuiOverrides, setOuiOverride, deleteOuiOverride } from "../../services/ouiService.js";
+import {
+  checkForUpdates,
+  applyUpdate,
+  getUpdateStatus,
+  clearUpdateStatus,
+  initUpdateStatus,
+} from "../../services/updateService.js";
 import { applyHttps, isHttpsRunning } from "../../httpsManager.js";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
@@ -688,6 +695,46 @@ router.post("/pg-tuning/snooze", async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// ─── Application Updates ──────────────────────────────────────────────────
+
+// Initialize update status on module load (detects post-restart state)
+initUpdateStatus();
+
+router.get("/updates/check", async (_req, res, next) => {
+  try {
+    const status = await checkForUpdates();
+    res.json(status);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/updates/status", (_req, res) => {
+  res.json(getUpdateStatus());
+});
+
+router.post("/updates/apply", async (_req, res, next) => {
+  try {
+    const status = getUpdateStatus();
+    if (status.state === "applying" || status.state === "restarting") {
+      return res.status(409).json({ error: "An update is already in progress" });
+    }
+    // Start the update in the background
+    applyUpdate().catch((err) => {
+      logger.error({ err }, "Update failed");
+    });
+    // Return immediately — client should poll /updates/status
+    res.json({ started: true, message: "Update started — poll /updates/status for progress" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/updates/dismiss", (_req, res) => {
+  clearUpdateStatus();
+  res.json({ ok: true });
 });
 
 export default router;

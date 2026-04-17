@@ -1031,6 +1031,14 @@ let SSO_SETTINGS = {
 
 let PG_TUNING_SNOOZE = { until: null };
 
+let DEMO_UPDATE_STATUS = { state: "idle" };
+
+function _bumpPatch(version) {
+  const parts = (version || "0.0.0").split(".");
+  parts[2] = String((parseInt(parts[2], 10) || 0) + 1);
+  return parts.join(".");
+}
+
 let DNS_SETTINGS = { servers: [], mode: "standard", dohUrl: "" };
 let OUI_STATUS = { loaded: true, entries: 31265, refreshedAt: new Date(Date.now() - 2 * 86400000).toISOString() };
 let OUI_OVERRIDES = [
@@ -3018,6 +3026,82 @@ async function routeAPI(method, path, params, body, res, req) {
     const days = Math.min(30, Math.max(1, parseInt(body?.days, 10) || 7));
     PG_TUNING_SNOOZE.until = new Date(Date.now() + days * 86400000).toISOString();
     return json(res, { ok: true, snoozedUntil: PG_TUNING_SNOOZE.until });
+  }
+
+  // Server Settings — Application Updates
+  if (path === "/api/v1/server-settings/updates/check" && method === "GET") {
+    // Simulate checking for updates — alternate between up-to-date and available
+    if (DEMO_UPDATE_STATUS.state === "complete" || DEMO_UPDATE_STATUS.state === "failed") {
+      return json(res, DEMO_UPDATE_STATUS);
+    }
+    DEMO_UPDATE_STATUS = {
+      state: "available",
+      currentVersion: BRANDING.version || "1.0.5",
+      latestVersion: _bumpPatch(BRANDING.version || "1.0.5"),
+      currentCommit: "27d7c6f",
+      latestCommit: "a1b2c3d",
+      commitsBehind: 3,
+      changes: [
+        "a1b2c3d Add searchable timezone dropdown",
+        "e4f5g6h Add deployment scripts for Ubuntu and Windows",
+        "i7j8k9l Update README with multi-platform docs",
+      ],
+    };
+    return json(res, DEMO_UPDATE_STATUS);
+  }
+
+  if (path === "/api/v1/server-settings/updates/status" && method === "GET") {
+    return json(res, DEMO_UPDATE_STATUS);
+  }
+
+  if (path === "/api/v1/server-settings/updates/apply" && method === "POST") {
+    // Simulate a multi-step update process
+    const steps = [
+      { name: "Backup database", status: "pending" },
+      { name: "Pull latest code", status: "pending" },
+      { name: "Install dependencies", status: "pending" },
+      { name: "Build TypeScript", status: "pending" },
+      { name: "Run migrations", status: "pending" },
+      { name: "Restart service", status: "pending" },
+    ];
+    DEMO_UPDATE_STATUS = {
+      state: "applying",
+      currentVersion: BRANDING.version || "1.0.5",
+      latestVersion: _bumpPatch(BRANDING.version || "1.0.5"),
+      startedAt: new Date().toISOString(),
+      steps,
+    };
+
+    // Simulate progress over time
+    let stepIdx = 0;
+    const interval = setInterval(() => {
+      if (stepIdx < steps.length) {
+        if (stepIdx > 0) steps[stepIdx - 1].status = "done";
+        steps[stepIdx].status = "running";
+        if (stepIdx === 0) steps[0].message = "Backup created (42 KB)";
+        DEMO_UPDATE_STATUS.steps = steps;
+      }
+      stepIdx++;
+      if (stepIdx > steps.length) {
+        clearInterval(interval);
+        steps[steps.length - 1].status = "done";
+        DEMO_UPDATE_STATUS = {
+          ...DEMO_UPDATE_STATUS,
+          state: "complete",
+          completedAt: new Date().toISOString(),
+          steps,
+        };
+        // Update branding version
+        BRANDING.version = DEMO_UPDATE_STATUS.latestVersion;
+      }
+    }, 1500);
+
+    return json(res, { started: true, message: "Update started" });
+  }
+
+  if (path === "/api/v1/server-settings/updates/dismiss" && method === "POST") {
+    DEMO_UPDATE_STATUS = { state: "idle" };
+    return json(res, { ok: true });
   }
 
   // Server Settings — Database
