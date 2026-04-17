@@ -10,14 +10,21 @@ import { AppError } from "../../utils/errors.js";
 
 const router = Router();
 
+const passwordSchema = z.string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[a-z]/, "Password must contain a lowercase letter")
+  .regex(/[A-Z]/, "Password must contain an uppercase letter")
+  .regex(/[0-9]/, "Password must contain a number")
+  .regex(/[^a-zA-Z0-9]/, "Password must contain a special character");
+
 const CreateUserSchema = z.object({
   username: z.string().min(1).max(64),
-  password: z.string().min(4),
+  password: passwordSchema,
   role:     z.enum(["admin", "networkadmin", "assetsadmin", "user", "readonly"]).optional(),
 });
 
 const ResetPasswordSchema = z.object({
-  password: z.string().min(4),
+  password: passwordSchema,
 });
 
 const UpdateRoleSchema = z.object({
@@ -28,7 +35,7 @@ const UpdateRoleSchema = z.object({
 router.get("/", async (_req, res, next) => {
   try {
     const users = await prisma.user.findMany({
-      select: { id: true, username: true, role: true, createdAt: true, updatedAt: true },
+      select: { id: true, username: true, role: true, authProvider: true, displayName: true, email: true, lastLogin: true, createdAt: true, updatedAt: true },
       orderBy: { username: "asc" },
     });
     res.json(users);
@@ -47,8 +54,8 @@ router.post("/", async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { username, passwordHash, role: role || "readonly" },
-      select: { id: true, username: true, role: true, createdAt: true },
+      data: { username, passwordHash, role: role || "readonly", authProvider: "local" },
+      select: { id: true, username: true, role: true, authProvider: true, createdAt: true },
     });
     res.status(201).json(user);
   } catch (err) {
@@ -62,6 +69,7 @@ router.put("/:id/password", async (req, res, next) => {
     const { password } = ResetPasswordSchema.parse(req.body);
     const user = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!user) throw new AppError(404, "User not found");
+    if (user.authProvider === "azure") throw new AppError(400, "Cannot reset password for Azure SSO users");
 
     const passwordHash = await bcrypt.hash(password, 10);
     await prisma.user.update({

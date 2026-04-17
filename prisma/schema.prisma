@@ -211,6 +211,11 @@ model User {
   username     String   @unique
   passwordHash String   @map("password_hash")
   role         UserRole @default(readonly)
+  authProvider String   @default("local") @map("auth_provider")  // "local" or "azure"
+  azureOid     String?  @unique @map("azure_oid")                // Azure AD Object ID
+  displayName  String?  @map("display_name")
+  email        String?
+  lastLogin    DateTime? @map("last_login")
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

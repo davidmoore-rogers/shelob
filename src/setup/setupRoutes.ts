@@ -1,0 +1,206 @@
+/**
+ * src/setup/setupRoutes.ts — API endpoints for first-run setup wizard
+ */
+
+import { Router } from "express";
+import { z } from "zod";
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
+import pg from "pg";
+import bcrypt from "bcrypt";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const router = Router();
+
+const DbConfigSchema = z.object({
+  host: z.string().min(1),
+  port: z.coerce.number().int().min(1).max(65535).default(5432),
+  username: z.string().min(1),
+  password: z.string(),
+  database: z.string().min(1),
+  ssl: z.boolean().default(false),
+});
+
+const passwordSchema = z.string()
+  .min(8, "Password must be at least 8 characters")
+  .regex(/[a-z]/, "Password must contain a lowercase letter")
+  .regex(/[A-Z]/, "Password must contain an uppercase letter")
+  .regex(/[0-9]/, "Password must contain a number")
+  .regex(/[^a-zA-Z0-9]/, "Password must contain a special character");
+
+const FinalizeSchema = z.object({
+  db: DbConfigSchema,
+  admin: z.object({
+    username: z.string().min(1).max(64),
+    password: passwordSchema,
+  }),
+  app: z.object({
+    port: z.coerce.number().int().min(1).max(65535).default(3000),
+    sessionSecret: z.string().min(16),
+  }),
+});
+
+function buildConnectionString(db: z.infer<typeof DbConfigSchema>): string {
+  const encoded = encodeURIComponent(db.password);
+  const base = `postgresql://${encodeURIComponent(db.username)}:${encoded}@${db.host}:${db.port}/${db.database}`;
+  return db.ssl ? `${base}?sslmode=require` : base;
+}
+
+// GET /api/setup/status
+router.get("/status", (_req, res) => {
+  res.json({ needsSetup: true });
+});
+
+// POST /api/setup/generate-secret
+router.post("/generate-secret", (_req, res) => {
+  res.json({ secret: randomBytes(32).toString("hex") });
+});
+
+// POST /api/setup/test-connection
+router.post("/test-connection", async (req, res) => {
+  try {
+    const db = DbConfigSchema.parse(req.body);
+
+    // Connect to the postgres default database to test server connectivity
+    const connStr = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/postgres${db.ssl ? "?sslmode=require" : ""}`;
+    const client = new pg.Client({ connectionString: connStr, connectionTimeoutMillis: 8000 });
+    await client.connect();
+
+    // Check PostgreSQL version
+    const versionResult = await client.query("SELECT version()");
+    const version = versionResult.rows[0]?.version || "Unknown";
+
+    // Check if target database exists
+    const dbCheck = await client.query(
+      "SELECT 1 FROM pg_database WHERE datname = $1",
+      [db.database],
+    );
+    const dbExists = (dbCheck.rowCount ?? 0) > 0;
+
+    await client.end();
+
+    res.json({
+      ok: true,
+      version,
+      databaseExists: dbExists,
+      message: dbExists
+        ? `Connected — ${version.split(",")[0]}`
+        : `Connected — database "${db.database}" will be created during setup`,
+    });
+  } catch (err: any) {
+    const msg = err.code === "ECONNREFUSED"
+      ? `Connection refused — ${req.body.host}:${req.body.port}`
+      : err.code === "ENOTFOUND"
+      ? `Host not found — ${req.body.host}`
+      : err.code === "ETIMEDOUT"
+      ? `Connection timed out — ${req.body.host}:${req.body.port}`
+      : err.code === "28P01"
+      ? "Authentication failed — check username and password"
+      : err.message || "Connection failed";
+    res.json({ ok: false, message: msg });
+  }
+});
+
+// POST /api/setup/finalize
+router.post("/finalize", async (req, res) => {
+  try {
+    const { db, admin, app } = FinalizeSchema.parse(req.body);
+
+    // Safety: don't overwrite existing working config
+    if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0) {
+      return res.status(409).json({ ok: false, message: "Application is already configured" });
+    }
+
+    // Step 1: Create database if it doesn't exist
+    const serverConnStr = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/postgres${db.ssl ? "?sslmode=require" : ""}`;
+    const serverClient = new pg.Client({ connectionString: serverConnStr, connectionTimeoutMillis: 8000 });
+    await serverClient.connect();
+
+    const dbCheck = await serverClient.query(
+      "SELECT 1 FROM pg_database WHERE datname = $1",
+      [db.database],
+    );
+    if ((dbCheck.rowCount ?? 0) === 0) {
+      // Use double-quote escaping for the database name
+      const safeName = db.database.replace(/"/g, '""');
+      await serverClient.query(`CREATE DATABASE "${safeName}"`);
+    }
+    await serverClient.end();
+
+    // Step 2: Write .env file
+    const databaseUrl = buildConnectionString(db);
+    const envContent = [
+      "# Shelob — Application Configuration",
+      "# Generated by first-run setup wizard",
+      "",
+      "# Database",
+      `DATABASE_URL=${databaseUrl}`,
+      "",
+      "# App",
+      `PORT=${app.port}`,
+      "NODE_ENV=production",
+      "LOG_LEVEL=info",
+      "",
+      "# Session secret",
+      `SESSION_SECRET=${app.sessionSecret}`,
+      "",
+    ].join("\n");
+
+    const envPath = resolve(process.cwd(), ".env");
+    writeFileSync(envPath, envContent, "utf-8");
+
+    // Step 3: Set DATABASE_URL in current process so Prisma can use it
+    process.env.DATABASE_URL = databaseUrl;
+    process.env.PORT = String(app.port);
+    process.env.SESSION_SECRET = app.sessionSecret;
+
+    // Step 4: Run Prisma migrations
+    const projectRoot = resolve(__dirname, "..", "..");
+    try {
+      execSync("npx prisma migrate deploy", {
+        cwd: projectRoot,
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+        stdio: "pipe",
+        timeout: 120000,
+      });
+    } catch (migrateErr: any) {
+      const stderr = migrateErr.stderr?.toString() || migrateErr.message;
+      return res.status(500).json({
+        ok: false,
+        step: "migrations",
+        message: `Database migration failed: ${stderr.slice(0, 500)}`,
+      });
+    }
+
+    // Step 5: Create admin user via raw pg
+    const appClient = new pg.Client({ connectionString: databaseUrl, connectionTimeoutMillis: 8000 });
+    await appClient.connect();
+
+    const passwordHash = await bcrypt.hash(admin.password, 10);
+    await appClient.query(
+      `INSERT INTO users (id, username, password_hash, role, auth_provider, created_at, updated_at)
+       VALUES (gen_random_uuid(), $1, $2, 'admin', 'local', NOW(), NOW())
+       ON CONFLICT (username) DO UPDATE SET password_hash = $2, role = 'admin'`,
+      [admin.username, passwordHash],
+    );
+    await appClient.end();
+
+    res.json({ ok: true, message: "Setup complete. The application is restarting." });
+
+    // Step 6: Restart the process after response flushes
+    setTimeout(() => {
+      process.exit(0);
+    }, 1500);
+  } catch (err: any) {
+    if (err.name === "ZodError") {
+      return res.status(400).json({ ok: false, message: "Invalid input", errors: err.errors });
+    }
+    res.status(500).json({ ok: false, message: err.message || "Setup failed" });
+  }
+});
+
+export default router;

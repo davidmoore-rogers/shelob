@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<script>document.documentElement.setAttribute("data-theme",localStorage.getItem("shelob-theme")||"dark")</script>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shelob — Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/webp" href="/logo.webp">
+  <link rel="stylesheet" href="/css/styles.css">
+  <style>
+    .setup-wrapper {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-bg-secondary);
+      padding: 2rem 1rem;
+    }
+    .setup-card {
+      background: var(--color-bg-primary);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: 2rem 2.5rem 2.5rem;
+      width: 100%;
+      max-width: 540px;
+      box-shadow: var(--shadow-md);
+    }
+    .setup-card h2 {
+      text-align: center;
+      margin-bottom: 0.15rem;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--color-text-primary);
+    }
+    .setup-card .subtitle {
+      text-align: center;
+      color: var(--color-text-tertiary);
+      font-size: 0.8rem;
+      margin-bottom: 1.5rem;
+    }
+    .setup-logo {
+      display: block;
+      margin: 0 auto 1rem;
+      max-width: 120px;
+      border-radius: 8px;
+    }
+
+    /* Stepper */
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      margin-bottom: 1.75rem;
+    }
+    .stepper-step {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      color: var(--color-text-tertiary);
+      font-weight: 500;
+    }
+    .stepper-step.active { color: var(--color-text-primary); }
+    .stepper-step.done { color: var(--color-success, #4caf50); }
+    .stepper-num {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.72rem;
+      font-weight: 600;
+      border: 1.5px solid var(--color-border);
+      color: var(--color-text-tertiary);
+      flex-shrink: 0;
+    }
+    .stepper-step.active .stepper-num {
+      border-color: var(--color-primary, #4a9eff);
+      background: var(--color-primary, #4a9eff);
+      color: #fff;
+    }
+    .stepper-step.done .stepper-num {
+      border-color: var(--color-success, #4caf50);
+      background: var(--color-success, #4caf50);
+      color: #fff;
+    }
+    .stepper-line {
+      width: 32px;
+      height: 1.5px;
+      background: var(--color-border);
+      margin: 0 0.35rem;
+    }
+    .stepper-line.done { background: var(--color-success, #4caf50); }
+
+    /* Step panels */
+    .step-panel { display: none; }
+    .step-panel.visible { display: block; }
+    .step-panel h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--color-text-primary);
+    }
+
+    /* Actions bar */
+    .setup-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 1.5rem;
+      gap: 0.75rem;
+    }
+    .setup-actions .btn { min-width: 100px; justify-content: center; }
+
+    /* Test connection result */
+    .test-result {
+      margin-top: 0.75rem;
+      padding: 0.5rem 0.75rem;
+      border-radius: var(--radius-md);
+      font-size: 0.85rem;
+      display: none;
+    }
+    .test-result.success {
+      display: block;
+      background: rgba(76,175,80,0.12);
+      color: var(--color-success, #4caf50);
+      border: 1px solid rgba(76,175,80,0.3);
+    }
+    .test-result.error {
+      display: block;
+      background: rgba(255,23,68,0.12);
+      color: var(--color-danger, #ff1744);
+      border: 1px solid rgba(255,23,68,0.3);
+    }
+
+    /* Form grid */
+    .form-row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+    @media (max-width: 480px) { .form-row-2 { grid-template-columns: 1fr; } }
+
+    /* Review summary */
+    .review-grid {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 0.35rem 1rem;
+      font-size: 0.88rem;
+    }
+    .review-grid dt { color: var(--color-text-tertiary); }
+    .review-grid dd { color: var(--color-text-primary); margin: 0; word-break: break-all; }
+
+    /* Progress overlay */
+    .setup-progress {
+      text-align: center;
+      padding: 2rem 0;
+    }
+    .setup-progress .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--color-border);
+      border-top-color: var(--color-primary, #4a9eff);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .setup-progress p { color: var(--color-text-secondary); font-size: 0.9rem; }
+
+    /* Secret field */
+    .secret-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-end;
+    }
+    .secret-row input { flex: 1; }
+    .secret-row .btn { flex-shrink: 0; height: 36px; }
+
+    .form-group .hint { margin-top: 0.25rem; }
+  </style>
+</head>
+<body>
+  <div class="setup-wrapper">
+    <div class="setup-card">
+      <img src="/logo.webp" alt="Shelob" class="setup-logo">
+      <h2>Shelob</h2>
+      <p class="subtitle">First-Run Setup</p>
+
+      <!-- Stepper -->
+      <div class="stepper" id="stepper">
+        <div class="stepper-step active" data-step="1"><span class="stepper-num">1</span><span>Database</span></div>
+        <div class="stepper-line" data-line="1"></div>
+        <div class="stepper-step" data-step="2"><span class="stepper-num">2</span><span>Admin</span></div>
+        <div class="stepper-line" data-line="2"></div>
+        <div class="stepper-step" data-step="3"><span class="stepper-num">3</span><span>Settings</span></div>
+        <div class="stepper-line" data-line="3"></div>
+        <div class="stepper-step" data-step="4"><span class="stepper-num">4</span><span>Review</span></div>
+      </div>
+
+      <!-- Step 1: Database -->
+      <div class="step-panel visible" id="step-1">
+        <h3>Database Configuration</h3>
+        <p class="hint" style="margin-bottom:1rem">Enter the connection details for your PostgreSQL database server.</p>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="db-host">Host</label>
+            <input type="text" id="db-host" value="localhost" placeholder="e.g. localhost or db.example.com">
+          </div>
+          <div class="form-group">
+            <label for="db-port">Port</label>
+            <input type="number" id="db-port" value="5432" min="1" max="65535">
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="db-username">Username</label>
+            <input type="text" id="db-username" value="shelob" placeholder="e.g. shelob">
+          </div>
+          <div class="form-group">
+            <label for="db-password">Password</label>
+            <input type="password" id="db-password" placeholder="Database password">
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="db-database">Database Name</label>
+          <input type="text" id="db-database" value="shelob" placeholder="e.g. shelob">
+          <p class="hint">If the database does not exist, it will be created automatically.</p>
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+            <input type="checkbox" id="db-ssl">
+            <span>Use SSL connection</span>
+          </label>
+        </div>
+        <button class="btn btn-secondary" id="btn-test-conn" style="width:100%">Test Connection</button>
+        <div class="test-result" id="test-result"></div>
+        <div class="setup-actions">
+          <span></span>
+          <button class="btn btn-primary" id="btn-next-1" disabled>Next</button>
+        </div>
+      </div>
+
+      <!-- Step 2: Admin Account -->
+      <div class="step-panel" id="step-2">
+        <h3>Admin Account</h3>
+        <p class="hint" style="margin-bottom:1rem">Create the first administrator account. You can add more users after setup.</p>
+        <div class="form-group">
+          <label for="admin-username">Username</label>
+          <input type="text" id="admin-username" value="admin" placeholder="e.g. admin">
+        </div>
+        <div class="form-group">
+          <label for="admin-password">Password</label>
+          <input type="password" id="admin-password" placeholder="Enter password">
+          <div id="pw-checks" style="margin-top:0.5rem;font-size:0.8rem;line-height:1.6;color:var(--color-text-tertiary)">
+            <div data-rule="length"><span class="pw-icon">&#9675;</span> At least 8 characters</div>
+            <div data-rule="lower"><span class="pw-icon">&#9675;</span> Lowercase letter</div>
+            <div data-rule="upper"><span class="pw-icon">&#9675;</span> Uppercase letter</div>
+            <div data-rule="number"><span class="pw-icon">&#9675;</span> Number</div>
+            <div data-rule="special"><span class="pw-icon">&#9675;</span> Special character</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="admin-password-confirm">Confirm Password</label>
+          <input type="password" id="admin-password-confirm" placeholder="Re-enter password">
+        </div>
+        <div class="setup-actions">
+          <button class="btn btn-secondary" id="btn-back-2">Back</button>
+          <button class="btn btn-primary" id="btn-next-2">Next</button>
+        </div>
+      </div>
+
+      <!-- Step 3: App Settings -->
+      <div class="step-panel" id="step-3">
+        <h3>Application Settings</h3>
+        <div class="form-group">
+          <label for="app-port">HTTP Port</label>
+          <input type="number" id="app-port" value="3000" min="1" max="65535">
+          <p class="hint">The port Shelob will listen on after setup.</p>
+        </div>
+        <div class="form-group">
+          <label for="app-secret">Session Secret</label>
+          <div class="secret-row">
+            <input type="text" id="app-secret" readonly placeholder="Generating...">
+            <button class="btn btn-secondary btn-sm" id="btn-regen-secret" title="Regenerate">Regenerate</button>
+          </div>
+          <p class="hint">Used to sign session cookies. Auto-generated for security.</p>
+        </div>
+        <div class="setup-actions">
+          <button class="btn btn-secondary" id="btn-back-3">Back</button>
+          <button class="btn btn-primary" id="btn-next-3">Next</button>
+        </div>
+      </div>
+
+      <!-- Step 4: Review -->
+      <div class="step-panel" id="step-4">
+        <h3>Review Configuration</h3>
+        <p class="hint" style="margin-bottom:1rem">Verify the settings below, then click "Complete Setup" to configure the application.</p>
+
+        <div style="margin-bottom:1rem">
+          <strong style="font-size:0.85rem;color:var(--color-text-secondary)">Database</strong>
+          <dl class="review-grid" id="review-db"></dl>
+        </div>
+        <div style="margin-bottom:1rem">
+          <strong style="font-size:0.85rem;color:var(--color-text-secondary)">Admin Account</strong>
+          <dl class="review-grid" id="review-admin"></dl>
+        </div>
+        <div style="margin-bottom:1rem">
+          <strong style="font-size:0.85rem;color:var(--color-text-secondary)">Application</strong>
+          <dl class="review-grid" id="review-app"></dl>
+        </div>
+
+        <div class="setup-actions">
+          <button class="btn btn-secondary" id="btn-back-4">Back</button>
+          <button class="btn btn-primary" id="btn-finalize">Complete Setup</button>
+        </div>
+      </div>
+
+      <!-- Progress / Done -->
+      <div class="step-panel" id="step-progress">
+        <div class="setup-progress">
+          <div class="spinner"></div>
+          <p id="progress-msg">Setting up your application...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    var currentStep = 1;
+    var connectionTested = false;
+    var sessionSecret = "";
+    var demoMode = false;
+
+    // Detect demo mode — if setup/status says needsSetup: false, we're in demo
+    (async function () {
+      try {
+        var res = await fetch("/api/setup/status");
+        var data = await res.json();
+        if (data.needsSetup === false) {
+          demoMode = true;
+          // Enable Next on step 1 immediately (no connection test required)
+          document.getElementById("btn-next-1").disabled = false;
+        }
+      } catch (_) {}
+    })();
+
+    // ─── Step navigation ──────────────────────────────────────────────
+
+    function goToStep(step) {
+      currentStep = step;
+      for (var i = 1; i <= 4; i++) {
+        var panel = document.getElementById("step-" + i);
+        panel.classList.toggle("visible", i === step);
+      }
+      document.getElementById("step-progress").classList.remove("visible");
+      updateStepper();
+    }
+
+    function updateStepper() {
+      document.querySelectorAll(".stepper-step").forEach(function (el) {
+        var s = parseInt(el.dataset.step, 10);
+        el.classList.remove("active", "done");
+        if (s === currentStep) el.classList.add("active");
+        else if (s < currentStep) el.classList.add("done");
+      });
+      document.querySelectorAll(".stepper-line").forEach(function (el) {
+        var l = parseInt(el.dataset.line, 10);
+        el.classList.toggle("done", l < currentStep);
+      });
+    }
+
+    // ─── Step 1: Database ─────────────────────────────────────────────
+
+    function getDbConfig() {
+      return {
+        host: document.getElementById("db-host").value.trim(),
+        port: parseInt(document.getElementById("db-port").value, 10) || 5432,
+        username: document.getElementById("db-username").value.trim(),
+        password: document.getElementById("db-password").value,
+        database: document.getElementById("db-database").value.trim(),
+        ssl: document.getElementById("db-ssl").checked,
+      };
+    }
+
+    document.getElementById("btn-test-conn").addEventListener("click", async function () {
+      var btn = this;
+      var resultEl = document.getElementById("test-result");
+      btn.disabled = true;
+      btn.textContent = "Testing...";
+      resultEl.className = "test-result";
+      resultEl.style.display = "none";
+
+      try {
+        var db = getDbConfig();
+        if (!db.host || !db.username || !db.database) {
+          throw new Error("Host, username, and database name are required");
+        }
+        var res = await fetch("/api/setup/test-connection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(db),
+        });
+        var data = await res.json();
+        if (data.ok) {
+          resultEl.className = "test-result success";
+          resultEl.textContent = data.message;
+          connectionTested = true;
+          document.getElementById("btn-next-1").disabled = false;
+        } else {
+          resultEl.className = "test-result error";
+          resultEl.textContent = data.message;
+          connectionTested = false;
+          document.getElementById("btn-next-1").disabled = true;
+        }
+      } catch (err) {
+        resultEl.className = "test-result error";
+        resultEl.textContent = err.message || "Connection test failed";
+        connectionTested = false;
+        document.getElementById("btn-next-1").disabled = true;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Test Connection";
+      }
+    });
+
+    // Reset test when DB fields change
+    ["db-host", "db-port", "db-username", "db-password", "db-database", "db-ssl"].forEach(function (id) {
+      document.getElementById(id).addEventListener("input", function () {
+        connectionTested = false;
+        document.getElementById("btn-next-1").disabled = true;
+        var r = document.getElementById("test-result");
+        r.className = "test-result";
+        r.style.display = "none";
+      });
+    });
+
+    document.getElementById("btn-next-1").addEventListener("click", function () {
+      if (!connectionTested && !demoMode) return;
+      goToStep(2);
+    });
+
+    // ─── Step 2: Admin ────────────────────────────────────────────────
+
+    var pwRules = {
+      length:  function (p) { return p.length >= 8; },
+      lower:   function (p) { return /[a-z]/.test(p); },
+      upper:   function (p) { return /[A-Z]/.test(p); },
+      number:  function (p) { return /[0-9]/.test(p); },
+      special: function (p) { return /[^a-zA-Z0-9]/.test(p); },
+    };
+
+    function checkPasswordComplexity(pw) {
+      var allPassed = true;
+      Object.keys(pwRules).forEach(function (rule) {
+        var passed = pwRules[rule](pw);
+        if (!passed) allPassed = false;
+        var el = document.querySelector('#pw-checks [data-rule="' + rule + '"]');
+        if (el) {
+          el.querySelector(".pw-icon").innerHTML = passed ? "&#10003;" : "&#9675;";
+          el.style.color = passed ? "var(--color-success, #4caf50)" : "var(--color-text-tertiary)";
+        }
+      });
+      return allPassed;
+    }
+
+    document.getElementById("admin-password").addEventListener("input", function () {
+      checkPasswordComplexity(this.value);
+    });
+
+    document.getElementById("btn-back-2").addEventListener("click", function () { goToStep(1); });
+    document.getElementById("btn-next-2").addEventListener("click", function () {
+      if (!demoMode) {
+        var username = document.getElementById("admin-username").value.trim();
+        var password = document.getElementById("admin-password").value;
+        var confirm = document.getElementById("admin-password-confirm").value;
+
+        if (!username) { alert("Username is required"); return; }
+        if (!checkPasswordComplexity(password)) { alert("Password does not meet complexity requirements"); return; }
+        if (password !== confirm) { alert("Passwords do not match"); return; }
+      }
+      goToStep(3);
+    });
+
+    // ─── Step 3: Settings ─────────────────────────────────────────────
+
+    async function generateSecret() {
+      try {
+        var res = await fetch("/api/setup/generate-secret", { method: "POST" });
+        var data = await res.json();
+        sessionSecret = data.secret;
+        document.getElementById("app-secret").value = sessionSecret;
+      } catch (_) {
+        // Fallback: generate client-side
+        var arr = new Uint8Array(32);
+        crypto.getRandomValues(arr);
+        sessionSecret = Array.from(arr).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+        document.getElementById("app-secret").value = sessionSecret;
+      }
+    }
+
+    generateSecret();
+
+    document.getElementById("btn-regen-secret").addEventListener("click", generateSecret);
+    document.getElementById("btn-back-3").addEventListener("click", function () { goToStep(2); });
+    document.getElementById("btn-next-3").addEventListener("click", function () {
+      var port = parseInt(document.getElementById("app-port").value, 10);
+      if (!demoMode) {
+        if (!port || port < 1 || port > 65535) { alert("Port must be between 1 and 65535"); return; }
+        if (!sessionSecret) { alert("Session secret is required"); return; }
+      }
+
+      // Populate review
+      var db = getDbConfig();
+      document.getElementById("review-db").innerHTML =
+        rv("Host", db.host + ":" + db.port) +
+        rv("Username", db.username) +
+        rv("Database", db.database) +
+        rv("SSL", db.ssl ? "Enabled" : "Disabled");
+
+      document.getElementById("review-admin").innerHTML =
+        rv("Username", document.getElementById("admin-username").value.trim()) +
+        rv("Password", "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022");
+
+      document.getElementById("review-app").innerHTML =
+        rv("HTTP Port", port) +
+        rv("Session Secret", sessionSecret.substring(0, 12) + "\u2026");
+
+      goToStep(4);
+    });
+
+    function rv(label, value) {
+      return "<dt>" + esc(label) + "</dt><dd>" + esc(value) + "</dd>";
+    }
+
+    function esc(s) {
+      if (!s) return "";
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // ─── Step 4: Finalize ─────────────────────────────────────────────
+
+    document.getElementById("btn-back-4").addEventListener("click", function () { goToStep(3); });
+    document.getElementById("btn-finalize").addEventListener("click", async function () {
+      var btn = this;
+      btn.disabled = true;
+
+      // Show progress
+      for (var i = 1; i <= 4; i++) document.getElementById("step-" + i).classList.remove("visible");
+      var progress = document.getElementById("step-progress");
+      progress.classList.add("visible");
+      var msgEl = document.getElementById("progress-msg");
+      msgEl.textContent = "Writing configuration...";
+
+      try {
+        var payload = {
+          db: getDbConfig(),
+          admin: {
+            username: document.getElementById("admin-username").value.trim(),
+            password: document.getElementById("admin-password").value,
+          },
+          app: {
+            port: parseInt(document.getElementById("app-port").value, 10) || 3000,
+            sessionSecret: sessionSecret,
+          },
+        };
+
+        msgEl.textContent = "Configuring database and running migrations...";
+        var res = await fetch("/api/setup/finalize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        var data = await res.json();
+
+        if (!data.ok) {
+          msgEl.textContent = "Setup failed: " + (data.message || "Unknown error");
+          progress.querySelector(".spinner").style.display = "none";
+          btn.disabled = false;
+          document.getElementById("btn-back-4").click();
+          alert("Setup failed: " + (data.message || "Unknown error"));
+          return;
+        }
+
+        // Success — wait for application to restart
+        msgEl.textContent = "Setup complete! The application is restarting...";
+        var targetPort = payload.app.port;
+        var attempts = 0;
+        var maxAttempts = 30;
+
+        var pollInterval = setInterval(async function () {
+          attempts++;
+          try {
+            var healthRes = await fetch("http://localhost:" + targetPort + "/health", {
+              signal: AbortSignal.timeout(2000),
+            });
+            if (healthRes.ok) {
+              clearInterval(pollInterval);
+              msgEl.textContent = "Application is ready! Redirecting...";
+              setTimeout(function () {
+                window.location.href = "http://localhost:" + targetPort + "/login.html";
+              }, 1000);
+            }
+          } catch (_) {
+            // Application not ready yet
+          }
+
+          if (attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            progress.querySelector(".spinner").style.display = "none";
+            msgEl.innerHTML = "The application did not come back automatically.<br><br>" +
+              "Please restart the application manually, then visit:<br>" +
+              '<a href="http://localhost:' + targetPort + '" style="color:var(--color-primary,#4a9eff)">http://localhost:' + targetPort + "</a>";
+          }
+        }, 2000);
+
+      } catch (err) {
+        msgEl.textContent = "Setup failed: " + (err.message || "Network error");
+        progress.querySelector(".spinner").style.display = "none";
+      }
+    });
+  </script>
+</body>
+</html>

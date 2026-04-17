@@ -187,6 +187,10 @@ const api = {
   },
   auth: {
     me: () => request("GET", "/auth/me"),
+    azureConfig: () => request("GET", "/auth/azure/config"),
+    azureSettings: () => request("GET", "/auth/azure/settings"),
+    updateAzureSettings: (body) => request("PUT", "/auth/azure/settings", body),
+    testAzureSettings: () => request("POST", "/auth/azure/test"),
   },
 };
 

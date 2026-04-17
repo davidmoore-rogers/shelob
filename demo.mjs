@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createGzip, createGunzip, gzipSync, gunzipSync } from "node:zlib";
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash, X509Certificate } from "node:crypto";
 import { Netmask } from "netmask";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -586,12 +586,12 @@ const RESERVATIONS = [
 ];
 
 const USERS = [
-  { id: "u1", username: "admin", role: "admin", createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z", lastLogin: "2026-04-17T07:30:00.000Z" },
-  { id: "u2", username: "jsmith", role: "networkadmin", createdAt: "2026-01-10T09:00:00.000Z", updatedAt: "2026-01-10T09:00:00.000Z", lastLogin: "2026-04-16T12:00:00.000Z" },
-  { id: "u3", username: "kbrown", role: "assetsadmin", createdAt: "2026-02-20T14:00:00.000Z", updatedAt: "2026-02-20T14:00:00.000Z", lastLogin: null },
-  { id: "u4", username: "dmoore", role: "admin", createdAt: "2026-03-01T08:00:00.000Z", updatedAt: "2026-03-01T08:00:00.000Z", lastLogin: "2026-04-17T08:15:00.000Z" },
-  { id: "u5", username: "rjones", role: "readonly", createdAt: "2026-04-10T10:00:00.000Z", updatedAt: "2026-04-10T10:00:00.000Z", lastLogin: "2026-04-16T09:00:00.000Z" },
-  { id: "u6", username: "mwilson", role: "user", createdAt: "2026-04-12T09:00:00.000Z", updatedAt: "2026-04-12T09:00:00.000Z", lastLogin: "2026-04-17T08:00:00.000Z" },
+  { id: "u1", username: "admin", role: "admin", authProvider: "local", createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z", lastLogin: "2026-04-17T07:30:00.000Z" },
+  { id: "u2", username: "jsmith", role: "networkadmin", authProvider: "local", createdAt: "2026-01-10T09:00:00.000Z", updatedAt: "2026-01-10T09:00:00.000Z", lastLogin: "2026-04-16T12:00:00.000Z" },
+  { id: "u3", username: "kbrown", role: "assetsadmin", authProvider: "local", createdAt: "2026-02-20T14:00:00.000Z", updatedAt: "2026-02-20T14:00:00.000Z", lastLogin: null },
+  { id: "u4", username: "dmoore", role: "admin", authProvider: "local", createdAt: "2026-03-01T08:00:00.000Z", updatedAt: "2026-03-01T08:00:00.000Z", lastLogin: "2026-04-17T08:15:00.000Z" },
+  { id: "u5", username: "rjones", role: "readonly", authProvider: "azure", displayName: "Robert Jones", email: "rjones@rogersgroup.com", createdAt: "2026-04-10T10:00:00.000Z", updatedAt: "2026-04-10T10:00:00.000Z", lastLogin: "2026-04-16T09:00:00.000Z" },
+  { id: "u6", username: "mwilson", role: "user", authProvider: "azure", displayName: "Maria Wilson", email: "mwilson@rogersgroup.com", createdAt: "2026-04-12T09:00:00.000Z", updatedAt: "2026-04-12T09:00:00.000Z", lastLogin: "2026-04-17T08:00:00.000Z" },
 ];
 
 const INTEGRATIONS = [
@@ -1018,6 +1018,15 @@ let HTTPS_SETTINGS = {
   certId: null,
   keyId: null,
   redirectHttp: false,
+};
+
+let SSO_SETTINGS = {
+  idpEntityId: "",
+  idpLoginUrl: "",
+  idpLogoutUrl: "",
+  idpCertificate: "",
+  skipLoginPage: false,
+  autoLogoutMinutes: 0,
 };
 
 let BRANDING = {
@@ -1985,6 +1994,38 @@ const _httpHandler = (req, res) => {
     return res.end();
   }
 
+  // ── Health check ──
+  if (path === "/health") {
+    return json(res, { status: "ok" });
+  }
+
+  // ── Setup wizard stubs (demo mode) ──
+  if (path === "/api/setup/status") {
+    return json(res, { needsSetup: false });
+  }
+  if (path.startsWith("/api/setup/") && method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      if (path === "/api/setup/test-connection") {
+        return json(res, {
+          ok: true,
+          version: "PostgreSQL 15.4 (Demo)",
+          databaseExists: true,
+          message: "Connected — PostgreSQL 15.4 (Demo)",
+        });
+      }
+      if (path === "/api/setup/generate-secret") {
+        return json(res, { secret: randomBytes(32).toString("hex") });
+      }
+      if (path === "/api/setup/finalize") {
+        return json(res, { ok: true, message: "Setup complete. (Demo mode — no changes were made.)" });
+      }
+      json(res, { error: "Not found" }, 404);
+    });
+    return;
+  }
+
   // ── API routes ──
   if (path.startsWith("/api/v1/")) {
     const ct = req.headers["content-type"] || "";
@@ -2020,7 +2061,7 @@ const _httpHandler = (req, res) => {
 
   // ── Static files ──
   // Redirect unauthenticated users to login for HTML pages (except login itself)
-  if (path !== "/login.html" && (path === "/" || path.endsWith(".html"))) {
+  if (path !== "/login.html" && path !== "/setup.html" && (path === "/" || path.endsWith(".html"))) {
     const cookies = (req.headers.cookie || "").split(";").reduce((m, c) => {
       const [k, v] = c.trim().split("=");
       if (k) m[k] = v;
@@ -2074,9 +2115,78 @@ async function routeAPI(method, path, params, body, res, req) {
     return json(res, { ok: true });
   }
   if (path === "/api/v1/auth/me") {
-    if (!isLoggedIn) return json(res, { authenticated: false }, 401);
-    return json(res, { authenticated: true, username: sessionUser.username, role: sessionUser.role });
+    if (!isLoggedIn) return json(res, { authenticated: false });
+    return json(res, { authenticated: true, username: sessionUser.username, role: sessionUser.role, authProvider: sessionUser.authProvider || "local" });
   }
+
+  // Azure SAML SSO stubs
+  if (path === "/api/v1/auth/azure/config") {
+    const enabled = !!(SSO_SETTINGS.idpEntityId && SSO_SETTINGS.idpLoginUrl && SSO_SETTINGS.idpCertificate);
+    return json(res, { enabled, skipLoginPage: SSO_SETTINGS.skipLoginPage, autoLogoutMinutes: SSO_SETTINGS.autoLogoutMinutes });
+  }
+  if (path === "/api/v1/auth/azure/settings" && method === "GET") {
+    return json(res, { ...SSO_SETTINGS });
+  }
+  if (path === "/api/v1/auth/azure/settings" && method === "PUT") {
+    if (body.idpEntityId !== undefined) SSO_SETTINGS.idpEntityId = body.idpEntityId.trim();
+    if (body.idpLoginUrl !== undefined) SSO_SETTINGS.idpLoginUrl = body.idpLoginUrl.trim();
+    if (body.idpLogoutUrl !== undefined) SSO_SETTINGS.idpLogoutUrl = body.idpLogoutUrl.trim();
+    if (body.idpCertificate !== undefined) SSO_SETTINGS.idpCertificate = body.idpCertificate.trim();
+    if (body.skipLoginPage !== undefined) SSO_SETTINGS.skipLoginPage = body.skipLoginPage;
+    if (body.autoLogoutMinutes !== undefined) SSO_SETTINGS.autoLogoutMinutes = Math.max(0, Math.min(1440, body.autoLogoutMinutes));
+    return json(res, { ...SSO_SETTINGS });
+  }
+  if (path === "/api/v1/auth/azure/test" && method === "POST") {
+    const results = {
+      certificate: { ok: false, message: "No certificate provided" },
+      idpLoginUrl: { ok: false, message: "No IdP Login URL provided" },
+    };
+    if (SSO_SETTINGS.idpCertificate) {
+      try {
+        let pem = SSO_SETTINGS.idpCertificate.trim();
+        if (!pem.startsWith("-----BEGIN")) {
+          pem = `-----BEGIN CERTIFICATE-----\n${pem}\n-----END CERTIFICATE-----`;
+        }
+        const cert = new X509Certificate(pem);
+        const now = new Date();
+        const validTo = new Date(cert.validTo);
+        const expired = now > validTo;
+        const notYetValid = now < new Date(cert.validFrom);
+        const daysLeft = Math.floor((validTo.getTime() - now.getTime()) / 86400000);
+        results.certificate = {
+          ok: !expired && !notYetValid,
+          subject: cert.subject,
+          issuer: cert.issuer,
+          validFrom: cert.validFrom,
+          validTo: cert.validTo,
+          expired,
+          daysLeft,
+          message: expired
+            ? `Certificate expired on ${cert.validTo}`
+            : notYetValid
+            ? `Certificate not valid until ${cert.validFrom}`
+            : `Valid — expires in ${daysLeft} days (${cert.validTo})`,
+        };
+      } catch (e) {
+        results.certificate = { ok: false, message: `Invalid certificate: ${e.message}` };
+      }
+    }
+    if (SSO_SETTINGS.idpLoginUrl) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const resp = await fetch(SSO_SETTINGS.idpLoginUrl, { method: "HEAD", signal: controller.signal, redirect: "manual" });
+        clearTimeout(timeout);
+        results.idpLoginUrl = { ok: true, status: resp.status, message: `Reachable (HTTP ${resp.status})` };
+      } catch (e) {
+        const msg = e.name === "AbortError" ? "Connection timed out (8s)" : e.cause?.code === "ENOTFOUND" ? `Host not found` : e.message || "Connection failed";
+        results.idpLoginUrl = { ok: false, message: msg };
+      }
+    }
+    const allOk = results.certificate.ok && results.idpLoginUrl.ok;
+    return json(res, { ok: allOk, results });
+  }
+
   // Branding endpoint is public (login page needs it)
   if (path.startsWith("/api/v1/server-settings/branding")) {
     // fall through — handled below
@@ -2317,9 +2427,15 @@ async function routeAPI(method, path, params, body, res, req) {
     return json(res, USERS);
   }
   if (path === "/api/v1/users" && method === "POST") {
-    return json(res, { id: crypto.randomUUID(), ...body, createdAt: new Date().toISOString() }, 201);
+    return json(res, { id: crypto.randomUUID(), ...body, authProvider: "local", createdAt: new Date().toISOString() }, 201);
   }
   if (path.match(/\/password$/) && method === "PUT") {
+    // Find the user and check if Azure (block password reset for Azure users)
+    const pwUserId = path.split("/").slice(-2, -1)[0];
+    const pwUser = USERS.find((u) => u.id === pwUserId);
+    if (pwUser && pwUser.authProvider === "azure") {
+      return json(res, { error: "Cannot reset password for Azure SSO users" }, 400);
+    }
     return json(res, { ok: true });
   }
   if (path.match(/\/role$/) && method === "PUT") {

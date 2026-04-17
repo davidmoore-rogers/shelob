@@ -59,6 +59,49 @@
       max-width: 160px;
       border-radius: 8px;
     }
+    .login-divider {
+      display: flex;
+      align-items: center;
+      margin: 1.25rem 0;
+      color: var(--color-text-tertiary);
+      font-size: 0.8rem;
+    }
+    .login-divider::before, .login-divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--color-border);
+    }
+    .login-divider span { padding: 0 0.75rem; }
+    .btn-azure {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.55rem 1rem;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-bg-secondary);
+      color: var(--color-text-primary);
+      font-size: 0.88rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .btn-azure:hover {
+      background: var(--color-bg-tertiary, var(--color-bg-secondary));
+      border-color: var(--color-text-tertiary);
+    }
+    .btn-azure svg { width: 18px; height: 18px; flex-shrink: 0; }
+    #azure-sso-section { display: none; }
+    .login-redirect-msg {
+      text-align: center;
+      color: var(--color-text-tertiary);
+      font-size: 0.85rem;
+      margin-top: 1rem;
+    }
+    .login-redirect-msg a { color: var(--color-primary, #4a9eff); }
   </style>
 </head>
 <body>
@@ -68,20 +111,47 @@
       <h2>Shelob</h2>
       <p class="subtitle">Network Management Tool</p>
       <div class="login-error" id="login-error"></div>
-      <form id="login-form">
-        <div class="form-group">
-          <label for="username">Username</label>
-          <input type="text" id="username" name="username" required autofocus>
-        </div>
-        <div class="form-group">
-          <label for="password">Password</label>
-          <input type="password" id="password" name="password" required>
-        </div>
-        <button type="submit" class="btn btn-primary">Sign in</button>
-      </form>
+      <div id="local-login-section">
+        <form id="login-form">
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autofocus>
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required>
+          </div>
+          <button type="submit" class="btn btn-primary">Sign in</button>
+        </form>
+      </div>
+      <div id="azure-sso-section">
+        <div class="login-divider"><span>or</span></div>
+        <button id="btn-azure-sso" class="btn-azure">
+          <svg viewBox="0 0 23 23" xmlns="http://www.w3.org/2000/svg"><path fill="#f25022" d="M1 1h10v10H1z"/><path fill="#00a4ef" d="M1 12h10v10H1z"/><path fill="#7fba00" d="M12 1h10v10H12z"/><path fill="#ffb900" d="M12 12h10v10H12z"/></svg>
+          Sign in with Microsoft
+        </button>
+      </div>
+      <div id="demo-setup-section" style="display:none">
+        <div class="login-divider"><span>demo</span></div>
+        <button id="btn-demo-setup" class="btn-azure" style="color:var(--color-text-secondary)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+          View Setup Wizard
+        </button>
+      </div>
     </div>
   </div>
   <script>
+    // Show any error from query string (e.g. Azure SSO errors)
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var err = params.get("error");
+      if (err) {
+        var errEl = document.getElementById("login-error");
+        errEl.textContent = decodeURIComponent(err);
+        errEl.style.display = "block";
+      }
+    })();
+
     // Apply branding
     (async function () {
       try {
@@ -101,6 +171,40 @@
         }
       } catch (_) {}
     })();
+
+    // Check Azure SSO config and show button if enabled
+    (async function () {
+      try {
+        var res = await fetch("/api/v1/auth/azure/config");
+        if (!res.ok) return;
+        var cfg = await res.json();
+        if (!cfg.enabled) return;
+
+        // Show the SSO button
+        document.getElementById("azure-sso-section").style.display = "block";
+      } catch (_) {}
+    })();
+
+    // Azure SSO button click
+    document.getElementById("btn-azure-sso").addEventListener("click", function () {
+      window.location.href = "/api/v1/auth/azure/login";
+    });
+
+    // Show "View Setup Wizard" in demo mode
+    (async function () {
+      try {
+        var res = await fetch("/api/setup/status");
+        if (!res.ok) return;
+        var data = await res.json();
+        // Demo server returns needsSetup: false — if we got a response, setup endpoint exists
+        if (data.needsSetup === false) {
+          document.getElementById("demo-setup-section").style.display = "block";
+        }
+      } catch (_) {}
+    })();
+    document.getElementById("btn-demo-setup").addEventListener("click", function () {
+      window.location.href = "/setup.html";
+    });
 
     document.getElementById("login-form").addEventListener("submit", async function (e) {
       e.preventDefault();

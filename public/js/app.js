@@ -357,7 +357,13 @@ function openModal(title, bodyHTML, footerHTML, options) {
     overlay.innerHTML = '<div class="modal"><div class="modal-header"><h3></h3><button class="btn-icon modal-close">&times;</button></div><div class="modal-body"></div><div class="modal-footer"></div></div>';
     document.body.appendChild(overlay);
     overlay.addEventListener("click", function (e) {
-      if (e.target === overlay) closeModal();
+      if (e.target === overlay) {
+        var closeBtn = overlay.querySelector(".modal-close");
+        if (closeBtn) {
+          closeBtn.classList.add("flash");
+          setTimeout(function () { closeBtn.classList.remove("flash"); }, 600);
+        }
+      }
     });
     overlay.querySelector(".modal-close").addEventListener("click", closeModal);
   }
@@ -607,6 +613,33 @@ function hideAdminOnlyElements() {
   });
 }
 
+// ─── Client-side Auto-Logout ──────────────────────────────────────────────
+
+var _autoLogoutTimer = null;
+var _autoLogoutMs = 0;
+
+function initAutoLogout() {
+  api.auth.azureConfig().then(function (cfg) {
+    if (!cfg || !cfg.autoLogoutMinutes || cfg.autoLogoutMinutes <= 0) return;
+    _autoLogoutMs = cfg.autoLogoutMinutes * 60 * 1000;
+    _resetAutoLogoutTimer();
+    // Reset timer on user activity
+    ["mousemove", "keydown", "click", "scroll", "touchstart"].forEach(function (evt) {
+      document.addEventListener(evt, _resetAutoLogoutTimer, { passive: true });
+    });
+  }).catch(function () {});
+}
+
+function _resetAutoLogoutTimer() {
+  if (_autoLogoutTimer) clearTimeout(_autoLogoutTimer);
+  if (_autoLogoutMs <= 0) return;
+  _autoLogoutTimer = setTimeout(function () {
+    // Session expired client-side — logout
+    fetch("/api/v1/auth/logout", { method: "POST" }).catch(function () {});
+    window.location.href = "/login.html";
+  }, _autoLogoutMs);
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async function () {
@@ -614,4 +647,5 @@ document.addEventListener("DOMContentLoaded", async function () {
   renderNav();
   hideAdminOnlyElements();
   fetchBranding();
+  initAutoLogout();
 });
