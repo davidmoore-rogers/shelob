@@ -19,7 +19,9 @@ async function loadUsers() {
       var roleBadge;
       if (u.role === "admin") roleBadge = '<span class="badge badge-admin">admin</span>';
       else if (u.role === "networkadmin") roleBadge = '<span class="badge badge-network-admin">network admin</span>';
-      else roleBadge = '<span class="badge badge-available">user</span>';
+      else if (u.role === "assetsadmin") roleBadge = '<span class="badge badge-assets-admin">assets admin</span>';
+      else if (u.role === "user") roleBadge = '<span class="badge badge-available">user</span>';
+      else roleBadge = '<span class="badge badge-readonly">read only</span>';
       var lastLogin = u.lastLogin
         ? '<span title="' + escapeHtml(new Date(u.lastLogin).toLocaleString()) + '">' + timeAgo(u.lastLogin) + '</span>'
         : '<span style="color:var(--color-text-tertiary)">Never</span>';
@@ -42,7 +44,7 @@ async function loadUsers() {
 function openCreateModal() {
   var body = '<div class="form-group"><label>Username *</label><input type="text" id="f-username" placeholder="e.g. jsmith"></div>' +
     '<div class="form-group"><label>Password *</label><input type="password" id="f-password" placeholder="Minimum 4 characters"><p class="hint">The user can change this after first login.</p></div>' +
-    '<div class="form-group"><label>Role</label><select id="f-role"><option value="user">User</option><option value="networkadmin">Network Admin</option><option value="admin">Admin</option></select></div>';
+    '<div class="form-group"><label>Role</label><select id="f-role"><option value="readonly" selected>Read Only</option><option value="user">User</option><option value="networkadmin">Network Admin</option><option value="assetsadmin">Assets Admin</option><option value="admin">Admin</option></select></div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Create User</button>';
   openModal("Add User", body, footer);
 
@@ -70,8 +72,10 @@ function openCreateModal() {
 function openChangeRoleModal(id, username, currentRole) {
   var body = '<p style="font-size:0.9rem;color:var(--color-text-secondary);margin-bottom:1rem">Change role for <strong>' + escapeHtml(username) + '</strong></p>' +
     '<div class="form-group"><label>Role</label><select id="f-role">' +
+      '<option value="readonly"' + (currentRole === "readonly" ? " selected" : "") + '>Read Only</option>' +
       '<option value="user"' + (currentRole === "user" ? " selected" : "") + '>User</option>' +
       '<option value="networkadmin"' + (currentRole === "networkadmin" ? " selected" : "") + '>Network Admin</option>' +
+      '<option value="assetsadmin"' + (currentRole === "assetsadmin" ? " selected" : "") + '>Assets Admin</option>' +
       '<option value="admin"' + (currentRole === "admin" ? " selected" : "") + '>Admin</option>' +
     '</select></div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Update Role</button>';

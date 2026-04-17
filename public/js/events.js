@@ -504,6 +504,9 @@ async function handleEventExport(mode, fmt) {
 }
 
 function generateEventPdf(events, label) {
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    throw new Error("PDF library not loaded. Check your internet connection and reload the page.");
+  }
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
 

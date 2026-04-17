@@ -689,8 +689,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   const dhcpLeases: string[] = [];
   const dhcpReservations: string[] = [];
   if (result.dhcpEntries && result.dhcpEntries.length > 0) {
-    // Refresh subnet list in case new ones were just created above
+    // Refresh subnet list and load all assets for MAC lookup
     const currentSubnets = await prisma.subnet.findMany();
+    const allAssetsForDhcp = await prisma.asset.findMany();
     for (const entry of result.dhcpEntries) {
       if (!entry.ipAddress) continue;
 
@@ -704,13 +705,25 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       if (existingRes) continue;
 
       const isDhcpReservation = entry.type === "dhcp-reservation";
+
+      // Look up matching asset by MAC to populate hostname and owner
+      let matchedAsset: any = null;
+      if (entry.macAddress) {
+        const normalized = entry.macAddress.toUpperCase().replace(/-/g, ":");
+        matchedAsset = allAssetsForDhcp.find((a) => {
+          if (a.macAddress && a.macAddress.toUpperCase() === normalized) return true;
+          if (Array.isArray(a.macAddresses) && (a.macAddresses as any[]).some((m: any) => m.mac === normalized)) return true;
+          return false;
+        }) || null;
+      }
+
       try {
         await prisma.reservation.create({
           data: {
             subnetId: matchingSubnet.id,
             ipAddress: entry.ipAddress,
-            hostname: entry.hostname || null,
-            owner: isDhcpReservation ? "dhcp-reservation" : "dhcp-lease",
+            hostname: (matchedAsset && matchedAsset.hostname) || entry.hostname || null,
+            owner: (matchedAsset && matchedAsset.assignedTo) || (isDhcpReservation ? "dhcp-reservation" : "dhcp-lease"),
             projectRef: "FortiManager Integration",
             notes: `${isDhcpReservation ? "DHCP reservation" : "DHCP lease"} on ${entry.device} (${entry.interfaceName})${entry.macAddress ? " — MAC: " + entry.macAddress : ""}`,
             status: "active",
@@ -763,27 +776,31 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       macList.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
 
       try {
-        // Update asset: MAC list + IP address from DHCP entry
+        // Update asset: MAC list + IP address from DHCP entry, activate if not already
         await prisma.asset.update({
           where: { id: asset.id },
           data: {
             macAddress: macList[0].mac,
             macAddresses: macList,
             ipAddress: entry.ipAddress,
+            status: "active",
           },
         });
 
-        // Update the reservation hostname to match the asset's hostname
-        if (asset.hostname) {
-          const matchingSubnet = currentSubnets.find((s) => ipInCidr(entry.ipAddress, s.cidr));
-          if (matchingSubnet) {
-            const res = await prisma.reservation.findFirst({
-              where: { subnetId: matchingSubnet.id, ipAddress: entry.ipAddress, status: "active" },
-            });
-            if (res && res.hostname !== asset.hostname) {
+        // Update the reservation hostname and owner from the asset
+        const matchingSubnet = currentSubnets.find((s) => ipInCidr(entry.ipAddress, s.cidr));
+        if (matchingSubnet) {
+          const res = await prisma.reservation.findFirst({
+            where: { subnetId: matchingSubnet.id, ipAddress: entry.ipAddress, status: "active" },
+          });
+          if (res) {
+            const updateData: Record<string, string> = {};
+            if (asset.hostname && res.hostname !== asset.hostname) updateData.hostname = asset.hostname;
+            if (asset.assignedTo && res.owner !== asset.assignedTo) updateData.owner = asset.assignedTo;
+            if (Object.keys(updateData).length > 0) {
               await prisma.reservation.update({
                 where: { id: res.id },
-                data: { hostname: asset.hostname },
+                data: updateData,
               });
             }
           }

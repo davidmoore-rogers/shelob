@@ -145,7 +145,7 @@ function renderAssetsPage() {
       '<td>' + (a.acquiredAt ? formatDate(a.acquiredAt) : "-") + '</td>' +
       '<td class="actions">' +
         '<button class="btn btn-sm btn-secondary" onclick="openViewModal(\'' + a.id + '\')">View</button>' +
-        (isAdmin() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + a.id + '\')">Edit</button>' +
+        (canManageAssets() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + a.id + '\')">Edit</button>' +
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + a.id + '\', \'' + escapeHtml(a.hostname || a.assetTag || a.ipAddress || "this asset") + '\')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
@@ -231,10 +231,10 @@ function assetFormHTML(defaults) {
       '<option value="other"' + (d.assetType === "other" || !d.assetType ? " selected" : "") + '>Other</option>' +
     '</select></div>' +
     '<div class="form-group"><label>Status</label><select id="f-status">' +
-      '<option value="active"' + (d.status === "active" || !d.status ? " selected" : "") + '>Active</option>' +
+      '<option value="storage"' + (d.status === "storage" || !d.status ? " selected" : "") + '>Storage</option>' +
+      '<option value="active"' + (d.status === "active" ? " selected" : "") + '>Active</option>' +
       '<option value="maintenance"' + (d.status === "maintenance" ? " selected" : "") + '>Maintenance</option>' +
       '<option value="decommissioned"' + (d.status === "decommissioned" ? " selected" : "") + '>Decommissioned</option>' +
-      '<option value="storage"' + (d.status === "storage" ? " selected" : "") + '>Storage</option>' +
     '</select></div>' +
   '</div>' +
   '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
@@ -367,7 +367,7 @@ async function openViewModal(id) {
       viewRow("Created", formatDate(a.createdAt)) +
       viewRow("Updated", formatDate(a.updatedAt)) +
     '</div>';
-    var footer = isAdmin()
+    var footer = canManageAssets()
       ? '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
       : '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
     openModal("Asset Details", body, footer, { wide: true });
@@ -502,6 +502,9 @@ async function handleAssetExport(mode, fmt) {
 }
 
 function generateAssetPdf(assets, label) {
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    throw new Error("PDF library not loaded. Check your internet connection and reload the page.");
+  }
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
 

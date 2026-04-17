@@ -78,7 +78,7 @@ const SUBNETS = [
     vlan: 100,
     tags: ["kubernetes", "prod"],
     discoveredBy: "i1000000-0000-0000-0000-000000000001",
-    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager" },
+    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager", type: "fortimanager" },
     fortigateDevice: "FGT-DC1-01",
     createdAt: "2025-11-15T09:00:00.000Z",
     updatedAt: "2025-11-15T09:00:00.000Z",
@@ -95,7 +95,7 @@ const SUBNETS = [
     vlan: 200,
     tags: ["database", "prod"],
     discoveredBy: "i1000000-0000-0000-0000-000000000001",
-    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager" },
+    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager", type: "fortimanager" },
     fortigateDevice: "FGT-DC1-01",
     createdAt: "2025-11-15T09:05:00.000Z",
     updatedAt: "2025-11-15T09:05:00.000Z",
@@ -112,7 +112,7 @@ const SUBNETS = [
     vlan: 300,
     tags: ["monitoring", "prod"],
     discoveredBy: "i1000000-0000-0000-0000-000000000001",
-    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager" },
+    integration: { id: "i1000000-0000-0000-0000-000000000001", name: "Production FortiManager", type: "fortimanager" },
     fortigateDevice: "FGT-DC1-02",
     createdAt: "2026-01-10T11:00:00.000Z",
     updatedAt: "2026-01-10T11:00:00.000Z",
@@ -187,6 +187,23 @@ const SUBNETS = [
     _count: { reservations: 0 },
   },
   {
+    id: "s9000000-0000-0000-0000-000000000009",
+    blockId: BLOCKS[0].id,
+    block: { name: "Corporate Datacenter", cidr: "10.0.0.0/8" },
+    cidr: "10.0.20.0/24",
+    name: "Dev Lab Network",
+    purpose: "Developer lab environment",
+    status: "available",
+    vlan: 600,
+    tags: ["dev", "lab"],
+    discoveredBy: null,
+    integration: null,
+    fortigateDevice: null,
+    createdAt: "2026-03-10T10:00:00.000Z",
+    updatedAt: "2026-03-10T10:00:00.000Z",
+    _count: { reservations: 0 },
+  },
+  {
     id: "s8000000-0000-0000-0000-000000000008",
     blockId: BLOCKS[3].id,
     block: { name: "IPv6 Global", cidr: "2001:db8::/32" },
@@ -215,8 +232,9 @@ const RESERVATIONS = [
     owner: "platform-team",
     projectRef: "INFRA-001",
     expiresAt: null,
-    notes: "Primary worker node",
+    notes: "Primary worker node — MAC: AA:BB:CC:DD:10:10",
     status: "active",
+    createdBy: "admin",
     createdAt: "2025-11-16T10:00:00.000Z",
     updatedAt: "2025-11-16T10:00:00.000Z",
   },
@@ -229,8 +247,9 @@ const RESERVATIONS = [
     owner: "platform-team",
     projectRef: "INFRA-001",
     expiresAt: null,
-    notes: "Secondary worker node",
+    notes: "Secondary worker node — MAC: AA:BB:CC:DD:10:11",
     status: "active",
+    createdBy: "admin",
     createdAt: "2025-11-16T10:05:00.000Z",
     updatedAt: "2025-11-16T10:05:00.000Z",
   },
@@ -243,8 +262,9 @@ const RESERVATIONS = [
     owner: "platform-team",
     projectRef: "INFRA-002",
     expiresAt: "2026-06-01T00:00:00.000Z",
-    notes: "Temporary burst node for Q2 load testing",
+    notes: "Temporary burst node for Q2 load testing — MAC: AA:BB:CC:DD:10:12",
     status: "active",
+    createdBy: "jsmith",
     createdAt: "2026-03-20T14:00:00.000Z",
     updatedAt: "2026-03-20T14:00:00.000Z",
   },
@@ -257,8 +277,9 @@ const RESERVATIONS = [
     owner: "data-team",
     projectRef: "DB-001",
     expiresAt: null,
-    notes: "Primary PostgreSQL instance",
+    notes: "Primary PostgreSQL instance — MAC: AA:BB:CC:DD:20:10",
     status: "active",
+    createdBy: "dmoore",
     createdAt: "2025-11-17T08:00:00.000Z",
     updatedAt: "2025-11-17T08:00:00.000Z",
   },
@@ -273,6 +294,7 @@ const RESERVATIONS = [
     expiresAt: null,
     notes: "Redis cache cluster leader",
     status: "active",
+    createdBy: "dmoore",
     createdAt: "2026-01-05T09:00:00.000Z",
     updatedAt: "2026-01-05T09:00:00.000Z",
   },
@@ -285,8 +307,9 @@ const RESERVATIONS = [
     owner: "sre-team",
     projectRef: "MON-001",
     expiresAt: null,
-    notes: "Grafana + Prometheus",
+    notes: "Grafana + Prometheus — MAC: AA:BB:CC:DD:03:10",
     status: "active",
+    createdBy: "admin",
     createdAt: "2026-01-12T13:00:00.000Z",
     updatedAt: "2026-01-12T13:00:00.000Z",
   },
@@ -301,6 +324,7 @@ const RESERVATIONS = [
     expiresAt: null,
     notes: "Rack A1 baseboard management",
     status: "active",
+    createdBy: "jsmith",
     createdAt: "2025-12-10T16:00:00.000Z",
     updatedAt: "2025-12-10T16:00:00.000Z",
   },
@@ -315,6 +339,7 @@ const RESERVATIONS = [
     expiresAt: null,
     notes: "AWS VPN gateway endpoint",
     status: "active",
+    createdBy: "admin",
     createdAt: "2026-01-20T15:30:00.000Z",
     updatedAt: "2026-01-20T15:30:00.000Z",
   },
@@ -329,6 +354,7 @@ const RESERVATIONS = [
     expiresAt: "2026-01-01T00:00:00.000Z",
     notes: "Holiday traffic surge node",
     status: "expired",
+    createdBy: "admin",
     createdAt: "2025-12-15T12:00:00.000Z",
     updatedAt: "2026-01-01T00:05:00.000Z",
   },
@@ -343,6 +369,7 @@ const RESERVATIONS = [
     expiresAt: null,
     notes: "IPv6 frontend load balancer",
     status: "active",
+    createdBy: "dmoore",
     createdAt: "2026-03-05T11:00:00.000Z",
     updatedAt: "2026-03-05T11:00:00.000Z",
   },
@@ -351,8 +378,10 @@ const RESERVATIONS = [
 const USERS = [
   { id: "u1", username: "admin", role: "admin", createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z", lastLogin: "2026-04-17T07:30:00.000Z" },
   { id: "u2", username: "jsmith", role: "networkadmin", createdAt: "2026-01-10T09:00:00.000Z", updatedAt: "2026-01-10T09:00:00.000Z", lastLogin: "2026-04-16T12:00:00.000Z" },
-  { id: "u3", username: "kbrown", role: "user", createdAt: "2026-02-20T14:00:00.000Z", updatedAt: "2026-02-20T14:00:00.000Z", lastLogin: null },
+  { id: "u3", username: "kbrown", role: "assetsadmin", createdAt: "2026-02-20T14:00:00.000Z", updatedAt: "2026-02-20T14:00:00.000Z", lastLogin: null },
   { id: "u4", username: "dmoore", role: "admin", createdAt: "2026-03-01T08:00:00.000Z", updatedAt: "2026-03-01T08:00:00.000Z", lastLogin: "2026-04-17T08:15:00.000Z" },
+  { id: "u5", username: "rjones", role: "readonly", createdAt: "2026-04-10T10:00:00.000Z", updatedAt: "2026-04-10T10:00:00.000Z", lastLogin: "2026-04-16T09:00:00.000Z" },
+  { id: "u6", username: "mwilson", role: "user", createdAt: "2026-04-12T09:00:00.000Z", updatedAt: "2026-04-12T09:00:00.000Z", lastLogin: "2026-04-17T08:00:00.000Z" },
 ];
 
 const INTEGRATIONS = [
@@ -368,7 +397,7 @@ const INTEGRATIONS = [
       adom: "root",
       verifySsl: true,
       mgmtInterface: "port1",
-      dhcpInclude: ["dhcp-prod-01", "dhcp-prod-02", "dhcp-monitor"],
+      dhcpInclude: ["dhcp-prod-01", "dhcp-prod-02", "dhcp-monitor", "dhcp-k8s", "dhcp-database", "dhcp-lab-01"],
       dhcpExclude: [],
     },
     enabled: true,
@@ -948,6 +977,7 @@ function registerFortiManagerDemo(host, name, force, fields) {
         subnet: { name: subnet.name, cidr: subnet.cidr },
         ...proposed.reservation,
         expiresAt: null,
+        createdBy: sessionUser?.username || "system",
         createdAt: now,
         updatedAt: now,
       });
@@ -978,6 +1008,8 @@ const MOCK_DEVICES = [
 ];
 
 const MOCK_DHCP_SERVERS = [
+  { device: "FGT-DC1-01", iface: "port1",  id: "4", cidr: "10.0.1.0/24",  name: "dhcp-k8s", ifaceIp: "10.0.1.1" },
+  { device: "FGT-DC1-01", iface: "port2",  id: "5", cidr: "10.0.2.0/24",  name: "dhcp-database", ifaceIp: "10.0.2.1" },
   { device: "FGT-DC1-01", iface: "port5",  id: "1", cidr: "10.0.10.0/24", name: "dhcp-prod-01", ifaceIp: "10.0.10.1" },
   { device: "FGT-DC1-01", iface: "port6",  id: "2", cidr: "10.0.11.0/24", name: "dhcp-prod-02", ifaceIp: "10.0.11.1" },
   { device: "FGT-DC1-02", iface: "port2",  id: "1", cidr: "10.0.3.0/24",  name: "dhcp-monitor", ifaceIp: "10.0.3.1" },
@@ -987,6 +1019,17 @@ const MOCK_DHCP_SERVERS = [
 
 // Mock DHCP entries: static reservations and dynamic leases
 const MOCK_DHCP_ENTRIES = [
+  // Entries that overlap with manual reservations (conflict test cases)
+  // Case 1: DHCP reservation + same IP + same MAC → promote to "DHCP Reservation"
+  { device: "FGT-DC1-01", iface: "port1", ip: "10.0.1.10", mac: "AA:BB:CC:DD:10:10", hostname: "k8s-worker-01", type: "dhcp-reservation" },
+  // Case 2: DHCP reservation + same IP + different MAC → "Conflict: MAC address reservation doesn't match"
+  { device: "FGT-DC1-01", iface: "port1", ip: "10.0.1.12", mac: "FF:FF:FF:DD:10:12", hostname: "k8s-worker-03", type: "dhcp-reservation" },
+  // Case 3: DHCP lease + same IP + different MAC → "Conflict: MAC address lease doesn't match reservation"
+  { device: "FGT-DC1-01", iface: "port1", ip: "10.0.1.11", mac: "FF:FF:FF:DD:10:11", hostname: "k8s-worker-02", type: "dhcp-lease" },
+  // Case 4: DHCP lease + same IP + same MAC → "Conflict: Lease should be reserved on FGT-DC1-01"
+  { device: "FGT-DC1-01", iface: "port2", ip: "10.0.2.10", mac: "AA:BB:CC:DD:20:10", hostname: "postgres-primary", type: "dhcp-lease" },
+  // Monitoring Stack conflict: DHCP lease + different MAC on grafana-01 IP
+  { device: "FGT-DC1-02", iface: "port2", ip: "10.0.3.10", mac: "FF:FF:FF:DD:03:10", hostname: "unknown-device", type: "dhcp-lease" },
   // Static reservations on FGT-DC1-01
   { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.10", mac: "AA:BB:CC:01:10:0A", hostname: "k8s-master-01", type: "dhcp-reservation" },
   { device: "FGT-DC1-01", iface: "port5", ip: "10.0.10.11", mac: "AA:BB:CC:01:10:0B", hostname: "k8s-master-02", type: "dhcp-reservation" },
@@ -1197,9 +1240,25 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
     // Check if a non-deprecated subnet with this CIDR already exists
     const existing = SUBNETS.find((s) => s.cidr === entry.cidr && s.status !== "deprecated");
     if (existing) {
-      existing.discoveredBy = integrationId;
-      existing.integration = { id: integrationId, name: integrationName };
-      existing.fortigateDevice = entry.fortigateDevice;
+      if (existing.discoveredBy) {
+        // Already integration-managed — update ownership
+        existing.discoveredBy = integrationId;
+        existing.integration = { id: integrationId, name: integrationName, type: integrationType };
+        existing.fortigateDevice = entry.fortigateDevice;
+        existing.conflictMessage = null;
+      } else {
+        // Manually created — flag as conflict, don't take ownership
+        const source = integrationType === "windowsserver"
+          ? `Network learned from ${integrationName}`
+          : `Network learned from ${integrationName} on ${entry.fortigateDevice}`;
+        existing.conflictMessage = source;
+        existing.pendingIntegration = {
+          integrationId,
+          integrationName,
+          integrationType,
+          fortigateDevice: entry.fortigateDevice,
+        };
+      }
       existing.updatedAt = now;
       updated.push(entry.cidr);
       continue;
@@ -1235,7 +1294,7 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
       vlan: null,
       tags: ["dhcp-discovered", integrationType || "fortimanager"],
       discoveredBy: integrationId,
-      integration: { id: integrationId, name: integrationName },
+      integration: { id: integrationId, name: integrationName, type: integrationType },
       fortigateDevice: entry.fortigateDevice,
       createdAt: now,
       updatedAt: now,
@@ -1338,6 +1397,7 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
         notes: `${ifaceIp.role === "management" ? "Management" : "DHCP server"} interface (${ifaceIp.interfaceName}) on ${ifaceIp.device}`,
         status: "active",
         expiresAt: null,
+        createdBy: "system",
         createdAt: now,
         updatedAt: now,
       });
@@ -1363,23 +1423,66 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
       });
       if (!matchingSubnet) continue;
 
+      const isDhcpReservation = entry.type === "dhcp-reservation";
       const existingRes = RESERVATIONS.find(
         (r) => r.ipAddress === entry.ipAddress && r.status === "active"
       );
-      if (existingRes) continue;
+      if (existingRes) {
+        // Already a DHCP-owned reservation — skip
+        if (existingRes.owner === "dhcp-reservation" || existingRes.owner === "dhcp-lease") continue;
 
-      const isDhcpReservation = entry.type === "dhcp-reservation";
+        // Compare MACs: get existing MAC from reservation notes or asset lookup
+        const existingMacMatch = existingRes.notes ? existingRes.notes.match(/MAC:\s*([\w:]+)/) : null;
+        let existingMac = existingMacMatch ? existingMacMatch[1].toUpperCase() : null;
+        if (!existingMac) {
+          const matchedAsset = ASSETS.find((a) => a.ipAddress === entry.ipAddress);
+          if (matchedAsset && matchedAsset.macAddress) existingMac = matchedAsset.macAddress.toUpperCase();
+        }
+        const incomingMac = entry.macAddress ? entry.macAddress.toUpperCase().replace(/-/g, ":") : null;
+        const macsMatch = existingMac && incomingMac && existingMac === incomingMac;
+
+        if (isDhcpReservation && macsMatch) {
+          // DHCP reservation + same MAC → promote to DHCP Reservation
+          existingRes.owner = "dhcp-reservation";
+          existingRes.notes = `DHCP reservation on ${entry.device} (${entry.interfaceName})${entry.macAddress ? " — MAC: " + entry.macAddress : ""}`;
+          existingRes.conflictMessage = null;
+          existingRes.updatedAt = now;
+          dhcpReservationCount++;
+        } else if (isDhcpReservation && !macsMatch) {
+          // DHCP reservation + different MAC → conflict
+          existingRes.conflictMessage = "MAC address reservation doesn't match";
+          existingRes.updatedAt = now;
+        } else if (!isDhcpReservation && !macsMatch) {
+          // DHCP lease + different MAC → conflict
+          existingRes.conflictMessage = "MAC address lease doesn't match reservation";
+          existingRes.updatedAt = now;
+        } else if (!isDhcpReservation && macsMatch) {
+          // DHCP lease + same MAC → should be reserved
+          existingRes.conflictMessage = `Lease should be reserved on ${entry.device}`;
+          existingRes.updatedAt = now;
+        }
+        continue;
+      }
+      // Look up matching asset by MAC to populate hostname and owner
+      const incomingMacNorm = entry.macAddress ? entry.macAddress.toUpperCase().replace(/-/g, ":") : null;
+      const matchedAsset = incomingMacNorm ? ASSETS.find((a) => {
+        if (a.macAddress && a.macAddress.toUpperCase() === incomingMacNorm) return true;
+        if (Array.isArray(a.macAddresses) && a.macAddresses.some((m) => m.mac === incomingMacNorm)) return true;
+        return false;
+      }) : null;
+
       RESERVATIONS.push({
         id: crypto.randomUUID(),
         subnetId: matchingSubnet.id,
         subnet: { name: matchingSubnet.name, cidr: matchingSubnet.cidr },
         ipAddress: entry.ipAddress,
-        hostname: entry.hostname || null,
-        owner: isDhcpReservation ? "dhcp-reservation" : "dhcp-lease",
+        hostname: (matchedAsset && matchedAsset.hostname) || entry.hostname || null,
+        owner: (matchedAsset && matchedAsset.assignedTo) || (isDhcpReservation ? "dhcp-reservation" : "dhcp-lease"),
         projectRef: "FortiManager Integration",
         notes: `${isDhcpReservation ? "DHCP reservation" : "DHCP lease"} on ${entry.device} (${entry.interfaceName})${entry.macAddress ? " — MAC: " + entry.macAddress : ""}`,
         status: "active",
         expiresAt: null,
+        createdBy: "system",
         createdAt: now,
         updatedAt: now,
       });
@@ -1411,18 +1514,27 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
       // Update asset MAC list
       _addMacToAsset(asset, entry.macAddress, entry.type, now);
 
-      // Update asset IP address from DHCP entry
+      // Update asset IP address from DHCP entry and activate
       asset.ipAddress = entry.ipAddress;
+      if (asset.status !== "active") {
+        asset.status = "active";
+      }
 
-      // Update the reservation hostname to match the asset's hostname
-      if (asset.hostname) {
-        const res = RESERVATIONS.find(
-          (r) => r.ipAddress === entry.ipAddress && r.status === "active"
-        );
-        if (res && res.hostname !== asset.hostname) {
+      // Update the reservation hostname and owner from the asset
+      const res = RESERVATIONS.find(
+        (r) => r.ipAddress === entry.ipAddress && r.status === "active"
+      );
+      if (res) {
+        let changed = false;
+        if (asset.hostname && res.hostname !== asset.hostname) {
           res.hostname = asset.hostname;
-          res.updatedAt = now;
+          changed = true;
         }
+        if (asset.assignedTo && res.owner !== asset.assignedTo) {
+          res.owner = asset.assignedTo;
+          changed = true;
+        }
+        if (changed) res.updatedAt = now;
       }
     }
   }
@@ -1518,6 +1630,39 @@ function syncDhcpSubnetsDemo(integrationId, integrationName, integrationType, re
         inventoryDeviceCount++;
       }
     }
+  }
+
+  // ── Clear stale subnet-level conflicts for CIDRs no longer discovered ──
+  const discoveredCidrs = new Set(discovered.map((e) => e.cidr));
+  for (const subnet of SUBNETS) {
+    if (subnet.pendingIntegration && subnet.pendingIntegration.integrationId === integrationId && !discoveredCidrs.has(subnet.cidr)) {
+      subnet.conflictMessage = null;
+      subnet.pendingIntegration = null;
+      subnet.updatedAt = now;
+    }
+  }
+
+  // ── Clear stale IP-level DHCP conflicts for IPs no longer in DHCP entries ──
+  if (result.dhcpEntries) {
+    const dhcpIps = new Set(result.dhcpEntries.map((e) => e.ipAddress));
+    // Only clear conflicts on subnets covered by this integration's discovered CIDRs
+    const coveredSubnetIds = new Set(
+      SUBNETS.filter((s) => discoveredCidrs.has(s.cidr)).map((s) => s.id)
+    );
+    for (const res of RESERVATIONS) {
+      if (res.conflictMessage && res.status === "active" && coveredSubnetIds.has(res.subnetId) && !dhcpIps.has(res.ipAddress)) {
+        res.conflictMessage = null;
+        res.updatedAt = now;
+      }
+    }
+  }
+
+  // ── Flag subnets that contain conflicting reservations or have subnet-level conflicts ──
+  for (const subnet of SUBNETS) {
+    const hasIpConflict = RESERVATIONS.some(
+      (r) => r.subnetId === subnet.id && r.status === "active" && r.conflictMessage
+    );
+    subnet.hasConflict = hasIpConflict || !!subnet.conflictMessage;
   }
 
   return { created, updated, skipped, deprecated, assets, reservations, dhcpLeases: dhcpLeaseCount, dhcpReservations: dhcpReservationCount, inventoryDevices: inventoryDeviceCount };
@@ -1815,6 +1960,25 @@ async function routeAPI(method, path, params, body, res, req) {
       if (body.status !== undefined) subnet.status = body.status;
       if (body.vlan !== undefined) subnet.vlan = body.vlan;
       if (body.tags !== undefined) subnet.tags = body.tags;
+      if (body.convertToManual) {
+        subnet.discoveredBy = null;
+        subnet.integration = null;
+        subnet.fortigateDevice = null;
+        subnet.conflictMessage = null;
+        subnet.pendingIntegration = null;
+        subnet.hasConflict = false;
+      }
+      if (body.mergeIntegration && subnet.pendingIntegration) {
+        const pi = subnet.pendingIntegration;
+        subnet.discoveredBy = pi.integrationId;
+        subnet.integration = { id: pi.integrationId, name: pi.integrationName, type: pi.integrationType };
+        subnet.fortigateDevice = pi.fortigateDevice;
+        subnet.conflictMessage = null;
+        subnet.pendingIntegration = null;
+        subnet.hasConflict = RESERVATIONS.some(
+          (r) => r.subnetId === subnet.id && r.status === "active" && r.conflictMessage
+        );
+      }
       subnet.updatedAt = new Date().toISOString();
     }
     logEventDemo({ action: "subnet.updated", resourceType: "subnet", resourceId: id, resourceName: body.name || subnet?.name, message: `Subnet "${body.name || subnet?.name || "unknown"}" updated` });
@@ -1845,6 +2009,10 @@ async function routeAPI(method, path, params, body, res, req) {
     return r ? json(res, r) : json(res, { error: "Not found" }, 404);
   }
   if (path === "/api/v1/reservations" && method === "POST") {
+    const role = sessionUser ? sessionUser.role : "admin";
+    if (role !== "admin" && role !== "networkadmin" && role !== "user" && role !== "assetsadmin") {
+      return json(res, { error: "Forbidden — you do not have permission to create reservations" }, 403);
+    }
     const now = new Date().toISOString();
     const newId = crypto.randomUUID();
     const subnet = SUBNETS.find((s) => s.id === body.subnetId);
@@ -1859,6 +2027,7 @@ async function routeAPI(method, path, params, body, res, req) {
       notes: body.notes || null,
       expiresAt: body.expiresAt || null,
       status: "active",
+      createdBy: sessionUser ? sessionUser.username : null,
       createdAt: now,
       updatedAt: now,
     };
@@ -1867,26 +2036,42 @@ async function routeAPI(method, path, params, body, res, req) {
       subnet._count = subnet._count || { reservations: 0 };
       subnet._count.reservations++;
     }
-    logEventDemo({ action: "reservation.created", resourceType: "reservation", resourceId: newId, resourceName: body.hostname || body.ipAddress, message: `Reservation created for ${body.ipAddress || "subnet"} (${body.owner})` });
+    logEventDemo({ action: "reservation.created", resourceType: "reservation", resourceId: newId, resourceName: body.hostname || body.ipAddress, actor: sessionUser?.username, message: `Reservation created for ${body.ipAddress || "subnet"} (${body.owner})` });
     return json(res, newRes, 201);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "PUT") {
+    const role = sessionUser ? sessionUser.role : "admin";
+    if (role !== "admin" && role !== "networkadmin" && role !== "user" && role !== "assetsadmin") {
+      return json(res, { error: "Forbidden — you do not have permission to edit reservations" }, 403);
+    }
     const id = path.split("/").pop();
     const existing = RESERVATIONS.find((r) => r.id === id);
     if (!existing) return json(res, { error: "Not found" }, 404);
+    // User and assetsadmin roles can only edit their own reservations
+    if ((role === "user" || role === "assetsadmin") && existing.createdBy !== sessionUser?.username) {
+      return json(res, { error: "Forbidden — you can only edit reservations you created" }, 403);
+    }
     if (body.hostname !== undefined) existing.hostname = body.hostname;
     if (body.owner !== undefined) existing.owner = body.owner;
     if (body.projectRef !== undefined) existing.projectRef = body.projectRef;
     if (body.expiresAt !== undefined) existing.expiresAt = body.expiresAt;
     if (body.notes !== undefined) existing.notes = body.notes;
     existing.updatedAt = new Date().toISOString();
-    logEventDemo({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: existing.hostname || existing.ipAddress, message: `Reservation updated for ${existing.ipAddress || "subnet"}` });
+    logEventDemo({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: existing.hostname || existing.ipAddress, actor: sessionUser?.username, message: `Reservation updated for ${existing.ipAddress || "subnet"}` });
     return json(res, existing);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "DELETE") {
+    const role = sessionUser ? sessionUser.role : "admin";
+    if (role !== "admin" && role !== "networkadmin" && role !== "user" && role !== "assetsadmin") {
+      return json(res, { error: "Forbidden — you do not have permission to release reservations" }, 403);
+    }
     const id = path.split("/").pop();
     const existing = RESERVATIONS.find((r) => r.id === id);
     if (existing) {
+      // User and assetsadmin roles can only release their own reservations
+      if ((role === "user" || role === "assetsadmin") && existing.createdBy !== sessionUser?.username) {
+        return json(res, { error: "Forbidden — you can only release reservations you created" }, 403);
+      }
       existing.status = "released";
       existing.updatedAt = new Date().toISOString();
       const subnet = SUBNETS.find((s) => s.id === existing.subnetId);

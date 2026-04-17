@@ -36,6 +36,8 @@ const UpdateSubnetSchema = z.object({
   status:  z.enum(["available", "reserved", "deprecated"]).optional(),
   vlan:    z.number().int().min(1).max(4094).nullable().optional(),
   tags:    z.array(z.string()).optional(),
+  convertToManual: z.boolean().optional(),
+  mergeIntegration: z.boolean().optional(),
 });
 
 // ─── Routes ───────────────────────────────────────────────────────────────────

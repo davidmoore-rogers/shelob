@@ -6,6 +6,7 @@ var cachedBlocks = [];
 var _subnetsPageSize = 15;
 var _subnetsPage = 1;
 var _subnetsData = [];
+var _allSubnetsData = [];
 
 document.addEventListener("DOMContentLoaded", async function () {
   await loadBlockOptions();
@@ -23,6 +24,8 @@ document.addEventListener("DOMContentLoaded", async function () {
   });
   document.getElementById("filter-block").addEventListener("change", function () { _subnetsPage = 1; loadSubnets(); });
   document.getElementById("filter-status").addEventListener("change", function () { _subnetsPage = 1; loadSubnets(); });
+  document.getElementById("filter-server").addEventListener("input", debounce(function () { _subnetsPage = 1; _applyLocalFilters(); renderSubnetsPage(); }, 300));
+  document.getElementById("filter-integration").addEventListener("change", function () { _subnetsPage = 1; _applyLocalFilters(); renderSubnetsPage(); });
   document.getElementById("filter-tag").addEventListener("input", debounce(function () { _subnetsPage = 1; loadSubnets(); }, 300));
   document.getElementById("filter-pagesize").addEventListener("change", function () {
     _subnetsPageSize = parseInt(this.value, 10) || 15;
@@ -64,14 +67,45 @@ async function loadSubnets() {
       status: apiStatus,
       tag: document.getElementById("filter-tag").value || undefined,
     };
-    _subnetsData = await api.subnets.list(filters);
+    _allSubnetsData = await api.subnets.list(filters);
     if (statusVal === "hide-deprecated") {
-      _subnetsData = _subnetsData.filter(function (s) { return s.status !== "deprecated"; });
+      _allSubnetsData = _allSubnetsData.filter(function (s) { return s.status !== "deprecated"; });
     }
+    _rebuildServerIntegrationFilters();
+    _applyLocalFilters();
     renderSubnetsPage();
   } catch (err) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
+}
+
+function _rebuildServerIntegrationFilters() {
+  var integrations = new Map(); // id → name
+  _allSubnetsData.forEach(function (s) {
+    if (s.integration) integrations.set(s.integration.id, s.integration.name);
+  });
+
+  var intSel = document.getElementById("filter-integration");
+  var prevInt = intSel.value;
+  intSel.innerHTML = '<option value="">All integrations</option><option value="__manual__">Manual</option>';
+  integrations.forEach(function (name, id) {
+    var opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = name;
+    intSel.appendChild(opt);
+  });
+  intSel.value = prevInt;
+}
+
+function _applyLocalFilters() {
+  var serverVal = document.getElementById("filter-server").value;
+  var intVal = document.getElementById("filter-integration").value;
+  _subnetsData = _allSubnetsData.filter(function (s) {
+    if (serverVal && !(s.fortigateDevice || "").toLowerCase().includes(serverVal.toLowerCase())) return false;
+    if (intVal === "__manual__" && s.integration) return false;
+    if (intVal && intVal !== "__manual__" && (!s.integration || s.integration.id !== intVal)) return false;
+    return true;
+  });
 }
 
 function renderSubnetsPage() {
@@ -96,7 +130,7 @@ function renderSubnetsPage() {
       '<td>' + blockName + '</td>' +
       '<td>' + escapeHtml(s.purpose || "-") + '</td>' +
       '<td>' + (s.vlan ? '<span class="badge badge-vlan">VLAN ' + s.vlan + '</span>' : '-') + '</td>' +
-      '<td>' + statusBadge(s.status) + '</td>' +
+      '<td>' + (s.hasConflict ? (s.conflictMessage ? '<span title="' + escapeHtml(s.conflictMessage) + '">' + statusBadge("conflict") + '</span>' : statusBadge("conflict")) : statusBadge(s.status)) + '</td>' +
       '<td>' + (tags || '<span style="color:var(--color-text-tertiary)">-</span>') + '</td>' +
       '<td>' + fgtDevice + '</td>' +
       '<td>' + source + '</td>' +
@@ -190,28 +224,78 @@ async function openEditModal(id) {
   try {
     var results = await Promise.all([api.subnets.get(id), _ensureTagCache()]);
     var subnet = results[0];
-    var body = '<div class="form-group"><label>CIDR</label><input type="text" value="' + escapeHtml(subnet.cidr) + '" disabled></div>' +
-      '<div class="form-group"><label>Name</label><input type="text" id="f-name" value="' + escapeHtml(subnet.name) + '"></div>' +
+    var isIntegration = !!subnet.discoveredBy;
+    var isDeprecatedIntegration = isIntegration && subnet.status === "deprecated" && canManageNetworks();
+    var dis = isIntegration && !isDeprecatedIntegration ? ' disabled class="field-locked"' : '';
+    var statusDis = isIntegration && !isDeprecatedIntegration ? ' disabled class="field-locked"' : '';
+    var hasPendingMerge = !isIntegration && subnet.conflictMessage && subnet.pendingIntegration && canManageNetworks();
+    var hintMsg = isDeprecatedIntegration
+      ? '<p class="hint" style="margin-bottom:12px">This network was deprecated by an integration. Changing the status will convert it to a manual network.</p>'
+      : (isIntegration ? '<p class="hint" style="margin-bottom:12px">This network is managed by an integration. Only purpose and tags can be edited.</p>' : '');
+    if (hasPendingMerge) {
+      var pi = subnet.pendingIntegration;
+      var mergeDesc = pi.integrationType === "windowsserver"
+        ? escapeHtml(pi.integrationName)
+        : escapeHtml(pi.integrationName) + ' on ' + escapeHtml(pi.fortigateDevice);
+      hintMsg = '<div class="merge-banner">' +
+        '<span>This network was also discovered by <strong>' + mergeDesc + '</strong>. Merge to let the integration manage it.</span>' +
+        '<button class="btn btn-sm btn-primary" id="btn-merge">Merge</button>' +
+        '</div>';
+    }
+    var body = hintMsg +
+      '<div class="form-group"><label>CIDR</label><input type="text" value="' + escapeHtml(subnet.cidr) + '" disabled class="field-locked"></div>' +
+      '<div class="form-group"><label>Name</label><input type="text" id="f-name" value="' + escapeHtml(subnet.name) + '"' + dis + '></div>' +
       '<div class="form-group"><label>Purpose</label><textarea id="f-purpose">' + escapeHtml(subnet.purpose || "") + '</textarea></div>' +
-      '<div class="form-group"><label>Status</label><select id="f-status"><option value="available"' + (subnet.status === "available" ? " selected" : "") + '>Available</option><option value="reserved"' + (subnet.status === "reserved" ? " selected" : "") + '>Reserved</option><option value="deprecated"' + (subnet.status === "deprecated" ? " selected" : "") + '>Deprecated</option></select></div>' +
-      '<div class="form-group"><label>VLAN</label><input type="number" id="f-vlan" min="1" max="4094" value="' + (subnet.vlan || "") + '" placeholder="Empty to clear"></div>' +
+      '<div class="form-group"><label>Status</label><select id="f-status"' + statusDis + '><option value="available"' + (subnet.status === "available" ? " selected" : "") + '>Available</option><option value="reserved"' + (subnet.status === "reserved" ? " selected" : "") + '>Reserved</option><option value="deprecated"' + (subnet.status === "deprecated" ? " selected" : "") + '>Deprecated</option></select></div>' +
+      '<div class="form-group"><label>VLAN</label><input type="number" id="f-vlan" min="1" max="4094" value="' + (subnet.vlan || "") + '" placeholder="Empty to clear"' + dis + '></div>' +
       tagFieldHTML(subnet.tags || []);
     var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Network", body, footer);
     wireTagPicker();
 
+    if (hasPendingMerge) {
+      document.getElementById("btn-merge").addEventListener("click", async function () {
+        var mergeBtn = this;
+        var pi = subnet.pendingIntegration;
+        var mergeLabel = pi.integrationType === "windowsserver"
+          ? pi.integrationName
+          : pi.integrationName + ' on ' + pi.fortigateDevice;
+        var ok = await showConfirm('Merge this network with "' + mergeLabel + '"? It will become managed by the integration.');
+        if (!ok) return;
+        mergeBtn.disabled = true;
+        try {
+          await api.subnets.update(id, { mergeIntegration: true });
+          closeModal();
+          showToast("Network merged with integration");
+          loadSubnets();
+        } catch (err) {
+          showToast(err.message, "error");
+        } finally {
+          mergeBtn.disabled = false;
+        }
+      });
+    }
+
     document.getElementById("btn-save").addEventListener("click", async function () {
       var btn = this;
       btn.disabled = true;
       try {
-        var vlanVal = document.getElementById("f-vlan").value;
         var input = {
-          name: val("f-name") || undefined,
           purpose: val("f-purpose") || undefined,
-          status: val("f-status"),
-          vlan: vlanVal ? parseInt(vlanVal, 10) : null,
           tags: getTagFieldValue(),
         };
+        if (!isIntegration) {
+          var vlanVal = document.getElementById("f-vlan").value;
+          input.name = val("f-name") || undefined;
+          input.status = val("f-status");
+          input.vlan = vlanVal ? parseInt(vlanVal, 10) : null;
+        } else if (isDeprecatedIntegration) {
+          var newStatus = val("f-status");
+          input.status = newStatus;
+          if (newStatus !== "deprecated") {
+            input.convertToManual = true;
+          }
+        }
         await api.subnets.update(id, input);
         closeModal();
         showToast("Network updated");
@@ -302,6 +386,9 @@ async function handleNetworkExport(mode, fmt) {
 }
 
 function generateNetworkPdf(networks, label) {
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    throw new Error("PDF library not loaded. Check your internet connection and reload the page.");
+  }
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
 
@@ -323,7 +410,7 @@ function generateNetworkPdf(networks, label) {
       s.block ? s.block.name : "-",
       s.purpose || "-",
       s.vlan ? "VLAN " + s.vlan : "-",
-      s.status ? s.status.charAt(0).toUpperCase() + s.status.slice(1) : "-",
+      s.hasConflict ? ("Conflict" + (s.conflictMessage ? ": " + s.conflictMessage : "")) : (s.status ? s.status.charAt(0).toUpperCase() + s.status.slice(1) : "-"),
       s.fortigateDevice || "-",
       s.integration ? s.integration.name : "Manual",
       s._count ? String(s._count.reservations) : "0",
@@ -362,7 +449,7 @@ function generateNetworkCsv(networks) {
   var rows = networks.map(function (s) {
     return [
       s.name || "", s.cidr || "", s.block ? s.block.name : "",
-      s.purpose || "", s.vlan ? String(s.vlan) : "", s.status || "",
+      s.purpose || "", s.vlan ? String(s.vlan) : "", s.hasConflict ? ("Conflict" + (s.conflictMessage ? ": " + s.conflictMessage : "")) : (s.status || ""),
       (s.tags || []).join("; "), s.fortigateDevice || "",
       s.integration ? s.integration.name : "Manual",
       s._count ? String(s._count.reservations) : "0",

@@ -46,6 +46,10 @@
           <option value="reserved">Reserved</option>
           <option value="deprecated">Deprecated</option>
         </select>
+        <label>Server</label>
+        <input type="text" id="filter-server" placeholder="All servers" style="width:140px">
+        <label>Integration</label>
+        <select id="filter-integration" style="width:auto"><option value="">All integrations</option></select>
         <label>Tag</label>
         <input type="text" id="filter-tag" placeholder="e.g. prod" style="width:140px">
         <label style="margin-left:auto">Show</label>
@@ -83,8 +87,8 @@
     </main>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.4/jspdf.plugin.autotable.min.js"></script>
+  <script src="/js/vendor/jspdf.umd.min.js"></script>
+  <script src="/js/vendor/jspdf.plugin.autotable.min.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/app.js"></script>
   <script src="/js/ip-panel.js"></script>

@@ -61,6 +61,7 @@
 [data-theme="light"] .badge-active     { background: rgba(46,125,50,0.10); border-color: rgba(46,125,50,0.30); }
 [data-theme="light"] .badge-reserved   { background: rgba(2,136,209,0.10); border-color: rgba(2,136,209,0.30); }
 [data-theme="light"] .badge-deprecated { background: rgba(117,117,117,0.10); border-color: rgba(117,117,117,0.30); }
+[data-theme="light"] .badge-conflict   { background: rgba(211,47,47,0.10); color: #d32f2f; border-color: rgba(211,47,47,0.30); }
 [data-theme="light"] .badge-released   { background: rgba(117,117,117,0.10); border-color: rgba(117,117,117,0.30); }
 [data-theme="light"] .badge-expired    { background: rgba(245,127,23,0.10); border-color: rgba(245,127,23,0.30); }
 [data-theme="light"] .badge-v4         { background: rgba(2,136,209,0.10); border-color: rgba(2,136,209,0.30); }
@@ -68,6 +69,8 @@
 [data-theme="light"] .badge-vlan       { background: rgba(2,136,209,0.10); border-color: rgba(2,136,209,0.30); }
 [data-theme="light"] .badge-admin      { background: rgba(198,40,40,0.10); border-color: rgba(198,40,40,0.30); }
 [data-theme="light"] .badge-network-admin { background: rgba(230,126,0,0.10); color: #e67e00; border-color: rgba(230,126,0,0.30); }
+[data-theme="light"] .badge-assets-admin { background: rgba(0,151,167,0.10); color: #00838f; border-color: rgba(0,151,167,0.30); }
+[data-theme="light"] .badge-readonly { background: rgba(117,117,117,0.10); color: #616161; border-color: rgba(117,117,117,0.30); }
 [data-theme="light"] .badge-maintenance    { background: rgba(245,127,23,0.10); border-color: rgba(245,127,23,0.30); }
 [data-theme="light"] .badge-decommissioned { background: rgba(117,117,117,0.10); border-color: rgba(117,117,117,0.30); }
 [data-theme="light"] .badge-storage        { background: rgba(156,39,176,0.10); color: #7b1fa2; border-color: rgba(156,39,176,0.30); }
@@ -610,8 +613,24 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 2px rgba(79,195,247,0.15);
 }
 textarea { resize: vertical; min-height: 60px; }
+.field-locked { opacity: 0.45; cursor: not-allowed; }
 select { cursor: pointer; }
 select option { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+
+.merge-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius-md);
+  background: rgba(239,83,80,0.08);
+  border: 1px solid rgba(239,83,80,0.25);
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+}
+.merge-banner .btn { flex-shrink: 0; }
+[data-theme="light"] .merge-banner { background: rgba(211,47,47,0.06); border-color: rgba(211,47,47,0.20); }
 
 /* ─── Badges ───────────────────────────────────────────────────────────────── */
 .badge {
@@ -626,6 +645,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .badge-available  { background: rgba(0,200,83,0.12); color: var(--color-success); border: 1px solid rgba(0,200,83,0.25); }
 .badge-reserved   { background: rgba(79,195,247,0.12); color: var(--color-accent); border: 1px solid rgba(79,195,247,0.25); }
 .badge-deprecated { background: rgba(117,117,117,0.12); color: var(--color-deprecated); border: 1px solid rgba(117,117,117,0.25); }
+.badge-conflict   { background: rgba(239,83,80,0.12); color: #ef5350; border: 1px solid rgba(239,83,80,0.25); }
 .badge-active     { background: rgba(0,200,83,0.12); color: var(--color-success); border: 1px solid rgba(0,200,83,0.25); }
 .badge-expired    { background: rgba(255,214,0,0.12); color: var(--color-warning); border: 1px solid rgba(255,214,0,0.25); }
 .badge-released   { background: rgba(117,117,117,0.12); color: var(--color-deprecated); border: 1px solid rgba(117,117,117,0.25); }
@@ -634,6 +654,8 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .badge-vlan       { background: rgba(79,195,247,0.12); color: var(--color-accent); border: 1px solid rgba(79,195,247,0.25); font-family: var(--font-mono); font-size: 0.72rem; }
 .badge-admin      { background: rgba(255,23,68,0.12); color: var(--color-danger); border: 1px solid rgba(255,23,68,0.25); }
 .badge-network-admin { background: rgba(255,152,0,0.12); color: #ff9800; border: 1px solid rgba(255,152,0,0.25); }
+.badge-assets-admin { background: rgba(0,188,212,0.12); color: #00bcd4; border: 1px solid rgba(0,188,212,0.25); }
+.badge-readonly { background: rgba(158,158,158,0.12); color: #9e9e9e; border: 1px solid rgba(158,158,158,0.25); }
 
 /* ─── Utilization Bar ──────────────────────────────────────────────────────── */
 .util-bar-track {
@@ -1225,7 +1247,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   right: max(0px, calc((100vw - var(--sidebar-width) - 1400px) / 2));
   top: 0;
   height: 100vh;
-  width: 560px;
+  width: 720px;
   background: var(--color-bg-primary);
   border-left: 1px solid var(--color-border);
   box-shadow: -8px 0 32px rgba(0,0,0,.4);
@@ -1333,8 +1355,14 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .ip-dot-reserved         { background: var(--color-border); }
 .ip-dot-dhcp-reservation { background: #ce93d8; box-shadow: 0 0 4px rgba(206,147,216,0.5); }
 .ip-dot-dhcp-lease       { background: #ffb74d; box-shadow: 0 0 4px rgba(255,183,77,0.5); }
+.ip-dot-conflict         { background: #ef5350; box-shadow: 0 0 4px rgba(239,83,80,0.5); }
 [data-theme="light"] .ip-dot-dhcp-reservation { background: #9c27b0; box-shadow: 0 0 4px rgba(156,39,176,0.3); }
 [data-theme="light"] .ip-dot-dhcp-lease       { background: #ef6c00; box-shadow: 0 0 4px rgba(239,108,0,0.3); }
+[data-theme="light"] .ip-dot-conflict         { background: #d32f2f; box-shadow: 0 0 4px rgba(211,47,47,0.3); }
+
+.conflict-label { cursor: help; color: #ef5350; font-weight: 600; }
+.conflict-icon { font-size: 0.85em; }
+[data-theme="light"] .conflict-label { color: #d32f2f; }
 
 /* ── MAC address hover tooltip ───────────────────────────────────────── */
 .mac-hover-trigger {

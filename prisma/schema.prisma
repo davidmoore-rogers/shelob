@@ -32,7 +32,9 @@ enum ReservationStatus {
 enum UserRole {
   admin
   networkadmin
+  assetsadmin
   user
+  readonly
 }
 
 // ─── Models ───────────────────────────────────────────────────────────────────
@@ -94,6 +96,8 @@ model Reservation {
   expiresAt  DateTime?
   notes      String?           @db.Text
   status     ReservationStatus @default(active)
+  createdBy  String?                              // Username of the user who created this reservation
+  conflictMessage String?                         // Set by discovery when DHCP data conflicts with this reservation
 
   createdAt  DateTime          @default(now())
   updatedAt  DateTime          @updatedAt
@@ -104,6 +108,7 @@ model Reservation {
   @@index([projectRef])
   @@index([status])
   @@index([expiresAt])
+  @@index([createdBy])
   @@map("reservations")
 }
 
@@ -204,7 +209,7 @@ model User {
   id           String   @id @default(uuid())
   username     String   @unique
   passwordHash String   @map("password_hash")
-  role         UserRole @default(user)
+  role         UserRole @default(readonly)
 
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

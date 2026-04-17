@@ -1,14 +1,14 @@
 /**
  * src/api/routes/assets.ts — Asset management CRUD
  * GET routes are available to all authenticated users.
- * POST / PUT / DELETE require admin role.
+ * POST / PUT / DELETE require assets admin role.
  */
 
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { requireAssetsAdmin } from "../middleware/auth.js";
 import { logEvent } from "./events.js";
 
 const router = Router();
@@ -36,7 +36,7 @@ const CreateAssetSchema = z.object({
   manufacturer:  z.string().optional(),
   model:         z.string().optional(),
   assetType:     AssetTypeEnum.optional().default("other"),
-  status:        AssetStatusEnum.optional().default("active"),
+  status:        AssetStatusEnum.optional().default("storage"),
   location:      z.string().optional(),
   department:    z.string().optional(),
   assignedTo:    z.string().optional(),
@@ -91,8 +91,8 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-// POST /api/v1/assets — create (admin only)
-router.post("/", requireAdmin, async (req, res, next) => {
+// POST /api/v1/assets — create (assets admin)
+router.post("/", requireAssetsAdmin, async (req, res, next) => {
   try {
     const input = CreateAssetSchema.parse(req.body);
     const data: Record<string, unknown> = { ...input };
@@ -107,8 +107,8 @@ router.post("/", requireAdmin, async (req, res, next) => {
   }
 });
 
-// PUT /api/v1/assets/:id — update (admin only)
-router.put("/:id", requireAdmin, async (req, res, next) => {
+// PUT /api/v1/assets/:id — update (assets admin)
+router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
   try {
     const existing = await prisma.asset.findUnique({ where: { id: req.params.id } });
     if (!existing) throw new AppError(404, "Asset not found");
@@ -127,8 +127,8 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
   }
 });
 
-// DELETE /api/v1/assets/:id — delete (admin only)
-router.delete("/:id", requireAdmin, async (req, res, next) => {
+// DELETE /api/v1/assets/:id — delete (assets admin)
+router.delete("/:id", requireAssetsAdmin, async (req, res, next) => {
   try {
     const existing = await prisma.asset.findUnique({ where: { id: req.params.id } });
     if (!existing) throw new AppError(404, "Asset not found");

@@ -30,6 +30,8 @@ export interface UpdateSubnetInput {
   status?: SubnetStatus;
   vlan?: number;
   tags?: string[];
+  convertToManual?: boolean;
+  mergeIntegration?: boolean;
 }
 
 export interface ListSubnetsFilter {
@@ -164,16 +166,19 @@ export async function updateSubnet(id: string, input: UpdateSubnetInput) {
   const subnet = await prisma.subnet.findUnique({ where: { id } });
   if (!subnet) throw new AppError(404, `Subnet ${id} not found`);
 
-  return prisma.subnet.update({
-    where: { id },
-    data: {
-      name: input.name,
-      purpose: input.purpose,
-      status: input.status,
-      vlan: input.vlan,
-      tags: input.tags,
-    },
-  });
+  const data: any = {
+    name: input.name,
+    purpose: input.purpose,
+    status: input.status,
+    vlan: input.vlan,
+    tags: input.tags,
+  };
+  if (input.convertToManual) {
+    data.discoveredBy = null;
+    data.fortigateDevice = null;
+  }
+
+  return prisma.subnet.update({ where: { id }, data });
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────

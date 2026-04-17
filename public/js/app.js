@@ -36,12 +36,14 @@ function _moonIcon() {
 // ─── Current User ────────────────────────────────────────────────────────────
 
 var currentUserRole = null;
+var currentUsername = null;
 
 async function fetchCurrentUser() {
   try {
     var data = await fetch("/api/v1/auth/me").then(function (r) { return r.json(); });
     if (data.authenticated) {
       currentUserRole = data.role;
+      currentUsername = data.username;
     }
   } catch (_) {}
   return currentUserRole;
@@ -49,7 +51,10 @@ async function fetchCurrentUser() {
 
 function isAdmin() { return currentUserRole === "admin"; }
 function isNetworkAdmin() { return currentUserRole === "networkadmin"; }
+function isAssetsAdmin() { return currentUserRole === "assetsadmin"; }
 function canManageNetworks() { return currentUserRole === "admin" || currentUserRole === "networkadmin"; }
+function canManageAssets() { return currentUserRole === "admin" || currentUserRole === "assetsadmin"; }
+function canReserveIps() { return currentUserRole === "admin" || currentUserRole === "networkadmin" || currentUserRole === "user" || currentUserRole === "assetsadmin"; }
 
 // ─── Sidebar Navigation ──────────────────────────────────────────────────────
 
@@ -237,7 +242,8 @@ async function trackedPdfExport(label, fn) {
     if (err.name === "AbortError" || controller.signal.aborted) {
       showToast("PDF export aborted", "error");
     } else {
-      throw err;
+      console.error("Export error:", err);
+      showToast("Export failed: " + (err.message || "Unknown error"), "error");
     }
   } finally {
     _unregisterQuery(qid);
@@ -588,6 +594,9 @@ function hideAdminOnlyElements() {
   });
   document.querySelectorAll("[data-manage-networks]").forEach(function (el) {
     if (!canManageNetworks()) el.style.display = "none";
+  });
+  document.querySelectorAll("[data-manage-assets]").forEach(function (el) {
+    if (!canManageAssets()) el.style.display = "none";
   });
 }
 

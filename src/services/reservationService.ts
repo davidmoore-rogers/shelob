@@ -16,6 +16,7 @@ export interface CreateReservationInput {
   projectRef: string;
   expiresAt?: Date;
   notes?: string;
+  createdBy?: string;
 }
 
 export interface UpdateReservationInput {
@@ -121,6 +122,7 @@ export async function createReservation(input: CreateReservationInput) {
         expiresAt: input.expiresAt,
         notes: input.notes,
         status: "active",
+        createdBy: input.createdBy ?? null,
       },
     });
 

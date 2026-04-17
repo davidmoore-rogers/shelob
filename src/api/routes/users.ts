@@ -13,7 +13,7 @@ const router = Router();
 const CreateUserSchema = z.object({
   username: z.string().min(1).max(64),
   password: z.string().min(4),
-  role:     z.enum(["admin", "networkadmin", "user"]).optional(),
+  role:     z.enum(["admin", "networkadmin", "assetsadmin", "user", "readonly"]).optional(),
 });
 
 const ResetPasswordSchema = z.object({
@@ -21,7 +21,7 @@ const ResetPasswordSchema = z.object({
 });
 
 const UpdateRoleSchema = z.object({
-  role: z.enum(["admin", "networkadmin", "user"]),
+  role: z.enum(["admin", "networkadmin", "assetsadmin", "user", "readonly"]),
 });
 
 // GET /api/v1/users
@@ -47,7 +47,7 @@ router.post("/", async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
-      data: { username, passwordHash, role: role || "user" },
+      data: { username, passwordHash, role: role || "readonly" },
       select: { id: true, username: true, role: true, createdAt: true },
     });
     res.status(201).json(user);

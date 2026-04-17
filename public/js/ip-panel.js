@@ -78,8 +78,13 @@ function _renderPanelHeader(data) {
     escapeHtml(s.name) + ' <code style="font-size:0.85rem;margin-left:4px">' + escapeHtml(s.cidr) + '</code>';
 
   var meta = '';
-  if (s.status) meta += statusBadge(s.status);
+  if (s.status) {
+    var badge = statusBadge(s.hasConflict ? "conflict" : s.status);
+    meta += s.conflictMessage ? '<span title="' + escapeHtml(s.conflictMessage) + '" style="cursor:help">' + badge + '</span>' : badge;
+  }
   if (s.vlan) meta += '<span class="badge badge-vlan">VLAN ' + s.vlan + '</span>';
+  if (s.integration) meta += '<span style="font-size:0.78rem;color:var(--color-text-secondary)">Integration: <strong>' + escapeHtml(s.integration.name) + '</strong></span>';
+  if (s.fortigateDevice && (!s.integration || s.integration.type !== 'windowsserver')) meta += '<span style="font-size:0.78rem;color:var(--color-text-secondary)">Server: <strong>' + escapeHtml(s.fortigateDevice) + '</strong></span>';
   if (s.purpose) meta += '<span style="color:var(--color-text-tertiary)">' + escapeHtml(s.purpose) + '</span>';
   if (data.ipv6) meta += '<span style="color:var(--color-warning);font-size:0.75rem">IPv6 — showing reservations only</span>';
 
@@ -91,7 +96,7 @@ function _renderPanelHeader(data) {
         '<button data-fmt="csv">Export as CSV</button>' +
       '</div>' +
     '</div>' +
-    (canManageNetworks() ? '<button class="btn btn-sm btn-primary" id="ip-panel-reserve-btn">+ Reserve IP</button>' : '') +
+    (canReserveIps() ? '<button class="btn btn-sm btn-primary" id="ip-panel-reserve-btn">+ Reserve IP</button>' : '') +
     '</span>';
   meta += headerBtns;
 
@@ -132,7 +137,9 @@ function _renderIpList(data) {
     '<th style="width:36px"></th>' +
     '<th>IP Address</th>' +
     '<th>Hostname</th>' +
+    '<th>MAC Address</th>' +
     '<th>Owner</th>' +
+    '<th>Lease Expiry</th>' +
     '<th>Status</th>' +
     '<th style="width:100px">Actions</th>' +
     '</tr></thead><tbody>';
@@ -142,10 +149,14 @@ function _renderIpList(data) {
     var r = ip.reservation;
     var rowClass = isSpecial ? ' class="ip-row-special"' : '';
 
-    var dotClass, statusLabel;
+    var dotClass, statusLabel, statusTooltip = "";
     if (isSpecial) {
       dotClass = "ip-dot-reserved";
       statusLabel = ip.type === "network" ? "Network" : "Broadcast";
+    } else if (r && r.conflictMessage) {
+      dotClass = "ip-dot-conflict";
+      statusLabel = "Conflict";
+      statusTooltip = r.conflictMessage;
     } else if (r && r.status === "active" && r.owner === "dhcp-reservation") {
       dotClass = "ip-dot-dhcp-reservation";
       statusLabel = "DHCP Reservation";
@@ -167,39 +178,46 @@ function _renderIpList(data) {
     }
 
     var hostname = r ? escapeHtml(r.hostname || "-") : '<span style="color:var(--color-text-tertiary)">-</span>';
-    var ownerDisplay;
-    if (!r) {
-      ownerDisplay = '<span style="color:var(--color-text-tertiary)">-</span>';
-    } else if (r.owner === "dhcp-reservation" || r.owner === "dhcp-lease") {
-      // Extract MAC from notes if present (format: "... — MAC: AA:BB:CC:DD:EE:FF")
-      var macMatch = r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
-      ownerDisplay = macMatch
-        ? '<span class="mono" style="font-size:0.75rem">' + escapeHtml(macMatch[1]) + '</span>'
-        : escapeHtml(r.owner);
-    } else {
-      ownerDisplay = escapeHtml(r.owner || "-");
-    }
+    var macMatch = r && r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
+    var macDisplay = macMatch
+      ? '<span class="mono" style="font-size:0.75rem">' + escapeHtml(macMatch[1]) + '</span>'
+      : '<span style="color:var(--color-text-tertiary)">-</span>';
+    var ownerDisplay = !r
+      ? '<span style="color:var(--color-text-tertiary)">-</span>'
+      : escapeHtml(r.owner || "-");
     var owner = ownerDisplay;
 
     var actions = "";
+    var isOwner = r && r.createdBy === currentUsername;
+    var canEditThis = canManageNetworks() || isOwner;
     if (isSpecial) {
       actions = "";
     } else if (r && r.status === "active") {
       actions =
-        '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' +
-        (canManageNetworks() ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
+        (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
+        (canEditThis ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
     } else if (r && r.status === "expired") {
-      actions = '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>';
-    } else if (!r && canManageNetworks()) {
+      actions = canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '';
+    } else if (!r && canReserveIps()) {
       actions = '<button class="btn btn-sm btn-primary ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '">Reserve</button>';
     }
+
+    var statusHtml = statusTooltip
+      ? '<span class="conflict-label" title="' + escapeHtml(statusTooltip) + '">' + statusLabel + ' <span class="conflict-icon">&#9888;</span></span>'
+      : statusLabel;
+
+    var leaseExpiry = r && r.expiresAt
+      ? '<span style="font-size:0.75rem">' + escapeHtml(formatDate(r.expiresAt)) + '</span>'
+      : '<span style="color:var(--color-text-tertiary)">-</span>';
 
     html += '<tr' + rowClass + '>' +
       '<td style="text-align:center"><span class="ip-status-dot ' + dotClass + '"></span></td>' +
       '<td class="mono" style="font-size:0.8rem">' + escapeHtml(ip.address) + '</td>' +
       '<td>' + hostname + '</td>' +
+      '<td>' + macDisplay + '</td>' +
       '<td>' + owner + '</td>' +
-      '<td style="font-size:0.78rem">' + statusLabel + '</td>' +
+      '<td>' + leaseExpiry + '</td>' +
+      '<td style="font-size:0.78rem">' + statusHtml + '</td>' +
       '<td class="actions">' + actions + '</td>' +
       '</tr>';
   });
@@ -412,6 +430,9 @@ async function _exportIpPanel(fmt) {
 }
 
 function _generateIpPanelPdf(s, allIps) {
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    throw new Error("PDF library not loaded. Check your internet connection and reload the page.");
+  }
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
 
@@ -443,13 +464,15 @@ function _generateIpPanelPdf(s, allIps) {
   yPos += 18;
 
   // Table
-  var head = [["IP Address", "Hostname", "Owner", "Status"]];
+  var head = [["IP Address", "Hostname", "MAC Address", "Owner", "Lease Expiry", "Status"]];
   var body = allIps.map(function (ip) {
     var isSpecial = ip.type === "network" || ip.type === "broadcast";
     var r = ip.reservation;
     var statusLabel;
     if (isSpecial) {
       statusLabel = ip.type === "network" ? "Network" : "Broadcast";
+    } else if (r && r.conflictMessage) {
+      statusLabel = "Conflict: " + r.conflictMessage;
     } else if (r && r.status === "active" && r.owner === "dhcp-reservation") {
       statusLabel = "DHCP Reservation";
     } else if (r && r.status === "active" && r.owner === "dhcp-lease") {
@@ -464,20 +487,17 @@ function _generateIpPanelPdf(s, allIps) {
       statusLabel = "Available";
     }
 
-    var owner = "-";
-    if (r) {
-      if (r.owner === "dhcp-reservation" || r.owner === "dhcp-lease") {
-        var macMatch = r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
-        owner = macMatch ? macMatch[1] : r.owner;
-      } else {
-        owner = r.owner || "-";
-      }
-    }
+    var macMatch = r && r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
+    var mac = macMatch ? macMatch[1] : "-";
+    var owner = r ? (r.owner || "-") : "-";
+    var expiry = r && r.expiresAt ? formatDate(r.expiresAt) : "-";
 
     return [
       ip.address,
       r ? (r.hostname || "-") : "-",
+      mac,
       owner,
+      expiry,
       statusLabel,
     ];
   });
@@ -513,13 +533,15 @@ function _generateIpPanelPdf(s, allIps) {
 }
 
 function _generateIpPanelCsv(s, allIps) {
-  var headers = ["IP Address", "Hostname", "Owner", "Status"];
+  var headers = ["IP Address", "Hostname", "MAC Address", "Owner", "Lease Expiry", "Status"];
   var rows = allIps.map(function (ip) {
     var isSpecial = ip.type === "network" || ip.type === "broadcast";
     var r = ip.reservation;
     var statusLabel;
     if (isSpecial) {
       statusLabel = ip.type === "network" ? "Network" : "Broadcast";
+    } else if (r && r.conflictMessage) {
+      statusLabel = "Conflict: " + r.conflictMessage;
     } else if (r && r.status === "active" && r.owner === "dhcp-reservation") {
       statusLabel = "DHCP Reservation";
     } else if (r && r.status === "active" && r.owner === "dhcp-lease") {
@@ -533,16 +555,11 @@ function _generateIpPanelCsv(s, allIps) {
     } else {
       statusLabel = "Available";
     }
-    var owner = "";
-    if (r) {
-      if (r.owner === "dhcp-reservation" || r.owner === "dhcp-lease") {
-        var macMatch = r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
-        owner = macMatch ? macMatch[1] : r.owner;
-      } else {
-        owner = r.owner || "";
-      }
-    }
-    return [ip.address, r ? (r.hostname || "") : "", owner, statusLabel];
+    var macMatch = r && r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
+    var mac = macMatch ? macMatch[1] : "";
+    var owner = r ? (r.owner || "") : "";
+    var expiry = r && r.expiresAt ? formatDate(r.expiresAt) : "";
+    return [ip.address, r ? (r.hostname || "") : "", mac, owner, expiry, statusLabel];
   });
   var filename = "shelob-network-" + s.cidr.replace(/[\/]/g, "_") + "-" + new Date().toISOString().slice(0, 10) + ".csv";
   downloadCsv(headers, rows, filename);

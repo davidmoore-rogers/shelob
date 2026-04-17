@@ -25,3 +25,10 @@ export function requireNetworkAdmin(req: Request, _res: Response, next: NextFunc
   }
   next(new AppError(403, "Forbidden — network admin access required"));
 }
+
+export function requireAssetsAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (req.session?.role === "admin" || req.session?.role === "assetsadmin") {
+    return next();
+  }
+  next(new AppError(403, "Forbidden — assets admin access required"));
+}
