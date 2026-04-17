@@ -499,10 +499,6 @@ async function loadDatabaseInfo() {
     var db = await api.serverSettings.getDatabase();
     _dbLoaded = true;
 
-    var connParts = [];
-    if (db.host) connParts.push(escapeHtml(db.host) + (db.port ? ":" + db.port : ""));
-    if (db.database) connParts.push(escapeHtml(db.database));
-
     container.innerHTML =
       '<div class="settings-card">' +
         '<h4>Database Engine</h4>' +
@@ -545,17 +541,347 @@ async function loadDatabaseInfo() {
             '</div>' +
           '</div>'
         : '') +
+
+      // ── Backup Card ──
+      '<div class="settings-card">' +
+        '<h4>Backup</h4>' +
+        '<p class="hint" style="margin-bottom:0.75rem">Create a compressed backup of the database. Optionally encrypt with a password for secure storage or transfer.</p>' +
+        '<div class="form-row" style="align-items:flex-end;gap:12px;flex-wrap:wrap">' +
+          '<div style="flex:1;min-width:200px">' +
+            '<label for="backup-password">Encryption password <span style="color:var(--color-text-tertiary)">(optional)</span></label>' +
+            '<input type="password" id="backup-password" placeholder="Leave blank for unencrypted backup" autocomplete="new-password">' +
+          '</div>' +
+          '<div style="flex:1;min-width:200px">' +
+            '<label for="backup-password-confirm">Confirm password</label>' +
+            '<input type="password" id="backup-password-confirm" placeholder="Re-enter password" autocomplete="new-password">' +
+          '</div>' +
+          '<div>' +
+            '<button class="btn btn-primary" id="btn-backup" style="white-space:nowrap">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+              'Create Backup</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="backup-status" style="margin-top:0.5rem"></div>' +
+      '</div>' +
+
+      // ── Restore Card ──
+      '<div class="settings-card">' +
+        '<h4>Restore</h4>' +
+        '<p class="hint" style="margin-bottom:0.75rem">Restore the database from a previously created backup file. This will replace all current data.</p>' +
+        '<div class="restore-drop-zone" id="restore-drop-zone">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32" style="opacity:0.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>' +
+          '<p>Drag and drop a backup file here, or <label for="restore-file-input" class="link-text" style="cursor:pointer">browse</label></p>' +
+          '<p class="hint">Accepts .gz or .enc.gz files</p>' +
+          '<input type="file" id="restore-file-input" accept=".gz" style="display:none">' +
+        '</div>' +
+        '<div id="restore-file-info" style="display:none;margin-top:0.75rem">' +
+          '<div class="db-info-grid" style="margin-bottom:0.75rem">' +
+            '<div class="db-info-label">File</div><div class="db-info-value" id="restore-filename">-</div>' +
+            '<div class="db-info-label">Size</div><div class="db-info-value" id="restore-filesize">-</div>' +
+            '<div class="db-info-label">Backup version</div><div class="db-info-value" id="restore-version">-</div>' +
+            '<div class="db-info-label">Encrypted</div><div class="db-info-value" id="restore-encrypted">-</div>' +
+          '</div>' +
+          '<div id="restore-version-warning" style="display:none;margin-bottom:0.75rem;padding:0.6rem 0.75rem;border-radius:6px;background:color-mix(in srgb, var(--color-warning) 12%, transparent);border:1px solid color-mix(in srgb, var(--color-warning) 30%, transparent);font-size:0.82rem;color:var(--color-text-primary)">' +
+            '<strong style="color:var(--color-warning)">Version mismatch</strong> — ' +
+            'This backup was created with a different version of Shelob. ' +
+            'Restoring a backup from a different version may fail or cause issues if the database schema has changed. ' +
+            'For best results, ensure the application version matches the backup version before restoring.' +
+          '</div>' +
+          '<div id="restore-password-row" style="display:none;margin-bottom:0.75rem">' +
+            '<label for="restore-password">Decryption password</label>' +
+            '<input type="password" id="restore-password" placeholder="Enter the password used during backup" autocomplete="off">' +
+          '</div>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="btn btn-danger" id="btn-restore">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>' +
+              'Restore Database</button>' +
+            '<button class="btn btn-secondary" id="btn-restore-cancel">Cancel</button>' +
+          '</div>' +
+        '</div>' +
+        '<div id="restore-status" style="margin-top:0.5rem"></div>' +
+      '</div>' +
+
+      // ── Backup History Card ──
+      '<div class="settings-card">' +
+        '<h4>Backup History</h4>' +
+        '<div id="backup-history-body"><p class="empty-state">Loading...</p></div>' +
+      '</div>' +
+
       '<div style="display:flex;gap:8px;align-items:center">' +
         '<button class="btn btn-secondary" id="btn-db-refresh">Refresh</button>' +
       '</div>';
 
+    // Wire up events
     document.getElementById("btn-db-refresh").addEventListener("click", function () {
       _dbLoaded = false;
       loadDatabaseInfo();
     });
+
+    initBackupControls();
+    initRestoreControls();
+    loadBackupHistory();
   } catch (err) {
     container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
   }
+}
+
+// ─── Backup Logic ───────────────────────────────────────────────────────────
+
+function initBackupControls() {
+  var btnBackup = document.getElementById("btn-backup");
+  btnBackup.addEventListener("click", async function () {
+    var pw = document.getElementById("backup-password").value;
+    var pwConfirm = document.getElementById("backup-password-confirm").value;
+    var statusEl = document.getElementById("backup-status");
+
+    if (pw && pw !== pwConfirm) {
+      statusEl.innerHTML = '<span class="badge badge-error">Passwords do not match</span>';
+      return;
+    }
+
+    btnBackup.disabled = true;
+    btnBackup.textContent = "Creating backup...";
+    statusEl.innerHTML = '<span class="badge badge-info">Compressing' + (pw ? " and encrypting" : "") + ' database...</span>';
+
+    try {
+      var result = await api.serverSettings.backupDatabase(pw || null);
+      if (!result || !result.blob) throw new Error("No data received");
+
+      // Trigger download
+      var url = URL.createObjectURL(result.blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = result.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      var sizeKb = (result.blob.size / 1024).toFixed(1);
+      statusEl.innerHTML = '<span class="badge badge-success">Backup created: ' + escapeHtml(result.filename) + ' (' + sizeKb + ' KB' + (pw ? ', encrypted' : '') + ')</span>';
+      document.getElementById("backup-password").value = "";
+      document.getElementById("backup-password-confirm").value = "";
+      showToast("Backup downloaded: " + result.filename, "success");
+      loadBackupHistory();
+    } catch (err) {
+      statusEl.innerHTML = '<span class="badge badge-error">' + escapeHtml(err.message) + '</span>';
+      showToast("Backup failed: " + err.message, "error");
+    } finally {
+      btnBackup.disabled = false;
+      btnBackup.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Create Backup';
+    }
+  });
+}
+
+// ─── Restore Logic ──────────────────────────────────────────────────────────
+
+var _restoreFile = null;
+
+function initRestoreControls() {
+  var dropZone = document.getElementById("restore-drop-zone");
+  var fileInput = document.getElementById("restore-file-input");
+  var fileInfo = document.getElementById("restore-file-info");
+  var btnRestore = document.getElementById("btn-restore");
+  var btnCancel = document.getElementById("btn-restore-cancel");
+
+  dropZone.addEventListener("dragover", function (e) {
+    e.preventDefault();
+    dropZone.classList.add("drag-over");
+  });
+  dropZone.addEventListener("dragleave", function () {
+    dropZone.classList.remove("drag-over");
+  });
+  dropZone.addEventListener("drop", function (e) {
+    e.preventDefault();
+    dropZone.classList.remove("drag-over");
+    if (e.dataTransfer.files.length > 0) selectRestoreFile(e.dataTransfer.files[0]);
+  });
+
+  fileInput.addEventListener("change", function () {
+    if (fileInput.files.length > 0) selectRestoreFile(fileInput.files[0]);
+  });
+
+  btnCancel.addEventListener("click", function () {
+    _restoreFile = null;
+    fileInfo.style.display = "none";
+    dropZone.style.display = "";
+    document.getElementById("restore-status").innerHTML = "";
+    fileInput.value = "";
+  });
+
+  btnRestore.addEventListener("click", async function () {
+    if (!_restoreFile) return;
+    var pw = document.getElementById("restore-password")?.value || null;
+    var statusEl = document.getElementById("restore-status");
+
+    var confirmed = await showConfirm("This will replace ALL current data with the backup contents. This cannot be undone. Continue?");
+    if (!confirmed) return;
+
+    btnRestore.disabled = true;
+    btnRestore.textContent = "Restoring...";
+    statusEl.innerHTML = '<span class="badge badge-info">Restoring database...</span>';
+
+    try {
+      var result = await api.serverSettings.restoreDatabase(_restoreFile, pw);
+      statusEl.innerHTML = '<span class="badge badge-success">' + escapeHtml(result.message || "Restore completed") +
+        (result.backupDate ? ' (backup from ' + escapeHtml(formatDate(result.backupDate)) + ')' : '') + '</span>';
+      showToast("Database restored successfully", "success");
+
+      // Reset the form
+      _restoreFile = null;
+      fileInfo.style.display = "none";
+      dropZone.style.display = "";
+      document.getElementById("restore-file-input").value = "";
+
+      // Refresh the database info
+      setTimeout(function () {
+        _dbLoaded = false;
+        loadDatabaseInfo();
+      }, 1500);
+    } catch (err) {
+      statusEl.innerHTML = '<span class="badge badge-error">' + escapeHtml(err.message) + '</span>';
+      showToast("Restore failed: " + err.message, "error");
+    } finally {
+      btnRestore.disabled = false;
+      btnRestore.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Restore Database';
+    }
+  });
+}
+
+function selectRestoreFile(file) {
+  _restoreFile = file;
+  var dropZone = document.getElementById("restore-drop-zone");
+  var fileInfo = document.getElementById("restore-file-info");
+  var statusEl = document.getElementById("restore-status");
+
+  dropZone.style.display = "none";
+  fileInfo.style.display = "";
+  statusEl.innerHTML = "";
+
+  document.getElementById("restore-filename").textContent = file.name;
+  document.getElementById("restore-filesize").textContent = formatFileSize(file.size);
+
+  // Extract version from filename: shelob-backup-1.0.0-2026-...gz
+  var versionMatch = file.name.match(/shelob-backup-(\d+\.\d+\.\d+)-/);
+  var backupVersion = versionMatch ? versionMatch[1] : null;
+  var currentVersion = _branding && _branding.version ? _branding.version : null;
+  var versionEl = document.getElementById("restore-version");
+  var warningEl = document.getElementById("restore-version-warning");
+
+  if (backupVersion) {
+    versionEl.textContent = backupVersion;
+    if (currentVersion && backupVersion !== currentVersion) {
+      warningEl.style.display = "";
+      warningEl.innerHTML =
+        '<strong style="color:var(--color-warning)">Version mismatch</strong> — ' +
+        'This backup was created with <strong>v' + escapeHtml(backupVersion) + '</strong>, ' +
+        'but the running application is <strong>v' + escapeHtml(currentVersion) + '</strong>. ' +
+        'Restoring a backup from a different version may fail or cause issues if the database schema has changed. ' +
+        'For best results, ensure the application version matches the backup version before restoring.';
+    } else {
+      warningEl.style.display = "none";
+    }
+  } else {
+    versionEl.innerHTML = '<span style="color:var(--color-text-tertiary)">Unknown</span>';
+    warningEl.style.display = "";
+    warningEl.innerHTML =
+      '<strong style="color:var(--color-warning)">Unknown version</strong> — ' +
+      'Could not determine the application version from this backup file. ' +
+      'Ensure this backup was created by a compatible version of Shelob before restoring.';
+  }
+
+  var isEncrypted = file.name.includes(".enc");
+  document.getElementById("restore-encrypted").innerHTML = isEncrypted
+    ? '<span class="badge badge-warning" style="font-size:0.75rem">Yes</span>'
+    : '<span class="badge badge-info" style="font-size:0.75rem">No</span>';
+  document.getElementById("restore-password-row").style.display = isEncrypted ? "" : "none";
+
+  // Also check magic bytes for encryption detection
+  if (file.size > 8) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var arr = new Uint8Array(reader.result);
+      var magic = String.fromCharCode.apply(null, arr.slice(0, 7));
+      if (magic === "SHELOB1") {
+        document.getElementById("restore-encrypted").innerHTML = '<span class="badge badge-warning" style="font-size:0.75rem">Yes</span>';
+        document.getElementById("restore-password-row").style.display = "";
+      }
+    };
+    reader.readAsArrayBuffer(file.slice(0, 8));
+  }
+}
+
+// ─── Backup History ─────────────────────────────────────────────────────────
+
+async function loadBackupHistory() {
+  var body = document.getElementById("backup-history-body");
+  if (!body) return;
+  try {
+    var history = await api.serverSettings.listBackups();
+    if (!history || history.length === 0) {
+      body.innerHTML = '<p class="empty-state" style="font-size:0.85rem">No backups have been created yet.</p>';
+      return;
+    }
+    body.innerHTML =
+      '<table class="ip-table"><thead><tr>' +
+        '<th>Date</th><th>Filename</th><th style="text-align:right">Size</th><th>Encrypted</th><th style="width:80px"></th>' +
+      '</tr></thead><tbody>' +
+      history.slice(0, 20).map(function (b) {
+        var dlBtn = b.downloadable !== false
+          ? '<button class="btn btn-secondary btn-sm backup-dl-btn" data-id="' + escapeHtml(b.id) + '" data-filename="' + escapeHtml(b.filename) + '" style="font-size:0.75rem;padding:2px 8px">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="vertical-align:-1px;margin-right:3px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+              'Download</button>'
+          : '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">Unavailable</span>';
+        return '<tr>' +
+          '<td style="font-size:0.82rem;white-space:nowrap">' + escapeHtml(formatDate(b.createdAt)) + '</td>' +
+          '<td class="mono" style="font-size:0.82rem">' + escapeHtml(b.filename) + '</td>' +
+          '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(b.size || formatFileSize(b.sizeBytes || 0)) + '</td>' +
+          '<td>' + (b.encrypted
+            ? '<span class="badge badge-warning" style="font-size:0.7rem">Encrypted</span>'
+            : '<span class="badge badge-info" style="font-size:0.7rem">Plain</span>') +
+          '</td>' +
+          '<td>' + dlBtn + '</td>' +
+          '</tr>';
+      }).join("") +
+      '</tbody></table>';
+
+    // Wire up download buttons
+    body.querySelectorAll(".backup-dl-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-id");
+        btn.disabled = true;
+        btn.textContent = "...";
+        api.serverSettings.downloadBackup(id).then(function (result) {
+          if (!result || !result.blob) throw new Error("No data received");
+          var url = URL.createObjectURL(result.blob);
+          var a = document.createElement("a");
+          a.href = url;
+          a.download = result.filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showToast("Downloaded: " + result.filename, "success");
+        }).catch(function (err) {
+          showToast("Download failed: " + err.message, "error");
+        }).finally(function () {
+          btn.disabled = false;
+          btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="vertical-align:-1px;margin-right:3px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download';
+        });
+      });
+    });
+  } catch {
+    body.innerHTML = '<p class="empty-state" style="font-size:0.85rem">Could not load backup history.</p>';
+  }
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return "0 B";
+  var units = ["B", "KB", "MB", "GB"];
+  var i = 0;
+  var size = bytes;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+  return size.toFixed(i === 0 ? 0 : 1) + " " + units[i];
 }
 
 function dbInfoRow(label, value) {

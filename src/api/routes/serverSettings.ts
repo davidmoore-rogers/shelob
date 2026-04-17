@@ -4,6 +4,18 @@
 
 import { Router } from "express";
 import multer from "multer";
+import { execSync } from "node:child_process";
+import { gzipSync, gunzipSync } from "node:zlib";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  scryptSync,
+} from "node:crypto";
+import { existsSync, unlinkSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getNtpSettings,
   updateNtpSettings,
@@ -21,6 +33,19 @@ import { AppError } from "../../utils/errors.js";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 } });
+const restoreUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 512 * 1024 * 1024 } });
+
+const APP_VERSION: string = (() => {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // Works from both src/ (dev) and dist/ (build)
+    for (const rel of ["../../../package.json", "../../package.json"]) {
+      const p = join(here, rel);
+      if (existsSync(p)) return JSON.parse(readFileSync(p, "utf-8")).version || "0.0.0";
+    }
+    return "0.0.0";
+  } catch { return "0.0.0"; }
+})();
 
 // ─── Database ──────────────────────────────────────────────────────────────
 
@@ -91,6 +116,139 @@ router.get("/database", async (_req, res, next) => {
       maxConnections,
       uptime: String(uptime),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Database Backup ──────────────────────────────────────────────────────
+
+router.post("/database/backup", async (req, res, next) => {
+  try {
+    const password: string | null = req.body?.password || null;
+    const connUrl = process.env.DATABASE_URL || "";
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const filename = `shelob-backup-${APP_VERSION}-${ts}${password ? ".enc" : ""}.gz`;
+    const tmpFile = join(tmpdir(), `shelob-dump-${Date.now()}.sql`);
+
+    try {
+      // Use pg_dump to create a full SQL dump
+      // --clean --if-exists: DROP tables before CREATE so restore works on both fresh and existing databases
+      execSync(`pg_dump "${connUrl}" --no-owner --no-acl --clean --if-exists -f "${tmpFile}"`, {
+        timeout: 120000,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err: any) {
+      throw new AppError(500, "pg_dump failed: " + (err.stderr?.toString() || err.message));
+    }
+
+    let payload = readFileSync(tmpFile);
+    try { unlinkSync(tmpFile); } catch {}
+
+    // Compress with gzip
+    payload = gzipSync(payload);
+
+    // Encrypt if password provided
+    if (password) {
+      const salt = randomBytes(32);
+      const key = scryptSync(password, salt, 32);
+      const iv = randomBytes(16);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      const encrypted = Buffer.concat([cipher.update(payload), cipher.final()]);
+      const authTag = cipher.getAuthTag();
+      const magic = Buffer.from("SHELOB1\0");
+      payload = Buffer.concat([magic, salt, iv, authTag, encrypted]);
+    }
+
+    // Record backup in settings table
+    const backupRecord = {
+      id: `bk-${Date.now()}`,
+      filename,
+      size: payload.length,
+      encrypted: !!password,
+      createdAt: new Date().toISOString(),
+    };
+    const existing = await prisma.setting.findUnique({ where: { key: "backup_history" } });
+    const history: any[] = existing?.value && Array.isArray(existing.value) ? existing.value as any[] : [];
+    history.push(backupRecord);
+    if (history.length > 50) history.splice(0, history.length - 50);
+    await prisma.setting.upsert({
+      where: { key: "backup_history" },
+      update: { value: history },
+      create: { key: "backup_history", value: history },
+    });
+
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", payload.length);
+    res.end(payload);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/database/restore", restoreUpload.single("file"), async (req, res, next) => {
+  try {
+    if (!req.file) throw new AppError(400, "No backup file uploaded");
+    const password: string | null = req.body?.password || null;
+    const connUrl = process.env.DATABASE_URL || "";
+
+    let payload = req.file.buffer;
+
+    // Check if encrypted
+    const magic = Buffer.from("SHELOB1\0");
+    const isEncrypted = payload.length > 72 && payload.subarray(0, 8).equals(magic);
+
+    if (isEncrypted) {
+      if (!password) throw new AppError(400, "This backup is encrypted — a password is required to restore it");
+      const salt = payload.subarray(8, 40);
+      const iv = payload.subarray(40, 56);
+      const authTag = payload.subarray(56, 72);
+      const ciphertext = payload.subarray(72);
+      const key = scryptSync(password, salt, 32);
+      const decipher = createDecipheriv("aes-256-gcm", key, iv);
+      decipher.setAuthTag(authTag);
+      try {
+        payload = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      } catch {
+        throw new AppError(400, "Decryption failed — incorrect password or corrupted file");
+      }
+    }
+
+    // Decompress
+    try {
+      payload = gunzipSync(payload);
+    } catch {
+      throw new AppError(400, "Decompression failed — file is not a valid gzip archive");
+    }
+
+    // Write SQL to temp file and restore with psql
+    const tmpFile = join(tmpdir(), `shelob-restore-${Date.now()}.sql`);
+    writeFileSync(tmpFile, payload);
+
+    try {
+      // --single-transaction: rollback everything if any statement fails
+      execSync(`psql "${connUrl}" --single-transaction -f "${tmpFile}"`, {
+        timeout: 120000,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err: any) {
+      throw new AppError(500, "psql restore failed: " + (err.stderr?.toString() || err.message));
+    } finally {
+      try { unlinkSync(tmpFile); } catch {}
+    }
+
+    res.json({ ok: true, message: "Database restored successfully" });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/database/backups", async (_req, res, next) => {
+  try {
+    const existing = await prisma.setting.findUnique({ where: { key: "backup_history" } });
+    const history: any[] = existing?.value && Array.isArray(existing.value) ? existing.value as any[] : [];
+    res.json(history.reverse());
   } catch (err) {
     next(err);
   }

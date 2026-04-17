@@ -115,6 +115,7 @@ function renderNav() {
       <div style="padding:0.25rem 0.5rem 0.75rem">
         <a href="#" id="btn-logout" class="sidebar-bottom-link sidebar-bottom-link-logout">${ICONS.logout}<span>Logout</span></a>
       </div>
+      <div id="sidebar-version" style="padding:0 0.75rem 0.75rem;text-align:center;font-size:0.7rem;color:var(--color-text-tertiary);letter-spacing:0.02em"></div>
     </div>
   `;
 
@@ -169,6 +170,12 @@ function applyBranding(b) {
   var favicon = document.querySelector('link[rel="icon"]');
   if (favicon && b.logoUrl) {
     favicon.href = b.logoUrl;
+  }
+
+  // Update version in sidebar
+  var versionEl = document.getElementById("sidebar-version");
+  if (versionEl && b.version) {
+    versionEl.textContent = "v" + b.version;
   }
 }
 

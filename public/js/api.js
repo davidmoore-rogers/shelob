@@ -130,6 +130,38 @@ const api = {
     updateHttps: (body)   => request("PUT", "/server-settings/https", body),
     applyHttps:  ()       => request("POST", "/server-settings/https/apply"),
     getDatabase: ()       => request("GET", "/server-settings/database"),
+    backupDatabase: (password) => {
+      var opts = { method: "POST", headers: { "Content-Type": "application/json" } };
+      if (password) opts.body = JSON.stringify({ password: password });
+      return fetch(API_BASE + "/server-settings/database/backup", opts).then(function (res) {
+        if (res.status === 401) { window.location.href = "/login.html"; return; }
+        if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || "Backup failed"); });
+        var filename = "shelob-backup.gz";
+        var cd = res.headers.get("Content-Disposition");
+        if (cd) { var m = cd.match(/filename="?([^"]+)"?/); if (m) filename = m[1]; }
+        return res.blob().then(function (blob) { return { blob: blob, filename: filename }; });
+      });
+    },
+    restoreDatabase: (file, password) => {
+      var formData = new FormData();
+      formData.append("file", file);
+      if (password) formData.append("password", password);
+      return fetch(API_BASE + "/server-settings/database/restore", { method: "POST", body: formData }).then(function (res) {
+        if (res.status === 401) { window.location.href = "/login.html"; return; }
+        return res.json().then(function (data) { if (!res.ok) throw new Error(data.error || "Restore failed"); return data; });
+      });
+    },
+    listBackups: () => request("GET", "/server-settings/database/backups"),
+    downloadBackup: (id) => {
+      return fetch(API_BASE + "/server-settings/database/backups/" + id + "/download").then(function (res) {
+        if (res.status === 401) { window.location.href = "/login.html"; return; }
+        if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || "Download failed"); });
+        var filename = "backup.gz";
+        var cd = res.headers.get("Content-Disposition");
+        if (cd) { var m = cd.match(/filename="?([^"]+)"?/); if (m) filename = m[1]; }
+        return res.blob().then(function (blob) { return { blob: blob, filename: filename }; });
+      });
+    },
     listTags:    ()       => request("GET", "/server-settings/tags"),
     createTag:   (body)   => request("POST", "/server-settings/tags", body),
     deleteTag:   (id)     => request("DELETE", `/server-settings/tags/${id}`),

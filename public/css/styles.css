@@ -1099,6 +1099,30 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   border-bottom: 1px solid var(--color-border);
 }
 
+/* Restore drop zone */
+.restore-drop-zone {
+  border: 2px dashed var(--color-border);
+  border-radius: 8px;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--color-text-tertiary);
+  transition: border-color 0.2s, background 0.2s;
+  cursor: pointer;
+}
+.restore-drop-zone:hover,
+.restore-drop-zone.drag-over {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+.restore-drop-zone p {
+  margin: 0.5rem 0 0;
+  font-size: 0.88rem;
+}
+.restore-drop-zone .link-text {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
 /* Tag chips */
 .tag-category-header {
   display: flex;

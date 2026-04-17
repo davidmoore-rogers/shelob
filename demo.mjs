@@ -12,10 +12,220 @@ import { join, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createGzip, createGunzip, gzipSync, gunzipSync } from "node:zlib";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from "node:crypto";
+import { Netmask } from "netmask";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const PORT = 3000;
 const PUBLIC = join(__dirname, "public");
+const APP_VERSION = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf-8")).version || "0.0.0";
+
+// ─── Real FortiManager API Client ───────────────────────────────────────────
+// Used when non-mock FMG integrations are added to the demo.
+
+const MOCK_FMG_HOSTS = ["fmg.example.com", "lab-fmg.example.com"];
+
+function _isMockFmg(config) {
+  return !config?.host || MOCK_FMG_HOSTS.includes(config.host);
+}
+
+async function _fmgRpc(url, payload, apiUser, apiToken, verifySsl, signal) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  // Temporarily disable TLS verification for self-signed FMG certs when verifySsl is false
+  const prevTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  if (verifySsl === false) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  try {
+    const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${apiToken}` };
+    if (apiUser) headers["access_user"] = apiUser;
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (res.status === 401 || res.status === 403) throw new Error("Authentication failed — check your API token");
+    if (!res.ok) throw new Error(`FortiManager returned HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
+    if (verifySsl === false) {
+      if (prevTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
+    }
+  }
+}
+
+async function _fmgTestConnection(config) {
+  if (!config.host || !config.apiToken) return { ok: false, message: "Host and API token are required" };
+  const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
+  try {
+    const res = await _fmgRpc(baseUrl, { id: 1, method: "get", params: [{ url: "/sys/status" }] }, config.apiUser, config.apiToken, config.verifySsl);
+    const code = res.result?.[0]?.status?.code;
+    if (code !== 0) {
+      const msg = res.result?.[0]?.status?.message || "Request failed";
+      if (code === -11) return { ok: false, message: "Invalid or expired API token" };
+      return { ok: false, message: msg };
+    }
+    const data = res.result?.[0]?.data;
+    const version = data?.Version ? String(data.Version) : undefined;
+    return { ok: true, message: version ? `Connected — FortiManager ${version}` : "Connected successfully", version };
+  } catch (err) {
+    if (err.cause?.code === "ECONNREFUSED") return { ok: false, message: `Connection refused — ${config.host}:${config.port || 443}` };
+    if (err.cause?.code === "ENOTFOUND") return { ok: false, message: `Host not found — ${config.host}` };
+    if (err.cause?.code === "ETIMEDOUT" || err.name === "TimeoutError") return { ok: false, message: `Connection timed out — ${config.host}:${config.port || 443}` };
+    if (err.cause?.code === "CERT_HAS_EXPIRED" || err.cause?.code === "DEPTH_ZERO_SELF_SIGNED_CERT" || err.cause?.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE") {
+      return { ok: false, message: `SSL certificate error — ${err.cause.code}. Try disabling "Verify SSL certificate".` };
+    }
+    return { ok: false, message: err.message || "Unknown error" };
+  }
+}
+
+async function _fmgDiscover(config, log) {
+  if (!log) log = () => {};
+  const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
+  const adom = config.adom || "root";
+  const { apiUser, apiToken, verifySsl } = config;
+
+  // Step 1: List managed devices
+  let devicesRes;
+  try {
+    devicesRes = await _fmgRpc(baseUrl, { id: 1, method: "get", params: [{ url: `/dvmdb/adom/${adom}/device` }] }, apiUser, apiToken, verifySsl);
+  } catch (err) {
+    log("discover.devices", "error", `Failed to list managed devices: ${err.message}`);
+    throw err;
+  }
+  const devicesData = devicesRes.result?.[0]?.data;
+  if (!Array.isArray(devicesData) || devicesData.length === 0) {
+    log("discover.devices", "info", `No managed devices found in ADOM "${adom}"`);
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
+  }
+  log("discover.devices", "info", `Found ${devicesData.length} managed device(s) in ADOM "${adom}"`);
+
+  const discovered = [], devices = [], interfaceIps = [], dhcpEntries = [], deviceInventory = [];
+
+  for (const device of devicesData) {
+    const deviceName = device.name || device.hostname;
+    if (!deviceName) continue;
+
+    const mgmtIp = device.ip || "";
+    devices.push({ name: deviceName, hostname: device.hostname || deviceName, serial: device.sn || "", model: device.platform_str || "", mgmtIp });
+
+    if (mgmtIp && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(mgmtIp)) {
+      interfaceIps.push({ device: deviceName, interfaceName: config.mgmtInterface || "mgmt", ipAddress: mgmtIp, role: "management" });
+    }
+
+    const dhcpInterfaceNames = [];
+    try {
+      const dhcpRes = await _fmgRpc(baseUrl, { id: 2, method: "get", params: [{ url: `/pm/config/device/${deviceName}/vdom/root/system/dhcp/server` }] }, apiUser, apiToken, verifySsl);
+      const dhcpData = dhcpRes.result?.[0]?.data;
+      if (!Array.isArray(dhcpData)) { log("discover.dhcp", "info", `${deviceName}: No DHCP servers configured`); continue; }
+
+      let subnetCount = 0, resCount = 0;
+      for (const server of dhcpData) {
+        const iface = server.interface || "";
+        const serverId = String(server.id || iface);
+        const netmaskStr = server.netmask;
+        const ranges = server["ip-range"];
+        if (!netmaskStr || !Array.isArray(ranges) || ranges.length === 0) continue;
+        const startIp = ranges[0]["start-ip"];
+        if (!startIp) continue;
+        try {
+          const block = new Netmask(`${startIp}/${netmaskStr}`);
+          discovered.push({ cidr: `${block.base}/${block.bitmask}`, name: iface || `dhcp-${serverId}`, fortigateDevice: deviceName, dhcpServerId: serverId });
+          subnetCount++;
+          if (iface) dhcpInterfaceNames.push(iface);
+        } catch {}
+
+        const reservedAddrs = server["reserved-address"];
+        if (Array.isArray(reservedAddrs)) {
+          for (const entry of reservedAddrs) {
+            if (!entry.ip || entry.ip === "0.0.0.0") continue;
+            dhcpEntries.push({ device: deviceName, interfaceName: iface || `dhcp-${serverId}`, ipAddress: entry.ip, macAddress: entry.mac || "", hostname: entry.description || "", type: "dhcp-reservation" });
+            resCount++;
+          }
+        }
+      }
+      log("discover.dhcp", "info", `${deviceName}: Found ${subnetCount} DHCP subnet(s) and ${resCount} static reservation(s)`);
+
+      // DHCP leases
+      try {
+        const leaseRes = await _fmgRpc(baseUrl, { id: 4, method: "exec", params: [{ url: "/sys/proxy/json", data: { target: [`/adom/${adom}/device/${deviceName}`], action: "get", resource: "/api/v2/monitor/dhcp/server-leases" } }] }, apiUser, apiToken, verifySsl);
+        const leaseData = leaseRes.result?.[0]?.data;
+        const results = Array.isArray(leaseData) ? leaseData[0]?.response?.results : leaseData?.response?.results;
+        let leaseCount = 0;
+        if (Array.isArray(results)) {
+          for (const lease of results) {
+            if (!lease.ip || lease.ip === "0.0.0.0") continue;
+            if (dhcpEntries.some((e) => e.ipAddress === lease.ip && e.device === deviceName)) continue;
+            if (lease.interface && !dhcpInterfaceNames.includes(lease.interface)) continue;
+            dhcpEntries.push({ device: deviceName, interfaceName: lease.interface || "unknown", ipAddress: lease.ip, macAddress: lease.mac || "", hostname: lease.hostname || "", type: "dhcp-lease" });
+            leaseCount++;
+          }
+        }
+        log("discover.leases", "info", `${deviceName}: Found ${leaseCount} dynamic DHCP lease(s)`);
+      } catch (err) { log("discover.leases", "error", `${deviceName}: Failed to query DHCP leases — ${err.message}`); }
+
+      // Interface IPs
+      if (dhcpInterfaceNames.length > 0) {
+        try {
+          const ifaceRes = await _fmgRpc(baseUrl, { id: 3, method: "get", params: [{ url: `/pm/config/device/${deviceName}/vdom/root/system/interface` }] }, apiUser, apiToken, verifySsl);
+          const ifaceData = ifaceRes.result?.[0]?.data;
+          let ipCount = 0;
+          if (Array.isArray(ifaceData)) {
+            for (const iface of ifaceData) {
+              if (!dhcpInterfaceNames.includes(iface.name || "")) continue;
+              const ipArr = iface.ip;
+              if (Array.isArray(ipArr) && ipArr[0] && ipArr[0] !== "0.0.0.0") {
+                interfaceIps.push({ device: deviceName, interfaceName: iface.name, ipAddress: ipArr[0], role: "dhcp-server" });
+                ipCount++;
+              }
+            }
+          }
+          log("discover.interfaces", "info", `${deviceName}: Resolved ${ipCount} DHCP interface IP(s)`);
+        } catch (err) { log("discover.interfaces", "error", `${deviceName}: Failed to query interfaces — ${err.message}`); }
+      }
+
+      // Device inventory
+      try {
+        const invRes = await _fmgRpc(baseUrl, { id: 5, method: "exec", params: [{ url: "/sys/proxy/json", data: { target: [`/adom/${adom}/device/${deviceName}`], action: "get", resource: "/api/v2/monitor/user/device/query" } }] }, apiUser, apiToken, verifySsl);
+        const invData = invRes.result?.[0]?.data;
+        const results = Array.isArray(invData) ? invData[0]?.response?.results : invData?.response?.results;
+        let invCount = 0;
+        if (Array.isArray(results)) {
+          for (const c of results) {
+            if (!c.mac && !c.ip) continue;
+            deviceInventory.push({ device: deviceName, macAddress: c.mac || "", ipAddress: c.ip || "", hostname: c.hostname || c.host || "", os: c.os || c.type || "", osVersion: c.os_version || "", hardwareVendor: c.hardware_vendor || "", interfaceName: c.interface || "", switchName: c.switch_fortilink || c.fortiswitch || "", switchPort: c.switch_port != null ? String(c.switch_port) : "", apName: c.ap_name || c.fortiap || "", user: c.user || c.detected_user || "", isOnline: !!c.is_online, lastSeen: c.last_seen ? new Date(c.last_seen * 1000).toISOString() : new Date().toISOString() });
+            invCount++;
+          }
+        }
+        log("discover.inventory", "info", `${deviceName}: Found ${invCount} device inventory client(s)`);
+      } catch (err) { log("discover.inventory", "error", `${deviceName}: Failed to query device inventory — ${err.message}`); }
+    } catch (err) { log("discover.device", "error", `${deviceName}: Failed to query device — ${err.message}`); }
+  }
+
+  // Filter by include/exclude
+  let filteredSubnets = discovered;
+  if (config.dhcpInclude?.length) {
+    filteredSubnets = filteredSubnets.filter((s) => config.dhcpInclude.some((p) => s.name.toLowerCase().includes(p.toLowerCase()) || s.dhcpServerId.toLowerCase().includes(p.toLowerCase())));
+  }
+  if (config.dhcpExclude?.length) {
+    filteredSubnets = filteredSubnets.filter((s) => !config.dhcpExclude.some((p) => s.name.toLowerCase().includes(p.toLowerCase()) || s.dhcpServerId.toLowerCase().includes(p.toLowerCase())));
+  }
+
+  const includedIfaces = new Set(filteredSubnets.map((s) => s.name));
+  const filteredIps = interfaceIps.filter((ip) => ip.role === "management" || includedIfaces.has(ip.interfaceName));
+  const filteredDhcp = dhcpEntries.filter((e) => includedIfaces.has(e.interfaceName));
+  const excludedIfaces = new Set(discovered.filter((s) => !filteredSubnets.includes(s)).map((s) => `${s.fortigateDevice}/${s.name}`));
+  const filteredInv = deviceInventory.filter((d) => !excludedIfaces.has(`${d.device}/${d.interfaceName}`));
+
+  log("discover.filter", "info", `Filter complete: ${filteredSubnets.length} subnet(s), ${filteredDhcp.length} DHCP entries, ${filteredInv.length} inventory`);
+  return { subnets: filteredSubnets, devices, interfaceIps: filteredIps, dhcpEntries: filteredDhcp, deviceInventory: filteredInv };
+}
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 
@@ -798,6 +1008,8 @@ let NTP_SETTINGS = {
 };
 
 let CERTIFICATES = [];
+let BACKUP_HISTORY = [];
+let BACKUP_BLOBS = {};  // id → Buffer, kept in memory for demo re-downloads
 
 let HTTPS_SETTINGS = {
   enabled: false,
@@ -2187,8 +2399,20 @@ async function routeAPI(method, path, params, body, res, req) {
     }));
   }
   if (path === "/api/v1/integrations/test" && method === "POST") {
-    const delay = 800 + Math.random() * 400;
     const isWin = body.type === "windowsserver";
+    // Real FortiManager test for non-mock hosts
+    if (!isWin && !_isMockFmg(body.config)) {
+      logEventDemo({ action: "integration.test.started", resourceType: "integration", resourceName: body.name, message: `Connection test started for "${body.name || "new integration"}"` });
+      _fmgTestConnection(body.config).then((result) => {
+        logEventDemo({ action: "integration.test.completed", resourceType: "integration", resourceName: body.name, level: result.ok ? "info" : "warning", message: `Connection test ${result.ok ? "succeeded" : "failed"} for "${body.name || "new integration"}": ${result.message}` });
+        json(res, result);
+      }).catch((err) => {
+        logEventDemo({ action: "integration.test.completed", resourceType: "integration", resourceName: body.name, level: "error", message: `Connection test failed for "${body.name || "new integration"}": ${err.message}` });
+        json(res, { ok: false, message: err.message || "Unknown error" });
+      });
+      return;
+    }
+    const delay = 800 + Math.random() * 400;
     return setTimeout(() => {
       const msg = isWin
         ? "Connected — DHCP Server is running on " + (body.config?.host || "server") + " (demo)"
@@ -2202,6 +2426,22 @@ async function routeAPI(method, path, params, body, res, req) {
     const intg = INTEGRATIONS.find((i) => i.id === id);
     if (!intg) return json(res, { error: "Not found" }, 404);
     const isWin = intg.type === "windowsserver";
+    // Real FortiManager test for non-mock hosts
+    if (!isWin && !_isMockFmg(intg.config)) {
+      logEventDemo({ action: "integration.test.started", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `Connection test started for "${intg.name}"` });
+      _fmgTestConnection(intg.config).then((result) => {
+        intg.lastTestOk = result.ok;
+        intg.lastTestAt = new Date().toISOString();
+        logEventDemo({ action: "integration.test.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, level: result.ok ? "info" : "warning", message: `Connection test ${result.ok ? "succeeded" : "failed"} for "${intg.name}": ${result.message}` });
+        json(res, result);
+      }).catch((err) => {
+        intg.lastTestOk = false;
+        intg.lastTestAt = new Date().toISOString();
+        logEventDemo({ action: "integration.test.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, level: "error", message: `Connection test failed for "${intg.name}": ${err.message}` });
+        json(res, { ok: false, message: err.message || "Unknown error" });
+      });
+      return;
+    }
     const delay = 800 + Math.random() * 400;
     logEventDemo({ action: "integration.test.started", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `Connection test started for "${intg.name}"` });
     return setTimeout(() => {
@@ -2237,6 +2477,18 @@ async function routeAPI(method, path, params, body, res, req) {
     const syncLog = (level, message) => {
       logEventDemo({ action: "integration.sync", resourceType: "integration", resourceId: id, resourceName: intg.name, level, message: "[" + intg.name + "] " + message });
     };
+    // Real FortiManager discovery for non-mock hosts
+    if (intg.type !== "windowsserver" && !_isMockFmg(intg.config)) {
+      _fmgDiscover(intg.config, progressLog).then((discovered) => {
+        const result = syncDhcpSubnetsDemo(intg.id, intg.name, intg.type, discovered, syncLog);
+        logEventDemo({ action: "integration.discover.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, message: `DHCP discovery completed for "${intg.name}" — ${result.created.length} created, ${result.updated.length} updated, ${result.skipped.length} skipped, ${(result.assets || []).length} assets, ${(result.reservations || []).length} reservations` });
+        json(res, result);
+      }).catch((err) => {
+        logEventDemo({ action: "integration.discover.completed", resourceType: "integration", resourceId: id, resourceName: intg.name, level: "error", message: `DHCP discovery failed for "${intg.name}": ${err.message}` });
+        json(res, { error: err.message }, 502);
+      });
+      return;
+    }
     const discovered = intg.type === "windowsserver"
       ? discoverWinDhcpDemo(intg.config)
       : discoverDhcpDemo(intg.config, progressLog);
@@ -2288,6 +2540,19 @@ async function routeAPI(method, path, params, body, res, req) {
       const pLog = (step, level, message) => {
         logEventDemo({ action: "integration." + step, resourceType: "integration", resourceId: newIntg.id, resourceName: body.name, level, message: "[" + body.name + "] " + message });
       };
+      // Real FortiManager discovery for non-mock hosts
+      if (!isWin && !_isMockFmg(body.config)) {
+        _fmgDiscover(body.config, pLog).then((discovered) => {
+          const syncResult = syncDhcpSubnetsDemo(newIntg.id, body.name || newIntg.type, intgType, discovered);
+          response.dhcpDiscovery = syncResult;
+          json(res, response, 201);
+        }).catch((err) => {
+          pLog("discover.completed", "error", `DHCP discovery failed: ${err.message}`);
+          response.dhcpDiscovery = { error: err.message };
+          json(res, response, 201);
+        });
+        return;
+      }
       const discovered = isWin
         ? discoverWinDhcpDemo(body.config)
         : discoverDhcpDemo(body.config, pLog);
@@ -2317,6 +2582,8 @@ async function routeAPI(method, path, params, body, res, req) {
         : intg.pollInterval,
       updatedAt: new Date().toISOString(),
     };
+    // Persist real config (with secrets) back to the in-memory integration
+    Object.assign(intg, { ...updated, config: mergedConfig });
     logEventDemo({ action: "integration.updated", resourceType: "integration", resourceId: intg.id, resourceName: updated.name || intg.name, message: `Integration "${updated.name || intg.name}" updated` });
     const response = { ...updated };
     // Auto-register FortiManager IP
@@ -2331,6 +2598,19 @@ async function routeAPI(method, path, params, body, res, req) {
       const pLog = (step, level, message) => {
         logEventDemo({ action: "integration." + step, resourceType: "integration", resourceId: intg.id, resourceName: updated.name || intg.name, level, message: "[" + (updated.name || intg.name) + "] " + message });
       };
+      // Real FortiManager discovery for non-mock hosts
+      if (!isWin && !_isMockFmg(mergedConfig)) {
+        _fmgDiscover(mergedConfig, pLog).then((discovered) => {
+          const syncResult = syncDhcpSubnetsDemo(intg.id, updated.name || intg.name, intg.type, discovered);
+          response.dhcpDiscovery = syncResult;
+          json(res, response);
+        }).catch((err) => {
+          pLog("discover.completed", "error", `DHCP discovery failed: ${err.message}`);
+          response.dhcpDiscovery = { error: err.message };
+          json(res, response);
+        });
+        return;
+      }
       const discovered = isWin
         ? discoverWinDhcpDemo(mergedConfig)
         : discoverDhcpDemo(mergedConfig, pLog);
@@ -2443,6 +2723,116 @@ async function routeAPI(method, path, params, body, res, req) {
     });
   }
 
+  // Server Settings — Database Backup
+  if (path === "/api/v1/server-settings/database/backup" && method === "POST") {
+    const password = body?.password || null;
+    const now = new Date();
+    const ts = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const filename = `shelob-backup-${APP_VERSION}-${ts}${password ? ".enc" : ""}.gz`;
+
+    // Serialize all in-memory data
+    const snapshot = {
+      _shelob_backup: true,
+      version: "1.0",
+      createdAt: now.toISOString(),
+      data: {
+        blocks: BLOCKS,
+        subnets: SUBNETS,
+        reservations: RESERVATIONS,
+        assets: ASSETS,
+        integrations: INTEGRATIONS.map((i) => {
+          const c = { ...i.config };
+          if (c.apiToken) c.apiToken = "••••••••";
+          if (c.password) c.password = "••••••••";
+          return { ...i, config: c };
+        }),
+        events: EVENTS.slice(-5000),
+        users: USERS.map((u) => ({ ...u, passwordHash: undefined })),
+        tags: TAGS,
+        settings: { archive: { ...ARCHIVE_SETTINGS, password: undefined }, syslog: SYSLOG_SETTINGS, ntp: NTP_SETTINGS, branding: BRANDING },
+      },
+    };
+
+    let payload = Buffer.from(JSON.stringify(snapshot), "utf-8");
+
+    // Compress with gzip
+    payload = gzipSync(payload);
+
+    // Encrypt if password provided
+    if (password) {
+      const salt = randomBytes(32);
+      const key = scryptSync(password, salt, 32);
+      const iv = randomBytes(16);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
+      const encrypted = Buffer.concat([cipher.update(payload), cipher.final()]);
+      const authTag = cipher.getAuthTag();
+      // Format: SHELOB1 + salt(32) + iv(16) + authTag(16) + ciphertext
+      const magic = Buffer.from("SHELOB1\0");
+      payload = Buffer.concat([magic, salt, iv, authTag, encrypted]);
+    }
+
+    // Record in backup history and store blob for re-download
+    const backupId = crypto.randomUUID();
+    BACKUP_HISTORY.push({
+      id: backupId,
+      filename,
+      size: _formatBytes(payload.length),
+      sizeBytes: payload.length,
+      encrypted: !!password,
+      createdAt: now.toISOString(),
+      tables: Object.keys(snapshot.data).length,
+      rows: BLOCKS.length + SUBNETS.length + RESERVATIONS.length + ASSETS.length + INTEGRATIONS.length + EVENTS.length + USERS.length + TAGS.length,
+    });
+    BACKUP_BLOBS[backupId] = payload;
+
+    // Keep at most 10 blobs in memory
+    const blobIds = BACKUP_HISTORY.map((b) => b.id);
+    for (const id of Object.keys(BACKUP_BLOBS)) {
+      if (!blobIds.includes(id)) delete BACKUP_BLOBS[id];
+    }
+    if (Object.keys(BACKUP_BLOBS).length > 10) {
+      const oldest = blobIds.filter((id) => BACKUP_BLOBS[id]);
+      while (oldest.length > 10) delete BACKUP_BLOBS[oldest.shift()];
+    }
+
+    logEventDemo({ action: "database.backup.completed", resourceType: "database", message: `Database backup created: ${filename} (${_formatBytes(payload.length)}${password ? ", encrypted" : ""})` });
+
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": payload.length,
+    });
+    res.end(payload);
+    return;
+  }
+
+  // Server Settings — Database Restore
+  if (path === "/api/v1/server-settings/database/restore" && method === "POST") {
+    // This is handled in routeMultipart for multipart uploads
+    return json(res, { error: "Expected multipart/form-data upload" }, 400);
+  }
+
+  // Server Settings — Backup History
+  if (path === "/api/v1/server-settings/database/backups" && method === "GET") {
+    return json(res, [...BACKUP_HISTORY].reverse().map((b) => ({ ...b, downloadable: !!BACKUP_BLOBS[b.id] })));
+  }
+
+  // Server Settings — Download a backup from history
+  if (path.match(/^\/api\/v1\/server-settings\/database\/backups\/[\w-]+\/download$/) && method === "GET") {
+    const id = path.split("/")[6];
+    const record = BACKUP_HISTORY.find((b) => b.id === id);
+    if (!record) return json(res, { error: "Backup not found" }, 404);
+    const blob = BACKUP_BLOBS[id];
+    if (!blob) return json(res, { error: "Backup file is no longer available — it was created in a previous session" }, 410);
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": `attachment; filename="${record.filename}"`,
+      "Content-Length": blob.length,
+    });
+    res.end(blob);
+    return;
+  }
+
   // Server Settings — Tags
   if (path === "/api/v1/server-settings/tags" && method === "GET") {
     return json(res, [...TAGS].sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)));
@@ -2481,7 +2871,7 @@ async function routeAPI(method, path, params, body, res, req) {
 
   // Server Settings — Branding
   if (path === "/api/v1/server-settings/branding" && method === "GET") {
-    return json(res, { ...BRANDING });
+    return json(res, { ...BRANDING, version: APP_VERSION });
   }
   if (path === "/api/v1/server-settings/branding" && method === "PUT") {
     if (body.appName !== undefined) BRANDING.appName = String(body.appName).trim() || "Shelob";
@@ -2718,6 +3108,73 @@ function routeMultipart(method, path, rawBody, contentType, res) {
     logEventDemo({ action: "branding.logo.uploaded", resourceType: "settings", resourceId: "branding", resourceName: "Logo", message: "Custom logo uploaded" });
     return json(res, { ...BRANDING });
   }
+  // Database restore
+  if (path === "/api/v1/server-settings/database/restore" && method === "POST") {
+    const { fields, file } = parseMultipart(rawBody, contentType);
+    if (!file) return json(res, { error: "No backup file uploaded" }, 400);
+    const password = fields.password || null;
+
+    try {
+      let payload = Buffer.from(file.content, "binary");
+
+      // Check if encrypted (starts with SHELOB1 magic)
+      const magic = Buffer.from("SHELOB1\0");
+      const isEncrypted = payload.length > 72 && payload.subarray(0, 8).equals(magic);
+
+      if (isEncrypted) {
+        if (!password) return json(res, { error: "This backup is encrypted — a password is required to restore it" }, 400);
+        const salt = payload.subarray(8, 40);
+        const iv = payload.subarray(40, 56);
+        const authTag = payload.subarray(56, 72);
+        const ciphertext = payload.subarray(72);
+        const key = scryptSync(password, salt, 32);
+        const decipher = createDecipheriv("aes-256-gcm", key, iv);
+        decipher.setAuthTag(authTag);
+        try {
+          payload = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        } catch {
+          return json(res, { error: "Decryption failed — incorrect password or corrupted file" }, 400);
+        }
+      }
+
+      // Decompress gzip
+      try {
+        payload = gunzipSync(payload);
+      } catch {
+        return json(res, { error: "Decompression failed — file is not a valid gzip archive" }, 400);
+      }
+
+      // Parse JSON
+      let snapshot;
+      try {
+        snapshot = JSON.parse(payload.toString("utf-8"));
+      } catch {
+        return json(res, { error: "Invalid backup file — could not parse JSON data" }, 400);
+      }
+
+      if (!snapshot._shelob_backup) {
+        return json(res, { error: "Invalid backup file — not a Shelob backup" }, 400);
+      }
+
+      const d = snapshot.data;
+      if (!d) return json(res, { error: "Invalid backup file — no data section" }, 400);
+
+      // Restore each data set
+      const restored = [];
+      if (Array.isArray(d.blocks))       { BLOCKS.length = 0; BLOCKS.push(...d.blocks); restored.push("blocks: " + d.blocks.length); }
+      if (Array.isArray(d.subnets))      { SUBNETS.length = 0; SUBNETS.push(...d.subnets); restored.push("subnets: " + d.subnets.length); }
+      if (Array.isArray(d.reservations)) { RESERVATIONS.length = 0; RESERVATIONS.push(...d.reservations); restored.push("reservations: " + d.reservations.length); }
+      if (Array.isArray(d.assets))       { ASSETS.length = 0; ASSETS.push(...d.assets); restored.push("assets: " + d.assets.length); }
+      if (Array.isArray(d.events))       { EVENTS.length = 0; EVENTS.push(...d.events); restored.push("events: " + d.events.length); }
+      if (Array.isArray(d.tags))         { TAGS.length = 0; TAGS.push(...d.tags); restored.push("tags: " + d.tags.length); }
+
+      logEventDemo({ action: "database.restore.completed", resourceType: "database", message: `Database restored from backup (${file.originalname}) — ${restored.join(", ")}` });
+      return json(res, { ok: true, message: "Database restored successfully", restored, backupDate: snapshot.createdAt });
+    } catch (err) {
+      return json(res, { error: "Restore failed: " + (err.message || "Unknown error") }, 500);
+    }
+  }
+
   // Certificate upload
   if (path === "/api/v1/server-settings/certificates" && method === "POST") {
     const { fields, file } = parseMultipart(rawBody, contentType);
