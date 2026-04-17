@@ -67,7 +67,8 @@ async function loadSubnets() {
       status: apiStatus,
       tag: document.getElementById("filter-tag").value || undefined,
     };
-    _allSubnetsData = await api.subnets.list(filters);
+    var result = await api.subnets.list(filters);
+    _allSubnetsData = result.subnets || result;
     if (statusVal === "hide-deprecated") {
       _allSubnetsData = _allSubnetsData.filter(function (s) { return s.status !== "deprecated"; });
     }
@@ -375,7 +376,8 @@ async function handleNetworkExport(mode, fmt) {
 
   await trackedPdfExport("Exporting networks " + fmt.toUpperCase(), async function (signal) {
     if (mode === "all") {
-      networks = await request("GET", "/subnets", undefined, signal);
+      var allResult = await request("GET", "/subnets?limit=200", undefined, signal);
+      networks = allResult.subnets || allResult;
       label = "all " + networks.length + " networks";
     }
     if (signal.aborted) return;

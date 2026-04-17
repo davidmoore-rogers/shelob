@@ -7,6 +7,7 @@
  */
 
 import https from "node:https";
+import { constants as tlsConstants } from "node:crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import { getHttpsSettings, resolveHttpsCertificates } from "./services/serverSettingsService.js";
 import { logger } from "./utils/logger.js";
@@ -55,6 +56,27 @@ export async function applyHttps(): Promise<{ ok: boolean; message: string }> {
   const opts: https.ServerOptions = {
     cert: tlsData.cert,
     key: tlsData.key,
+    minVersion: "TLSv1.2",
+    // Disable known-insecure ciphers; allow only AEAD suites for TLS 1.2
+    // TLS 1.3 cipher suites are always secure and managed by Node.js automatically
+    ciphers: [
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_AES_128_GCM_SHA256",
+      "ECDHE-ECDSA-AES256-GCM-SHA384",
+      "ECDHE-RSA-AES256-GCM-SHA384",
+      "ECDHE-ECDSA-CHACHA20-POLY1305",
+      "ECDHE-RSA-CHACHA20-POLY1305",
+      "ECDHE-ECDSA-AES128-GCM-SHA256",
+      "ECDHE-RSA-AES128-GCM-SHA256",
+    ].join(":"),
+    honorCipherOrder: true,
+    secureOptions:
+      tlsConstants.SSL_OP_NO_SSLv2 |
+      tlsConstants.SSL_OP_NO_SSLv3 |
+      tlsConstants.SSL_OP_NO_TLSv1 |
+      tlsConstants.SSL_OP_NO_TLSv1_1 |
+      tlsConstants.SSL_OP_NO_RENEGOTIATION,
   };
   if (tlsData.ca.length > 0) {
     opts.ca = tlsData.ca;

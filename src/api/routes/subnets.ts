@@ -42,11 +42,13 @@ const UpdateSubnetSchema = z.object({
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-// GET /subnets?blockId=&status=&tag=
+// GET /subnets?blockId=&status=&tag=&limit=&offset=
 router.get("/", async (req, res, next) => {
   try {
     const { blockId, status, tag } = req.query as Record<string, string>;
-    res.json(await subnetService.listSubnets({ blockId, status: status as any, tag }));
+    const limit = parseInt(req.query.limit as string, 10) || undefined;
+    const offset = parseInt(req.query.offset as string, 10) || undefined;
+    res.json(await subnetService.listSubnets({ blockId, status: status as any, tag, limit, offset }));
   } catch (err) {
     next(err);
   }

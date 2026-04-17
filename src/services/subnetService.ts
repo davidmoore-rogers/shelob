@@ -38,24 +38,37 @@ export interface ListSubnetsFilter {
   blockId?: string;
   status?: SubnetStatus;
   tag?: string;
+  limit?: number;
+  offset?: number;
 }
 
 // ─── List ─────────────────────────────────────────────────────────────────────
 
 export async function listSubnets(filter: ListSubnetsFilter = {}) {
-  const subnets = await prisma.subnet.findMany({
-    where: {
-      blockId: filter.blockId,
-      status: filter.status,
-    },
-    include: {
-      block: { select: { name: true, cidr: true } },
-      integration: { select: { id: true, name: true } },
-      _count: { select: { reservations: true } },
-    },
-    orderBy: { cidr: "asc" },
-  });
-  return filter.tag ? subnets.filter((s) => s.tags.includes(filter.tag!)) : subnets;
+  const limit = Math.min(filter.limit || 50, 200);
+  const offset = filter.offset || 0;
+
+  const where: Record<string, unknown> = {};
+  if (filter.blockId) where.blockId = filter.blockId;
+  if (filter.status) where.status = filter.status;
+
+  const [subnets, total] = await Promise.all([
+    prisma.subnet.findMany({
+      where,
+      include: {
+        block: { select: { name: true, cidr: true } },
+        integration: { select: { id: true, name: true } },
+        _count: { select: { reservations: true } },
+      },
+      orderBy: { cidr: "asc" },
+      skip: offset,
+      take: limit,
+    }),
+    prisma.subnet.count({ where }),
+  ]);
+
+  const filtered = filter.tag ? subnets.filter((s) => s.tags.includes(filter.tag!)) : subnets;
+  return { subnets: filtered, total, limit, offset };
 }
 
 // ─── Get ──────────────────────────────────────────────────────────────────────

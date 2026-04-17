@@ -8,6 +8,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import session from "express-session";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { router } from "./api/router.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,10 +21,34 @@ import { isAzureSsoConfiguredAsync, getSsoSettings } from "./services/azureAuthS
 import "./jobs/pruneEvents.js";
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: false })); // SAML callback posts form-encoded
 
-// Session middleware (MemoryStore is fine for single-process / internal use)
+// ─── Security headers ────────────────────────────────────────────────────────
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: ["'self'"],
+        frameSrc: ["'none'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'", "https://login.microsoftonline.com"],
+      },
+    },
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: false },
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  })
+);
+
+// ─── Body parsing with size limits ───────────────────────────────────────────
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: false, limit: "1mb" })); // SAML callback posts form-encoded
+
+// ─── Session ─────────────────────────────────────────────────────────────────
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "shelob-dev-secret-change-in-production",
@@ -31,10 +57,22 @@ app.use(
     cookie: {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000, // 8 hours
     },
   })
 );
+
+// ─── Rate limiting ───────────────────────────────────────────────────────────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 attempts per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Please try again in 15 minutes." },
+});
+app.use("/api/v1/auth/login", loginLimiter);
+app.use("/api/v1/auth/azure/login", loginLimiter);
 
 // HTTP → HTTPS redirect (enabled dynamically via server settings)
 app.use(httpsRedirectMiddleware);

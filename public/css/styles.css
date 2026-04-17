@@ -332,6 +332,66 @@ code {
   background: rgba(255,23,68,0.15);
 }
 
+/* ─── PostgreSQL Tuning Alert ────────────────────────────────────────────── */
+.pg-tuning-alert {
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0.5rem 0;
+  border: 1px solid rgba(255,214,0,0.30);
+  border-radius: var(--radius-md);
+  background: rgba(255,214,0,0.06);
+}
+.pg-tuning-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-warning);
+  margin-bottom: 6px;
+}
+.pg-tuning-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.pg-tuning-body {
+  margin-bottom: 6px;
+}
+.pg-tuning-text {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+  margin: 0 0 6px;
+  line-height: 1.4;
+}
+.pg-tuning-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.72rem;
+  padding: 2px 0;
+  color: var(--color-text-secondary);
+}
+.pg-tuning-param {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+}
+.pg-tuning-values {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--color-warning);
+}
+.pg-tuning-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+[data-theme="light"] .pg-tuning-alert {
+  border-color: rgba(245,127,23,0.30);
+  background: rgba(245,127,23,0.06);
+}
+[data-theme="light"] .pg-tuning-header { color: var(--color-warning); }
+[data-theme="light"] .pg-tuning-values { color: var(--color-warning); }
+
 /* ─── Main Content ─────────────────────────────────────────────────────────── */
 .main {
   flex: 1;

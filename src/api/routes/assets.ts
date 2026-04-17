@@ -52,9 +52,11 @@ const UpdateAssetSchema = CreateAssetSchema.partial();
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
-// GET /api/v1/assets — list all assets (all authenticated users)
+// GET /api/v1/assets — list all assets (all authenticated users, paginated)
 router.get("/", async (req, res, next) => {
   try {
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
+    const offset = parseInt(req.query.offset as string, 10) || 0;
     const { status, assetType, department, search } = req.query as Record<string, string>;
     const where: Record<string, unknown> = {};
     if (status) where.status = status;
@@ -70,11 +72,16 @@ router.get("/", async (req, res, next) => {
         { assignedTo:{ contains: search, mode: "insensitive" } },
       ];
     }
-    const assets = await prisma.asset.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-    });
-    res.json(assets);
+    const [assets, total] = await Promise.all([
+      prisma.asset.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.asset.count({ where }),
+    ]);
+    res.json({ assets, total, limit, offset });
   } catch (err) {
     next(err);
   }

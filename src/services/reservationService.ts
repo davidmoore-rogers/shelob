@@ -32,21 +32,34 @@ export interface ListReservationsFilter {
   owner?: string;
   projectRef?: string;
   status?: ReservationStatus;
+  limit?: number;
+  offset?: number;
 }
 
 // ─── List ─────────────────────────────────────────────────────────────────────
 
 export async function listReservations(filter: ListReservationsFilter = {}) {
-  return prisma.reservation.findMany({
-    where: {
-      subnetId: filter.subnetId,
-      owner: filter.owner,
-      projectRef: filter.projectRef,
-      status: filter.status,
-    },
-    include: { subnet: { select: { cidr: true, name: true } } },
-    orderBy: { createdAt: "desc" },
-  });
+  const limit = Math.min(filter.limit || 50, 200);
+  const offset = filter.offset || 0;
+
+  const where: Record<string, unknown> = {};
+  if (filter.subnetId) where.subnetId = filter.subnetId;
+  if (filter.owner) where.owner = filter.owner;
+  if (filter.projectRef) where.projectRef = filter.projectRef;
+  if (filter.status) where.status = filter.status;
+
+  const [reservations, total] = await Promise.all([
+    prisma.reservation.findMany({
+      where,
+      include: { subnet: { select: { cidr: true, name: true } } },
+      orderBy: { createdAt: "desc" },
+      skip: offset,
+      take: limit,
+    }),
+    prisma.reservation.count({ where }),
+  ]);
+
+  return { reservations, total, limit, offset };
 }
 
 // ─── Get ──────────────────────────────────────────────────────────────────────

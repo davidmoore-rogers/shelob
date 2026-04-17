@@ -106,6 +106,7 @@ function renderNav() {
     </ul>
     <div style="margin-top:auto">
       <div id="query-status" class="query-status" style="display:none"></div>
+      <div id="pg-tuning-alert" class="pg-tuning-alert" style="display:none"></div>
       ${isAdmin() ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
         <a href="/server-settings.html" class="sidebar-bottom-link${current === '/server-settings.html' ? ' active' : ''}">${ICONS.settings}<span>Server Settings</span></a>
       </div>` : ''}
@@ -311,8 +312,8 @@ function startMockHeartbeat() {
 
   // Fetch integrations list, then start the cycle
   setTimeout(function () {
-    api.integrations.list().then(function (list) {
-      _mockIntegrations = list;
+    api.integrations.list().then(function (result) {
+      _mockIntegrations = result.integrations || result;
       runMock();
       setInterval(runMock, 30000);
     }).catch(function () {});
@@ -640,6 +641,66 @@ function _resetAutoLogoutTimer() {
   }, _autoLogoutMs);
 }
 
+// ─── PostgreSQL Tuning Alert ──────────────────────────────────────────────────
+
+function checkPgTuning() {
+  if (!isAdmin()) return;
+  api.serverSettings.getPgTuning().then(function (data) {
+    var container = document.getElementById("pg-tuning-alert");
+    if (!container) return;
+
+    if (!data.needed || data.snoozedUntil) {
+      container.style.display = "none";
+      return;
+    }
+
+    var badSettings = (data.settings || []).filter(function (s) { return !s.ok; });
+    if (!badSettings.length) {
+      container.style.display = "none";
+      return;
+    }
+
+    var triggeredText = data.triggered.map(function (t) {
+      var count = data.counts[t] || 0;
+      var threshold = data.thresholds[t] || 0;
+      return t + " (" + count.toLocaleString() + "/" + threshold.toLocaleString() + ")";
+    }).join(", ");
+
+    var settingsRows = badSettings.map(function (s) {
+      return '<div class="pg-tuning-row">' +
+        '<span class="pg-tuning-param">' + escapeHtml(s.name) + '</span>' +
+        '<span class="pg-tuning-values">' + escapeHtml(s.current) + ' &rarr; ' + escapeHtml(s.recommended) + '</span>' +
+      '</div>';
+    }).join("");
+
+    container.innerHTML =
+      '<div class="pg-tuning-header">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pg-tuning-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+        '<span>PostgreSQL Tuning</span>' +
+      '</div>' +
+      '<div class="pg-tuning-body">' +
+        '<p class="pg-tuning-text">Scale threshold reached for ' + triggeredText + '. Recommended PostgreSQL tuning:</p>' +
+        settingsRows +
+      '</div>' +
+      '<div class="pg-tuning-actions">' +
+        '<button class="btn btn-sm btn-secondary" id="pg-tuning-snooze">Snooze 7d</button>' +
+      '</div>';
+
+    container.style.display = "block";
+
+    document.getElementById("pg-tuning-snooze").addEventListener("click", function () {
+      api.serverSettings.snoozePgTuning(7).then(function () {
+        container.style.display = "none";
+        showToast("Alert snoozed for 7 days", "success");
+      }).catch(function () {
+        showToast("Failed to snooze alert", "error");
+      });
+    });
+  }).catch(function () {
+    // Silently ignore — non-critical check
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async function () {
@@ -648,4 +709,5 @@ document.addEventListener("DOMContentLoaded", async function () {
   hideAdminOnlyElements();
   fetchBranding();
   initAutoLogout();
+  checkPgTuning();
 });

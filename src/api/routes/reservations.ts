@@ -52,13 +52,16 @@ function canWriteAny(req: any): boolean {
 router.get("/", async (req, res, next) => {
   try {
     const { subnetId, owner, projectRef, status } = req.query as Record<string, string>;
-    const reservations = await reservationService.listReservations({
+    const limit = parseInt(req.query.limit as string, 10) || undefined;
+    const offset = parseInt(req.query.offset as string, 10) || undefined;
+    res.json(await reservationService.listReservations({
       subnetId,
       owner,
       projectRef,
       status: status as any,
-    });
-    res.json(reservations);
+      limit,
+      offset,
+    }));
   } catch (err) {
     next(err);
   }

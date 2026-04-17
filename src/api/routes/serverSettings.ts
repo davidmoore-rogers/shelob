@@ -428,4 +428,124 @@ router.post("/https/apply", async (_req, res, next) => {
   }
 });
 
+// ─── PostgreSQL Tuning Check ───────────────────────────────────────────────
+
+const PG_TUNING_THRESHOLDS = {
+  assets: 160,        // 80% of 200
+  subnets: 1600,      // 80% of 2,000
+  reservations: 160000, // 80% of 200,000
+};
+
+const PG_RECOMMENDED: Record<string, { min: number; unit: string; display: string }> = {
+  shared_buffers:     { min: 2 * 1024 * 1024 * 1024,   unit: "bytes", display: "2GB" },
+  work_mem:           { min: 32 * 1024 * 1024,          unit: "bytes", display: "32MB" },
+  effective_cache_size:{ min: 4 * 1024 * 1024 * 1024,   unit: "bytes", display: "4GB" },
+  random_page_cost:   { min: -1,                        unit: "cost",  display: "1.1" }, // special: ≤ 1.1
+};
+
+function parsePgBytes(val: string): number {
+  const s = val.trim();
+  // PostgreSQL reports in 8kB pages for shared_buffers, or kB/MB/GB suffixes
+  const m = s.match(/^(\d+)\s*(kB|MB|GB|TB)?$/i);
+  if (!m) return parseInt(s, 10) || 0;
+  const n = parseInt(m[1], 10);
+  switch ((m[2] || "").toUpperCase()) {
+    case "KB": return n * 1024;
+    case "MB": return n * 1024 * 1024;
+    case "GB": return n * 1024 * 1024 * 1024;
+    case "TB": return n * 1024 * 1024 * 1024 * 1024;
+    default:   return n; // unit-less = 8kB pages for shared_buffers
+  }
+}
+
+router.get("/pg-tuning", async (_req, res, next) => {
+  try {
+    // 1. Count records to see if any threshold is crossed
+    const [assetCount, subnetCount, reservationCount] = await Promise.all([
+      prisma.asset.count(),
+      prisma.subnet.count(),
+      prisma.reservation.count(),
+    ]);
+
+    const triggered: string[] = [];
+    if (assetCount >= PG_TUNING_THRESHOLDS.assets) triggered.push("assets");
+    if (subnetCount >= PG_TUNING_THRESHOLDS.subnets) triggered.push("subnets");
+    if (reservationCount >= PG_TUNING_THRESHOLDS.reservations) triggered.push("reservations");
+
+    if (!triggered.length) {
+      return res.json({ needed: false, triggered: [], settings: [], snoozedUntil: null });
+    }
+
+    // 2. Check snooze state
+    const snoozeRow = await prisma.setting.findUnique({ where: { key: "pg_tuning_snooze" } });
+    const snoozedUntil = (snoozeRow?.value as any)?.until || null;
+    const isSnoozed = snoozedUntil && new Date(snoozedUntil) > new Date();
+
+    // 3. Query current PostgreSQL settings
+    const pgSettings = await prisma.$queryRawUnsafe<{ name: string; setting: string; unit: string | null }[]>(
+      `SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost')`
+    );
+
+    const settings = pgSettings.map((s) => {
+      const rec = PG_RECOMMENDED[s.name];
+      if (!rec) return null;
+
+      let currentBytes: number;
+      let ok: boolean;
+
+      if (s.name === "random_page_cost") {
+        const val = parseFloat(s.setting);
+        ok = val <= 1.1;
+        return { name: s.name, current: String(val), recommended: rec.display, ok };
+      }
+
+      // PostgreSQL reports shared_buffers in 8kB pages, work_mem in kB, etc.
+      if (s.unit === "8kB") {
+        currentBytes = parseInt(s.setting, 10) * 8192;
+      } else if (s.unit === "kB") {
+        currentBytes = parseInt(s.setting, 10) * 1024;
+      } else {
+        currentBytes = parsePgBytes(s.setting);
+      }
+
+      ok = currentBytes >= rec.min;
+      // Format current value for display
+      let currentDisplay: string;
+      if (currentBytes >= 1024 * 1024 * 1024) currentDisplay = (currentBytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "") + "GB";
+      else if (currentBytes >= 1024 * 1024) currentDisplay = (currentBytes / (1024 * 1024)).toFixed(0) + "MB";
+      else currentDisplay = (currentBytes / 1024).toFixed(0) + "kB";
+
+      return { name: s.name, current: currentDisplay, recommended: rec.display, ok };
+    }).filter(Boolean);
+
+    const allOk = settings.every((s: any) => s.ok);
+
+    res.json({
+      needed: !allOk,
+      triggered,
+      counts: { assets: assetCount, subnets: subnetCount, reservations: reservationCount },
+      thresholds: PG_TUNING_THRESHOLDS,
+      settings,
+      snoozedUntil: isSnoozed ? snoozedUntil : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/pg-tuning/snooze", async (req, res, next) => {
+  try {
+    const days = Math.min(30, Math.max(1, parseInt(req.body?.days, 10) || 7));
+    const until = new Date(Date.now() + days * 86400000).toISOString();
+    await prisma.setting.upsert({
+      where: { key: "pg_tuning_snooze" },
+      update: { value: { until } },
+      create: { key: "pg_tuning_snooze", value: { until } },
+    });
+    res.json({ ok: true, snoozedUntil: until });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

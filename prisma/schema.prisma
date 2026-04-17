@@ -78,6 +78,7 @@ model Subnet {
   reservations    Reservation[]
 
   @@index([blockId])
+  @@index([blockId, status])
   @@index([cidr])
   @@index([status])
   @@index([discoveredBy])
@@ -104,9 +105,11 @@ model Reservation {
 
   @@unique([subnetId, ipAddress, status])
   @@index([subnetId])
+  @@index([subnetId, status])
   @@index([owner])
   @@index([projectRef])
   @@index([status])
+  @@index([status, expiresAt])
   @@index([expiresAt])
   @@index([createdBy])
   @@map("reservations")
@@ -126,6 +129,8 @@ model Integration {
 
   subnets   Subnet[]
 
+  @@index([type])
+  @@index([enabled])
   @@map("integrations")
 }
 
@@ -203,6 +208,8 @@ model Asset {
   @@index([assetType])
   @@index([status])
   @@index([department])
+  @@index([serialNumber])
+  @@index([dnsName])
   @@map("assets")
 }
 

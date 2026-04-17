@@ -42,7 +42,8 @@ async function loadAssets() {
       assetType: document.getElementById("filter-type").value || undefined,
       search: document.getElementById("filter-search").value || undefined,
     };
-    _assetsData = await api.assets.list(filters);
+    var result = await api.assets.list(filters);
+    _assetsData = result.assets || result;
     if (statusVal === "hide-decommissioned") {
       _assetsData = _assetsData.filter(function (a) { return a.status !== "decommissioned"; });
     }
@@ -492,7 +493,8 @@ async function handleAssetExport(mode, fmt) {
 
   await trackedPdfExport("Exporting assets " + fmt.toUpperCase(), async function (signal) {
     if (mode === "all") {
-      assets = await request("GET", "/assets", undefined, signal);
+      var allResult = await request("GET", "/assets?limit=200", undefined, signal);
+      assets = allResult.assets || allResult;
       label = "all " + assets.length + " assets";
     }
     if (signal.aborted) return;

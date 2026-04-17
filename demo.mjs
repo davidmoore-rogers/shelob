@@ -611,7 +611,7 @@ const INTEGRATIONS = [
       dhcpExclude: [],
     },
     enabled: true,
-    pollInterval: 4,
+    pollInterval: 12,
     lastTestAt: "2026-04-10T14:30:00.000Z",
     lastTestOk: true,
     createdAt: "2026-03-15T09:00:00.000Z",
@@ -1028,6 +1028,8 @@ let SSO_SETTINGS = {
   skipLoginPage: false,
   autoLogoutMinutes: 0,
 };
+
+let PG_TUNING_SNOOZE = { until: null };
 
 let BRANDING = {
   appName: "Shelob",
@@ -2235,7 +2237,11 @@ async function routeAPI(method, path, params, body, res, req) {
     if (blockId) result = result.filter((s) => s.blockId === blockId);
     if (status) result = result.filter((s) => s.status === status);
     if (tag) result = result.filter((s) => s.tags.includes(tag));
-    return json(res, result);
+    const total = result.length;
+    const limit = Math.min(parseInt(params.get("limit")) || 50, 200);
+    const offset = parseInt(params.get("offset")) || 0;
+    result = result.slice(offset, offset + limit);
+    return json(res, { subnets: result, total, limit, offset });
   }
   if (path.match(/^\/api\/v1\/subnets\/[\w-]+\/ips$/) && method === "GET") {
     const id = path.split("/").slice(-2, -1)[0];
@@ -2334,7 +2340,11 @@ async function routeAPI(method, path, params, body, res, req) {
     if (status) result = result.filter((r) => r.status === status);
     if (owner) result = result.filter((r) => r.owner.toLowerCase().includes(owner.toLowerCase()));
     if (proj) result = result.filter((r) => r.projectRef.toLowerCase().includes(proj.toLowerCase()));
-    return json(res, result);
+    const total = result.length;
+    const limit = Math.min(parseInt(params.get("limit")) || 50, 200);
+    const offset = parseInt(params.get("offset")) || 0;
+    result = result.slice(offset, offset + limit);
+    return json(res, { reservations: result, total, limit, offset });
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "GET") {
     const id = path.split("/").pop();
@@ -2465,7 +2475,11 @@ async function routeAPI(method, path, params, body, res, req) {
         (a.assignedTo && a.assignedTo.toLowerCase().includes(q))
       );
     }
-    return json(res, result);
+    const total = result.length;
+    const limit = Math.min(parseInt(params.get("limit")) || 50, 200);
+    const offset = parseInt(params.get("offset")) || 0;
+    result = result.slice(offset, offset + limit);
+    return json(res, { assets: result, total, limit, offset });
   }
   if (path.match(/^\/api\/v1\/assets\/[\w-]+$/) && method === "GET") {
     const id = path.split("/").pop();
@@ -2507,12 +2521,16 @@ async function routeAPI(method, path, params, body, res, req) {
   // Integrations
   if (path === "/api/v1/integrations" && method === "GET") {
     // Strip secrets from list response
-    return json(res, INTEGRATIONS.map((i) => {
+    const safe = INTEGRATIONS.map((i) => {
       const c = { ...i.config };
       if (c.apiToken) c.apiToken = "••••••••";
       if (c.password) c.password = "••••••••";
       return { ...i, config: c };
-    }));
+    });
+    const total = safe.length;
+    const limit = Math.min(parseInt(params.get("limit")) || 50, 200);
+    const offset = parseInt(params.get("offset")) || 0;
+    return json(res, { integrations: safe.slice(offset, offset + limit), total, limit, offset });
   }
   if (path === "/api/v1/integrations/test" && method === "POST") {
     const isWin = body.type === "windowsserver";
@@ -2805,6 +2823,39 @@ async function routeAPI(method, path, params, body, res, req) {
     return setTimeout(() => {
       json(res, { ok: true, message: "Synchronized with " + servers[0] + " (offset: +0.003s, " + (body.mode || "NTP").toUpperCase() + ")" });
     }, delay);
+  }
+
+  // Server Settings — PostgreSQL Tuning Check
+  if (path === "/api/v1/server-settings/pg-tuning" && method === "GET") {
+    const thresholds = { assets: 160, subnets: 1600, reservations: 160000 };
+    // Demo uses mock counts above thresholds to showcase the alert
+    const counts = { assets: 185, subnets: 1820, reservations: 12400 };
+    const triggered = ["assets", "subnets"];
+
+    const isSnoozed = PG_TUNING_SNOOZE.until && new Date(PG_TUNING_SNOOZE.until) > new Date();
+
+    // Mock PG settings that are below recommended (for demo)
+    const settings = [
+      { name: "shared_buffers",      current: "128MB",  recommended: "2GB",  ok: false },
+      { name: "work_mem",            current: "4MB",    recommended: "32MB", ok: false },
+      { name: "effective_cache_size", current: "4GB",    recommended: "4GB",  ok: true },
+      { name: "random_page_cost",    current: "4",      recommended: "1.1",  ok: false },
+    ];
+
+    return json(res, {
+      needed: true,
+      triggered,
+      counts,
+      thresholds,
+      settings,
+      snoozedUntil: isSnoozed ? PG_TUNING_SNOOZE.until : null,
+    });
+  }
+
+  if (path === "/api/v1/server-settings/pg-tuning/snooze" && method === "POST") {
+    const days = Math.min(30, Math.max(1, parseInt(body?.days, 10) || 7));
+    PG_TUNING_SNOOZE.until = new Date(Date.now() + days * 86400000).toISOString();
+    return json(res, { ok: true, snoozedUntil: PG_TUNING_SNOOZE.until });
   }
 
   // Server Settings — Database

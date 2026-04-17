@@ -184,6 +184,8 @@ const api = {
       });
     },
     deleteLogo: () => request("DELETE", "/server-settings/branding/logo"),
+    getPgTuning: () => request("GET", "/server-settings/pg-tuning"),
+    snoozePgTuning: (days) => request("POST", "/server-settings/pg-tuning/snooze", { days: days || 7 }),
   },
   auth: {
     me: () => request("GET", "/auth/me"),
