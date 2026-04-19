@@ -107,9 +107,9 @@
 <body>
   <div class="login-wrapper">
     <div class="login-card">
-      <img src="/logo.webp" alt="Rogers Group" class="login-logo">
-      <h2>Shelob</h2>
-      <p class="subtitle">Network Management Tool</p>
+      <img src="/logo.webp" alt="" class="login-logo" style="visibility:hidden">
+      <h2 style="visibility:hidden">Shelob</h2>
+      <p class="subtitle" style="visibility:hidden">Network Management Tool</p>
       <div class="login-error" id="login-error"></div>
       <div id="local-login-section">
         <form id="login-form">
@@ -154,26 +154,27 @@
 
     // Apply branding
     (async function () {
+      var h2 = document.querySelector(".login-card h2");
+      var subEl = document.querySelector(".login-card .subtitle");
+      var logo = document.querySelector(".login-logo");
       try {
         var res = await fetch("/api/v1/server-settings/branding");
         if (res.ok) {
           var b = await res.json();
-          if (b.appName) {
-            document.querySelector(".login-card h2").textContent = b.appName;
-            document.title = b.appName + " \u2014 Login";
-          }
-          var subEl = document.querySelector(".login-card .subtitle");
-          if (subEl) {
-            subEl.textContent = b.subtitle || "";
-            subEl.style.display = b.subtitle ? "" : "none";
-          }
+          h2.textContent = b.appName || "Shelob";
+          document.title = (b.appName || "Shelob") + " \u2014 Login";
+          subEl.textContent = b.subtitle || "";
+          subEl.style.display = b.subtitle ? "" : "none";
           if (b.logoUrl) {
-            document.querySelector(".login-logo").src = b.logoUrl;
+            logo.src = b.logoUrl;
             var fav = document.querySelector('link[rel="icon"]');
             if (fav) fav.href = b.logoUrl;
           }
         }
       } catch (_) {}
+      h2.style.visibility = "";
+      subEl.style.visibility = "";
+      logo.style.visibility = "";
     })();
 
     // Check Azure SSO config and show button if enabled

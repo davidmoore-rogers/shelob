@@ -94,9 +94,9 @@ function renderNav() {
 
   sidebar.innerHTML = `
     <div class="sidebar-brand">
-      <img src="/logo.webp" alt="Rogers Group" class="sidebar-logo">
-      <h1 style="font-size:1.1rem;font-weight:600;margin:0.5rem 0 0;color:var(--color-text-primary);text-align:center">Shelob</h1>
-      <p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.15rem 0 0;text-align:center">Network Management Tool</p>
+      <img src="/logo.webp" alt="" class="sidebar-logo" style="visibility:hidden">
+      <h1 style="font-size:1.1rem;font-weight:600;margin:0.5rem 0 0;color:var(--color-text-primary);text-align:center;visibility:hidden">Shelob</h1>
+      <p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.15rem 0 0;text-align:center;visibility:hidden">Network Management Tool</p>
     </div>
     <ul class="sidebar-nav">
       ${visibleItems.map(item => {
@@ -147,13 +147,20 @@ function applyBranding(b) {
 
   // Update sidebar logo + name
   var sidebarLogo = document.querySelector(".sidebar-logo");
-  if (sidebarLogo) sidebarLogo.src = b.logoUrl || "/logo.webp";
+  if (sidebarLogo) {
+    sidebarLogo.src = b.logoUrl || "/logo.webp";
+    sidebarLogo.style.visibility = "";
+  }
   var sidebarName = document.querySelector(".sidebar-brand h1");
-  if (sidebarName) sidebarName.textContent = b.appName || "Shelob";
+  if (sidebarName) {
+    sidebarName.textContent = b.appName || "Shelob";
+    sidebarName.style.visibility = "";
+  }
   var sidebarSub = document.querySelector(".sidebar-brand p");
   if (sidebarSub) {
     sidebarSub.textContent = b.subtitle || "";
     sidebarSub.style.display = b.subtitle ? "" : "none";
+    sidebarSub.style.visibility = "";
   }
 
   // Update page title
@@ -190,7 +197,9 @@ async function fetchBranding() {
   try {
     var b = await api.serverSettings.getBranding();
     applyBranding(b);
-  } catch (_) {}
+  } catch (_) {
+    applyBranding({ appName: "Shelob", subtitle: "Network Management Tool", logoUrl: "/logo.webp", version: "" });
+  }
 }
 
 async function checkSidebarUpdate() {
