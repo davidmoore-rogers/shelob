@@ -81,14 +81,14 @@ export async function updateSsoSettings(updates: Partial<SsoSettings>): Promise<
 export function isAzureSsoConfigured(): boolean {
   if (_ssoCache && Date.now() < _ssoCache.expiry) {
     const s = _ssoCache.value;
-    return !!(s.spEntityId && s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
+    return !!(s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
   }
   return false;
 }
 
 export async function isAzureSsoConfiguredAsync(): Promise<boolean> {
   const s = await getSsoSettings();
-  return !!(s.spEntityId && s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
+  return !!(s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
 }
 
 // ─── SAML Client ─────────────────────────────────────────────────────────────
@@ -99,8 +99,11 @@ async function getSamlClient(): Promise<SAML> {
   if (_samlClient) return _samlClient;
 
   const settings = await getSsoSettings();
-  if (!settings.spEntityId || !settings.idpEntityId || !settings.idpLoginUrl || !settings.idpCertificate) {
+  if (!settings.idpEntityId || !settings.idpLoginUrl || !settings.idpCertificate) {
     throw new Error("SAML SSO is not configured");
+  }
+  if (!settings.spEntityId) {
+    throw new Error("SAML SSO requires an Application URL — set it in Authentication Settings");
   }
 
   const baseUrl = settings.spEntityId.replace(/\/+$/, "");
