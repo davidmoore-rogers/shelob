@@ -92,8 +92,8 @@ model Reservation {
 
   ipAddress  String?
   hostname   String?
-  owner      String
-  projectRef String
+  owner      String?
+  projectRef String?
   expiresAt  DateTime?
   notes      String?           @db.Text
   status     ReservationStatus @default(active)

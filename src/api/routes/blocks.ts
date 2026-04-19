@@ -13,14 +13,14 @@ const router = Router();
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 
 const CreateBlockSchema = z.object({
-  name:        z.string().min(1),
-  cidr:        z.string().min(1),
+  name:        z.string().min(1, "Name is required"),
+  cidr:        z.string().min(1, "CIDR is required"),
   description: z.string().optional(),
   tags:        z.array(z.string()).optional(),
 });
 
 const UpdateBlockSchema = z.object({
-  name:        z.string().min(1).optional(),
+  name:        z.string().min(1, "Name is required").optional(),
   description: z.string().optional(),
   tags:        z.array(z.string()).optional(),
 });

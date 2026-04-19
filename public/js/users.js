@@ -187,13 +187,13 @@ async function openAuthSettingsModal() {
   try {
     settings = await api.auth.azureSettings();
   } catch (_) {
-    settings = { idpEntityId: "", idpLoginUrl: "", idpLogoutUrl: "", idpCertificate: "", skipLoginPage: false, autoLogoutMinutes: 0 };
+    settings = { spEntityId: "", idpEntityId: "", idpLoginUrl: "", idpLogoutUrl: "", idpCertificate: "", skipLoginPage: false, autoLogoutMinutes: 0 };
   }
 
   var origin = window.location.origin;
-  var spEntityId = origin;
-  var spAcsUrl = origin + "/api/v1/auth/azure/callback";
-  var spSlsUrl = origin + "/login.html";
+  var spEntityId = settings.spEntityId || origin;
+  var spAcsUrl = spEntityId.replace(/\/+$/, "") + "/api/v1/auth/azure/callback";
+  var spSlsUrl = spEntityId.replace(/\/+$/, "") + "/login.html";
 
   var body =
     '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1.25rem">Configure Azure AD SAML single sign-on and session behavior.</p>' +
@@ -201,11 +201,9 @@ async function openAuthSettingsModal() {
     '<h4 style="font-size:0.88rem;font-weight:600;margin-bottom:0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Service Provider Info</h4>' +
     '<p style="font-size:0.8rem;color:var(--color-text-tertiary);margin-bottom:0.75rem">Copy these values into your Azure Enterprise Application SAML configuration.</p>' +
     '<div class="form-group">' +
-      '<label>SP Entity ID</label>' +
-      '<div style="display:flex;gap:0.5rem;align-items:center">' +
-        '<input type="text" id="f-sp-entity-id" value="' + escapeHtml(spEntityId) + '" readonly style="background:var(--color-bg-secondary);cursor:default;flex:1">' +
-        '<button type="button" class="btn btn-sm btn-secondary" id="btn-copy-entity-id" title="Copy">Copy</button>' +
-      '</div>' +
+      '<label>Application URL *</label>' +
+      '<input type="text" id="f-sp-entity-id" value="' + escapeHtml(spEntityId) + '" placeholder="https://ipam.example.com">' +
+      '<p class="hint">Your application\'s public URL. Used as the SP Entity ID and to build the callback URLs below.</p>' +
     '</div>' +
     '<div class="form-group">' +
       '<label>SP ACS (Login) URL</label>' +
@@ -277,8 +275,14 @@ async function openAuthSettingsModal() {
 
   openModal("Authentication Settings", body, footer);
 
+  // Live-update ACS / SLS URLs when Application URL changes
+  document.getElementById("f-sp-entity-id").addEventListener("input", function () {
+    var base = this.value.trim().replace(/\/+$/, "");
+    document.getElementById("f-sp-acs-url").value = base ? base + "/api/v1/auth/azure/callback" : "";
+    document.getElementById("f-sp-sls-url").value = base ? base + "/login.html" : "";
+  });
+
   // Copy buttons
-  document.getElementById("btn-copy-entity-id").addEventListener("click", function () { copyField("f-sp-entity-id", this); });
   document.getElementById("btn-copy-acs-url").addEventListener("click", function () { copyField("f-sp-acs-url", this); });
   document.getElementById("btn-copy-sls-url").addEventListener("click", function () { copyField("f-sp-sls-url", this); });
   document.getElementById("btn-cancel-auth").addEventListener("click", closeModal);
@@ -307,6 +311,7 @@ async function openAuthSettingsModal() {
     try {
       // Save current values first so the test uses the latest config
       await api.auth.updateAzureSettings({
+        spEntityId: val("f-sp-entity-id"),
         idpEntityId: val("f-idp-entity-id"),
         idpLoginUrl: val("f-idp-login-url"),
         idpLogoutUrl: val("f-idp-logout-url"),
@@ -349,6 +354,7 @@ async function openAuthSettingsModal() {
     btn.disabled = true;
     try {
       await api.auth.updateAzureSettings({
+        spEntityId: val("f-sp-entity-id"),
         idpEntityId: val("f-idp-entity-id"),
         idpLoginUrl: val("f-idp-login-url"),
         idpLogoutUrl: val("f-idp-logout-url"),

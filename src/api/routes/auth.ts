@@ -23,8 +23,8 @@ import { logEvent } from "./events.js";
 const router = Router();
 
 const LoginSchema = z.object({
-  username: z.string().min(1),
-  password: z.string().min(1),
+  username: z.string().min(1, "Username is required"),
+  password: z.string().min(1, "Password is required"),
 });
 
 // POST /api/v1/auth/login

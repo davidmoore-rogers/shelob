@@ -14,6 +14,7 @@ import bcrypt from "bcrypt";
 // ─── SSO Settings (stored in Setting table) ─────────────────────────────────
 
 export interface SsoSettings {
+  spEntityId: string;
   idpEntityId: string;
   idpLoginUrl: string;
   idpLogoutUrl: string;
@@ -24,6 +25,7 @@ export interface SsoSettings {
 }
 
 const SSO_DEFAULTS: SsoSettings = {
+  spEntityId: "",
   idpEntityId: "",
   idpLoginUrl: "",
   idpLogoutUrl: "",
@@ -49,6 +51,7 @@ export async function getSsoSettings(): Promise<SsoSettings> {
 export async function updateSsoSettings(updates: Partial<SsoSettings>): Promise<SsoSettings> {
   const current = await getSsoSettings();
   const merged: SsoSettings = {
+    spEntityId: updates.spEntityId !== undefined ? updates.spEntityId.trim() : current.spEntityId,
     idpEntityId: updates.idpEntityId !== undefined ? updates.idpEntityId.trim() : current.idpEntityId,
     idpLoginUrl: updates.idpLoginUrl !== undefined ? updates.idpLoginUrl.trim() : current.idpLoginUrl,
     idpLogoutUrl: updates.idpLogoutUrl !== undefined ? updates.idpLogoutUrl.trim() : current.idpLogoutUrl,
@@ -78,37 +81,33 @@ export async function updateSsoSettings(updates: Partial<SsoSettings>): Promise<
 export function isAzureSsoConfigured(): boolean {
   if (_ssoCache && Date.now() < _ssoCache.expiry) {
     const s = _ssoCache.value;
-    return !!(s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
+    return !!(s.spEntityId && s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
   }
   return false;
 }
 
 export async function isAzureSsoConfiguredAsync(): Promise<boolean> {
   const s = await getSsoSettings();
-  return !!(s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
+  return !!(s.spEntityId && s.idpEntityId && s.idpLoginUrl && s.idpCertificate);
 }
 
 // ─── SAML Client ─────────────────────────────────────────────────────────────
 
 let _samlClient: SAML | null = null;
 
-function getBaseUrl(): string {
-  const port = process.env.PORT || "3000";
-  return `http://localhost:${port}`;
-}
-
 async function getSamlClient(): Promise<SAML> {
   if (_samlClient) return _samlClient;
 
   const settings = await getSsoSettings();
-  if (!settings.idpEntityId || !settings.idpLoginUrl || !settings.idpCertificate) {
+  if (!settings.spEntityId || !settings.idpEntityId || !settings.idpLoginUrl || !settings.idpCertificate) {
     throw new Error("SAML SSO is not configured");
   }
 
+  const baseUrl = settings.spEntityId.replace(/\/+$/, "");
   const config: SamlConfig = {
     idpCert: settings.idpCertificate,
-    issuer: getBaseUrl(),
-    callbackUrl: `${getBaseUrl()}/api/v1/auth/azure/callback`,
+    issuer: baseUrl,
+    callbackUrl: `${baseUrl}/api/v1/auth/azure/callback`,
     entryPoint: settings.idpLoginUrl,
     logoutUrl: settings.idpLogoutUrl || settings.idpLoginUrl,
     idpIssuer: settings.idpEntityId,

@@ -20,17 +20,17 @@ const router = Router();
 const CreateReservationSchema = z.object({
   subnetId: z.string().uuid(),
   ipAddress: z.string().optional(),
-  hostname: z.string().optional(),
-  owner: z.string().min(1),
-  projectRef: z.string().min(1),
+  hostname: z.string().min(1, "Hostname is required"),
+  owner: z.string().optional(),
+  projectRef: z.string().optional(),
   expiresAt: z.coerce.date().optional(),
   notes: z.string().optional(),
 });
 
 const UpdateReservationSchema = z.object({
   hostname: z.string().optional(),
-  owner: z.string().min(1).optional(),
-  projectRef: z.string().min(1).optional(),
+  owner: z.string().min(1, "Owner is required").optional(),
+  projectRef: z.string().min(1, "Project reference is required").optional(),
   expiresAt: z.coerce.date().optional(),
   notes: z.string().optional(),
 });

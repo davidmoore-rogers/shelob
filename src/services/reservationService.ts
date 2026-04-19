@@ -12,8 +12,8 @@ export interface CreateReservationInput {
   subnetId: string;
   ipAddress?: string;
   hostname?: string;
-  owner: string;
-  projectRef: string;
+  owner?: string;
+  projectRef?: string;
   expiresAt?: Date;
   notes?: string;
   createdBy?: string;
@@ -130,13 +130,13 @@ export async function createReservation(input: CreateReservationInput) {
         subnetId: input.subnetId,
         ipAddress: input.ipAddress ?? null,
         hostname: input.hostname,
-        owner: input.owner,
-        projectRef: input.projectRef,
+        owner: input.owner || null,
+        projectRef: input.projectRef || null,
         expiresAt: input.expiresAt,
         notes: input.notes,
         status: "active",
         createdBy: input.createdBy ?? null,
-      },
+      } as any,
     });
 
     if (!input.ipAddress) {

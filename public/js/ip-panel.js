@@ -300,9 +300,9 @@ function _openReserveModal(subnetId, ipAddress) {
         ? '<input type="text" value="' + escapeHtml(ipAddress) + '" disabled>'
         : '<input type="text" id="f-ipAddress" placeholder="e.g. ' + (s ? escapeHtml(s.cidr.replace(/\/.*/, '').replace(/\.0$/, '.10')) : '10.0.1.10') + '">') +
     '</div>' +
-    '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
-    '<div class="form-group"><label>Owner *</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
-    '<div class="form-group"><label>Project Ref *</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
+    '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
+    '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
+    '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
     '<div class="form-group"><label>Notes</label><textarea id="f-notes" placeholder="Optional notes"></textarea></div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
@@ -318,9 +318,9 @@ function _openReserveModal(subnetId, ipAddress) {
       var input = {
         subnetId: subnetId,
         ipAddress: ipAddress || (ipEl ? ipEl.value.trim() : undefined) || undefined,
-        hostname: document.getElementById("f-hostname").value.trim() || undefined,
-        owner: document.getElementById("f-owner").value.trim(),
-        projectRef: document.getElementById("f-projectRef").value.trim(),
+        hostname: document.getElementById("f-hostname").value.trim(),
+        owner: document.getElementById("f-owner").value.trim() || undefined,
+        projectRef: document.getElementById("f-projectRef").value.trim() || undefined,
         expiresAt: expiresVal ? new Date(expiresVal).toISOString() : undefined,
         notes: document.getElementById("f-notes").value.trim() || undefined,
       };

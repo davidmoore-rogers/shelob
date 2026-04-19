@@ -14,7 +14,7 @@ const router = Router();
 
 const CreateSubnetSchema = z.object({
   blockId:     z.string().uuid(),
-  cidr:        z.string().min(1),
+  cidr:        z.string().min(1, "CIDR is required"),
   name:        z.string().min(1, "Subnet name is required"),
   purpose:     z.string().optional(),          // description / what it's for
   vlan:        z.number().int().min(1).max(4094).optional(),
@@ -31,7 +31,7 @@ const AllocateNextSchema = z.object({
 });
 
 const UpdateSubnetSchema = z.object({
-  name:    z.string().min(1).optional(),
+  name:    z.string().min(1, "Name is required").optional(),
   purpose: z.string().optional(),
   status:  z.enum(["available", "reserved", "deprecated"]).optional(),
   vlan:    z.number().int().min(1).max(4094).nullable().optional(),
