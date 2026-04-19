@@ -564,10 +564,7 @@ function _ensureTagCache() {
  * Build tag field HTML. Call _ensureTagCache() before using this.
  * selected: array of currently selected tag names
  */
-function tagFieldHTML(selected) {
-  selected = selected || [];
-
-  // Group tags by category
+function _renderTagChips(selected) {
   var cats = {};
   _tagCache.tags.forEach(function (t) {
     var cat = t.category || "General";
@@ -575,13 +572,11 @@ function tagFieldHTML(selected) {
     cats[cat].push(t);
   });
   var catNames = Object.keys(cats).sort();
+  var html = '';
 
-  var html = '<div class="form-group"><label>Tags</label>' +
-    '<div class="tag-picker" id="f-tags-picker">';
-
-  if (_tagCache.tags.length === 0 && _tagCache.enforce) {
-    html += '<p class="hint" style="margin:0">No tags defined. Add tags in Server Settings &gt; Identification.</p>';
-  } else if (_tagCache.tags.length > 0) {
+  if (_tagCache.tags.length === 0) {
+    html += '<p class="hint" style="margin:0">No tags defined yet. Use the form below to add one.</p>';
+  } else {
     catNames.forEach(function (cat) {
       html += '<div class="tag-picker-category">' +
         '<span class="tag-picker-cat-label">' + escapeHtml(cat) + '</span>';
@@ -598,15 +593,33 @@ function tagFieldHTML(selected) {
       html += '</div>';
     });
   }
+  return html;
+}
 
-  html += '</div>';
+function tagFieldHTML(selected) {
+  selected = selected || [];
+
+  var html = '<div class="form-group"><label>Tags</label>' +
+    '<div class="tag-picker" id="f-tags-picker">' +
+    _renderTagChips(selected) +
+    '</div>';
 
   if (!_tagCache.enforce) {
-    var customTags = selected.filter(function (s) {
-      return !_tagCache.tags.some(function (t) { return t.name === s; });
+    var catOptions = '';
+    var seenCats = {};
+    _tagCache.tags.forEach(function (t) {
+      var c = t.category || "General";
+      if (!seenCats[c]) { seenCats[c] = true; catOptions += '<option value="' + escapeHtml(c) + '">'; }
     });
-    html += '<input type="text" id="f-tags-custom" value="' + escapeHtml(tagsToString(customTags)) + '" placeholder="Additional custom tags (comma-separated)">' +
-      '<p class="hint">Select predefined tags above or type custom ones</p>';
+
+    html += '<div class="tag-add-row" id="f-tags-add-row" style="display:flex;gap:6px;align-items:center;margin-top:6px">' +
+      '<input type="text" id="f-tag-new-name" placeholder="Tag name" style="flex:1;min-width:0">' +
+      '<input type="text" id="f-tag-new-cat" list="f-tag-cat-list" placeholder="Category" style="width:120px">' +
+      '<datalist id="f-tag-cat-list">' + catOptions + '</datalist>' +
+      '<input type="color" id="f-tag-new-color" value="#4fc3f7" title="Tag color" style="width:36px;height:36px;padding:2px;border:1px solid var(--color-border);border-radius:var(--radius-md);cursor:pointer">' +
+      '<button type="button" class="btn btn-sm btn-secondary" id="f-tag-add-btn">Add</button>' +
+      '</div>' +
+      '<p class="hint">Select tags above or add new ones</p>';
   }
 
   html += '</div>';
@@ -621,24 +634,14 @@ function getTagFieldValue() {
   document.querySelectorAll('input[name="f-tags-cb"]:checked').forEach(function (cb) {
     checked.push(cb.value);
   });
-  if (!_tagCache.enforce) {
-    var customEl = document.getElementById("f-tags-custom");
-    if (customEl) {
-      tagsToArray(customEl.value).forEach(function (t) {
-        if (checked.indexOf(t) === -1) checked.push(t);
-      });
-    }
-  }
   return checked;
 }
 
 /**
  * Wire up tag picker toggle styling after the form is rendered.
  */
-function wireTagPicker() {
-  var picker = document.getElementById("f-tags-picker");
-  if (!picker) return;
-  picker.querySelectorAll('.tag-picker-chip input').forEach(function (cb) {
+function _wireChipListeners(container) {
+  container.querySelectorAll('.tag-picker-chip input').forEach(function (cb) {
     cb.addEventListener("change", function () {
       var label = cb.parentElement;
       if (cb.checked) {
@@ -646,13 +649,73 @@ function wireTagPicker() {
       } else {
         label.classList.remove("selected");
       }
-      // Update background opacity based on checked state
       var tag = _tagCache.tags.find(function (t) { return t.name === cb.value; });
       if (tag && tag.color) {
         label.style.background = tag.color + (cb.checked ? '44' : '11');
       }
     });
   });
+}
+
+function wireTagPicker() {
+  var picker = document.getElementById("f-tags-picker");
+  if (!picker) return;
+  _wireChipListeners(picker);
+
+  var addBtn = document.getElementById("f-tag-add-btn");
+  if (!addBtn) return;
+  addBtn.addEventListener("click", async function () {
+    var nameEl = document.getElementById("f-tag-new-name");
+    var catEl = document.getElementById("f-tag-new-cat");
+    var colorEl = document.getElementById("f-tag-new-color");
+    var name = nameEl.value.trim();
+    if (!name) { nameEl.focus(); return; }
+
+    addBtn.disabled = true;
+    try {
+      var newTag = await api.serverSettings.createTag({
+        name: name,
+        category: catEl.value.trim() || "General",
+        color: colorEl.value || "#4fc3f7",
+      });
+      _tagCache.tags.push(newTag);
+
+      // Get currently selected tags before re-rendering
+      var selected = getTagFieldValue();
+      selected.push(newTag.name);
+
+      // Re-render chips and re-wire
+      picker.innerHTML = _renderTagChips(selected);
+      _wireChipListeners(picker);
+
+      // Update category datalist
+      var datalist = document.getElementById("f-tag-cat-list");
+      if (datalist) {
+        var seen = {};
+        _tagCache.tags.forEach(function (t) {
+          var c = t.category || "General";
+          if (!seen[c]) { seen[c] = true; }
+        });
+        datalist.innerHTML = Object.keys(seen).map(function (c) {
+          return '<option value="' + escapeHtml(c) + '">';
+        }).join('');
+      }
+
+      nameEl.value = "";
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      addBtn.disabled = false;
+    }
+  });
+
+  // Allow Enter key in the name field to trigger add
+  var nameInput = document.getElementById("f-tag-new-name");
+  if (nameInput) {
+    nameInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); addBtn.click(); }
+    });
+  }
 }
 
 // ─── Admin-only UI ───────────────────────────────────────────────────────────
