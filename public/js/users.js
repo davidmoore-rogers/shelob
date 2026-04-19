@@ -242,6 +242,15 @@ async function openAuthSettingsModal() {
       '<input type="file" id="f-idp-cert-file" accept=".pem,.cer,.crt,.cert" style="margin-top:0.35rem;font-size:0.8rem">' +
     '</div>' +
 
+    '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Signature Verification</h4>' +
+    '<div class="form-group">' +
+      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+        '<input type="checkbox" id="f-want-response-signed"' + (settings.wantResponseSigned ? ' checked' : '') + '>' +
+        '<span>Require signed SAML response</span>' +
+      '</label>' +
+      '<p class="hint" style="margin:0.35rem 0 0 1.5rem">Enable if your IdP is configured to "Sign SAML response." SAML assertions are always required to be signed.</p>' +
+    '</div>' +
+
     '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Session</h4>' +
     '<div class="form-group">' +
       '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
@@ -302,6 +311,7 @@ async function openAuthSettingsModal() {
         idpLoginUrl: val("f-idp-login-url"),
         idpLogoutUrl: val("f-idp-logout-url"),
         idpCertificate: document.getElementById("f-idp-certificate").value.trim(),
+        wantResponseSigned: document.getElementById("f-want-response-signed").checked,
         skipLoginPage: document.getElementById("f-skip-login").checked,
         autoLogoutMinutes: parseInt(document.getElementById("f-auto-logout").value, 10) || 0,
       });
@@ -343,6 +353,7 @@ async function openAuthSettingsModal() {
         idpLoginUrl: val("f-idp-login-url"),
         idpLogoutUrl: val("f-idp-logout-url"),
         idpCertificate: document.getElementById("f-idp-certificate").value.trim(),
+        wantResponseSigned: document.getElementById("f-want-response-signed").checked,
         skipLoginPage: document.getElementById("f-skip-login").checked,
         autoLogoutMinutes: parseInt(document.getElementById("f-auto-logout").value, 10) || 0,
       });

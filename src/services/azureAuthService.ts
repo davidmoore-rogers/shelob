@@ -18,6 +18,7 @@ export interface SsoSettings {
   idpLoginUrl: string;
   idpLogoutUrl: string;
   idpCertificate: string;
+  wantResponseSigned: boolean;
   skipLoginPage: boolean;
   autoLogoutMinutes: number;
 }
@@ -27,6 +28,7 @@ const SSO_DEFAULTS: SsoSettings = {
   idpLoginUrl: "",
   idpLogoutUrl: "",
   idpCertificate: "",
+  wantResponseSigned: false,
   skipLoginPage: false,
   autoLogoutMinutes: 0,
 };
@@ -51,6 +53,7 @@ export async function updateSsoSettings(updates: Partial<SsoSettings>): Promise<
     idpLoginUrl: updates.idpLoginUrl !== undefined ? updates.idpLoginUrl.trim() : current.idpLoginUrl,
     idpLogoutUrl: updates.idpLogoutUrl !== undefined ? updates.idpLogoutUrl.trim() : current.idpLogoutUrl,
     idpCertificate: updates.idpCertificate !== undefined ? updates.idpCertificate.trim() : current.idpCertificate,
+    wantResponseSigned: updates.wantResponseSigned !== undefined ? updates.wantResponseSigned : current.wantResponseSigned,
     skipLoginPage: updates.skipLoginPage !== undefined ? updates.skipLoginPage : current.skipLoginPage,
     autoLogoutMinutes:
       updates.autoLogoutMinutes !== undefined
@@ -110,7 +113,7 @@ async function getSamlClient(): Promise<SAML> {
     logoutUrl: settings.idpLogoutUrl || settings.idpLoginUrl,
     idpIssuer: settings.idpEntityId,
     wantAssertionsSigned: true,
-    wantAuthnResponseSigned: true,
+    wantAuthnResponseSigned: settings.wantResponseSigned,
     validateInResponseTo: ValidateInResponseTo.never,
   };
 
