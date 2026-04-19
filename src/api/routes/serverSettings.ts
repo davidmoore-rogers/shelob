@@ -753,7 +753,7 @@ async function getBranding(): Promise<BrandingSettings & { version: string }> {
   const saved = row ? (row.value as Record<string, unknown>) : {};
   return {
     appName:  (saved.appName as string)  || BRANDING_DEFAULTS.appName,
-    subtitle: (saved.subtitle as string) || BRANDING_DEFAULTS.subtitle,
+    subtitle: saved.subtitle !== undefined ? (saved.subtitle as string) : BRANDING_DEFAULTS.subtitle,
     logoUrl:  (saved.logoUrl as string)  || BRANDING_DEFAULTS.logoUrl,
     version:  APP_VERSION,
   };
