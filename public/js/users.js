@@ -181,101 +181,50 @@ async function initAuthSettingsButton() {
   btn.addEventListener("click", openAuthSettingsModal);
 }
 
-async function openAuthSettingsModal() {
-  // Load current settings
-  var settings;
-  try {
-    settings = await api.auth.azureSettings();
-  } catch (_) {
-    settings = { spEntityId: "", idpEntityId: "", idpLoginUrl: "", idpLogoutUrl: "", idpCertificate: "", skipLoginPage: false, autoLogoutMinutes: 0 };
-  }
+var _authActiveTab = "saml";
 
-  var origin = window.location.origin;
-  var spEntityId = settings.spEntityId || origin;
-  var spAcsUrl = spEntityId.replace(/\/+$/, "") + "/api/v1/auth/azure/callback";
-  var spSlsUrl = spEntityId.replace(/\/+$/, "") + "/login.html";
+async function openAuthSettingsModal() {
+  var results = await Promise.all([
+    api.auth.azureSettings().catch(function () { return { spEntityId: "", idpEntityId: "", idpLoginUrl: "", idpLogoutUrl: "", idpCertificate: "", wantResponseSigned: false, skipLoginPage: false, autoLogoutMinutes: 0 }; }),
+    api.auth.oidcSettings().catch(function () { return { enabled: false, discoveryUrl: "", clientId: "", clientSecret: "", scopes: "openid profile email" }; }),
+    api.auth.ldapSettings().catch(function () { return { enabled: false, url: "", bindDn: "", bindPassword: "", searchBase: "", searchFilter: "(sAMAccountName={{username}})", tlsVerify: true, displayNameAttr: "displayName", emailAttr: "mail" }; }),
+  ]);
+  var saml = results[0], oidc = results[1], ldap = results[2];
 
   var body =
-    '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1.25rem">Configure Azure AD SAML single sign-on and session behavior.</p>' +
-
-    '<h4 style="font-size:0.88rem;font-weight:600;margin-bottom:0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Service Provider Info</h4>' +
-    '<p style="font-size:0.8rem;color:var(--color-text-tertiary);margin-bottom:0.75rem">Copy these values into your Azure Enterprise Application SAML configuration.</p>' +
-    '<div class="form-group">' +
-      '<label>Application URL *</label>' +
-      '<input type="text" id="f-sp-entity-id" value="' + escapeHtml(spEntityId) + '" placeholder="https://ipam.example.com">' +
-      '<p class="hint">Your application\'s public URL. Used as the SP Entity ID and to build the callback URLs below.</p>' +
+    '<div class="settings-tabs">' +
+      '<button class="settings-tab' + (_authActiveTab === "saml" ? ' active' : '') + '" data-tab="saml">SAML</button>' +
+      '<button class="settings-tab' + (_authActiveTab === "oidc" ? ' active' : '') + '" data-tab="oidc">OIDC</button>' +
+      '<button class="settings-tab' + (_authActiveTab === "ldap" ? ' active' : '') + '" data-tab="ldap">LDAP</button>' +
+      '<button class="settings-tab' + (_authActiveTab === "session" ? ' active' : '') + '" data-tab="session">Session</button>' +
     '</div>' +
-    '<div class="form-group">' +
-      '<label>SP ACS (Login) URL</label>' +
-      '<div style="display:flex;gap:0.5rem;align-items:center">' +
-        '<input type="text" id="f-sp-acs-url" value="' + escapeHtml(spAcsUrl) + '" readonly style="background:var(--color-bg-secondary);cursor:default;flex:1">' +
-        '<button type="button" class="btn btn-sm btn-secondary" id="btn-copy-acs-url" title="Copy">Copy</button>' +
-      '</div>' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label>SP SLS (Logout) URL</label>' +
-      '<div style="display:flex;gap:0.5rem;align-items:center">' +
-        '<input type="text" id="f-sp-sls-url" value="' + escapeHtml(spSlsUrl) + '" readonly style="background:var(--color-bg-secondary);cursor:default;flex:1">' +
-        '<button type="button" class="btn btn-sm btn-secondary" id="btn-copy-sls-url" title="Copy">Copy</button>' +
-      '</div>' +
-    '</div>' +
-
-    '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Identity Provider</h4>' +
-    '<div class="form-group">' +
-      '<label>IdP Entity ID</label>' +
-      '<input type="text" id="f-idp-entity-id" value="' + escapeHtml(settings.idpEntityId || "") + '" placeholder="https://sts.windows.net/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/">' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label>IdP Login URL</label>' +
-      '<input type="text" id="f-idp-login-url" value="' + escapeHtml(settings.idpLoginUrl || "") + '" placeholder="https://login.microsoftonline.com/xxxxxxxx/saml2">' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label>IdP Logout URL</label>' +
-      '<input type="text" id="f-idp-logout-url" value="' + escapeHtml(settings.idpLogoutUrl || "") + '" placeholder="https://login.microsoftonline.com/xxxxxxxx/saml2">' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label>IdP Certificate</label>' +
-      '<textarea id="f-idp-certificate" rows="6" style="font-family:monospace;font-size:0.8rem;resize:vertical" placeholder="-----BEGIN CERTIFICATE-----\nMIIC8D...\n-----END CERTIFICATE-----">' + escapeHtml(settings.idpCertificate || "") + '</textarea>' +
-      '<p class="hint">Paste the Base64-encoded signing certificate from the Azure SAML configuration, or import below.</p>' +
-      '<input type="file" id="f-idp-cert-file" accept=".pem,.cer,.crt,.cert" style="margin-top:0.35rem;font-size:0.8rem">' +
-    '</div>' +
-
-    '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Signature Verification</h4>' +
-    '<div class="form-group">' +
-      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
-        '<input type="checkbox" id="f-want-response-signed"' + (settings.wantResponseSigned ? ' checked' : '') + '>' +
-        '<span>Require signed SAML response</span>' +
-      '</label>' +
-      '<p class="hint" style="margin:0.35rem 0 0 1.5rem">Enable if your IdP is configured to "Sign SAML response." SAML assertions are always required to be signed.</p>' +
-    '</div>' +
-
-    '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Session</h4>' +
-    '<div class="form-group">' +
-      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
-        '<input type="checkbox" id="f-skip-login"' + (settings.skipLoginPage ? ' checked' : '') + '>' +
-        '<span>Skip login page (SAML SSO only)</span>' +
-      '</label>' +
-      '<p class="hint" style="margin:0.35rem 0 0 1.5rem">Redirect unauthenticated users straight to Azure SAML SSO. Requires IdP to be configured.</p>' +
-    '</div>' +
-    '<div class="form-group">' +
-      '<label>Auto-logout after inactivity</label>' +
-      '<div style="display:flex;align-items:center;gap:0.5rem">' +
-        '<input type="number" id="f-auto-logout" min="0" max="1440" value="' + (settings.autoLogoutMinutes || 0) + '" style="width:80px">' +
-        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">minutes</span>' +
-      '</div>' +
-      '<p class="hint">Set to 0 to disable. Maximum 1440 minutes (24 hours).</p>' +
-    '</div>' +
-
-    '<div id="sso-test-results" style="display:none;margin-top:1rem;padding:0.75rem;border-radius:6px;font-size:0.85rem"></div>';
+    '<div class="settings-tab-panel' + (_authActiveTab === "saml" ? ' active' : '') + '" id="tab-saml">' + buildSamlTab(saml) + '</div>' +
+    '<div class="settings-tab-panel' + (_authActiveTab === "oidc" ? ' active' : '') + '" id="tab-oidc">' + buildOidcTab(oidc) + '</div>' +
+    '<div class="settings-tab-panel' + (_authActiveTab === "ldap" ? ' active' : '') + '" id="tab-ldap">' + buildLdapTab(ldap) + '</div>' +
+    '<div class="settings-tab-panel' + (_authActiveTab === "session" ? ' active' : '') + '" id="tab-session">' + buildSessionTab(saml) + '</div>';
 
   var footer =
+    '<div style="margin-right:auto"><button class="btn btn-secondary" id="btn-test-auth">Test</button></div>' +
     '<button class="btn btn-secondary" id="btn-cancel-auth">Cancel</button>' +
-    '<button class="btn btn-secondary" id="btn-test-sso">Test</button>' +
     '<button class="btn btn-primary" id="btn-save-auth">Save</button>';
 
-  openModal("Authentication Settings", body, footer);
+  openModal("Authentication", body, footer);
 
-  // Live-update ACS / SLS URLs when Application URL changes
+  // Tab switching
+  document.querySelectorAll(".settings-tab").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      var target = tab.getAttribute("data-tab");
+      _authActiveTab = target;
+      document.querySelectorAll(".settings-tab").forEach(function (t) { t.classList.remove("active"); });
+      document.querySelectorAll(".settings-tab-panel").forEach(function (p) { p.classList.remove("active"); });
+      tab.classList.add("active");
+      document.getElementById("tab-" + target).classList.add("active");
+      document.getElementById("btn-test-auth").style.display = target === "saml" ? "" : "none";
+    });
+  });
+  document.getElementById("btn-test-auth").style.display = _authActiveTab === "saml" ? "" : "none";
+
+  // SAML: live-update ACS / SLS URLs
   document.getElementById("f-sp-entity-id").addEventListener("input", function () {
     var base = this.value.trim().replace(/\/+$/, "");
     document.getElementById("f-sp-acs-url").value = base ? base + "/api/v1/auth/azure/callback" : "";
@@ -292,13 +241,12 @@ async function openAuthSettingsModal() {
     var file = this.files[0];
     if (!file) return;
     var reader = new FileReader();
-    reader.onload = function (e) {
-      document.getElementById("f-idp-certificate").value = e.target.result;
-    };
+    reader.onload = function (e) { document.getElementById("f-idp-certificate").value = e.target.result; };
     reader.readAsText(file);
   });
 
-  document.getElementById("btn-test-sso").addEventListener("click", async function () {
+  // Test (SAML only)
+  document.getElementById("btn-test-auth").addEventListener("click", async function () {
     var btn = this;
     var resultsDiv = document.getElementById("sso-test-results");
     btn.disabled = true;
@@ -307,38 +255,17 @@ async function openAuthSettingsModal() {
     resultsDiv.style.background = "var(--color-bg-secondary)";
     resultsDiv.style.border = "1px solid var(--color-border)";
     resultsDiv.innerHTML = '<span style="color:var(--color-text-secondary)">Running tests\u2026</span>';
-
     try {
-      // Save current values first so the test uses the latest config
-      await api.auth.updateAzureSettings({
-        spEntityId: val("f-sp-entity-id"),
-        idpEntityId: val("f-idp-entity-id"),
-        idpLoginUrl: val("f-idp-login-url"),
-        idpLogoutUrl: val("f-idp-logout-url"),
-        idpCertificate: document.getElementById("f-idp-certificate").value.trim(),
-        wantResponseSigned: document.getElementById("f-want-response-signed").checked,
-        skipLoginPage: document.getElementById("f-skip-login").checked,
-        autoLogoutMinutes: parseInt(document.getElementById("f-auto-logout").value, 10) || 0,
-      });
-
+      await api.auth.updateAzureSettings(getSamlFormData());
       var data = await api.auth.testAzureSettings();
       var r = data.results;
-      var certIcon = r.certificate.ok ? "\u2705" : "\u274c";
-      var urlIcon = r.idpLoginUrl.ok ? "\u2705" : "\u274c";
-
       var html = '<div style="display:flex;flex-direction:column;gap:0.5rem">' +
-        '<div>' + certIcon + ' <strong>Certificate:</strong> ' + escapeHtml(r.certificate.message) + '</div>' +
-        '<div>' + urlIcon + ' <strong>IdP Login URL:</strong> ' + escapeHtml(r.idpLoginUrl.message) + '</div>' +
+        '<div>' + (r.certificate.ok ? "\u2705" : "\u274c") + ' <strong>Certificate:</strong> ' + escapeHtml(r.certificate.message) + '</div>' +
+        '<div>' + (r.idpLoginUrl.ok ? "\u2705" : "\u274c") + ' <strong>IdP Login URL:</strong> ' + escapeHtml(r.idpLoginUrl.message) + '</div>' +
         '</div>';
-
       resultsDiv.innerHTML = html;
-      if (data.ok) {
-        resultsDiv.style.background = "rgba(34,197,94,0.08)";
-        resultsDiv.style.border = "1px solid rgba(34,197,94,0.3)";
-      } else {
-        resultsDiv.style.background = "rgba(239,68,68,0.08)";
-        resultsDiv.style.border = "1px solid rgba(239,68,68,0.3)";
-      }
+      resultsDiv.style.background = data.ok ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)";
+      resultsDiv.style.border = data.ok ? "1px solid rgba(34,197,94,0.3)" : "1px solid rgba(239,68,68,0.3)";
     } catch (err) {
       resultsDiv.innerHTML = '<span style="color:var(--color-danger)">\u274c ' + escapeHtml(err.message) + '</span>';
       resultsDiv.style.background = "rgba(239,68,68,0.08)";
@@ -349,20 +276,16 @@ async function openAuthSettingsModal() {
     }
   });
 
+  // Save — all tabs
   document.getElementById("btn-save-auth").addEventListener("click", async function () {
     var btn = this;
     btn.disabled = true;
     try {
-      await api.auth.updateAzureSettings({
-        spEntityId: val("f-sp-entity-id"),
-        idpEntityId: val("f-idp-entity-id"),
-        idpLoginUrl: val("f-idp-login-url"),
-        idpLogoutUrl: val("f-idp-logout-url"),
-        idpCertificate: document.getElementById("f-idp-certificate").value.trim(),
-        wantResponseSigned: document.getElementById("f-want-response-signed").checked,
-        skipLoginPage: document.getElementById("f-skip-login").checked,
-        autoLogoutMinutes: parseInt(document.getElementById("f-auto-logout").value, 10) || 0,
-      });
+      await Promise.all([
+        api.auth.updateAzureSettings(getSamlFormData()),
+        api.auth.updateOidcSettings(getOidcFormData()),
+        api.auth.updateLdapSettings(getLdapFormData()),
+      ]);
       closeModal();
       showToast("Authentication settings saved");
     } catch (err) {
@@ -371,6 +294,214 @@ async function openAuthSettingsModal() {
       btn.disabled = false;
     }
   });
+}
+
+function getSamlFormData() {
+  return {
+    spEntityId: val("f-sp-entity-id"),
+    idpEntityId: val("f-idp-entity-id"),
+    idpLoginUrl: val("f-idp-login-url"),
+    idpLogoutUrl: val("f-idp-logout-url"),
+    idpCertificate: document.getElementById("f-idp-certificate").value.trim(),
+    wantResponseSigned: document.getElementById("f-want-response-signed").checked,
+    skipLoginPage: document.getElementById("f-skip-login").checked,
+    autoLogoutMinutes: parseInt(document.getElementById("f-auto-logout").value, 10) || 0,
+  };
+}
+
+function getOidcFormData() {
+  return {
+    enabled: document.getElementById("f-oidc-enabled").checked,
+    discoveryUrl: val("f-oidc-discovery-url"),
+    clientId: val("f-oidc-client-id"),
+    clientSecret: val("f-oidc-client-secret"),
+    scopes: val("f-oidc-scopes"),
+  };
+}
+
+function getLdapFormData() {
+  return {
+    enabled: document.getElementById("f-ldap-enabled").checked,
+    url: val("f-ldap-url"),
+    bindDn: val("f-ldap-bind-dn"),
+    bindPassword: val("f-ldap-bind-password"),
+    searchBase: val("f-ldap-search-base"),
+    searchFilter: val("f-ldap-search-filter"),
+    tlsVerify: document.getElementById("f-ldap-tls-verify").checked,
+    displayNameAttr: val("f-ldap-display-name-attr"),
+    emailAttr: val("f-ldap-email-attr"),
+  };
+}
+
+function buildSamlTab(s) {
+  var origin = window.location.origin;
+  var spEntityId = s.spEntityId || origin;
+  var spAcsUrl = spEntityId.replace(/\/+$/, "") + "/api/v1/auth/azure/callback";
+  var spSlsUrl = spEntityId.replace(/\/+$/, "") + "/login.html";
+
+  return '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1.25rem">Configure SAML 2.0 single sign-on with your identity provider.</p>' +
+    '<h4 style="font-size:0.88rem;font-weight:600;margin-bottom:0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Service Provider</h4>' +
+    '<p style="font-size:0.8rem;color:var(--color-text-tertiary);margin-bottom:0.75rem">Copy these values into your identity provider\'s SAML configuration.</p>' +
+    '<div class="form-group">' +
+      '<label>Application URL *</label>' +
+      '<input type="text" id="f-sp-entity-id" value="' + escapeHtml(spEntityId) + '" placeholder="https://ipam.example.com">' +
+      '<p class="hint">Your application\'s public URL. Used as the SP Entity ID and to build the callback URLs below.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>ACS (Login) URL</label>' +
+      '<div style="display:flex;gap:0.5rem;align-items:center">' +
+        '<input type="text" id="f-sp-acs-url" value="' + escapeHtml(spAcsUrl) + '" readonly style="background:var(--color-bg-secondary);cursor:default;flex:1">' +
+        '<button type="button" class="btn btn-sm btn-secondary" id="btn-copy-acs-url" title="Copy">Copy</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>SLS (Logout) URL</label>' +
+      '<div style="display:flex;gap:0.5rem;align-items:center">' +
+        '<input type="text" id="f-sp-sls-url" value="' + escapeHtml(spSlsUrl) + '" readonly style="background:var(--color-bg-secondary);cursor:default;flex:1">' +
+        '<button type="button" class="btn btn-sm btn-secondary" id="btn-copy-sls-url" title="Copy">Copy</button>' +
+      '</div>' +
+    '</div>' +
+    '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Identity Provider</h4>' +
+    '<div class="form-group">' +
+      '<label>IdP Entity ID</label>' +
+      '<input type="text" id="f-idp-entity-id" value="' + escapeHtml(s.idpEntityId || "") + '" placeholder="e.g. https://sts.windows.net/... or https://accounts.google.com/...">' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>IdP Login URL</label>' +
+      '<input type="text" id="f-idp-login-url" value="' + escapeHtml(s.idpLoginUrl || "") + '" placeholder="e.g. https://login.microsoftonline.com/.../saml2">' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>IdP Logout URL</label>' +
+      '<input type="text" id="f-idp-logout-url" value="' + escapeHtml(s.idpLogoutUrl || "") + '" placeholder="Optional — defaults to login URL">' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>IdP Certificate</label>' +
+      '<textarea id="f-idp-certificate" rows="6" style="font-family:monospace;font-size:0.8rem;resize:vertical" placeholder="-----BEGIN CERTIFICATE-----\nMIIC8D...\n-----END CERTIFICATE-----">' + escapeHtml(s.idpCertificate || "") + '</textarea>' +
+      '<p class="hint">Paste the Base64-encoded signing certificate from your IdP, or import a file.</p>' +
+      '<input type="file" id="f-idp-cert-file" accept=".pem,.cer,.crt,.cert" style="margin-top:0.35rem;font-size:0.8rem">' +
+    '</div>' +
+    '<h4 style="font-size:0.88rem;font-weight:600;margin:1.25rem 0 0.75rem;color:var(--color-text-primary);border-bottom:1px solid var(--color-border);padding-bottom:0.4rem">Signature Verification</h4>' +
+    '<div class="form-group">' +
+      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+        '<input type="checkbox" id="f-want-response-signed"' + (s.wantResponseSigned ? ' checked' : '') + '>' +
+        '<span>Require signed SAML response</span>' +
+      '</label>' +
+      '<p class="hint" style="margin:0.35rem 0 0 1.5rem">Enable if your IdP signs the entire SAML response (not just the assertion).</p>' +
+    '</div>' +
+    '<div id="sso-test-results" style="display:none;margin-top:1rem;padding:0.75rem;border-radius:6px;font-size:0.85rem"></div>';
+}
+
+function buildOidcTab(s) {
+  return '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1.25rem">Configure OpenID Connect for single sign-on with providers like Azure AD, Google Workspace, or Okta.</p>' +
+    '<div class="form-group">' +
+      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+        '<input type="checkbox" id="f-oidc-enabled"' + (s.enabled ? ' checked' : '') + '>' +
+        '<span>Enable OIDC authentication</span>' +
+      '</label>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<div class="form-group">' +
+      '<label>Discovery URL</label>' +
+      '<input type="text" id="f-oidc-discovery-url" value="' + escapeHtml(s.discoveryUrl || "") + '" placeholder="e.g. https://login.microsoftonline.com/{tenant}/v2.0/.well-known/openid-configuration">' +
+      '<p class="hint">The OpenID Connect discovery endpoint. The client will auto-discover authorization, token, and userinfo endpoints.</p>' +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
+      '<div class="form-group">' +
+        '<label>Client ID</label>' +
+        '<input type="text" id="f-oidc-client-id" value="' + escapeHtml(s.clientId || "") + '" placeholder="Application (client) ID">' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Client Secret</label>' +
+        '<input type="password" id="f-oidc-client-secret" value="' + escapeHtml(s.clientSecret || "") + '" placeholder="Client secret value">' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Scopes</label>' +
+      '<input type="text" id="f-oidc-scopes" value="' + escapeHtml(s.scopes || "openid profile email") + '">' +
+      '<p class="hint">Space-separated list of scopes to request.</p>' +
+    '</div>' +
+    '<div style="margin-top:1rem;padding:0.75rem;background:var(--color-bg-secondary);border-radius:6px;font-size:0.82rem;color:var(--color-text-tertiary)">' +
+      'OIDC authentication is not yet implemented. Save your configuration now and it will be available when support is added.' +
+    '</div>';
+}
+
+function buildLdapTab(s) {
+  return '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1.25rem">Configure LDAP or Active Directory for username/password authentication against a directory server.</p>' +
+    '<div class="form-group">' +
+      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+        '<input type="checkbox" id="f-ldap-enabled"' + (s.enabled ? ' checked' : '') + '>' +
+        '<span>Enable LDAP authentication</span>' +
+      '</label>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Connection</p>' +
+    '<div class="form-group">' +
+      '<label>Server URL</label>' +
+      '<input type="text" id="f-ldap-url" value="' + escapeHtml(s.url || "") + '" placeholder="e.g. ldaps://dc01.corp.local:636 or ldap://dc01.corp.local:389">' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+        '<input type="checkbox" id="f-ldap-tls-verify"' + (s.tlsVerify !== false ? ' checked' : '') + '>' +
+        '<span>Verify TLS certificate</span>' +
+      '</label>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Bind Credentials</p>' +
+    '<div class="form-group">' +
+      '<label>Bind DN</label>' +
+      '<input type="text" id="f-ldap-bind-dn" value="' + escapeHtml(s.bindDn || "") + '" placeholder="e.g. CN=svc-shelob,OU=Service Accounts,DC=corp,DC=local">' +
+      '<p class="hint">Distinguished name of the service account used to search the directory.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Bind Password</label>' +
+      '<input type="password" id="f-ldap-bind-password" value="' + escapeHtml(s.bindPassword || "") + '">' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">User Search</p>' +
+    '<div class="form-group">' +
+      '<label>Search Base</label>' +
+      '<input type="text" id="f-ldap-search-base" value="' + escapeHtml(s.searchBase || "") + '" placeholder="e.g. DC=corp,DC=local">' +
+      '<p class="hint">Base DN to search for user accounts.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Search Filter</label>' +
+      '<input type="text" id="f-ldap-search-filter" value="' + escapeHtml(s.searchFilter || "(sAMAccountName={{username}})") + '">' +
+      '<p class="hint">LDAP filter to find the user. Use <code>{{username}}</code> as a placeholder for the login username.</p>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Attribute Mapping</p>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
+      '<div class="form-group">' +
+        '<label>Display Name Attribute</label>' +
+        '<input type="text" id="f-ldap-display-name-attr" value="' + escapeHtml(s.displayNameAttr || "displayName") + '">' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Email Attribute</label>' +
+        '<input type="text" id="f-ldap-email-attr" value="' + escapeHtml(s.emailAttr || "mail") + '">' +
+      '</div>' +
+    '</div>' +
+    '<div style="margin-top:1rem;padding:0.75rem;background:var(--color-bg-secondary);border-radius:6px;font-size:0.82rem;color:var(--color-text-tertiary)">' +
+      'LDAP authentication is not yet implemented. Save your configuration now and it will be available when support is added.' +
+    '</div>';
+}
+
+function buildSessionTab(s) {
+  return '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1.25rem">Configure session behavior for all authentication methods.</p>' +
+    '<div class="form-group">' +
+      '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">' +
+        '<input type="checkbox" id="f-skip-login"' + (s.skipLoginPage ? ' checked' : '') + '>' +
+        '<span>Skip login page (SSO only)</span>' +
+      '</label>' +
+      '<p class="hint" style="margin:0.35rem 0 0 1.5rem">Redirect unauthenticated users straight to SSO. Requires an SSO provider to be configured.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Auto-logout after inactivity</label>' +
+      '<div style="display:flex;align-items:center;gap:0.5rem">' +
+        '<input type="number" id="f-auto-logout" min="0" max="1440" value="' + (s.autoLogoutMinutes || 0) + '" style="width:80px">' +
+        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">minutes</span>' +
+      '</div>' +
+      '<p class="hint">Set to 0 to disable. Maximum 1440 minutes (24 hours).</p>' +
+    '</div>';
 }
 
 function copyField(id, btn) {

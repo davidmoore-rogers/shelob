@@ -211,6 +211,10 @@ const api = {
     azureSettings: () => request("GET", "/auth/azure/settings"),
     updateAzureSettings: (body) => request("PUT", "/auth/azure/settings", body),
     testAzureSettings: () => request("POST", "/auth/azure/test"),
+    oidcSettings: () => request("GET", "/auth/oidc/settings"),
+    updateOidcSettings: (body) => request("PUT", "/auth/oidc/settings", body),
+    ldapSettings: () => request("GET", "/auth/ldap/settings"),
+    updateLdapSettings: (body) => request("PUT", "/auth/ldap/settings", body),
   },
 };
 

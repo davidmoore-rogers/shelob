@@ -275,4 +275,75 @@ router.put("/azure/settings", requireAuth, requireAdmin, async (req, res, next) 
   }
 });
 
+// ─── OIDC Settings ──────────────────────────────────────────────────────────
+
+router.get("/oidc/settings", requireAuth, requireAdmin, async (_req, res, next) => {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: "oidc" } });
+    res.json(row?.value ?? { enabled: false, discoveryUrl: "", clientId: "", clientSecret: "", scopes: "openid profile email" });
+  } catch (err) { next(err); }
+});
+
+router.put("/oidc/settings", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const value = {
+      enabled: !!req.body.enabled,
+      discoveryUrl: (req.body.discoveryUrl || "").trim(),
+      clientId: (req.body.clientId || "").trim(),
+      clientSecret: (req.body.clientSecret || "").trim(),
+      scopes: (req.body.scopes || "openid profile email").trim(),
+    };
+    await prisma.setting.upsert({
+      where: { key: "oidc" },
+      update: { value: value as any },
+      create: { key: "oidc", value: value as any },
+    });
+    res.json(value);
+  } catch (err) { next(err); }
+});
+
+// ─── LDAP Settings ──────────────────────────────────────────────────────────
+
+router.get("/ldap/settings", requireAuth, requireAdmin, async (_req, res, next) => {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: "ldap" } });
+    const val: any = row?.value ?? {};
+    res.json({
+      enabled: val.enabled || false,
+      url: val.url || "",
+      bindDn: val.bindDn || "",
+      bindPassword: val.bindPassword ? "********" : "",
+      searchBase: val.searchBase || "",
+      searchFilter: val.searchFilter || "(sAMAccountName={{username}})",
+      tlsVerify: val.tlsVerify !== false,
+      displayNameAttr: val.displayNameAttr || "displayName",
+      emailAttr: val.emailAttr || "mail",
+    });
+  } catch (err) { next(err); }
+});
+
+router.put("/ldap/settings", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const current = await prisma.setting.findUnique({ where: { key: "ldap" } });
+    const cur: any = current?.value ?? {};
+    const value = {
+      enabled: !!req.body.enabled,
+      url: (req.body.url || "").trim(),
+      bindDn: (req.body.bindDn || "").trim(),
+      bindPassword: req.body.bindPassword === "********" ? (cur.bindPassword || "") : (req.body.bindPassword || "").trim(),
+      searchBase: (req.body.searchBase || "").trim(),
+      searchFilter: (req.body.searchFilter || "(sAMAccountName={{username}})").trim(),
+      tlsVerify: req.body.tlsVerify !== false,
+      displayNameAttr: (req.body.displayNameAttr || "displayName").trim(),
+      emailAttr: (req.body.emailAttr || "mail").trim(),
+    };
+    await prisma.setting.upsert({
+      where: { key: "ldap" },
+      update: { value: value as any },
+      create: { key: "ldap", value: value as any },
+    });
+    res.json({ ...value, bindPassword: value.bindPassword ? "********" : "" });
+  } catch (err) { next(err); }
+});
+
 export default router;
