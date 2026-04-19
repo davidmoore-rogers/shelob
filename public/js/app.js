@@ -566,13 +566,8 @@ function _ensureTagCache() {
  */
 function tagFieldHTML(selected) {
   selected = selected || [];
-  if (!_tagCache.enforce) {
-    return '<div class="form-group"><label>Tags</label>' +
-      '<input type="text" id="f-tags" value="' + escapeHtml(tagsToString(selected)) + '" placeholder="Comma-separated tags">' +
-      '<p class="hint">e.g. prod, internal, critical</p></div>';
-  }
 
-  // Group tags by category for the enforced picker
+  // Group tags by category
   var cats = {};
   _tagCache.tags.forEach(function (t) {
     var cat = t.category || "General";
@@ -584,9 +579,9 @@ function tagFieldHTML(selected) {
   var html = '<div class="form-group"><label>Tags</label>' +
     '<div class="tag-picker" id="f-tags-picker">';
 
-  if (_tagCache.tags.length === 0) {
+  if (_tagCache.tags.length === 0 && _tagCache.enforce) {
     html += '<p class="hint" style="margin:0">No tags defined. Add tags in Server Settings &gt; Identification.</p>';
-  } else {
+  } else if (_tagCache.tags.length > 0) {
     catNames.forEach(function (cat) {
       html += '<div class="tag-picker-category">' +
         '<span class="tag-picker-cat-label">' + escapeHtml(cat) + '</span>';
@@ -604,7 +599,17 @@ function tagFieldHTML(selected) {
     });
   }
 
-  html += '</div></div>';
+  html += '</div>';
+
+  if (!_tagCache.enforce) {
+    var customTags = selected.filter(function (s) {
+      return !_tagCache.tags.some(function (t) { return t.name === s; });
+    });
+    html += '<input type="text" id="f-tags-custom" value="' + escapeHtml(tagsToString(customTags)) + '" placeholder="Additional custom tags (comma-separated)">' +
+      '<p class="hint">Select predefined tags above or type custom ones</p>';
+  }
+
+  html += '</div>';
   return html;
 }
 
@@ -612,14 +617,18 @@ function tagFieldHTML(selected) {
  * Read selected tags from the form — works for both enforced and free-text modes.
  */
 function getTagFieldValue() {
-  if (!_tagCache.enforce) {
-    var el = document.getElementById("f-tags");
-    return el ? tagsToArray(el.value) : [];
-  }
   var checked = [];
   document.querySelectorAll('input[name="f-tags-cb"]:checked').forEach(function (cb) {
     checked.push(cb.value);
   });
+  if (!_tagCache.enforce) {
+    var customEl = document.getElementById("f-tags-custom");
+    if (customEl) {
+      tagsToArray(customEl.value).forEach(function (t) {
+        if (checked.indexOf(t) === -1) checked.push(t);
+      });
+    }
+  }
   return checked;
 }
 
@@ -627,7 +636,6 @@ function getTagFieldValue() {
  * Wire up tag picker toggle styling after the form is rendered.
  */
 function wireTagPicker() {
-  if (!_tagCache.enforce) return;
   var picker = document.getElementById("f-tags-picker");
   if (!picker) return;
   picker.querySelectorAll('.tag-picker-chip input').forEach(function (cb) {

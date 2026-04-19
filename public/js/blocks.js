@@ -64,10 +64,12 @@ function renderBlocksPage() {
   });
 }
 
-function openCreateModal() {
-  var body = formHTML({ name: "", cidr: "", description: "", tags: "" });
+async function openCreateModal() {
+  await _ensureTagCache();
+  var body = formHTML({ name: "", cidr: "", description: "" }) + tagFieldHTML([]);
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Create Block</button>';
   openModal("Add IP Block", body, footer);
+  wireTagPicker();
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
     btn.disabled = true;
@@ -76,7 +78,7 @@ function openCreateModal() {
         name: val("f-name"),
         cidr: val("f-cidr"),
         description: val("f-description") || undefined,
-        tags: tagsToArray(val("f-tags")),
+        tags: getTagFieldValue(),
       };
       await api.blocks.create(input);
       closeModal();
@@ -93,12 +95,14 @@ function openCreateModal() {
 async function openEditModal(id) {
   try {
     var block = await api.blocks.get(id);
+    await _ensureTagCache();
     var body = '<div class="form-group"><label>Name</label><input type="text" id="f-name" value="' + escapeHtml(block.name) + '"></div>' +
       '<div class="form-group"><label>CIDR</label><input type="text" value="' + escapeHtml(block.cidr) + '" disabled></div>' +
       '<div class="form-group"><label>Description</label><textarea id="f-description">' + escapeHtml(block.description || "") + '</textarea></div>' +
-      '<div class="form-group"><label>Tags</label><input type="text" id="f-tags" value="' + escapeHtml(tagsToString(block.tags)) + '"><p class="hint">Comma-separated</p></div>';
+      tagFieldHTML(block.tags || []);
     var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Block", body, footer);
+    wireTagPicker();
     document.getElementById("btn-save").addEventListener("click", async function () {
       var btn = this;
       btn.disabled = true;
@@ -106,7 +110,7 @@ async function openEditModal(id) {
         var input = {
           name: val("f-name") || undefined,
           description: val("f-description") || undefined,
-          tags: tagsToArray(val("f-tags")),
+          tags: getTagFieldValue(),
         };
         await api.blocks.update(id, input);
         closeModal();
@@ -138,8 +142,7 @@ async function confirmDelete(id, cidr) {
 function formHTML(defaults) {
   return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(defaults.name) + '" placeholder="e.g. Corporate Datacenter"></div>' +
     '<div class="form-group"><label>CIDR *</label><input type="text" id="f-cidr" value="' + escapeHtml(defaults.cidr) + '" placeholder="e.g. 10.0.0.0/8"></div>' +
-    '<div class="form-group"><label>Description</label><textarea id="f-description" placeholder="Optional description">' + escapeHtml(defaults.description) + '</textarea></div>' +
-    '<div class="form-group"><label>Tags</label><input type="text" id="f-tags" value="' + escapeHtml(defaults.tags) + '" placeholder="e.g. prod, internal"><p class="hint">Comma-separated</p></div>';
+    '<div class="form-group"><label>Description</label><textarea id="f-description" placeholder="Optional description">' + escapeHtml(defaults.description) + '</textarea></div>';
 }
 
 function val(id) { return document.getElementById(id).value.trim(); }
