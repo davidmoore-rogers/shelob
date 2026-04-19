@@ -6,6 +6,7 @@ var _ipPanelSubnetId = null;
 var _ipPanelPage = 1;
 var _ipPanelPageSize = 256;
 var _ipPanelData = null;
+var _ipPanelDirty = false;
 
 // ─── Panel lifecycle ────────────────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ function openIpPanel(subnetId) {
   _ensurePanelDOM();
   _ipPanelSubnetId = subnetId;
   _ipPanelPage = 1;
+  _ipPanelDirty = false;
   document.getElementById("ip-panel-title").textContent = "Loading...";
   document.getElementById("ip-panel-meta").innerHTML = "";
   document.getElementById("ip-panel-body").innerHTML = '<p class="empty-state">Loading...</p>';
@@ -53,8 +55,10 @@ function openIpPanel(subnetId) {
 function closeIpPanel() {
   var overlay = document.getElementById("ip-panel-overlay");
   if (overlay) overlay.classList.remove("open");
+  if (_ipPanelDirty && typeof loadSubnets === "function") loadSubnets();
   _ipPanelSubnetId = null;
   _ipPanelData = null;
+  _ipPanelDirty = false;
 }
 
 async function _fetchIpPage() {
@@ -323,8 +327,8 @@ function _openReserveModal(subnetId, ipAddress) {
       await api.reservations.create(input);
       closeModal();
       showToast("Reservation created");
+      _ipPanelDirty = true;
       _fetchIpPage();
-      if (typeof loadSubnets === "function") loadSubnets();
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -365,6 +369,7 @@ function _openEditReservationModal(reservationId) {
         await api.reservations.update(reservationId, input);
         closeModal();
         showToast("Reservation updated");
+        _ipPanelDirty = true;
         _fetchIpPage();
       } catch (err) {
         showToast(err.message, "error");
@@ -383,8 +388,8 @@ async function _confirmReleaseFromPanel(reservationId) {
   try {
     await api.reservations.release(reservationId);
     showToast("Reservation released");
+    _ipPanelDirty = true;
     _fetchIpPage();
-    if (typeof loadSubnets === "function") loadSubnets();
   } catch (err) {
     showToast(err.message, "error");
   }
