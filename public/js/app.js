@@ -113,13 +113,7 @@ function renderNav() {
       <div style="padding:${isAdmin() ? '0.25rem' : '0.5rem'} 0.5rem 0;${isAdmin() ? '' : 'border-top:1px solid var(--color-border-light);'}">
         <button id="btn-theme-toggle" class="theme-toggle">${_getCurrentTheme() === 'dark' ? _sunIcon() : _moonIcon()}<span>${_getCurrentTheme() === 'dark' ? 'Light Mode' : 'Dark Mode'}</span></button>
       </div>
-      <div style="padding:0.25rem 0.5rem 0">
-        <div style="display:flex;align-items:center;gap:0.5rem;padding:0.35rem 0.5rem;font-size:0.8rem;color:var(--color-text-secondary)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:15px;height:15px;flex-shrink:0;opacity:0.6"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${currentUsername || ''}">${currentUsername || ''}</span>
-        </div>
-      </div>
-      <div style="padding:0.15rem 0.5rem 0.75rem">
+      <div style="padding:0.25rem 0.5rem 0.75rem">
         <a href="#" id="btn-logout" class="sidebar-bottom-link sidebar-bottom-link-logout">${ICONS.logout}<span>Logout</span></a>
       </div>
       <div id="sidebar-version" style="padding:0 0.75rem 0.75rem;text-align:center;font-size:0.7rem;color:var(--color-text-tertiary);letter-spacing:0.02em"></div>
@@ -139,8 +133,38 @@ function renderNav() {
   // Wire up query status indicator
   _onQueriesChanged = renderQueryStatus;
 
-  // Demo: mock background query every 30s that runs for 10s
-  // startMockHeartbeat();  // disabled — only useful for demo server
+  // Inject user badge into page header
+  renderUserBadge();
+}
+
+function _getUserInitials(username) {
+  if (!username) return "?";
+  var parts = username.replace(/[._-]/g, " ").trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return username.substring(0, 2).toUpperCase();
+}
+
+function _getInitialsColor(username) {
+  var hash = 0;
+  for (var i = 0; i < (username || "").length; i++) hash = username.charCodeAt(i) + ((hash << 5) - hash);
+  var colors = ["#4a9eff", "#34d399", "#f59e0b", "#f472b6", "#a78bfa", "#fb923c", "#38bdf8", "#4ade80"];
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function renderUserBadge() {
+  var header = document.querySelector(".page-header-actions");
+  if (!header || !currentUsername) return;
+
+  var initials = _getUserInitials(currentUsername);
+  var color = _getInitialsColor(currentUsername);
+
+  var badge = document.createElement("div");
+  badge.className = "user-badge";
+  badge.innerHTML =
+    '<div class="user-badge-avatar" style="background:' + color + '">' + escapeHtml(initials) + '</div>' +
+    '<span class="user-badge-name">' + escapeHtml(currentUsername) + '</span>';
+  badge.title = currentUsername;
+  header.appendChild(badge);
 }
 
 // ─── Branding ──────────────────────────────────────────────────────────────
@@ -225,15 +249,6 @@ async function checkSidebarUpdate() {
         '<a href="/server-settings.html?tab=database" class="sidebar-update-link">' +
           '<span class="sidebar-update-dot"></span>' +
           'Update available: v' + escapeHtml(status.latestVersion) +
-        '</a>';
-      versionEl.parentNode.insertBefore(badge, versionEl.nextSibling);
-    } else if (status.state === "complete") {
-      var badge = document.createElement("div");
-      badge.id = "sidebar-update-badge";
-      badge.innerHTML =
-        '<a href="/server-settings.html?tab=database" class="sidebar-update-link sidebar-update-success">' +
-          '<span class="sidebar-update-dot" style="background:var(--color-success)"></span>' +
-          'Updated to v' + escapeHtml(status.latestVersion) +
         '</a>';
       versionEl.parentNode.insertBefore(badge, versionEl.nextSibling);
     }
@@ -548,6 +563,11 @@ function tagsToString(arr) {
   return (arr || []).join(", ");
 }
 
+function randomTagColor() {
+  var palette = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
+  return palette[Math.floor(Math.random() * palette.length)];
+}
+
 // ─── Tag field (enforced or free-text) ─────────────────────────────────────
 
 var _tagCache = { loaded: false, enforce: false, tags: [] };
@@ -622,7 +642,7 @@ function tagFieldHTML(selected) {
       '<input type="text" id="f-tag-new-name" placeholder="Tag name" style="flex:1;min-width:0">' +
       '<input type="text" id="f-tag-new-cat" list="f-tag-cat-list" placeholder="Category" style="width:120px">' +
       '<datalist id="f-tag-cat-list">' + catOptions + '</datalist>' +
-      '<input type="color" id="f-tag-new-color" value="#4fc3f7" title="Tag color" style="width:36px;height:36px;padding:2px;border:1px solid var(--color-border);border-radius:var(--radius-md);cursor:pointer">' +
+      '<input type="color" id="f-tag-new-color" value="' + randomTagColor() + '" title="Tag color" style="width:36px;height:36px;padding:2px;border:1px solid var(--color-border);border-radius:var(--radius-md);cursor:pointer">' +
       '<button type="button" class="btn btn-sm btn-secondary" id="f-tag-add-btn">Add</button>' +
       '</div>' +
       '<p class="hint">Select tags above or add new ones</p>';
@@ -682,7 +702,7 @@ function wireTagPicker() {
       var newTag = await api.serverSettings.createTag({
         name: name,
         category: catEl.value.trim() || "General",
-        color: colorEl.value || "#4fc3f7",
+        color: colorEl.value || randomTagColor(),
       });
       _tagCache.tags.push(newTag);
 

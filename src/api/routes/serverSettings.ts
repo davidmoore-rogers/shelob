@@ -42,6 +42,9 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { logger } from "../../utils/logger.js";
 
+const TAG_COLORS = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
+function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]; }
+
 function bufferToPem(buf: Buffer, filename: string): string {
   const text = buf.toString("utf-8");
   if (text.includes("-----BEGIN ")) return text;
@@ -344,7 +347,7 @@ router.post("/tags", async (req, res, next) => {
       data: {
         name,
         category: req.body.category || "General",
-        color: req.body.color || "#4fc3f7",
+        color: req.body.color || randomTagColor(),
       },
     });
     res.status(201).json(tag);

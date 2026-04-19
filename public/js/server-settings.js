@@ -2098,8 +2098,8 @@ async function openAddTagModal() {
     '</div>' +
     '<div class="form-group"><label>Color</label>' +
       '<div style="display:flex;gap:8px;align-items:center">' +
-        '<input type="color" id="f-tag-color" value="#4fc3f7" style="width:40px;height:32px;padding:2px;border:1px solid var(--color-border);border-radius:4px;background:transparent;cursor:pointer">' +
-        '<span id="f-tag-color-hex" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--color-text-secondary)">#4fc3f7</span>' +
+        '<input type="color" id="f-tag-color" value="' + randomTagColor() + '" style="width:40px;height:32px;padding:2px;border:1px solid var(--color-border);border-radius:4px;background:transparent;cursor:pointer">' +
+        '<span id="f-tag-color-hex" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--color-text-secondary)"></span>' +
       '</div>' +
     '</div>';
 
@@ -2125,6 +2125,7 @@ async function openAddTagModal() {
   colorInput.addEventListener("input", function () {
     hexLabel.textContent = colorInput.value;
   });
+  hexLabel.textContent = colorInput.value;
 
   document.getElementById("btn-save-tag").addEventListener("click", async function () {
     var btn = this;
@@ -2219,6 +2220,7 @@ async function openEditTagModal(id) {
   colorInput.addEventListener("input", function () {
     hexLabel.textContent = colorInput.value;
   });
+  hexLabel.textContent = colorInput.value;
 
   document.getElementById("btn-save-tag").addEventListener("click", async function () {
     var btn = this;
