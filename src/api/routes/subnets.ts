@@ -116,8 +116,20 @@ router.put("/:id", async (req, res, next) => {
 router.delete("/:id", requireNetworkAdmin, async (req, res, next) => {
   try {
     const id = req.params.id as string;
-    await subnetService.deleteSubnet(id);
-    logEvent({ action: "subnet.deleted", resourceType: "subnet", resourceId: id, actor: (req as any).user?.username, message: `Subnet deleted` });
+    const result = await subnetService.deleteSubnet(id);
+    const resCount = result.deletedReservations.length;
+    const message = resCount > 0
+      ? `Subnet "${result.name}" (${result.cidr}) deleted with ${resCount} reservation(s)`
+      : `Subnet "${result.name}" (${result.cidr}) deleted`;
+    logEvent({
+      action: "subnet.deleted",
+      resourceType: "subnet",
+      resourceId: id,
+      resourceName: result.name,
+      actor: (req as any).user?.username,
+      message,
+      details: resCount > 0 ? { deletedReservations: result.deletedReservations } : undefined,
+    });
     res.status(204).send();
   } catch (err) {
     next(err);

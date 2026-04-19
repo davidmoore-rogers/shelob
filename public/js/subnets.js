@@ -138,7 +138,7 @@ function renderSubnetsPage() {
       '<td>' + (s._count ? s._count.reservations : 0) + '</td>' +
       '<td class="actions">' +
         (canManageNetworks() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
-        '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\')">Del</button>' : '') +
+        '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\', ' + (s._count ? s._count.reservations : 0) + ')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
   renderPageControls("pagination", _subnetsData.length, _subnetsPageSize, _subnetsPage, function (p) {
@@ -312,8 +312,13 @@ async function openEditModal(id) {
   }
 }
 
-async function confirmDelete(id, cidr) {
-  var ok = await showConfirm('Delete network "' + cidr + '"? This cannot be undone.');
+async function confirmDelete(id, cidr, reservationCount) {
+  var msg = 'Delete network "' + cidr + '"?';
+  if (reservationCount > 0) {
+    msg += ' This will also delete ' + reservationCount + ' reservation' + (reservationCount !== 1 ? 's' : '') + '.';
+  }
+  msg += ' This cannot be undone.';
+  var ok = await showConfirm(msg);
   if (!ok) return;
   try {
     await api.subnets.delete(id);

@@ -289,21 +289,16 @@ export async function deleteSubnet(id: string) {
   const subnet = await prisma.subnet.findUnique({
     where: { id },
     include: {
-      _count: { select: { reservations: true } },
+      reservations: {
+        select: { id: true, ipAddress: true, hostname: true, owner: true, status: true },
+      },
     },
   });
 
   if (!subnet) throw new AppError(404, `Subnet ${id} not found`);
 
-  const activeCount = await prisma.reservation.count({
-    where: { subnetId: id, status: "active" },
-  });
+  const deletedReservations = subnet.reservations;
+  await prisma.subnet.delete({ where: { id } });
 
-  if (activeCount > 0)
-    throw new AppError(
-      409,
-      `Cannot delete subnet ${subnet.cidr} — it has ${activeCount} active reservation(s)`
-    );
-
-  return prisma.subnet.delete({ where: { id } });
+  return { ...subnet, deletedReservations };
 }
