@@ -154,11 +154,42 @@ async function main() {
     },
   });
 
+  // ─── Example Tags ──────────────────────────────────────────────────────────
+
+  const exampleTags = [
+    { name: "Production",     category: "Environment", color: "#ef4444" },
+    { name: "Staging",        category: "Environment", color: "#f59e0b" },
+    { name: "Development",    category: "Environment", color: "#22c55e" },
+    { name: "Testing",        category: "Environment", color: "#8b5cf6" },
+    { name: "Database",       category: "Function",    color: "#3b82f6" },
+    { name: "Web Server",     category: "Function",    color: "#06b6d4" },
+    { name: "DNS",            category: "Function",    color: "#14b8a6" },
+    { name: "DHCP",           category: "Function",    color: "#10b981" },
+    { name: "Firewall",       category: "Function",    color: "#f97316" },
+    { name: "Load Balancer",  category: "Function",    color: "#a855f7" },
+    { name: "Datacenter",     category: "Location",    color: "#6366f1" },
+    { name: "Cloud",          category: "Location",    color: "#0ea5e9" },
+    { name: "Remote Site",    category: "Location",    color: "#84cc16" },
+    { name: "Critical",       category: "Priority",    color: "#dc2626" },
+    { name: "Internal",       category: "Scope",       color: "#64748b" },
+    { name: "DMZ",            category: "Scope",       color: "#e11d48" },
+    { name: "Guest",          category: "Scope",       color: "#78716c" },
+  ];
+
+  for (const tag of exampleTags) {
+    await prisma.tag.upsert({
+      where:  { name: tag.name },
+      update: {},
+      create: tag,
+    });
+  }
+
   console.log("Seed complete.");
   console.log(`  Users:        ${await prisma.user.count()}`);
   console.log(`  Blocks:       ${await prisma.ipBlock.count()}`);
   console.log(`  Subnets:      ${await prisma.subnet.count()}`);
   console.log(`  Reservations: ${await prisma.reservation.count()}`);
+  console.log(`  Tags:         ${await prisma.tag.count()}`);
 }
 
 main()
