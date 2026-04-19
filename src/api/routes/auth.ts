@@ -81,8 +81,17 @@ router.get("/me", (req, res) => {
 router.get("/azure/config", async (_req, res) => {
   const settings = await getSsoSettings();
   const enabled = !!(settings.idpEntityId && settings.idpLoginUrl && settings.idpCertificate);
+  let brand = "generic";
+  if (settings.idpLoginUrl && /microsoftonline\.com|login\.microsoft\.com/i.test(settings.idpLoginUrl)) {
+    brand = "microsoft";
+  } else if (settings.idpLoginUrl && /accounts\.google\.com/i.test(settings.idpLoginUrl)) {
+    brand = "google";
+  } else if (settings.idpLoginUrl && /okta\.com/i.test(settings.idpLoginUrl)) {
+    brand = "okta";
+  }
   res.json({
     enabled,
+    brand,
     skipLoginPage: settings.skipLoginPage,
     autoLogoutMinutes: settings.autoLogoutMinutes,
   });
