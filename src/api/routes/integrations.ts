@@ -350,30 +350,37 @@ router.post("/:id/discover", async (req, res, next) => {
     activeDiscovery.set(req.params.id, ac);
 
     const actor = req.session?.username;
-    logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor, message: `Manual DHCP discovery started for "${integration.name}"` });
+    const integrationId = req.params.id;
+    const integrationName = integration.name;
+    logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `Manual DHCP discovery started for "${integrationName}"` });
 
     // Progress callback — logs each Phase 2 step as an event
     const onProgress: DiscoveryProgressCallback = (step, level, message) => {
-      logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor, level, message: `[${integration.name}] ${message}` });
+      logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
     };
 
-    try {
-      let discoveryResult: DiscoveryResult;
-      if (integration.type === "windowsserver") {
-        const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
-        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
-      } else {
-        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress);
+    // Run discovery detached so client navigation doesn't kill it.
+    (async () => {
+      try {
+        let discoveryResult: DiscoveryResult;
+        if (integration.type === "windowsserver") {
+          const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
+          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
+        } else {
+          discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress);
+        }
+        const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
+        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `Manual DHCP discovery completed for "${integrationName}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
+      } catch (err: any) {
+        if (err.name !== "AbortError") {
+          logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `Manual DHCP discovery failed for "${integrationName}": ${err.message || "Unknown error"}` });
+        }
+      } finally {
+        activeDiscovery.delete(integrationId);
       }
-      const syncResult = await syncDhcpSubnets(integration.id, integration.name, integration.type, discoveryResult, actor);
-      logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, message: `Manual DHCP discovery completed for "${integration.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
-      res.json(syncResult);
-    } catch (err: any) {
-      logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, level: "error", message: `Manual DHCP discovery failed for "${integration.name}": ${err.message || "Unknown error"}` });
-      throw err;
-    } finally {
-      activeDiscovery.delete(req.params.id);
-    }
+    })();
+
+    res.status(202).json({ message: "Discovery started" });
   } catch (err) {
     next(err);
   }

@@ -383,16 +383,14 @@ async function runDiscovery(id, btn) {
   btn.textContent = "Discovering...";
   var name = btn.closest(".integration-card").querySelector("strong").textContent;
   try {
-    var result = await api.integrations.discover(id, name);
-    var parts = [];
-    if (result.created && result.created.length) parts.push(result.created.length + " subnets created");
-    if (result.updated && result.updated.length) parts.push(result.updated.length + " updated");
-    if (result.skipped && result.skipped.length) parts.push(result.skipped.length + " skipped");
-    if (result.deprecated && result.deprecated.length) parts.push(result.deprecated.length + " deprecated");
-    if (result.dhcpReservations) parts.push(result.dhcpReservations + " DHCP reservations");
-    if (result.dhcpLeases) parts.push(result.dhcpLeases + " DHCP leases");
-    if (result.inventoryDevices) parts.push(result.inventoryDevices + " inventory devices");
-    showToast("Discovery complete: " + (parts.length ? parts.join(", ") : "no changes"), "success");
+    await api.integrations.discover(id, name);
+    showToast("Discovery started — running in the background. Results will appear shortly.", "success");
+    // Poll for completion: reload card at 15s, 45s, and 120s
+    [15000, 45000, 120000].forEach(function (delay) {
+      setTimeout(function () {
+        if (document.getElementById("integrations-list")) loadIntegrations();
+      }, delay);
+    });
   } catch (err) {
     if (err.name === "AbortError") { showToast("Discovery aborted", "error"); }
     else { showToast(err.message, "error"); }
