@@ -312,12 +312,11 @@ async function openEditModal(id) {
       btn.textContent = "Testing...";
       try {
         var formConfig = isWin ? getWinFormConfig() : getFormConfig();
-        if (isWin) {
-          if (!formConfig.password) formConfig.password = config.password;
-        } else {
-          if (!formConfig.apiToken) formConfig.apiToken = config.apiToken;
-        }
+        // Strip blank secrets so the server fills them in from the stored config.
+        if (isWin) { if (!formConfig.password) delete formConfig.password; }
+        else { if (!formConfig.apiToken) delete formConfig.apiToken; }
         var result = await api.integrations.testNew({
+          id: id,
           type: intg.type,
           name: val("f-name") || intg.name,
           config: formConfig,

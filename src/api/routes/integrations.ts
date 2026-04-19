@@ -385,6 +385,23 @@ router.post("/test", async (req, res, next) => {
     const input = CreateIntegrationSchema.parse(req.body);
     let result: { ok: boolean; message: string; version?: string };
 
+    // If an existing integration id is provided, merge unmasked secrets
+    // from the stored config when the form fields were left blank.
+    const existingId = typeof req.body?.id === "string" ? req.body.id : null;
+    if (existingId) {
+      const existing = await prisma.integration.findUnique({ where: { id: existingId } });
+      if (existing) {
+        const stored = existing.config as Record<string, unknown>;
+        const cfg = input.config as Record<string, unknown>;
+        if (input.type === "fortimanager" && (!cfg.apiToken || typeof cfg.apiToken !== "string")) {
+          cfg.apiToken = stored.apiToken;
+        }
+        if (input.type === "windowsserver" && (!cfg.password || typeof cfg.password !== "string")) {
+          cfg.password = stored.password;
+        }
+      }
+    }
+
     if (input.type === "fortimanager") {
       result = await fortimanager.testConnection(input.config);
     } else if (input.type === "windowsserver") {
