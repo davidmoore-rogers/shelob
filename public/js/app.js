@@ -151,7 +151,10 @@ function applyBranding(b) {
   var sidebarName = document.querySelector(".sidebar-brand h1");
   if (sidebarName) sidebarName.textContent = b.appName || "Shelob";
   var sidebarSub = document.querySelector(".sidebar-brand p");
-  if (sidebarSub) sidebarSub.textContent = b.subtitle || "";
+  if (sidebarSub) {
+    sidebarSub.textContent = b.subtitle || "";
+    sidebarSub.style.display = b.subtitle ? "" : "none";
+  }
 
   // Update page title
   var titleEl = document.querySelector("title");

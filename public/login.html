@@ -162,7 +162,11 @@
             document.querySelector(".login-card h2").textContent = b.appName;
             document.title = b.appName + " \u2014 Login";
           }
-          if (b.subtitle !== undefined) document.querySelector(".login-card .subtitle").textContent = b.subtitle;
+          var subEl = document.querySelector(".login-card .subtitle");
+          if (subEl) {
+            subEl.textContent = b.subtitle || "";
+            subEl.style.display = b.subtitle ? "" : "none";
+          }
           if (b.logoUrl) {
             document.querySelector(".login-logo").src = b.logoUrl;
             var fav = document.querySelector('link[rel="icon"]');
