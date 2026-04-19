@@ -62,7 +62,7 @@ async function loadIntegrations() {
         '</div>' +
         '<div class="integration-card-details">' +
           detailRows +
-          '<div class="detail-row"><span class="detail-label">Auto-Discovery</span><span class="detail-value">' + (intg.lastTestOk === true ? 'Every ' + (intg.pollInterval || 4) + ' hour' + ((intg.pollInterval || 4) === 1 ? '' : 's') : '<span style="color:var(--color-text-tertiary)">Disabled until a successful connection test</span>') + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Auto-Discovery</span><span class="detail-value">' + (!intg.lastTestOk ? '<span style="color:var(--color-text-tertiary)">Disabled until a successful connection test</span>' : intg.autoDiscover === false ? '<span style="color:var(--color-text-tertiary)">Disabled</span>' : 'Every ' + (intg.pollInterval || 4) + ' hour' + ((intg.pollInterval || 4) === 1 ? '' : 's')) + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Status</span><span class="detail-value">' + (intg.enabled ? '<span class="badge badge-active">Enabled</span>' : '<span class="badge badge-deprecated">Disabled</span>') + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Last Tested</span><span class="detail-value">' + lastTest + '</span></div>' +
         '</div>' +
@@ -93,6 +93,10 @@ function fortiManagerFormHTML(defaults) {
     '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
       '<input type="checkbox" id="f-enabled" ' + (d.enabled !== false ? "checked" : "") + ' style="width:auto">' +
       '<label for="f-enabled" style="margin:0">Enabled</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-autoDiscover" ' + (d.autoDiscover !== false ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-autoDiscover" style="margin:0">Enable auto-discovery</label>' +
     '</div>' +
     '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to automatically query for DHCP updates (1–24 hours)</p></div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
@@ -226,11 +230,13 @@ function openCreateModal(type) {
     btn.disabled = true;
     btn.textContent = "Creating...";
     try {
+      var autoDiscoverEl = document.getElementById("f-autoDiscover");
       var input = {
         type: type,
         name: val("f-name"),
         config: isWin ? getWinFormConfig() : getFormConfig(),
         enabled: document.getElementById("f-enabled").checked,
+        autoDiscover: autoDiscoverEl ? autoDiscoverEl.checked : true,
         pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
       };
       var result = await api.integrations.create(input);
@@ -288,6 +294,7 @@ async function openEditModal(id) {
         adom: config.adom,
         verifySsl: config.verifySsl,
         enabled: intg.enabled,
+        autoDiscover: intg.autoDiscover !== false,
         pollInterval: intg.pollInterval,
         mgmtInterface: config.mgmtInterface,
         dhcpInclude: config.dhcpInclude || [],
@@ -336,10 +343,12 @@ async function openEditModal(id) {
       btn.disabled = true;
       btn.textContent = "Saving...";
       try {
+        var autoDiscoverEl = document.getElementById("f-autoDiscover");
         var input = {
           name: val("f-name"),
           config: formGetter(),
           enabled: document.getElementById("f-enabled").checked,
+          autoDiscover: autoDiscoverEl ? autoDiscoverEl.checked : true,
           pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
         };
         var result = await api.integrations.update(id, input);

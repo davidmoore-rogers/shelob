@@ -54,6 +54,7 @@ const CreateIntegrationSchema = z.discriminatedUnion("type", [
     name:         z.string().min(1, "Name is required"),
     config:       FortiManagerConfigSchema,
     enabled:      z.boolean().optional().default(true),
+    autoDiscover: z.boolean().optional().default(true),
     pollInterval: z.number().int().min(1).max(24).optional().default(12),
   }),
   z.object({
@@ -61,6 +62,7 @@ const CreateIntegrationSchema = z.discriminatedUnion("type", [
     name:         z.string().min(1, "Name is required"),
     config:       WindowsServerConfigSchema,
     enabled:      z.boolean().optional().default(true),
+    autoDiscover: z.boolean().optional().default(true),
     pollInterval: z.number().int().min(1).max(24).optional().default(4),
   }),
 ]);
@@ -69,6 +71,7 @@ const UpdateIntegrationSchema = z.object({
   name:         z.string().min(1).optional(),
   config:       z.record(z.unknown()).optional(),
   enabled:      z.boolean().optional(),
+  autoDiscover: z.boolean().optional(),
   pollInterval: z.number().int().min(1).max(24).optional(),
 });
 
@@ -118,6 +121,7 @@ router.post("/", async (req, res, next) => {
         name: input.name,
         config: input.config as any,
         enabled: input.enabled,
+        autoDiscover: input.autoDiscover ?? true,
         pollInterval: input.pollInterval,
       },
     });
@@ -181,6 +185,7 @@ router.put("/:id", async (req, res, next) => {
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = input.name;
     if (input.enabled !== undefined) data.enabled = input.enabled;
+    if (input.autoDiscover !== undefined) data.autoDiscover = input.autoDiscover;
     if (input.pollInterval !== undefined) data.pollInterval = input.pollInterval;
     if (input.config) {
       // Merge config — preserve secrets if not re-submitted
@@ -212,10 +217,11 @@ router.put("/:id", async (req, res, next) => {
       }
     }
 
-    // DHCP discovery — only if previously tested successfully
+    // DHCP discovery — only if previously tested successfully and auto-discover enabled
     const canDiscover =
       updated.lastTestOk === true &&
       updated.enabled &&
+      updated.autoDiscover &&
       finalConfig.host &&
       ((existing.type === "fortimanager" && finalConfig.apiToken) ||
        (existing.type === "windowsserver" && finalConfig.username));
