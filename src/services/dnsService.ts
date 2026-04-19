@@ -150,7 +150,7 @@ function expandIpv6(ip: string): string {
 async function dohReverse(ip: string, dohUrl: string): Promise<string[]> {
   const ptrName = ipToPtrName(ip);
   const sep = dohUrl.includes("?") ? "&" : "?";
-  const url = `${dohUrl}${sep}name=${encodeURIComponent(ptrName)}&type=PTR`;
+  const url = `${dohUrl}${sep}ct=application/dns-json&name=${encodeURIComponent(ptrName)}&type=PTR`;
 
   const body = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
