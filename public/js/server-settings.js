@@ -1516,7 +1516,7 @@ async function pollUpdateStatus() {
 
     if (status.state === "complete") {
       stopUpdatePolling();
-      renderUpdateComplete(status);
+      window.location.href = "server-settings.html?tab=database";
       return;
     }
 
@@ -1563,7 +1563,7 @@ function pollForRestart(lastStatus) {
       var status = await api.serverSettings.getUpdateStatus();
       if (status.state === "complete") {
         clearInterval(restartTimer);
-        renderUpdateComplete(status);
+        window.location.href = "server-settings.html?tab=database";
         return;
       }
       if (status.state === "failed") {
