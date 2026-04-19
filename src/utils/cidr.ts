@@ -154,6 +154,45 @@ export function findNextAvailableSubnet(
   return null;
 }
 
+// ─── Enumeration ─────────────────────────────────────────────────────────────
+
+export interface EnumeratedIp {
+  address: string;
+  type: "network" | "broadcast" | "host";
+}
+
+export function enumerateSubnetIps(
+  cidr: string,
+  page: number = 1,
+  pageSize: number = 256
+): { addresses: EnumeratedIp[]; total: number } {
+  const block = new Netmask(cidr);
+  const baseInt = ipToInt(block.base);
+  const broadcastInt = ipToInt(block.broadcast!);
+  const total = broadcastInt - baseInt + 1;
+
+  const startIdx = (page - 1) * pageSize;
+  const endIdx = Math.min(startIdx + pageSize, total);
+  const addresses: EnumeratedIp[] = [];
+
+  for (let i = startIdx; i < endIdx; i++) {
+    const ip = intToIp(baseInt + i);
+    let type: EnumeratedIp["type"];
+    if (block.bitmask >= 31) {
+      type = "host";
+    } else if (i === 0) {
+      type = "network";
+    } else if (i === total - 1) {
+      type = "broadcast";
+    } else {
+      type = "host";
+    }
+    addresses.push({ address: ip, type });
+  }
+
+  return { addresses, total };
+}
+
 // ─── Conversion Utilities ─────────────────────────────────────────────────────
 
 function ipToInt(ip: string): number {

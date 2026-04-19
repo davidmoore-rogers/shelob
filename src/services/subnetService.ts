@@ -11,6 +11,7 @@ import {
   cidrOverlaps,
   findNextAvailableSubnet,
   detectIpVersion,
+  enumerateSubnetIps,
 } from "../utils/cidr.js";
 
 const prisma = new PrismaClient();
@@ -192,6 +193,94 @@ export async function updateSubnet(id: string, input: UpdateSubnetInput) {
   }
 
   return prisma.subnet.update({ where: { id }, data });
+}
+
+// ─── IP Enumeration ──────────────────────────────────────────────────────────
+
+export async function getSubnetIps(id: string, page: number, pageSize: number) {
+  const subnet = await prisma.subnet.findUnique({
+    where: { id },
+    include: {
+      integration: { select: { id: true, name: true, type: true } },
+      reservations: true,
+    },
+  });
+  if (!subnet) throw new AppError(404, `Subnet ${id} not found`);
+
+  const isIpv6 = detectIpVersion(subnet.cidr) === "v6";
+
+  const subnetInfo = {
+    name: subnet.name,
+    cidr: subnet.cidr,
+    status: subnet.status,
+    vlan: subnet.vlan,
+    purpose: subnet.purpose,
+    integration: subnet.integration,
+    fortigateDevice: subnet.fortigateDevice,
+    hasConflict: subnet.reservations.some(r => r.conflictMessage),
+    conflictMessage: subnet.reservations.some(r => r.conflictMessage)
+      ? "One or more IPs have conflicts"
+      : null,
+  };
+
+  const toReservationDto = (r: typeof subnet.reservations[0]) => ({
+    id: r.id,
+    hostname: r.hostname,
+    owner: r.owner,
+    status: r.status,
+    notes: r.notes,
+    expiresAt: r.expiresAt,
+    createdBy: r.createdBy,
+    conflictMessage: r.conflictMessage,
+  });
+
+  if (isIpv6) {
+    const ips = subnet.reservations
+      .filter(r => r.ipAddress)
+      .map(r => ({
+        address: r.ipAddress!,
+        type: "host" as const,
+        reservation: toReservationDto(r),
+      }));
+    return {
+      subnet: subnetInfo,
+      ips,
+      ipv6: true,
+      totalIps: ips.length,
+      page: 1,
+      pageSize: ips.length,
+    };
+  }
+
+  const { addresses, total } = enumerateSubnetIps(subnet.cidr, page, pageSize);
+
+  const reservationMap = new Map<string, typeof subnet.reservations[0]>();
+  for (const r of subnet.reservations) {
+    if (r.ipAddress) {
+      const existing = reservationMap.get(r.ipAddress);
+      if (!existing || (r.status === "active" && existing.status !== "active")) {
+        reservationMap.set(r.ipAddress, r);
+      }
+    }
+  }
+
+  const ips = addresses.map(addr => {
+    const r = reservationMap.get(addr.address);
+    return {
+      address: addr.address,
+      type: addr.type,
+      reservation: r ? toReservationDto(r) : null,
+    };
+  });
+
+  return {
+    subnet: subnetInfo,
+    ips,
+    ipv6: false,
+    totalIps: total,
+    page,
+    pageSize,
+  };
 }
 
 // ─── Delete ───────────────────────────────────────────────────────────────────

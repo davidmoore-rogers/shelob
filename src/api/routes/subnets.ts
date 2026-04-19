@@ -66,6 +66,18 @@ router.post("/next-available", requireNetworkAdmin, async (req, res, next) => {
   }
 });
 
+// GET /subnets/:id/ips?page=&pageSize=
+router.get("/:id/ips", async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+    const pageSize = Math.min(65536, Math.max(1, parseInt(req.query.pageSize as string, 10) || 256));
+    res.json(await subnetService.getSubnetIps(id, page, pageSize));
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /subnets/:id
 router.get("/:id", async (req, res, next) => {
   try {
