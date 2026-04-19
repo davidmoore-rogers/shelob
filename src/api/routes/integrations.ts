@@ -18,7 +18,7 @@ import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 const router = Router();
 
 // Track in-flight DHCP discovery per integration — abort previous if re-saved
-const activeDiscovery = new Map<string, AbortController>();
+const activeDiscovery = new Map<string, { controller: AbortController; name: string }>();
 
 // All integration routes require network admin or admin
 router.use(requireNetworkAdmin);
@@ -142,9 +142,9 @@ router.post("/", async (req, res, next) => {
     const canDiscover = false;
 
     if (canDiscover) {
-      activeDiscovery.get(integration.id)?.abort();
+      activeDiscovery.get(integration.id)?.controller.abort();
       const ac = new AbortController();
-      activeDiscovery.set(integration.id, ac);
+      activeDiscovery.set(integration.id, { controller: ac, name: input.name });
       logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: req.session?.username, message: `DHCP discovery started for "${input.name}"` });
       try {
         let discoveryResult: DiscoveryResult;
@@ -227,9 +227,9 @@ router.put("/:id", async (req, res, next) => {
        (existing.type === "windowsserver" && finalConfig.username));
 
     if (canDiscover) {
-      activeDiscovery.get(req.params.id)?.abort();
+      activeDiscovery.get(req.params.id)?.controller.abort();
       const ac = new AbortController();
-      activeDiscovery.set(req.params.id, ac);
+      activeDiscovery.set(req.params.id, { controller: ac, name: updated.name });
       logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: req.session?.username, message: `DHCP discovery started for "${updated.name}"` });
       try {
         let discoveryResult: DiscoveryResult;
@@ -351,13 +351,13 @@ router.post("/:id/discover", async (req, res, next) => {
     }
 
     // Abort any in-flight discovery for this integration
-    activeDiscovery.get(req.params.id)?.abort();
+    activeDiscovery.get(req.params.id)?.controller.abort();
     const ac = new AbortController();
-    activeDiscovery.set(req.params.id, ac);
-
-    const actor = req.session?.username;
     const integrationId = req.params.id;
     const integrationName = integration.name;
+    activeDiscovery.set(integrationId, { controller: ac, name: integrationName });
+
+    const actor = req.session?.username;
     logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `Manual DHCP discovery started for "${integrationName}"` });
 
     // Progress callback — logs each Phase 2 step as an event
@@ -390,6 +390,12 @@ router.post("/:id/discover", async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// GET /api/v1/integrations/discoveries — active background discoveries
+router.get("/discoveries", (req, res) => {
+  const running = Array.from(activeDiscovery.entries()).map(([id, { name }]) => ({ id, name }));
+  res.json({ discoveries: running });
 });
 
 // POST /api/v1/integrations/test — test without saving (for the create form)

@@ -133,6 +133,23 @@ function renderNav() {
   // Wire up query status indicator
   _onQueriesChanged = renderQueryStatus;
 
+  // Poll server for background discoveries (e.g. integration discovery after navigation)
+  var _serverDiscoveries = [];
+  async function pollDiscoveries() {
+    try {
+      var result = await api.integrations.discoveries();
+      _serverDiscoveries = result.discoveries || [];
+    } catch (_) {
+      _serverDiscoveries = [];
+    }
+    renderQueryStatus();
+  }
+  pollDiscoveries();
+  setInterval(pollDiscoveries, 4000);
+
+  // Expose for renderQueryStatus closure
+  window._getServerDiscoveries = function () { return _serverDiscoveries; };
+
   // Inject user badge into page header
   renderUserBadge();
 }
@@ -266,7 +283,10 @@ function renderQueryStatus() {
   var container = document.getElementById("query-status");
   if (!container) return;
 
-  if (!activeQueries.length) {
+  var serverDiscoveries = (window._getServerDiscoveries && window._getServerDiscoveries()) || [];
+  var totalCount = activeQueries.length + serverDiscoveries.length;
+
+  if (!totalCount) {
     container.style.display = "none";
     container.innerHTML = "";
     return;
@@ -276,13 +296,18 @@ function renderQueryStatus() {
   container.innerHTML =
     '<div class="query-status-header">' +
       '<span class="query-spinner"></span>' +
-      '<span class="query-status-label">' + activeQueries.length + ' quer' + (activeQueries.length === 1 ? 'y' : 'ies') + ' running</span>' +
+      '<span class="query-status-label">' + totalCount + ' quer' + (totalCount === 1 ? 'y' : 'ies') + ' running</span>' +
     '</div>' +
     '<ul class="query-status-list">' +
       activeQueries.map(function (q) {
         return '<li>' +
           '<span class="query-status-name">' + escapeHtml(q.label) + '</span>' +
           '<button class="query-abort-btn" data-qid="' + q.id + '" title="Abort">&#x2715;</button>' +
+        '</li>';
+      }).join("") +
+      serverDiscoveries.map(function (d) {
+        return '<li>' +
+          '<span class="query-status-name">Discovering ' + escapeHtml(d.name) + '</span>' +
         '</li>';
       }).join("") +
     '</ul>' +
