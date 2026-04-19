@@ -85,7 +85,7 @@ router.post("/", async (req, res, next) => {
       ...input,
       createdBy: req.session?.username,
     });
-    logEvent({ action: "reservation.created", resourceType: "reservation", resourceId: reservation.id, resourceName: input.hostname || input.ipAddress, actor: (req as any).user?.username || req.session?.username, message: `Reservation created for ${input.ipAddress || "subnet"} (${input.owner})` });
+    logEvent({ action: "reservation.created", resourceType: "reservation", resourceId: reservation.id, resourceName: input.hostname || input.ipAddress, actor: req.session?.username, message: `Reservation created for ${input.ipAddress || "subnet"} (${input.owner})` });
     res.status(201).json(reservation);
   } catch (err) {
     next(err);
@@ -106,7 +106,7 @@ router.put("/:id", async (req, res, next) => {
     }
     const input = UpdateReservationSchema.parse(req.body);
     const reservation = await reservationService.updateReservation(req.params.id, input);
-    logEvent({ action: "reservation.updated", resourceType: "reservation", resourceId: req.params.id, resourceName: input.hostname, actor: (req as any).user?.username || req.session?.username, message: `Reservation updated` });
+    logEvent({ action: "reservation.updated", resourceType: "reservation", resourceId: req.params.id, resourceName: input.hostname, actor: req.session?.username, message: `Reservation updated` });
     res.json(reservation);
   } catch (err) {
     next(err);
@@ -126,7 +126,7 @@ router.delete("/:id", async (req, res, next) => {
       }
     }
     await reservationService.releaseReservation(req.params.id);
-    logEvent({ action: "reservation.released", resourceType: "reservation", resourceId: req.params.id, actor: (req as any).user?.username || req.session?.username, message: `Reservation released` });
+    logEvent({ action: "reservation.released", resourceType: "reservation", resourceId: req.params.id, actor: req.session?.username, message: `Reservation released` });
     res.status(204).send();
   } catch (err) {
     next(err);

@@ -109,7 +109,7 @@ router.post("/", requireAssetsAdmin, async (req, res, next) => {
     if (input.acquiredAt) data.acquiredAt = new Date(input.acquiredAt);
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     const asset = await prisma.asset.create({ data: data as any });
-    logEvent({ action: "asset.created", resourceType: "asset", resourceId: asset.id, resourceName: input.hostname || input.ipAddress, actor: (req as any).user?.username, message: `Asset "${input.hostname || input.ipAddress || "unknown"}" created` });
+    logEvent({ action: "asset.created", resourceType: "asset", resourceId: asset.id, resourceName: input.hostname || input.ipAddress, actor: req.session?.username, message: `Asset "${input.hostname || input.ipAddress || "unknown"}" created` });
     res.status(201).json(asset);
   } catch (err) {
     next(err);
@@ -130,7 +130,7 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     else if (input.warrantyExpiry === undefined) delete data.warrantyExpiry;
     const asset = await prisma.asset.update({ where: { id }, data: data as any });
-    logEvent({ action: "asset.updated", resourceType: "asset", resourceId: id, resourceName: asset.hostname || asset.ipAddress || undefined, actor: (req as any).user?.username, message: `Asset "${asset.hostname || asset.ipAddress || "unknown"}" updated` });
+    logEvent({ action: "asset.updated", resourceType: "asset", resourceId: id, resourceName: asset.hostname || asset.ipAddress || undefined, actor: req.session?.username, message: `Asset "${asset.hostname || asset.ipAddress || "unknown"}" updated` });
     res.json(asset);
   } catch (err) {
     next(err);
@@ -167,7 +167,7 @@ router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
       }
     }
 
-    logEvent({ action: "asset.dns.bulk", resourceType: "asset", message: `Bulk DNS lookup: ${resolved} resolved, ${failed} failed out of ${assets.length} assets`, actor: (req as any).user?.username });
+    logEvent({ action: "asset.dns.bulk", resourceType: "asset", message: `Bulk DNS lookup: ${resolved} resolved, ${failed} failed out of ${assets.length} assets`, actor: req.session?.username });
     res.json({ total: assets.length, resolved, failed, results });
   } catch (err) {
     next(err);
@@ -195,7 +195,7 @@ router.post("/:id/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
     }
 
     await prisma.asset.update({ where: { id: asset.id }, data: { dnsName } });
-    logEvent({ action: "asset.dns.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress, actor: (req as any).user?.username, message: `DNS resolved: ${asset.ipAddress} → ${dnsName}` });
+    logEvent({ action: "asset.dns.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress, actor: req.session?.username, message: `DNS resolved: ${asset.ipAddress} → ${dnsName}` });
     res.json({ ok: true, dnsName, message: `${asset.ipAddress} → ${dnsName}` });
   } catch (err) {
     next(err);
@@ -226,7 +226,7 @@ router.post("/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
       }
     }
 
-    logEvent({ action: "asset.oui.bulk", resourceType: "asset", message: `Bulk OUI lookup: ${resolved} resolved, ${failed} unmatched out of ${assets.length} assets`, actor: (req as any).user?.username });
+    logEvent({ action: "asset.oui.bulk", resourceType: "asset", message: `Bulk OUI lookup: ${resolved} resolved, ${failed} unmatched out of ${assets.length} assets`, actor: req.session?.username });
     res.json({ total: assets.length, resolved, failed, results });
   } catch (err) {
     next(err);
@@ -246,7 +246,7 @@ router.post("/:id/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
     }
 
     await prisma.asset.update({ where: { id: asset.id }, data: { manufacturer: vendor } });
-    logEvent({ action: "asset.oui.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress || undefined, actor: (req as any).user?.username, message: `OUI resolved: ${asset.macAddress} → ${vendor}` });
+    logEvent({ action: "asset.oui.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress || undefined, actor: req.session?.username, message: `OUI resolved: ${asset.macAddress} → ${vendor}` });
     res.json({ ok: true, manufacturer: vendor, message: `${asset.macAddress} → ${vendor}` });
   } catch (err) {
     next(err);
@@ -260,7 +260,7 @@ router.delete("/:id", requireAssetsAdmin, async (req, res, next) => {
     const existing = await prisma.asset.findUnique({ where: { id } });
     if (!existing) throw new AppError(404, "Asset not found");
     await prisma.asset.delete({ where: { id } });
-    logEvent({ action: "asset.deleted", resourceType: "asset", resourceId: id, resourceName: existing.hostname || existing.ipAddress || undefined, actor: (req as any).user?.username, message: `Asset "${existing.hostname || existing.ipAddress || "unknown"}" deleted` });
+    logEvent({ action: "asset.deleted", resourceType: "asset", resourceId: id, resourceName: existing.hostname || existing.ipAddress || undefined, actor: req.session?.username, message: `Asset "${existing.hostname || existing.ipAddress || "unknown"}" deleted` });
     res.status(204).send();
   } catch (err) {
     next(err);

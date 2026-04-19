@@ -122,7 +122,7 @@ router.post("/", async (req, res, next) => {
       },
     });
 
-    logEvent({ action: "integration.created", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, message: `Integration "${input.name}" (${input.type}) created` });
+    logEvent({ action: "integration.created", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: req.session?.username, message: `Integration "${input.name}" (${input.type}) created` });
 
     const response: Record<string, unknown> = stripSecret(integration);
 
@@ -145,7 +145,7 @@ router.post("/", async (req, res, next) => {
       activeDiscovery.get(integration.id)?.abort();
       const ac = new AbortController();
       activeDiscovery.set(integration.id, ac);
-      logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, message: `DHCP discovery started for "${input.name}"` });
+      logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: req.session?.username, message: `DHCP discovery started for "${input.name}"` });
       try {
         let discoveryResult: DiscoveryResult;
         if (input.type === "windowsserver") {
@@ -154,13 +154,13 @@ router.post("/", async (req, res, next) => {
         } else {
           discoveryResult = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal);
         }
-        const syncResult = await syncDhcpSubnets(integration.id, input.name, input.type, discoveryResult, (req as any).user?.username);
+        const syncResult = await syncDhcpSubnets(integration.id, input.name, input.type, discoveryResult, req.session?.username);
         response.dhcpDiscovery = syncResult;
-        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, message: `DHCP discovery completed for "${input.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
+        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: req.session?.username, message: `DHCP discovery completed for "${input.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       } catch (err: any) {
         if (err.name !== "AbortError") {
           response.dhcpDiscoveryError = err.message || "DHCP discovery failed";
-          logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: (req as any).user?.username, level: "error", message: `DHCP discovery failed for "${input.name}": ${err.message || "Unknown error"}` });
+          logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: req.session?.username, level: "error", message: `DHCP discovery failed for "${input.name}": ${err.message || "Unknown error"}` });
         }
       } finally {
         activeDiscovery.delete(integration.id);
@@ -203,7 +203,7 @@ router.put("/:id", async (req, res, next) => {
       data,
     });
 
-    logEvent({ action: "integration.updated", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, message: `Integration "${updated.name}" updated` });
+    logEvent({ action: "integration.updated", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: req.session?.username, message: `Integration "${updated.name}" updated` });
 
     const finalConfig = (updated.config as Record<string, unknown>) || {};
     const response: Record<string, unknown> = stripSecret(updated);
@@ -227,7 +227,7 @@ router.put("/:id", async (req, res, next) => {
       activeDiscovery.get(req.params.id)?.abort();
       const ac = new AbortController();
       activeDiscovery.set(req.params.id, ac);
-      logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, message: `DHCP discovery started for "${updated.name}"` });
+      logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: req.session?.username, message: `DHCP discovery started for "${updated.name}"` });
       try {
         let discoveryResult: DiscoveryResult;
         if (existing.type === "windowsserver") {
@@ -236,13 +236,13 @@ router.put("/:id", async (req, res, next) => {
         } else {
           discoveryResult = await fortimanager.discoverDhcpSubnets(finalConfig as any, ac.signal);
         }
-        const syncResult = await syncDhcpSubnets(updated.id, updated.name, existing.type, discoveryResult, (req as any).user?.username);
+        const syncResult = await syncDhcpSubnets(updated.id, updated.name, existing.type, discoveryResult, req.session?.username);
         response.dhcpDiscovery = syncResult;
-        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, message: `DHCP discovery completed for "${updated.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
+        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: req.session?.username, message: `DHCP discovery completed for "${updated.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       } catch (err: any) {
         if (err.name !== "AbortError") {
           response.dhcpDiscoveryError = err.message || "DHCP discovery failed";
-          logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: (req as any).user?.username, level: "error", message: `DHCP discovery failed for "${updated.name}": ${err.message || "Unknown error"}` });
+          logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: req.session?.username, level: "error", message: `DHCP discovery failed for "${updated.name}": ${err.message || "Unknown error"}` });
         }
       } finally {
         activeDiscovery.delete(req.params.id);
@@ -261,7 +261,7 @@ router.delete("/:id", async (req, res, next) => {
     const existing = await prisma.integration.findUnique({ where: { id: req.params.id } });
     if (!existing) throw new AppError(404, "Integration not found");
     await prisma.integration.delete({ where: { id: req.params.id } });
-    logEvent({ action: "integration.deleted", resourceType: "integration", resourceId: req.params.id, resourceName: existing.name, actor: (req as any).user?.username, message: `Integration "${existing.name}" deleted` });
+    logEvent({ action: "integration.deleted", resourceType: "integration", resourceId: req.params.id, resourceName: existing.name, actor: req.session?.username, message: `Integration "${existing.name}" deleted` });
     res.status(204).send();
   } catch (err) {
     next(err);
@@ -279,7 +279,7 @@ router.post("/:id/test", async (req, res, next) => {
     const config = integration.config as Record<string, unknown>;
     let result: { ok: boolean; message: string; version?: string };
 
-    logEvent({ action: "integration.test.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, message: `Connection test started for "${integration.name}"` });
+    logEvent({ action: "integration.test.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, message: `Connection test started for "${integration.name}"` });
 
     if (integration.type === "fortimanager") {
       result = await fortimanager.testConnection(config as any);
@@ -295,7 +295,7 @@ router.post("/:id/test", async (req, res, next) => {
       data: { lastTestAt: new Date(), lastTestOk: result.ok },
     });
 
-    logEvent({ action: "integration.test.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, level: result.ok ? "info" : "warning", message: `Connection test ${result.ok ? "succeeded" : "failed"} for "${integration.name}": ${result.message}` });
+    logEvent({ action: "integration.test.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, level: result.ok ? "info" : "warning", message: `Connection test ${result.ok ? "succeeded" : "failed"} for "${integration.name}": ${result.message}` });
 
     res.json(result);
   } catch (err) {
@@ -349,7 +349,7 @@ router.post("/:id/discover", async (req, res, next) => {
     const ac = new AbortController();
     activeDiscovery.set(req.params.id, ac);
 
-    const actor = (req as any).user?.username;
+    const actor = req.session?.username;
     logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor, message: `Manual DHCP discovery started for "${integration.name}"` });
 
     // Progress callback — logs each Phase 2 step as an event
@@ -366,10 +366,10 @@ router.post("/:id/discover", async (req, res, next) => {
         discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress);
       }
       const syncResult = await syncDhcpSubnets(integration.id, integration.name, integration.type, discoveryResult, actor);
-      logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, message: `Manual DHCP discovery completed for "${integration.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
+      logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, message: `Manual DHCP discovery completed for "${integration.name}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
       res.json(syncResult);
     } catch (err: any) {
-      logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: (req as any).user?.username, level: "error", message: `Manual DHCP discovery failed for "${integration.name}": ${err.message || "Unknown error"}` });
+      logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, level: "error", message: `Manual DHCP discovery failed for "${integration.name}": ${err.message || "Unknown error"}` });
       throw err;
     } finally {
       activeDiscovery.delete(req.params.id);

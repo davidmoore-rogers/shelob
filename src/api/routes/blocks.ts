@@ -48,7 +48,7 @@ router.post("/", requireNetworkAdmin, async (req, res, next) => {
   try {
     const input = CreateBlockSchema.parse(req.body);
     const block = await blockService.createBlock(input);
-    logEvent({ action: "block.created", resourceType: "block", resourceId: block.id, resourceName: input.name, actor: (req as any).user?.username, message: `Block "${input.name}" (${input.cidr}) created` });
+    logEvent({ action: "block.created", resourceType: "block", resourceId: block.id, resourceName: input.name, actor: req.session?.username, message: `Block "${input.name}" (${input.cidr}) created` });
     res.status(201).json(block);
   } catch (err) {
     next(err);
@@ -60,7 +60,7 @@ router.put("/:id", requireNetworkAdmin, async (req, res, next) => {
     const id = req.params.id as string;
     const input = UpdateBlockSchema.parse(req.body);
     const block = await blockService.updateBlock(id, input);
-    logEvent({ action: "block.updated", resourceType: "block", resourceId: id, resourceName: input.name || block.name, actor: (req as any).user?.username, message: `Block "${input.name || block.name}" updated` });
+    logEvent({ action: "block.updated", resourceType: "block", resourceId: id, resourceName: input.name || block.name, actor: req.session?.username, message: `Block "${input.name || block.name}" updated` });
     res.json(block);
   } catch (err) {
     next(err);
@@ -71,7 +71,7 @@ router.delete("/:id", requireNetworkAdmin, async (req, res, next) => {
   try {
     const id = req.params.id as string;
     await blockService.deleteBlock(id);
-    logEvent({ action: "block.deleted", resourceType: "block", resourceId: id, actor: (req as any).user?.username, message: `Block deleted` });
+    logEvent({ action: "block.deleted", resourceType: "block", resourceId: id, actor: req.session?.username, message: `Block deleted` });
     res.status(204).send();
   } catch (err) {
     next(err);

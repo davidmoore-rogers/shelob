@@ -59,7 +59,7 @@ router.post("/next-available", requireNetworkAdmin, async (req, res, next) => {
   try {
     const { blockId, prefixLength, ...metadata } = AllocateNextSchema.parse(req.body);
     const subnet = await subnetService.allocateNextSubnet(blockId, prefixLength, metadata);
-    logEvent({ action: "subnet.created", resourceType: "subnet", resourceId: subnet.id, resourceName: metadata.name, actor: (req as any).user?.username, message: `Subnet "${metadata.name}" (${subnet.cidr}) auto-allocated` });
+    logEvent({ action: "subnet.created", resourceType: "subnet", resourceId: subnet.id, resourceName: metadata.name, actor: req.session?.username, message: `Subnet "${metadata.name}" (${subnet.cidr}) auto-allocated` });
     res.status(201).json(subnet);
   } catch (err) {
     next(err);
@@ -92,7 +92,7 @@ router.post("/", requireNetworkAdmin, async (req, res, next) => {
   try {
     const input = CreateSubnetSchema.parse(req.body);
     const subnet = await subnetService.createSubnet(input);
-    logEvent({ action: "subnet.created", resourceType: "subnet", resourceId: subnet.id, resourceName: input.name, actor: (req as any).user?.username, message: `Subnet "${input.name}" (${input.cidr}) created` });
+    logEvent({ action: "subnet.created", resourceType: "subnet", resourceId: subnet.id, resourceName: input.name, actor: req.session?.username, message: `Subnet "${input.name}" (${input.cidr}) created` });
     res.status(201).json(subnet);
   } catch (err) {
     next(err);
@@ -105,7 +105,7 @@ router.put("/:id", async (req, res, next) => {
     const id = req.params.id as string;
     const input = UpdateSubnetSchema.parse(req.body);
     const subnet = await subnetService.updateSubnet(id, { ...input, vlan: input.vlan ?? undefined });
-    logEvent({ action: "subnet.updated", resourceType: "subnet", resourceId: id, resourceName: input.name || subnet.name, actor: (req as any).user?.username, message: `Subnet "${input.name || subnet.name}" updated` });
+    logEvent({ action: "subnet.updated", resourceType: "subnet", resourceId: id, resourceName: input.name || subnet.name, actor: req.session?.username, message: `Subnet "${input.name || subnet.name}" updated` });
     res.json(subnet);
   } catch (err) {
     next(err);
@@ -126,7 +126,7 @@ router.delete("/:id", requireNetworkAdmin, async (req, res, next) => {
       resourceType: "subnet",
       resourceId: id,
       resourceName: result.name,
-      actor: (req as any).user?.username,
+      actor: req.session?.username,
       message,
       details: resCount > 0 ? { deletedReservations: result.deletedReservations } : undefined,
     });
