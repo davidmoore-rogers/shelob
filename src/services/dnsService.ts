@@ -183,7 +183,12 @@ async function dohReverse(ip: string, dohUrl: string): Promise<string[]> {
       throw timeout;
     }
     if (err.code?.startsWith?.("DOH_")) throw err;
-    const wrapped: any = new Error(`DoH connection failed: ${err.message || err}`);
+    const cause = err.cause || err;
+    const detail = cause.code === "ENOTFOUND" ? `Cannot resolve hostname in DoH URL`
+      : cause.code === "ECONNREFUSED" ? `Connection refused by DoH server`
+      : cause.code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" || cause.code === "CERT_HAS_EXPIRED" ? `TLS certificate error: ${cause.code}`
+      : cause.message || err.message || String(err);
+    const wrapped: any = new Error(detail);
     wrapped.code = "DOH_CONNECT_ERROR";
     throw wrapped;
   } finally {
