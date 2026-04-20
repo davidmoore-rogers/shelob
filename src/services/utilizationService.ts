@@ -39,6 +39,7 @@ export interface BlockUtilizationSummary {
   cidr: string;
   totalSubnets: number;
   availableSubnets: number;
+  discoveredSubnets: number;
   reservedSubnets: number;
   deprecatedSubnets: number;
   usedPercent: number;
@@ -71,7 +72,7 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
     }),
     prisma.ipBlock.findMany({
       include: {
-        subnets: { select: { status: true } },
+        subnets: { select: { status: true, discoveredBy: true } },
       },
       orderBy: { cidr: "asc" },
     }),
@@ -97,10 +98,11 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
 
   const blockUtilization: BlockUtilizationSummary[] = blocks.map((block) => {
     const total = block.subnets.length;
-    const available = block.subnets.filter((s) => s.status === "available").length;
+    const discovered = block.subnets.filter((s) => s.status === "available" && s.discoveredBy !== null).length;
+    const available = block.subnets.filter((s) => s.status === "available" && s.discoveredBy === null).length;
     const reserved = block.subnets.filter((s) => s.status === "reserved").length;
     const deprecated = block.subnets.filter((s) => s.status === "deprecated").length;
-    const usedPercent = total === 0 ? 0 : Math.round(((reserved + deprecated) / total) * 100);
+    const usedPercent = total === 0 ? 0 : Math.round(((reserved + deprecated + discovered) / total) * 100);
 
     return {
       id: block.id,
@@ -108,6 +110,7 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
       cidr: block.cidr,
       totalSubnets: total,
       availableSubnets: available,
+      discoveredSubnets: discovered,
       reservedSubnets: reserved,
       deprecatedSubnets: deprecated,
       usedPercent,

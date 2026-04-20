@@ -13,6 +13,7 @@ import {
   scryptSync,
 } from "node:crypto";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { totalmem } from "node:os";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -691,12 +692,27 @@ const PG_TUNING_THRESHOLDS = {
   reservations: 160000, // 80% of 200,000
 };
 
-const PG_RECOMMENDED: Record<string, { min: number; unit: string; display: string }> = {
-  shared_buffers:     { min: 2 * 1024 * 1024 * 1024,   unit: "bytes", display: "2GB" },
-  work_mem:           { min: 32 * 1024 * 1024,          unit: "bytes", display: "32MB" },
-  effective_cache_size:{ min: 4 * 1024 * 1024 * 1024,   unit: "bytes", display: "4GB" },
-  random_page_cost:   { min: -1,                        unit: "cost",  display: "1.1" }, // special: ≤ 1.1
-};
+function buildPgRecommended(): Record<string, { min: number; unit: string; display: string }> {
+  const ram = totalmem();
+  const MB = 1024 * 1024;
+  const GB = 1024 * MB;
+
+  const sharedBuffers    = Math.max(128 * MB, Math.round(ram * 0.25));
+  const effectiveCache   = Math.round(ram * 0.75);
+  // work_mem: RAM/128, capped at 256 MB, min 32 MB
+  const workMem          = Math.max(32 * MB, Math.min(256 * MB, Math.floor(ram / 128)));
+
+  const fmt = (b: number) =>
+    b >= GB  ? Math.round(b / GB)  + "GB"
+    : Math.round(b / MB) + "MB";
+
+  return {
+    shared_buffers:      { min: sharedBuffers,  unit: "bytes", display: fmt(sharedBuffers) },
+    work_mem:            { min: workMem,        unit: "bytes", display: fmt(workMem) },
+    effective_cache_size:{ min: effectiveCache, unit: "bytes", display: fmt(effectiveCache) },
+    random_page_cost:    { min: -1,             unit: "cost",  display: "1.1" },
+  };
+}
 
 function parsePgBytes(val: string): number {
   const s = val.trim();
@@ -741,6 +757,7 @@ router.get("/pg-tuning", async (_req, res, next) => {
       `SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost')`
     );
 
+    const PG_RECOMMENDED = buildPgRecommended();
     const settings = pgSettings.map((s) => {
       const rec = PG_RECOMMENDED[s.name];
       if (!rec) return null;

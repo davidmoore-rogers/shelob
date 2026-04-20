@@ -168,6 +168,25 @@ function _getInitialsColor(username) {
   return colors[Math.abs(hash) % colors.length];
 }
 
+function _getRoleLabel(role) {
+  switch (role) {
+    case "admin":        return "Admin";
+    case "networkadmin": return "Network Admin";
+    case "assetsadmin":  return "Assets Admin";
+    case "user":         return "User";
+    default:             return role || "";
+  }
+}
+
+function _getRoleBadgeClass(role) {
+  switch (role) {
+    case "admin":        return "badge-admin";
+    case "networkadmin": return "badge-network-admin";
+    case "assetsadmin":  return "badge-assets-admin";
+    default:             return "badge-readonly";
+  }
+}
+
 function renderUserBadge() {
   if (!currentUsername) return;
   var header = document.querySelector(".page-header-actions");
@@ -182,12 +201,16 @@ function renderUserBadge() {
   var initials = _getUserInitials(currentUsername);
   var color = _getInitialsColor(currentUsername);
 
+  var roleLabel = _getRoleLabel(currentUserRole);
+  var roleClass = _getRoleBadgeClass(currentUserRole);
+
   var badge = document.createElement("div");
   badge.className = "user-badge";
   badge.innerHTML =
     '<div class="user-badge-avatar" style="background:' + color + '">' + escapeHtml(initials) + '</div>' +
-    '<span class="user-badge-name">' + escapeHtml(currentUsername) + '</span>';
-  badge.title = currentUsername;
+    '<span class="user-badge-name">' + escapeHtml(currentUsername) + '</span>' +
+    (roleLabel ? '<span class="badge ' + roleClass + '" style="font-size:0.7rem;padding:1px 6px">' + escapeHtml(roleLabel) + '</span>' : '');
+  badge.title = currentUsername + ' (' + roleLabel + ')';
   header.appendChild(badge);
 }
 

@@ -1154,13 +1154,14 @@ function buildUtilization() {
 
   const blockUtilization = BLOCKS.map((b) => {
     const subs = SUBNETS.filter((s) => s.blockId === b.id);
-    const avail = subs.filter((s) => s.status === "available").length;
+    const disc = subs.filter((s) => s.status === "available" && s.discoveredBy != null).length;
+    const avail = subs.filter((s) => s.status === "available" && s.discoveredBy == null).length;
     const res = subs.filter((s) => s.status === "reserved").length;
     const dep = subs.filter((s) => s.status === "deprecated").length;
     return {
       blockId: b.id, name: b.name, cidr: b.cidr,
       totalSubnets: subs.length,
-      availableSubnets: avail, reservedSubnets: res, deprecatedSubnets: dep,
+      availableSubnets: avail, discoveredSubnets: disc, reservedSubnets: res, deprecatedSubnets: dep,
     };
   });
 

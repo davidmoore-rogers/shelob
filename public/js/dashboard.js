@@ -2,7 +2,7 @@
  * public/js/dashboard.js — Dashboard overview page logic
  */
 
-var STATUS_COLORS = { available: "#00c853", reserved: "#4fc3f7", deprecated: "#757575" };
+var STATUS_COLORS = { available: "#00c853", discovered: "#FF9800", reserved: "#4fc3f7", deprecated: "#757575" };
 
 document.addEventListener("DOMContentLoaded", async function () {
   try {
@@ -82,6 +82,7 @@ function renderBarChart(data) {
       '<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="font-size:0.82rem;font-weight:450">' + escapeHtml(b.name) + '</span><span style="font-size:0.75rem;color:var(--color-text-tertiary)">' + b.totalSubnets + ' networks</span></div>' +
       '<div class="stacked-bar">' +
         '<div class="stacked-bar-segment" style="flex:' + b.availableSubnets + ';background:' + STATUS_COLORS.available + '"></div>' +
+        '<div class="stacked-bar-segment" style="flex:' + (b.discoveredSubnets || 0) + ';background:' + STATUS_COLORS.discovered + '"></div>' +
         '<div class="stacked-bar-segment" style="flex:' + b.reservedSubnets + ';background:' + STATUS_COLORS.reserved + '"></div>' +
         '<div class="stacked-bar-segment" style="flex:' + b.deprecatedSubnets + ';background:' + STATUS_COLORS.deprecated + '"></div>' +
       '</div></div>';
@@ -96,7 +97,7 @@ function renderBlockUtil(data) {
   }
 
   container.innerHTML = data.blockUtilization.map(function (b) {
-    var used = b.reservedSubnets + b.deprecatedSubnets;
+    var used = b.reservedSubnets + b.deprecatedSubnets + (b.discoveredSubnets || 0);
     var total = b.totalSubnets;
     var pct = total === 0 ? 0 : Math.round((used / total) * 100);
     var color = pct > 75 ? "#ff1744" : pct > 50 ? "#ffd600" : "#4fc3f7";
