@@ -343,68 +343,70 @@ router.post("/:id/register", async (req, res, next) => {
   }
 });
 
+// ─── Shared discovery trigger (used by route handler + scheduler) ─────────────
+
+export function isDiscoveryRunning(integrationId: string): boolean {
+  return activeDiscovery.has(integrationId);
+}
+
+/**
+ * Validates the integration, registers it in activeDiscovery, and fires the
+ * discovery pipeline detached (returns before it completes). Throws AppError
+ * on validation failure so callers can handle it appropriately.
+ *
+ * actor: the username triggering the run, or "auto-discovery" for scheduled runs.
+ */
+export async function triggerDiscovery(integrationId: string, actor: string): Promise<void> {
+  const integration = await prisma.integration.findUnique({ where: { id: integrationId } });
+  if (!integration) throw new AppError(404, "Integration not found");
+  if (!integration.lastTestOk) throw new AppError(400, "Run a successful connection test before discovering");
+
+  const config = integration.config as Record<string, unknown>;
+  if (!config.host) throw new AppError(400, "Integration has no host configured");
+  if (integration.type === "fortimanager" && !config.apiToken) throw new AppError(400, "Integration has no API token configured");
+  if (integration.type === "windowsserver" && !config.username) throw new AppError(400, "Integration has no username configured");
+
+  activeDiscovery.get(integrationId)?.controller.abort();
+  const ac = new AbortController();
+  const integrationName = integration.name;
+  activeDiscovery.set(integrationId, { controller: ac, name: integrationName });
+
+  const label = actor === "auto-discovery" ? "Scheduled" : "Manual";
+  logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} DHCP discovery started for "${integrationName}"` });
+
+  const onProgress: DiscoveryProgressCallback = (step, level, message, device) => {
+    logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
+    if (device) {
+      const entry = activeDiscovery.get(integrationId);
+      if (entry) entry.currentDevice = device;
+    }
+  };
+
+  (async () => {
+    try {
+      let discoveryResult: DiscoveryResult;
+      if (integration.type === "windowsserver") {
+        const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
+        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
+      } else {
+        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24);
+      }
+      const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
+      logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} DHCP discovery completed for "${integrationName}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
+    } catch (err: any) {
+      if (err.name !== "AbortError") {
+        logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `${label} DHCP discovery failed for "${integrationName}": ${err.message || "Unknown error"}` });
+      }
+    } finally {
+      activeDiscovery.delete(integrationId);
+    }
+  })();
+}
+
 // POST /api/v1/integrations/:id/discover — manually trigger DHCP discovery
 router.post("/:id/discover", async (req, res, next) => {
   try {
-    const integration = await prisma.integration.findUnique({
-      where: { id: req.params.id },
-    });
-    if (!integration) throw new AppError(404, "Integration not found");
-    if (!integration.lastTestOk) {
-      throw new AppError(400, "Run a successful connection test before discovering");
-    }
-
-    const config = integration.config as Record<string, unknown>;
-    if (!config.host) {
-      throw new AppError(400, "Integration has no host configured");
-    }
-    if (integration.type === "fortimanager" && !config.apiToken) {
-      throw new AppError(400, "Integration has no API token configured");
-    }
-    if (integration.type === "windowsserver" && !config.username) {
-      throw new AppError(400, "Integration has no username configured");
-    }
-
-    // Abort any in-flight discovery for this integration
-    activeDiscovery.get(req.params.id)?.controller.abort();
-    const ac = new AbortController();
-    const integrationId = req.params.id;
-    const integrationName = integration.name;
-    activeDiscovery.set(integrationId, { controller: ac, name: integrationName });
-
-    const actor = req.session?.username;
-    logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `Manual DHCP discovery started for "${integrationName}"` });
-
-    // Progress callback — logs each Phase 2 step as an event and tracks the current device
-    const onProgress: DiscoveryProgressCallback = (step, level, message, device) => {
-      logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
-      if (device) {
-        const entry = activeDiscovery.get(integrationId);
-        if (entry) entry.currentDevice = device;
-      }
-    };
-
-    // Run discovery detached so client navigation doesn't kill it.
-    (async () => {
-      try {
-        let discoveryResult: DiscoveryResult;
-        if (integration.type === "windowsserver") {
-          const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
-          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
-        } else {
-          discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24);
-        }
-        const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
-        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `Manual DHCP discovery completed for "${integrationName}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
-      } catch (err: any) {
-        if (err.name !== "AbortError") {
-          logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `Manual DHCP discovery failed for "${integrationName}": ${err.message || "Unknown error"}` });
-        }
-      } finally {
-        activeDiscovery.delete(integrationId);
-      }
-    })();
-
+    await triggerDiscovery(req.params.id, req.session?.username ?? "");
     res.status(202).json({ message: "Discovery started" });
   } catch (err) {
     next(err);

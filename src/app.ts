@@ -23,6 +23,7 @@ import { isAzureSsoConfiguredAsync, getSsoSettings } from "./services/azureAuthS
 import "./jobs/pruneEvents.js";
 import "./jobs/ouiRefresh.js";
 import "./jobs/updateCheck.js";
+import "./jobs/discoveryScheduler.js";
 
 const app = express();
 
