@@ -25,6 +25,17 @@ async function main() {
     },
   });
 
+  // ─── Branding ──────────────────────────────────────────────────────────────
+
+  await prisma.setting.upsert({
+    where:  { key: "branding" },
+    update: {},
+    create: {
+      key:   "branding",
+      value: { appName: "Shelob", subtitle: "Network Management Tool", logoUrl: "/logo.png" },
+    },
+  });
+
   // ─── IP Blocks ─────────────────────────────────────────────────────────────
 
   const corpBlock = await prisma.ipBlock.upsert({

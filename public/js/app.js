@@ -94,7 +94,7 @@ function renderNav() {
 
   sidebar.innerHTML = `
     <div class="sidebar-brand">
-      <img src="/logo.webp" alt="" class="sidebar-logo" style="visibility:hidden">
+      <img src="/logo.png" alt="" class="sidebar-logo" style="visibility:hidden">
       <h1 style="font-size:1.1rem;font-weight:600;margin:0.5rem 0 0;color:var(--color-text-primary);text-align:center;visibility:hidden">Shelob</h1>
       <p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.15rem 0 0;text-align:center;visibility:hidden">Network Management Tool</p>
     </div>
@@ -226,7 +226,7 @@ function applyBranding(b) {
   // Update sidebar logo + name
   var sidebarLogo = document.querySelector(".sidebar-logo");
   if (sidebarLogo) {
-    sidebarLogo.src = b.logoUrl || "/logo.webp";
+    sidebarLogo.src = b.logoUrl || "/logo.png";
     sidebarLogo.style.visibility = "";
   }
   var sidebarName = document.querySelector(".sidebar-brand h1");
@@ -276,7 +276,7 @@ async function fetchBranding() {
     var b = await api.serverSettings.getBranding();
     applyBranding(b);
   } catch (_) {
-    applyBranding({ appName: "Shelob", subtitle: "Network Management Tool", logoUrl: "/logo.webp", version: "" });
+    applyBranding({ appName: "Shelob", subtitle: "Network Management Tool", logoUrl: "/logo.png", version: "" });
   }
 }
 

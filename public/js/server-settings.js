@@ -1736,7 +1736,7 @@ function renderUpdateFailed(status) {
 // ─── Customization Tab ─────────────────────────────────────────────────────
 
 var _brandingLoaded = false;
-var _brandingData = { appName: "Shelob", subtitle: "Network Management Tool", logoUrl: "/logo.webp" };
+var _brandingData = { appName: "Shelob", subtitle: "Network Management Tool", logoUrl: "/logo.png" };
 
 async function loadCustomizationTab() {
   var container = document.getElementById("tab-customization");
@@ -1753,7 +1753,7 @@ async function loadCustomizationTab() {
 
 function renderCustomizationTab() {
   var container = document.getElementById("tab-customization");
-  var isCustomLogo = _brandingData.logoUrl && _brandingData.logoUrl !== "/logo.webp";
+  var isCustomLogo = _brandingData.logoUrl && _brandingData.logoUrl !== "/logo.png";
 
   container.innerHTML =
     '<div class="settings-cards-row">' +
@@ -1779,7 +1779,7 @@ function renderCustomizationTab() {
       '<div style="display:flex;align-items:flex-start;gap:1.5rem;flex-wrap:wrap">' +
         '<div style="flex-shrink:0">' +
           '<div class="logo-preview-box">' +
-            '<img id="logo-preview" src="' + escapeHtml(_brandingData.logoUrl || "/logo.webp") + '" alt="Current logo">' +
+            '<img id="logo-preview" src="' + escapeHtml(_brandingData.logoUrl || "/logo.png") + '" alt="Current logo">' +
           '</div>' +
           '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin-top:0.5rem;text-align:center">' +
             (isCustomLogo ? 'Custom logo' : 'Default logo') +

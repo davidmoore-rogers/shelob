@@ -901,7 +901,7 @@ interface BrandingSettings {
 const BRANDING_DEFAULTS: BrandingSettings = {
   appName: "Shelob",
   subtitle: "Network Management Tool",
-  logoUrl: "/logo.webp",
+  logoUrl: "/logo.png",
 };
 
 export async function getBranding(): Promise<BrandingSettings & { version: string }> {
