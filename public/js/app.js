@@ -107,6 +107,7 @@ function renderNav() {
     <div style="margin-top:auto">
       <div id="query-status" class="query-status" style="display:none"></div>
       <div id="pg-tuning-alert" class="pg-tuning-alert" style="display:none"></div>
+      <div id="ram-warning-alert" class="ram-warning-alert" style="display:none"></div>
       ${isAdmin() ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
         <a href="/server-settings.html" class="sidebar-bottom-link${current === '/server-settings.html' ? ' active' : ''}">${ICONS.settings}<span>Server Settings</span></a>
       </div>` : ''}
@@ -906,6 +907,36 @@ function checkPgTuning() {
         showToast("Failed to snooze alert", "error");
       });
     });
+
+    // ── RAM insufficient warning ──────────────────────────────────────────────
+    var ramContainer = document.getElementById("ram-warning-alert");
+    if (ramContainer) {
+      if (!data.ramInsufficient) {
+        // RAM is now adequate — clear any prior dismissal so warning reappears if load grows again
+        localStorage.removeItem("shelob_ram_dismissed");
+        ramContainer.style.display = "none";
+      } else if (localStorage.getItem("shelob_ram_dismissed")) {
+        ramContainer.style.display = "none";
+      } else {
+        ramContainer.innerHTML =
+          '<div class="pg-tuning-header">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pg-tuning-icon"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+            '<span>Insufficient RAM</span>' +
+          '</div>' +
+          '<div class="pg-tuning-body">' +
+            '<p class="pg-tuning-text">This server has ' + data.currentRamGb + ' GB RAM. At least ' + data.recommendedRamGb + ' GB is recommended for the current database size.</p>' +
+          '</div>' +
+          '<div class="pg-tuning-actions">' +
+            '<button class="btn btn-sm btn-secondary" id="ram-warning-dismiss">Dismiss</button>' +
+          '</div>';
+        ramContainer.style.display = "block";
+
+        document.getElementById("ram-warning-dismiss").addEventListener("click", function () {
+          localStorage.setItem("shelob_ram_dismissed", "1");
+          ramContainer.style.display = "none";
+        });
+      }
+    }
   }).catch(function () {
     // Silently ignore — non-critical check
   });

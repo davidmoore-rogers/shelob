@@ -1158,10 +1158,15 @@ function buildUtilization() {
     const avail = subs.filter((s) => s.status === "available" && s.discoveredBy == null).length;
     const res = subs.filter((s) => s.status === "reserved").length;
     const dep = subs.filter((s) => s.status === "deprecated").length;
+    const cidrCount = (cidr) => { const p = parseInt(cidr.split("/")[1], 10); return cidr.includes(":") ? Math.pow(2, Math.min(128 - p, 52)) : Math.pow(2, 32 - p); };
+    const blockAddresses = cidrCount(b.cidr);
+    const allocatedAddresses = subs.reduce((sum, s) => sum + cidrCount(s.cidr), 0);
+    const usedPercent = blockAddresses === 0 ? 0 : Math.round((allocatedAddresses / blockAddresses) * 100);
     return {
       blockId: b.id, name: b.name, cidr: b.cidr,
       totalSubnets: subs.length,
       availableSubnets: avail, discoveredSubnets: disc, reservedSubnets: res, deprecatedSubnets: dep,
+      blockAddresses, allocatedAddresses, usedPercent,
     };
   });
 

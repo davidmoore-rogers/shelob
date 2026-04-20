@@ -42,7 +42,20 @@ export interface BlockUtilizationSummary {
   discoveredSubnets: number;
   reservedSubnets: number;
   deprecatedSubnets: number;
-  usedPercent: number;
+  blockAddresses: number;      // total IP addresses the block can hold
+  allocatedAddresses: number;  // IP addresses consumed by all carved subnets
+  usedPercent: number;         // allocatedAddresses / blockAddresses
+}
+
+// Returns the number of addresses in a CIDR block (e.g. /24 → 256, /16 → 65536).
+// IPv6 blocks are capped at Number.MAX_SAFE_INTEGER to avoid precision loss.
+function cidrAddressCount(cidr: string): number {
+  const prefix = parseInt(cidr.split("/")[1], 10);
+  if (cidr.includes(":")) {
+    const bits = 128 - prefix;
+    return bits >= 53 ? Number.MAX_SAFE_INTEGER : Math.pow(2, bits);
+  }
+  return Math.pow(2, 32 - prefix);
 }
 
 // ─── Global summary (for dashboard home page) ─────────────────────────────────
@@ -72,7 +85,7 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
     }),
     prisma.ipBlock.findMany({
       include: {
-        subnets: { select: { status: true, discoveredBy: true } },
+        subnets: { select: { cidr: true, status: true, discoveredBy: true } },
       },
       orderBy: { cidr: "asc" },
     }),
@@ -102,7 +115,10 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
     const available = block.subnets.filter((s) => s.status === "available" && s.discoveredBy === null).length;
     const reserved = block.subnets.filter((s) => s.status === "reserved").length;
     const deprecated = block.subnets.filter((s) => s.status === "deprecated").length;
-    const usedPercent = total === 0 ? 0 : Math.round(((reserved + deprecated + discovered) / total) * 100);
+
+    const blockAddresses = cidrAddressCount(block.cidr);
+    const allocatedAddresses = block.subnets.reduce((sum, s) => sum + cidrAddressCount(s.cidr), 0);
+    const usedPercent = blockAddresses === 0 ? 0 : Math.round((allocatedAddresses / blockAddresses) * 100);
 
     return {
       id: block.id,
@@ -113,6 +129,8 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
       discoveredSubnets: discovered,
       reservedSubnets: reserved,
       deprecatedSubnets: deprecated,
+      blockAddresses,
+      allocatedAddresses,
       usedPercent,
     };
   });

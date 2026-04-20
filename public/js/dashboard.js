@@ -89,6 +89,12 @@ function renderBarChart(data) {
   }).join("");
 }
 
+function fmtAddrs(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1024)    return Math.round(n / 1024) + "K";
+  return String(n);
+}
+
 function renderBlockUtil(data) {
   var container = document.getElementById("block-util");
   if (!data.blockUtilization || data.blockUtilization.length === 0) {
@@ -97,12 +103,13 @@ function renderBlockUtil(data) {
   }
 
   container.innerHTML = data.blockUtilization.map(function (b) {
-    var used = b.reservedSubnets + b.deprecatedSubnets + (b.discoveredSubnets || 0);
-    var total = b.totalSubnets;
-    var pct = total === 0 ? 0 : Math.round((used / total) * 100);
+    var pct = b.usedPercent != null ? b.usedPercent : 0;
     var color = pct > 75 ? "#ff1744" : pct > 50 ? "#ffd600" : "#4fc3f7";
+    var addrLabel = (b.blockAddresses != null)
+      ? fmtAddrs(b.allocatedAddresses) + ' / ' + fmtAddrs(b.blockAddresses) + ' IPs'
+      : b.totalSubnets + ' subnets';
     return '<div class="block-util-item">' +
-      '<div class="block-util-header"><div class="block-util-name"><span>' + escapeHtml(b.name) + '</span><code>' + escapeHtml(b.cidr) + '</code></div><span class="block-util-count">' + used + '/' + total + ' networks</span></div>' +
+      '<div class="block-util-header"><div class="block-util-name"><span>' + escapeHtml(b.name) + '</span><code>' + escapeHtml(b.cidr) + '</code></div><span class="block-util-count">' + addrLabel + '</span></div>' +
       '<div class="util-row"><div class="util-bar-track"><div class="util-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div><span style="font-size:0.82rem;color:var(--color-text-secondary);min-width:32px;text-align:right">' + pct + '%</span></div></div>';
   }).join("");
 }

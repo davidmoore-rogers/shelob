@@ -697,14 +697,19 @@ function buildPgRecommended(): Record<string, { min: number; unit: string; displ
   const MB = 1024 * 1024;
   const GB = 1024 * MB;
 
-  const sharedBuffers    = Math.max(128 * MB, Math.round(ram * 0.25));
-  const effectiveCache   = Math.round(ram * 0.75);
+  // Floor all values to whole-MB boundaries so recommendations match what
+  // PostgreSQL accepts and comparisons don't produce "60MB → 60MB" false positives.
+  const floorMB = (b: number) => Math.floor(b / MB) * MB;
+  const floorGB = (b: number) => Math.floor(b / GB) * GB;
+
+  const sharedBuffers = Math.max(128 * MB, floorGB(ram * 0.25) || floorMB(ram * 0.25));
+  const effectiveCache = Math.max(256 * MB, floorGB(ram * 0.75) || floorMB(ram * 0.75));
   // work_mem: RAM/128, capped at 256 MB, min 32 MB
-  const workMem          = Math.max(32 * MB, Math.min(256 * MB, Math.floor(ram / 128)));
+  const workMem = Math.max(32 * MB, Math.min(256 * MB, floorMB(ram / 128)));
 
   const fmt = (b: number) =>
-    b >= GB  ? Math.round(b / GB)  + "GB"
-    : Math.round(b / MB) + "MB";
+    b >= GB ? (b / GB) + "GB"
+    : (b / MB) + "MB";
 
   return {
     shared_buffers:      { min: sharedBuffers,  unit: "bytes", display: fmt(sharedBuffers) },
@@ -712,6 +717,19 @@ function buildPgRecommended(): Record<string, { min: number; unit: string; displ
     effective_cache_size:{ min: effectiveCache, unit: "bytes", display: fmt(effectiveCache) },
     random_page_cost:    { min: -1,             unit: "cost",  display: "1.1" },
   };
+}
+
+// Returns minimum host RAM (bytes) recommended for the given data volumes.
+// Scales at 1 GB per 1,000 assets / 10,000 subnets / 1M reservations, minimum 8 GB, rounded up to next power-of-2.
+function getMinRecommendedRamBytes(counts: { assets: number; subnets: number; reservations: number }): number {
+  const GB = 1024 * 1024 * 1024;
+  const loadFactor = Math.max(
+    counts.assets / 1000,
+    counts.subnets / 10000,
+    counts.reservations / 1000000,
+    8,
+  );
+  return Math.pow(2, Math.ceil(Math.log2(loadFactor))) * GB;
 }
 
 function parsePgBytes(val: string): number {
@@ -757,6 +775,13 @@ router.get("/pg-tuning", async (_req, res, next) => {
       `SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost')`
     );
 
+    const counts = { assets: assetCount, subnets: subnetCount, reservations: reservationCount };
+    const minRam = getMinRecommendedRamBytes(counts);
+    const currentRam = totalmem();
+    const ramInsufficient = currentRam < minRam;
+    const currentRamGb  = Math.round(currentRam / (1024 * 1024 * 1024));
+    const recommendedRamGb = minRam / (1024 * 1024 * 1024);
+
     const PG_RECOMMENDED = buildPgRecommended();
     const settings = pgSettings.map((s) => {
       const rec = PG_RECOMMENDED[s.name];
@@ -795,10 +820,13 @@ router.get("/pg-tuning", async (_req, res, next) => {
     res.json({
       needed: !allOk,
       triggered,
-      counts: { assets: assetCount, subnets: subnetCount, reservations: reservationCount },
+      counts,
       thresholds: PG_TUNING_THRESHOLDS,
       settings,
       snoozedUntil: isSnoozed ? snoozedUntil : null,
+      ramInsufficient,
+      currentRamGb,
+      recommendedRamGb,
     });
   } catch (err) {
     next(err);

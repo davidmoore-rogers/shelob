@@ -32,7 +32,31 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   loadIdentificationTab();
+  checkRamBanner();
 });
+
+function checkRamBanner() {
+  if (typeof api === "undefined" || !api.serverSettings) return;
+  api.serverSettings.getPgTuning().then(function (data) {
+    var banner = document.getElementById("ram-insufficient-banner");
+    if (!banner) return;
+    if (!data.ramInsufficient) {
+      localStorage.removeItem("shelob_ram_dismissed");
+      banner.style.display = "none";
+      return;
+    }
+    // Show persistent banner on this page whether or not it was dismissed from the sidebar
+    banner.className = "ram-banner";
+    banner.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ram-banner-icon"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+      '<div class="ram-banner-body">' +
+        '<div class="ram-banner-title">Insufficient RAM — Add Memory</div>' +
+        'This server has <strong>' + data.currentRamGb + ' GB</strong> of RAM. The current database size requires at least <strong>' + data.recommendedRamGb + ' GB</strong> for reliable performance. ' +
+        'This notice will clear automatically once sufficient RAM is detected or the database shrinks below the threshold.' +
+      '</div>';
+    banner.style.display = "flex";
+  }).catch(function () { /* non-critical */ });
+}
 
 // ─── NTP Tab ────────────────────────────────────────────────────────────────
 
