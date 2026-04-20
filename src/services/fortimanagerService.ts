@@ -291,7 +291,7 @@ export async function discoverDhcpSubnets(
       mgmtIp,
     });
 
-    // If device has a management IP, record it
+    // If device has a management IP, record it as a placeholder (may be updated below)
     if (mgmtIp && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(mgmtIp)) {
       interfaceIps.push({
         device: deviceName,
@@ -300,6 +300,36 @@ export async function discoverDhcpSubnets(
         role: "management",
       });
     }
+
+    // Resolve the FortiGate's actual management interface IP from its own config.
+    // device.ip from the FMG device DB reflects the FMG's own management address,
+    // not the FortiGate's interface IP.
+    const mgmtIfaceName = config.mgmtInterface || "mgmt";
+    try {
+      const mgmtIfacePayload: JsonRpcRequest = {
+        id: 6,
+        method: "get",
+        params: [{ url: `/pm/config/device/${deviceName}/global/system/interface` }],
+      };
+      const mgmtIfaceRes = await rpc(baseUrl, mgmtIfacePayload, apiUser, apiToken, verifySsl, signal);
+      const ifaceList = mgmtIfaceRes.result?.[0]?.data;
+      if (Array.isArray(ifaceList)) {
+        const found = (ifaceList as any[]).find((i) => i.name === mgmtIfaceName);
+        const rawIp = found
+          ? (Array.isArray(found.ip) ? found.ip[0] : (found.ip as string | null))
+          : null;
+        if (rawIp && rawIp !== "0.0.0.0" && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(rawIp)) {
+          devices[devices.length - 1].mgmtIp = rawIp;
+          const ifEntry = interfaceIps.find((e) => e.device === deviceName && e.role === "management");
+          if (ifEntry) {
+            ifEntry.ipAddress = rawIp;
+          } else {
+            interfaceIps.push({ device: deviceName, interfaceName: mgmtIfaceName, ipAddress: rawIp, role: "management" });
+          }
+          log("discover.device.mgmtip", "info", `${deviceName}: Resolved management IP from ${mgmtIfaceName}: ${rawIp}`, deviceName);
+        }
+      }
+    } catch { /* best-effort; keep device.ip as fallback */ }
 
     // Track which interface names serve DHCP so we can look up their IPs
     const dhcpInterfaceNames: string[] = [];
