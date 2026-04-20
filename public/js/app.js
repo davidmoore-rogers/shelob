@@ -306,9 +306,12 @@ function renderQueryStatus() {
         '</li>';
       }).join("") +
       serverDiscoveries.map(function (d) {
-        var label = 'Discovering ' + escapeHtml(d.name);
-        if (d.currentDevice) label += ' \u2014 ' + escapeHtml(d.currentDevice);
-        return '<li><span class="query-status-name">' + label + '</span></li>';
+        return '<li><div style="min-width:0;flex:1">' +
+          '<span class="query-status-name">Discovering ' + escapeHtml(d.name) + '</span>' +
+          (d.currentDevice ? '<span class="query-status-device">' + escapeHtml(d.currentDevice) + '</span>' : '') +
+          '</div>' +
+          '<button class="query-abort-btn" data-discovery-id="' + escapeHtml(d.id) + '" data-discovery-name="' + escapeHtml(d.name) + '" title="Abort">&#x2715;</button>' +
+          '</li>';
       }).join("") +
     '</ul>' +
     (activeQueries.length > 1
@@ -317,6 +320,14 @@ function renderQueryStatus() {
 
   container.querySelectorAll(".query-abort-btn").forEach(function (btn) {
     btn.addEventListener("click", async function () {
+      var discoveryId = btn.getAttribute("data-discovery-id");
+      if (discoveryId) {
+        var discoveryName = btn.getAttribute("data-discovery-name") || "discovery";
+        var ok = await showConfirm('Abort discovery of "' + discoveryName + '"?');
+        if (!ok) return;
+        try { await api.integrations.abortDiscover(discoveryId); } catch (_) {}
+        return;
+      }
       var qid = parseFloat(btn.getAttribute("data-qid"));
       var q = activeQueries.find(function (x) { return x.id === qid; });
       if (!q) return;

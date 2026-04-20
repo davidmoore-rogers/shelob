@@ -104,6 +104,15 @@ router.get("/discoveries", (req, res) => {
   res.json({ discoveries: running });
 });
 
+// DELETE /api/v1/integrations/:id/discover — abort an in-flight discovery
+router.delete("/:id/discover", (req, res) => {
+  const entry = activeDiscovery.get(req.params.id);
+  if (!entry) { res.status(404).json({ message: "No active discovery for this integration" }); return; }
+  entry.controller.abort();
+  activeDiscovery.delete(req.params.id);
+  res.status(204).send();
+});
+
 // GET /api/v1/integrations/:id
 router.get("/:id", async (req, res, next) => {
   try {
