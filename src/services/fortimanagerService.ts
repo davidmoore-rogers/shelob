@@ -220,6 +220,7 @@ export async function discoverDhcpSubnets(
   config: FortiManagerConfig,
   signal?: AbortSignal,
   onProgress?: DiscoveryProgressCallback,
+  inventoryMaxAgeHours = 24,
 ): Promise<DiscoveryResult> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
   const adom = config.adom || "root";
@@ -466,12 +467,14 @@ export async function discoverDhcpSubnets(
           ? inventoryData[0]?.response?.results
           : (inventoryData as any)?.response?.results;
 
+        const inventoryCutoffMs = Date.now() - inventoryMaxAgeHours * 60 * 60 * 1000;
         let inventoryCount = 0;
         if (Array.isArray(results)) {
           for (const client of results) {
             const mac = client.mac || "";
             const ip = client.ip || "";
             if (!mac && !ip) continue;
+            if (client.last_seen && client.last_seen * 1000 < inventoryCutoffMs) continue;
 
             deviceInventory.push({
               device: deviceName,

@@ -383,7 +383,7 @@ router.post("/:id/discover", async (req, res, next) => {
           const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
           discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
         } else {
-          discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress);
+          discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24);
         }
         const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
         logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `Manual DHCP discovery completed for "${integrationName}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
