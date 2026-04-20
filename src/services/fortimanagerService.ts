@@ -221,6 +221,7 @@ export async function discoverDhcpSubnets(
   signal?: AbortSignal,
   onProgress?: DiscoveryProgressCallback,
   inventoryMaxAgeHours = 24,
+  onDeviceComplete?: (result: DiscoveryResult) => Promise<void>,
 ): Promise<DiscoveryResult> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
   const adom = config.adom || "root";
@@ -261,6 +262,13 @@ export async function discoverDhcpSubnets(
 
     // Stop early if the caller aborted (e.g. integration was re-saved)
     if (signal?.aborted) break;
+
+    // Capture array lengths before this device so we can slice a per-device result
+    const snBefore = discovered.length;
+    const devBefore = devices.length;
+    const ifIpBefore = interfaceIps.length;
+    const entBefore = dhcpEntries.length;
+    const invBefore = deviceInventory.length;
 
     log("discover.device.start", "info", `Starting discovery for ${deviceName}`, deviceName);
 
@@ -501,6 +509,27 @@ export async function discoverDhcpSubnets(
       }
     } catch (err: any) {
       log("discover.device", "error", `${deviceName}: Failed to query device — ${err.message || "Unknown error"}`, deviceName);
+    }
+
+    // Emit a filtered per-device result so the caller can sync incrementally
+    if (onDeviceComplete) {
+      const devSubnets = discovered.slice(snBefore);
+      const filteredDevSubnets = filterDhcpResults(devSubnets, config.dhcpInclude, config.dhcpExclude);
+      const includedIfaces = new Set(filteredDevSubnets.map((s) => s.name));
+      const excludedDevIfaces = new Set(
+        devSubnets.filter((s) => !filteredDevSubnets.includes(s)).map((s) => `${s.fortigateDevice}/${s.name}`)
+      );
+      await onDeviceComplete({
+        subnets: filteredDevSubnets,
+        devices: devices.slice(devBefore),
+        interfaceIps: interfaceIps.slice(ifIpBefore).filter(
+          (ip) => ip.role === "management" || includedIfaces.has(ip.interfaceName)
+        ),
+        dhcpEntries: dhcpEntries.slice(entBefore).filter((e) => includedIfaces.has(e.interfaceName)),
+        deviceInventory: deviceInventory.slice(invBefore).filter(
+          (d) => !excludedDevIfaces.has(`${d.device}/${d.interfaceName}`)
+        ),
+      });
     }
   }
 

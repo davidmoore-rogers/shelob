@@ -385,14 +385,39 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
   (async () => {
     try {
       let discoveryResult: DiscoveryResult;
+
+      // Accumulate per-device sync totals for the completion log
+      const syncTotals = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+
+      // Per-device callback: sync each FortiGate's data as it arrives (phases 1, 3–9).
+      // Phase 2 (stale deprecation) runs separately at the end once all devices are known.
+      const onDeviceComplete = async (deviceResult: DiscoveryResult) => {
+        const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, deviceResult, actor, "skip-deprecation");
+        syncTotals.created.push(...r.created);
+        syncTotals.updated.push(...r.updated);
+        syncTotals.skipped.push(...r.skipped);
+      };
+
       if (integration.type === "windowsserver") {
         const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
         discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [] };
+        // Windows Server is a single host — no per-device iteration, sync the full result normally
+        const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
+        syncTotals.created.push(...r.created);
+        syncTotals.updated.push(...r.updated);
+        syncTotals.skipped.push(...r.skipped);
       } else {
-        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24);
+        // FortiManager: onDeviceComplete fires after each managed FortiGate is queried,
+        // syncing subnets/assets/reservations incrementally.
+        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24, onDeviceComplete);
+        // Run stale deprecation once, now that the full device list is known.
+        await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor, "deprecation-only");
       }
-      const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
-      logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} DHCP discovery completed for "${integrationName}" — ${syncResult.created.length} created, ${syncResult.updated.length} updated, ${syncResult.skipped.length} skipped` });
+
+      // ── ORIGINAL BATCH SYNC (commented out — replaced by per-device callback above) ──
+      // const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
+
+      logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} DHCP discovery completed for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped` });
     } catch (err: any) {
       if (err.name !== "AbortError") {
         logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `${label} DHCP discovery failed for "${integrationName}": ${err.message || "Unknown error"}` });
@@ -637,7 +662,12 @@ class AssetIndex {
  * indexes for O(1) lookups, avoiding N+1 query patterns. Writes are batched
  * in chunks of 50 via Promise.allSettled for throughput.
  */
-async function syncDhcpSubnets(integrationId: string, integrationName: string, integrationType: string, result: DiscoveryResult, actor?: string) {
+// "full"               — run all 9 phases (original batch behaviour, kept for reference)
+// "skip-deprecation"   — run phases 1, 3–9 but not phase 2 (used in per-device syncs)
+// "deprecation-only"   — run only phase 2 (used after all per-device syncs complete)
+type SyncMode = "full" | "skip-deprecation" | "deprecation-only";
+
+async function syncDhcpSubnets(integrationId: string, integrationName: string, integrationType: string, result: DiscoveryResult, actor?: string, mode: SyncMode = "full") {
   const syncLog = (level: "info" | "error", message: string) => {
     logEvent({ action: "integration.sync", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
   };
@@ -705,6 +735,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   // Collect the set of FortiGate device names in this discovery
   const discoveredDeviceNames = new Set(result.devices.map((d) => d.name));
 
+  if (mode !== "deprecation-only") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 1 — Sync subnets (in-memory lookups, individual creates)
   // ══════════════════════════════════════════════════════════════════════════════
@@ -780,7 +811,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       prisma.subnet.update({ where: { id: u.id }, data: u.data })
     );
   }
+  } // end mode !== "deprecation-only" (Phase 1)
 
+  if (mode !== "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 2 — Deprecate stale subnets (single updateMany)
   // ══════════════════════════════════════════════════════════════════════════════
@@ -805,6 +838,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
   }
 
+  } // end mode !== "skip-deprecation" (Phase 2)
+
+  if (mode !== "deprecation-only") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 3 — Create/update FortiGate device assets (in-memory serial lookup)
   // ══════════════════════════════════════════════════════════════════════════════
@@ -1209,6 +1245,8 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       syncLog("info", `OUI lookup: resolved ${ouiResolved} of ${assetsNeedingOui.length} assets`);
     }
   }
+
+  } // end mode !== "deprecation-only" (Phases 3–9)
 
   return { created, updated, skipped, deprecated, assets: assetNames, reservations: reservationNames, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length, dnsResolved, ouiResolved, ouiOverridden };
 }
