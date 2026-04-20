@@ -778,9 +778,11 @@ router.get("/pg-tuning", async (_req, res, next) => {
     const counts = { assets: assetCount, subnets: subnetCount, reservations: reservationCount };
     const minRam = getMinRecommendedRamBytes(counts);
     const currentRam = totalmem();
-    const ramInsufficient = currentRam < minRam;
-    const currentRamGb  = Math.round(currentRam / (1024 * 1024 * 1024));
-    const recommendedRamGb = minRam / (1024 * 1024 * 1024);
+    const GB = 1024 * 1024 * 1024;
+    const currentRamGb    = Math.round(currentRam / GB);
+    const recommendedRamGb = minRam / GB;
+    // Compare in whole GBs so a server displaying "8 GB" is never flagged against an "8 GB" target
+    const ramInsufficient = currentRamGb < recommendedRamGb;
 
     const PG_RECOMMENDED = buildPgRecommended();
     const settings = pgSettings.map((s) => {
