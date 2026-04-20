@@ -36,6 +36,7 @@ function _ensurePanelDOM() {
     if (e.target === overlay) closeIpPanel();
   });
   document.getElementById("ip-panel-close").addEventListener("click", closeIpPanel);
+
 }
 
 function openIpPanel(subnetId) {
