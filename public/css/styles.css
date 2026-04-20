@@ -171,7 +171,7 @@ code {
 }
 .sidebar-logo {
   width: 100%;
-  max-width: 140px;
+  max-width: 70px;
   height: auto;
   display: block;
   margin: 0 auto 6px;
@@ -824,6 +824,45 @@ td.actions {
   color: var(--color-text-tertiary);
   font-size: 0.9rem;
 }
+
+/* ─── Column Sort + Filter (TableSF) ──────────────────────────────────────── */
+th.sf-th { vertical-align: top; white-space: normal; padding-bottom: 6px; }
+.sf-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 5px;
+  white-space: nowrap;
+}
+.sf-header:hover .sf-sort-icon { opacity: 0.75; }
+.sf-sort-icon {
+  font-size: 0.6rem;
+  opacity: 0.3;
+  flex-shrink: 0;
+  transition: opacity 0.12s;
+}
+.sf-sort-icon.sf-sort-active { opacity: 1; color: var(--color-accent); }
+.sf-filter {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 0.68rem;
+  padding: 2px 5px;
+  height: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-family: inherit;
+  outline: none;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  transition: border-color 0.12s;
+}
+.sf-filter:focus { border-color: var(--color-accent); }
+.sf-filter::placeholder { color: var(--color-text-tertiary); opacity: 0.6; }
 
 /* ─── Filter Bar ───────────────────────────────────────────────────────────── */
 .filter-bar {

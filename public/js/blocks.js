@@ -5,8 +5,10 @@
 var _blocksPageSize = 15;
 var _blocksPage = 1;
 var _blocksData = [];
+var _blocksSF = null;
 
 document.addEventListener("DOMContentLoaded", function () {
+  _blocksSF = new TableSF("blocks-tbody", function () { _blocksPage = 1; renderBlocksPage(); });
   loadBlocks();
 
   var addBtn = document.getElementById("btn-add-block");
@@ -41,8 +43,14 @@ function renderBlocksPage() {
     document.getElementById("pagination").innerHTML = "";
     return;
   }
+  var sfData = _blocksSF ? _blocksSF.apply(_blocksData) : _blocksData;
+  if (sfData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No results match the current filters.</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
   var start = (_blocksPage - 1) * _blocksPageSize;
-  var page = _blocksData.slice(start, start + _blocksPageSize);
+  var page = sfData.slice(start, start + _blocksPageSize);
   tbody.innerHTML = page.map(function (b) {
     var tags = (b.tags || []).map(function (t) { return escapeHtml(t); }).join(", ");
     return '<tr>' +
@@ -58,7 +66,7 @@ function renderBlocksPage() {
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + b.id + '\', \'' + escapeHtml(b.cidr) + '\')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
-  renderPageControls("pagination", _blocksData.length, _blocksPageSize, _blocksPage, function (p) {
+  renderPageControls("pagination", sfData.length, _blocksPageSize, _blocksPage, function (p) {
     _blocksPage = p;
     renderBlocksPage();
   });

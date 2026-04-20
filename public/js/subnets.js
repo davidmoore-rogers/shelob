@@ -7,8 +7,10 @@ var _subnetsPageSize = 15;
 var _subnetsPage = 1;
 var _subnetsData = [];
 var _allSubnetsData = [];
+var _subnetsSF = null;
 
 document.addEventListener("DOMContentLoaded", async function () {
+  _subnetsSF = new TableSF("subnets-tbody", function () { _subnetsPage = 1; renderSubnetsPage(); });
   await loadBlockOptions();
   loadSubnets();
 
@@ -116,8 +118,14 @@ function renderSubnetsPage() {
     document.getElementById("pagination").innerHTML = "";
     return;
   }
+  var sfData = _subnetsSF ? _subnetsSF.apply(_subnetsData) : _subnetsData;
+  if (sfData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No results match the current filters.</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
   var start = (_subnetsPage - 1) * _subnetsPageSize;
-  var page = _subnetsData.slice(start, start + _subnetsPageSize);
+  var page = sfData.slice(start, start + _subnetsPageSize);
   tbody.innerHTML = page.map(function (s) {
     var tags = (s.tags || []).map(function (t) { return escapeHtml(t); }).join(", ");
     var blockName = s.block ? escapeHtml(s.block.name) : "-";
@@ -141,7 +149,7 @@ function renderSubnetsPage() {
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\', ' + (s._count ? s._count.reservations : 0) + ')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
-  renderPageControls("pagination", _subnetsData.length, _subnetsPageSize, _subnetsPage, function (p) {
+  renderPageControls("pagination", sfData.length, _subnetsPageSize, _subnetsPage, function (p) {
     _subnetsPage = p;
     renderSubnetsPage();
   });

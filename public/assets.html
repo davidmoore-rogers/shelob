@@ -73,16 +73,16 @@
         <table>
           <thead>
             <tr>
-              <th>Hostname</th>
-              <th>IP Address</th>
-              <th>MAC Address</th>
-              <th>Serial Number</th>
-              <th>DNS Name</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Location</th>
-              <th>Assigned To</th>
-              <th>Acquired</th>
+              <th data-sf-key="hostname" data-sf-type="string">Hostname</th>
+              <th data-sf-key="ipAddress" data-sf-type="ip">IP Address</th>
+              <th data-sf-key="macAddress" data-sf-type="string">MAC Address</th>
+              <th data-sf-key="serialNumber" data-sf-type="string">Serial Number</th>
+              <th data-sf-key="dnsName" data-sf-type="string">DNS Name</th>
+              <th data-sf-key="assetType" data-sf-type="string">Type</th>
+              <th data-sf-key="status" data-sf-type="string">Status</th>
+              <th data-sf-key="location" data-sf-type="string">Location</th>
+              <th data-sf-key="assignedTo" data-sf-type="string">Assigned To</th>
+              <th data-sf-key="acquiredAt" data-sf-type="date">Acquired</th>
               <th style="width:90px">Actions</th>
             </tr>
           </thead>
@@ -99,6 +99,7 @@
   <script src="/js/vendor/jspdf.plugin.autotable.min.js"></script>
   <script src="/js/api.js"></script>
   <script src="/js/app.js"></script>
+  <script src="/js/table-sf.js"></script>
   <script src="/js/assets.js"></script>
 </body>
 </html>

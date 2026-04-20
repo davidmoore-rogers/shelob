@@ -5,8 +5,10 @@
 var _assetsPageSize = 15;
 var _assetsPage = 1;
 var _assetsData = [];
+var _assetsSF = null;
 
 document.addEventListener("DOMContentLoaded", function () {
+  _assetsSF = new TableSF("assets-tbody", function () { _assetsPage = 1; renderAssetsPage(); });
   loadAssets();
 
   var addBtn = document.getElementById("btn-add-asset");
@@ -132,8 +134,14 @@ function renderAssetsPage() {
     document.getElementById("pagination").innerHTML = "";
     return;
   }
+  var sfData = _assetsSF ? _assetsSF.apply(_assetsData) : _assetsData;
+  if (sfData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No results match the current filters.</td></tr>';
+    document.getElementById("pagination").innerHTML = "";
+    return;
+  }
   var start = (_assetsPage - 1) * _assetsPageSize;
-  var page = _assetsData.slice(start, start + _assetsPageSize);
+  var page = sfData.slice(start, start + _assetsPageSize);
   tbody.innerHTML = page.map(function (a) {
     return '<tr>' +
       '<td><strong>' + escapeHtml(a.hostname || "-") + '</strong>' +
@@ -160,7 +168,7 @@ function renderAssetsPage() {
     el.addEventListener('mouseenter', _handleMacEnter);
     el.addEventListener('mouseleave', _handleMacLeave);
   });
-  renderPageControls("pagination", _assetsData.length, _assetsPageSize, _assetsPage, function (p) {
+  renderPageControls("pagination", sfData.length, _assetsPageSize, _assetsPage, function (p) {
     _assetsPage = p;
     renderAssetsPage();
   });
