@@ -1279,12 +1279,16 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 }
 .integration-card-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 1rem;
   padding-bottom: 0.75rem;
   border-bottom: 1px solid var(--color-border);
-  flex-wrap: wrap;
+}
+.integration-card-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 8px;
 }
 .integration-card-title {
@@ -1294,7 +1298,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   flex-wrap: wrap;
 }
 .integration-card-title strong { color: #fff; font-size: 1rem; }
-.integration-card-actions { display: flex; gap: 6px; }
+.integration-card-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .integration-type-badge {
   display: inline-block;
   padding: 3px 10px;

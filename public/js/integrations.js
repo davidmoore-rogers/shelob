@@ -83,17 +83,19 @@ async function loadIntegrations() {
 
       return '<div class="integration-card">' +
         '<div class="integration-card-header">' +
-          '<div class="integration-card-title">' +
-            '<span class="integration-type-badge">' + typeBadge + '</span>' +
-            '<strong>' + escapeHtml(intg.name) + '</strong>' +
-            '<span class="integration-status ' + statusDot + '">' + statusText + '</span>' +
-          '</div>' +
-          '<div class="integration-card-actions">' +
-            '<button class="btn btn-sm btn-secondary" onclick="testConnection(\'' + intg.id + '\', this)">Test Connection</button>' +
-            '<div id="discover-wrap-' + intg.id + '" data-disabled="' + (intg.lastTestOk !== true ? '1' : '0') + '" style="display:contents">' +
+          '<div class="integration-card-header-top">' +
+            '<div class="integration-card-title">' +
+              '<span class="integration-type-badge">' + typeBadge + '</span>' +
+              '<strong>' + escapeHtml(intg.name) + '</strong>' +
+              '<span class="integration-status ' + statusDot + '">' + statusText + '</span>' +
+            '</div>' +
+            '<div id="discover-wrap-' + intg.id + '" data-disabled="' + (intg.lastTestOk !== true ? '1' : '0') + '">' +
               _discoverBtnHTML(intg.id, intg.name, activeDiscoveries.find(function(d){ return d.id === intg.id; }) || null, intg.lastTestOk !== true) +
             '</div>' +
+          '</div>' +
+          '<div class="integration-card-actions">' +
             (intg.type !== "windowsserver" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\')">Query API</button>' : '') +
+            '<button class="btn btn-sm btn-secondary" onclick="testConnection(\'' + intg.id + '\', this)">Test Connection</button>' +
             '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + intg.id + '\')">Edit</button>' +
             '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + intg.id + '\', \'' + escapeHtml(intg.name) + '\')">Delete</button>' +
           '</div>' +
