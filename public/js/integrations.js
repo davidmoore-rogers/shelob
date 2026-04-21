@@ -9,20 +9,11 @@ document.addEventListener("DOMContentLoaded", function () {
 
 function _discoverBtnHTML(id, name, discovery, disabled) {
   if (discovery) {
-    var currentDevice = (typeof discovery === "object" && discovery.currentDevice) ? discovery.currentDevice : null;
-    return '<div class="query-status" style="margin:0;display:inline-block;vertical-align:middle">' +
-      '<div class="query-status-header">' +
-        '<span class="query-spinner"></span>' +
-        '<span>Discovering…</span>' +
-      '</div>' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">' +
-        '<div style="min-width:0;flex:1">' +
-          '<span class="query-status-name">' + escapeHtml(name) + '</span>' +
-          (currentDevice ? '<span class="query-status-device">' + escapeHtml(currentDevice) + '</span>' : '') +
-        '</div>' +
-        '<button class="query-abort-btn" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Abort">&#x2715;</button>' +
-      '</div>' +
-    '</div>';
+    return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:0.78rem;padding:0.3rem 0.6rem;border-radius:var(--radius-md);background:rgba(79,195,247,0.1);border:1px solid rgba(79,195,247,0.25);color:var(--color-accent);font-weight:500">' +
+      '<span class="query-spinner"></span>' +
+      '<span>Discovering…</span>' +
+      '<button class="query-abort-btn" style="margin-left:2px" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Abort">&#x2715;</button>' +
+    '</span>';
   }
   return '<button class="btn btn-sm btn-primary" onclick="runDiscovery(\'' + id + '\')"' +
     (disabled ? ' disabled title="Run a successful test first"' : '') + '>Discover</button>';
