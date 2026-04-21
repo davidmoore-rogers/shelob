@@ -104,7 +104,8 @@ function renderNav() {
     <ul class="sidebar-nav">
       ${visibleItems.map(item => {
         const isActive = current === item.href || (item.href === "/" && (current === "/index.html" || current === "/"));
-        return `<li><a href="${item.href}" class="${isActive ? "active" : ""}">${ICONS[item.icon]}<span>${item.label}</span></a></li>`;
+        const dot = item.href === "/events.html" ? '<span class="nav-conflict-dot" id="nav-conflict-dot" style="display:none"></span>' : "";
+        return `<li><a href="${item.href}" class="${isActive ? "active" : ""}">${ICONS[item.icon]}<span>${item.label}</span>${dot}</a></li>`;
       }).join("")}
     </ul>
     <div style="margin-top:auto">
@@ -157,6 +158,19 @@ function renderNav() {
 
   // Inject user badge into page header
   renderUserBadge();
+
+  // Conflict dot — poll every 30 s; also exposed so events.js can refresh on resolve
+  async function refreshConflictDot() {
+    var dot = document.getElementById("nav-conflict-dot");
+    if (!dot) return;
+    try {
+      var data = await api.conflicts.count();
+      dot.style.display = (data.count > 0) ? "inline-block" : "none";
+    } catch (_) {}
+  }
+  refreshConflictDot();
+  setInterval(refreshConflictDot, 30000);
+  window.refreshConflictDot = refreshConflictDot;
 }
 
 function _getUserInitials(username) {

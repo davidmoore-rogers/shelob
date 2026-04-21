@@ -471,6 +471,7 @@ function getSyslogFormData() {
       } else {
         badge.style.display = "none";
       }
+      if (typeof window.refreshConflictDot === "function") window.refreshConflictDot();
     } catch (_) {}
   }
   refreshBadge();
