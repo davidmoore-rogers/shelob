@@ -147,6 +147,7 @@ function renderNav() {
       _serverDiscoveries = [];
     }
     renderQueryStatus();
+    if (typeof window._onDiscoveriesChanged === "function") window._onDiscoveriesChanged(_serverDiscoveries);
   }
   pollDiscoveries();
   setInterval(pollDiscoveries, 4000);

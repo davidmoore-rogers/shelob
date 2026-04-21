@@ -7,8 +7,30 @@ document.addEventListener("DOMContentLoaded", function () {
   document.getElementById("btn-add-integration").addEventListener("click", showTypePicker);
 });
 
+function _discoverBtnHTML(id, name, discovering, disabled) {
+  if (discovering) {
+    return '<button class="btn btn-sm btn-secondary" disabled style="cursor:default;opacity:0.9">Discovering\u2026</button>' +
+      '<button class="btn btn-sm btn-secondary" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Abort discovery">&#x2715;</button>';
+  }
+  return '<button class="btn btn-sm btn-secondary" onclick="runDiscovery(\'' + id + '\')"' +
+    (disabled ? ' disabled title="Run a successful test first"' : '') + '>Discover</button>';
+}
+
+function _updateDiscoverButtons(discoveries) {
+  discoveries = discoveries || [];
+  document.querySelectorAll("[id^='discover-wrap-']").forEach(function (wrap) {
+    var id = wrap.id.slice("discover-wrap-".length);
+    var name = (wrap.closest(".integration-card") || document).querySelector("strong");
+    name = name ? name.textContent : "";
+    var disabled = wrap.getAttribute("data-disabled") === "1";
+    var discovering = discoveries.some(function (d) { return d.id === id; });
+    wrap.innerHTML = _discoverBtnHTML(id, name, discovering, disabled);
+  });
+}
+
 async function loadIntegrations() {
   var container = document.getElementById("integrations-list");
+  window._onDiscoveriesChanged = _updateDiscoverButtons;
   try {
     var result = await api.integrations.list();
     var integrations = result.integrations || result;
@@ -16,6 +38,7 @@ async function loadIntegrations() {
       container.innerHTML = '<div class="empty-state-card"><p>No integrations configured.</p><p style="color:var(--color-text-tertiary);font-size:0.85rem;margin-top:0.5rem">Add a FortiManager or Windows Server connection to get started.</p></div>';
       return;
     }
+    var activeDiscoveries = (window._getServerDiscoveries && window._getServerDiscoveries()) || [];
     container.innerHTML = integrations.map(function (intg) {
       var config = intg.config || {};
       var statusDot = intg.lastTestOk === true ? "dot-ok" : intg.lastTestOk === false ? "dot-fail" : "dot-unknown";
@@ -55,7 +78,9 @@ async function loadIntegrations() {
           '</div>' +
           '<div class="integration-card-actions">' +
             '<button class="btn btn-sm btn-secondary" onclick="testConnection(\'' + intg.id + '\', this)">Test Connection</button>' +
-            '<button class="btn btn-sm btn-secondary" onclick="runDiscovery(\'' + intg.id + '\', this)"' + (intg.lastTestOk !== true ? ' disabled title="Run a successful test first"' : '') + '>Discover</button>' +
+            '<div id="discover-wrap-' + intg.id + '" data-disabled="' + (intg.lastTestOk !== true ? '1' : '0') + '" style="display:contents">' +
+              _discoverBtnHTML(intg.id, intg.name, activeDiscoveries.some(function(d){ return d.id === intg.id; }), intg.lastTestOk !== true) +
+            '</div>' +
             '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + intg.id + '\')">Edit</button>' +
             '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + intg.id + '\', \'' + escapeHtml(intg.name) + '\')">Delete</button>' +
           '</div>' +
@@ -392,26 +417,32 @@ async function testConnection(id, btn) {
   }
 }
 
-async function runDiscovery(id, btn) {
-  btn.disabled = true;
-  btn.textContent = "Discovering...";
-  var name = btn.closest(".integration-card").querySelector("strong").textContent;
+async function runDiscovery(id) {
+  var wrap = document.getElementById("discover-wrap-" + id);
+  var name = wrap ? ((wrap.closest(".integration-card") || document).querySelector("strong") || {}).textContent || "" : "";
+  // Flip button immediately; the server poll will keep it in sync
+  if (wrap) wrap.innerHTML = _discoverBtnHTML(id, name, true, false);
   try {
     await api.integrations.discover(id, name);
     showToast("Discovery started — running in the background. Results will appear shortly.", "success");
-    // Poll for completion: reload card at 15s, 45s, and 120s
     [15000, 45000, 120000].forEach(function (delay) {
       setTimeout(function () {
         if (document.getElementById("integrations-list")) loadIntegrations();
       }, delay);
     });
   } catch (err) {
+    // Restore button on error (poll will also correct it on next tick)
+    var disabled = wrap ? wrap.getAttribute("data-disabled") === "1" : false;
+    if (wrap) wrap.innerHTML = _discoverBtnHTML(id, name, false, disabled);
     if (err.name === "AbortError") { showToast("Discovery aborted", "error"); }
     else { showToast(err.message, "error"); }
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Discover";
   }
+}
+
+async function abortIntegrationDiscovery(id, name) {
+  var ok = await showConfirm('Abort discovery of "' + name + '"?');
+  if (!ok) return;
+  try { await api.integrations.abortDiscover(id); } catch (_) {}
 }
 
 async function confirmDelete(id, name) {
