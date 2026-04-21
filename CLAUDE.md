@@ -201,6 +201,12 @@ npm run build && npm start
 
 ---
 
+## Commits
+
+Every commit must include a `package.json` version bump. Increment the patch digit (0.9.x) by 1 per commit. Include the new version number in the commit message subject line, e.g. `Fix DHCP lease expiry (0.9.101)`.
+
+---
+
 ## Key Coding Conventions
 
 - All IP math lives in `src/utils/cidr.ts`. **Never** do string manipulation on IPs elsewhere.
