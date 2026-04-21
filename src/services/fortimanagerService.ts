@@ -536,8 +536,11 @@ export async function discoverDhcpSubnets(
             for (const iface of ifaceData) {
               const ifaceName = iface.name || "";
 
-              // Collect VLAN ID for every interface (used to backfill discovered subnets)
-              const vid = typeof iface.vlanid === "number" ? iface.vlanid : parseInt(String(iface.vlanid ?? ""), 10);
+              // Collect VLAN ID for every interface (used to backfill discovered subnets).
+              // FortiLink interfaces store the management VLAN in switch-controller-mgmt-vlan
+              // rather than vlanid, so fall back to that field when vlanid is absent/zero.
+              const rawVid = iface.vlanid ?? iface["switch-controller-mgmt-vlan"] ?? "";
+              const vid = typeof rawVid === "number" ? rawVid : parseInt(String(rawVid), 10);
               if (!isNaN(vid) && vid > 0) ifaceVlanMap.set(ifaceName, vid);
 
               // Collect IP only for DHCP-serving interfaces
