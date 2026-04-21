@@ -875,6 +875,10 @@ th.sf-th { vertical-align: top; white-space: normal; padding-bottom: 6px; }
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-sm);
   margin-bottom: 8px;
+  position: sticky;
+  top: 8px;
+  z-index: 50;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35), 0 0 0 1px var(--color-accent);
 }
 .bulk-bar-count {
   font-size: 0.82rem;
