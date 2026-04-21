@@ -27,6 +27,15 @@ const CreateReservationSchema = z.object({
   notes: z.string().optional(),
 });
 
+const NextAvailableSchema = z.object({
+  subnetId: z.string().uuid(),
+  hostname: z.string().min(1, "Hostname is required"),
+  owner: z.string().optional(),
+  projectRef: z.string().optional(),
+  expiresAt: z.coerce.date().optional(),
+  notes: z.string().optional(),
+});
+
 const UpdateReservationSchema = z.object({
   hostname: z.string().optional(),
   owner: z.string().min(1, "Owner is required").optional(),
@@ -48,6 +57,24 @@ function canWriteAny(req: any): boolean {
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+
+// POST /reservations/next-available  (must come before /:id)
+router.post("/next-available", async (req, res, next) => {
+  try {
+    if (!canWriteReservations(req)) {
+      throw new AppError(403, "Forbidden — you do not have permission to create reservations");
+    }
+    const input = NextAvailableSchema.parse(req.body);
+    const reservation = await reservationService.nextAvailableReservation({
+      ...input,
+      createdBy: req.session?.username,
+    });
+    logEvent({ action: "reservation.created", resourceType: "reservation", resourceId: reservation.id, resourceName: reservation.hostname || reservation.ipAddress || undefined, actor: req.session?.username, message: `Reservation auto-allocated for ${reservation.ipAddress} (${input.owner || "no owner"})` });
+    res.status(201).json(reservation);
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get("/", async (req, res, next) => {
   try {

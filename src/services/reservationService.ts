@@ -4,7 +4,7 @@
 
 import { PrismaClient, ReservationStatus } from "@prisma/client";
 import { AppError } from "../utils/errors.js";
-import { ipInCidr, isValidIpAddress } from "../utils/cidr.js";
+import { ipInCidr, isValidIpAddress, enumerateSubnetIps, detectIpVersion } from "../utils/cidr.js";
 
 const prisma = new PrismaClient();
 
@@ -203,6 +203,56 @@ export async function releaseReservation(id: string) {
 
     return released;
   });
+}
+
+// ─── Next Available IP ────────────────────────────────────────────────────────
+
+export interface NextAvailableReservationInput {
+  subnetId: string;
+  hostname?: string;
+  owner?: string;
+  projectRef?: string;
+  expiresAt?: Date;
+  notes?: string;
+  createdBy?: string;
+}
+
+export async function nextAvailableReservation(input: NextAvailableReservationInput) {
+  const subnet = await prisma.subnet.findUnique({ where: { id: input.subnetId } });
+  if (!subnet) throw new AppError(404, `Subnet ${input.subnetId} not found`);
+  if (subnet.status === "deprecated")
+    throw new AppError(409, `Subnet ${subnet.cidr} is deprecated and cannot accept new reservations`);
+  if (detectIpVersion(subnet.cidr) !== "v4")
+    throw new AppError(400, "Auto-allocate is only supported for IPv4 subnets");
+
+  const activeReservations = await prisma.reservation.findMany({
+    where: { subnetId: input.subnetId, status: "active" },
+    select: { ipAddress: true },
+  });
+  const reservedIps = new Set(
+    activeReservations.map((r) => r.ipAddress).filter(Boolean) as string[]
+  );
+
+  const pageSize = 256;
+  let page = 1;
+  let found: string | null = null;
+
+  while (!found) {
+    const { addresses, total } = enumerateSubnetIps(subnet.cidr, page, pageSize);
+    for (const addr of addresses) {
+      if (addr.type !== "host") continue;
+      if (!reservedIps.has(addr.address)) {
+        found = addr.address;
+        break;
+      }
+    }
+    if (!found && page * pageSize >= total) break;
+    page++;
+  }
+
+  if (!found) throw new AppError(409, `No available IP addresses in subnet ${subnet.cidr}`);
+
+  return createReservation({ ...input, ipAddress: found });
 }
 
 // ─── Expire (called by scheduled job) ────────────────────────────────────────

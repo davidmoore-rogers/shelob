@@ -73,11 +73,12 @@ const api = {
     delete:        (id)     => request("DELETE", `/subnets/${id}`),
   },
   reservations: {
-    list:    (params) => request("GET", "/reservations" + toQuery(params)),
-    get:     (id)     => request("GET", `/reservations/${id}`),
-    create:  (body)   => request("POST", "/reservations", body),
-    update:  (id, b)  => request("PUT", `/reservations/${id}`, b),
-    release: (id)     => request("DELETE", `/reservations/${id}`),
+    list:          (params) => request("GET", "/reservations" + toQuery(params)),
+    get:           (id)     => request("GET", `/reservations/${id}`),
+    create:        (body)   => request("POST", "/reservations", body),
+    nextAvailable: (body)   => request("POST", "/reservations/next-available", body),
+    update:        (id, b)  => request("PUT", `/reservations/${id}`, b),
+    release:       (id)     => request("DELETE", `/reservations/${id}`),
   },
   utilization: {
     global:  ()   => request("GET", "/utilization"),

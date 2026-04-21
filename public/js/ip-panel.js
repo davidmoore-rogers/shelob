@@ -105,12 +105,19 @@ function _renderPanelHeader(data) {
         '<button data-fmt="csv">Export as CSV</button>' +
       '</div>' +
     '</div>' +
+    (canReserveIps() && !data.ipv6 ? '<button class="btn btn-sm btn-secondary" id="ip-panel-auto-alloc-btn">Auto-Allocate Next</button>' : '') +
     (canReserveIps() ? '<button class="btn btn-sm btn-primary" id="ip-panel-reserve-btn">+ Reserve IP</button>' : '') +
     '</span>';
   meta += headerBtns;
 
   document.getElementById("ip-panel-meta").innerHTML = meta;
 
+  var allocBtn = document.getElementById("ip-panel-auto-alloc-btn");
+  if (allocBtn) {
+    allocBtn.addEventListener("click", function () {
+      _openAutoAllocateModal(_ipPanelSubnetId);
+    });
+  }
   var btn = document.getElementById("ip-panel-reserve-btn");
   if (btn) {
     btn.addEventListener("click", function () {
@@ -390,6 +397,48 @@ function _renderPanelFooter(data) {
 }
 
 // ─── Reservation modals (reuse existing modal system) ───────────────────────
+
+function _openAutoAllocateModal(subnetId) {
+  var s = _ipPanelData ? _ipPanelData.subnet : null;
+  var subnetLabel = s ? escapeHtml(s.name) + ' (' + escapeHtml(s.cidr) + ')' : subnetId;
+
+  var body =
+    '<div class="form-group"><label>Network</label><input type="text" value="' + subnetLabel + '" disabled></div>' +
+    '<p class="hint" style="margin-bottom:12px">The next available host IP will be reserved automatically.</p>' +
+    '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
+    '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
+    '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
+    '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
+    '<div class="form-group"><label>Notes</label><textarea id="f-notes" placeholder="Optional notes"></textarea></div>';
+  var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" id="btn-save">Auto-Allocate</button>';
+  openModal("Auto-Allocate Next IP", body, footer);
+
+  document.getElementById("btn-save").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var expiresVal = document.getElementById("f-expiresAt").value;
+      var input = {
+        subnetId: subnetId,
+        hostname: document.getElementById("f-hostname").value.trim(),
+        owner: document.getElementById("f-owner").value.trim() || undefined,
+        projectRef: document.getElementById("f-projectRef").value.trim() || undefined,
+        expiresAt: expiresVal ? new Date(expiresVal).toISOString() : undefined,
+        notes: document.getElementById("f-notes").value.trim() || undefined,
+      };
+      var reservation = await api.reservations.nextAvailable(input);
+      closeModal();
+      showToast("Reserved " + reservation.ipAddress);
+      _ipPanelDirty = true;
+      _fetchIpPage();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
 
 function _openReserveModal(subnetId, ipAddress) {
   var s = _ipPanelData ? _ipPanelData.subnet : null;
