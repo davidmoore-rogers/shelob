@@ -797,6 +797,24 @@ export async function discoverDhcpSubnets(
         const excludedDevIfaces = new Set(
           devSubnets.filter((s) => !filteredDevSubnets.includes(s)).map((s) => `${s.fortigateDevice}/${s.name}`)
         );
+        // Enrich blank interfaceNames in this device's inventory slice using DHCP data
+        const devDhcpEntries = dhcpEntries.slice(entBefore);
+        const devMacToIface = new Map<string, string>();
+        for (const e of devDhcpEntries) {
+          if (e.macAddress && e.interfaceName) {
+            const norm = e.macAddress.toUpperCase().replace(/-/g, ":");
+            if (!devMacToIface.has(norm)) devMacToIface.set(norm, e.interfaceName);
+          }
+        }
+        const devInventory = deviceInventory.slice(invBefore);
+        for (const inv of devInventory) {
+          if (!inv.interfaceName && inv.macAddress) {
+            const norm = inv.macAddress.toUpperCase().replace(/-/g, ":");
+            const iface = devMacToIface.get(norm);
+            if (iface) inv.interfaceName = iface;
+          }
+        }
+
         await onDeviceComplete({
           subnets: filteredDevSubnets,
           devices: devices.slice(devBefore),
@@ -805,8 +823,8 @@ export async function discoverDhcpSubnets(
           ),
           // Pass all DHCP entries (including from excluded interfaces) so that manually-created
           // subnets matching an excluded network still get populated with reservations and leases.
-          dhcpEntries: dhcpEntries.slice(entBefore),
-          deviceInventory: deviceInventory.slice(invBefore).filter(
+          dhcpEntries: devDhcpEntries,
+          deviceInventory: devInventory.filter(
             (d) => !excludedDevIfaces.has(`${d.device}/${d.interfaceName}`) &&
                    matchesInventoryFilter(d.interfaceName, config)
           ),
@@ -834,6 +852,24 @@ export async function discoverDhcpSubnets(
   // syncDhcpSubnets uses findSubnetForIp, which returns nothing if no subnet exists,
   // so entries for fully-excluded networks with no matching subnet are silently skipped.
   const filteredDhcpEntries = dhcpEntries;
+
+  // Enrich inventory entries whose interfaceName is blank by matching them to a DHCP entry
+  // with the same MAC. FortiGate sometimes omits client.interface for wireless clients;
+  // the DHCP entry for the same device carries the correct interface (DHCP server interface).
+  const macToDhcpIface = new Map<string, string>();
+  for (const e of dhcpEntries) {
+    if (e.macAddress && e.interfaceName) {
+      const norm = e.macAddress.toUpperCase().replace(/-/g, ":");
+      if (!macToDhcpIface.has(norm)) macToDhcpIface.set(norm, e.interfaceName);
+    }
+  }
+  for (const inv of deviceInventory) {
+    if (!inv.interfaceName && inv.macAddress) {
+      const norm = inv.macAddress.toUpperCase().replace(/-/g, ":");
+      const iface = macToDhcpIface.get(norm);
+      if (iface) inv.interfaceName = iface;
+    }
+  }
 
   // Filter device inventory: drop devices connected to excluded DHCP interfaces
   const excludedIfaceNames = new Set(
@@ -873,8 +909,17 @@ function matchesWildcard(pattern: string, value: string): boolean {
 function matchesInventoryFilter(interfaceName: string, config: FortiManagerConfig): boolean {
   const includeList = config.inventoryIncludeInterfaces ?? [];
   const excludeList = config.inventoryExcludeInterfaces ?? [];
-  if (includeList.length > 0) return includeList.some((p) => matchesWildcard(p, interfaceName));
-  if (excludeList.length > 0) return !excludeList.some((p) => matchesWildcard(p, interfaceName));
+
+  // Plain patterns (no wildcards) also match VLAN sub-interfaces:
+  // "RGIGuest" matches "RGIGuest.100", "dmz" matches "dmz.10"
+  function matches(pattern: string, iface: string): boolean {
+    if (matchesWildcard(pattern, iface)) return true;
+    if (!pattern.includes("*") && iface.toLowerCase().startsWith(pattern.toLowerCase() + ".")) return true;
+    return false;
+  }
+
+  if (includeList.length > 0) return includeList.some((p) => matches(p, interfaceName));
+  if (excludeList.length > 0) return !excludeList.some((p) => matches(p, interfaceName));
   return true;
 }
 
