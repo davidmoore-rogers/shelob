@@ -1,4 +1,4 @@
-/**
+﻿/**
  * public/js/integrations.js — Integrations management page
  */
 
@@ -7,9 +7,22 @@ document.addEventListener("DOMContentLoaded", function () {
   document.getElementById("btn-add-integration").addEventListener("click", showTypePicker);
 });
 
-function _discoverBtnHTML(id, name, discovering, disabled) {
-  if (discovering) {
-    return '<button class="btn btn-sm btn-primary" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Click to abort discovery">Discovering\u2026 <span style="opacity:0.65;margin-left:2px">&#x2715;</span></button>';
+function _discoverBtnHTML(id, name, discovery, disabled) {
+  if (discovery) {
+    var currentDevice = (typeof discovery === "object" && discovery.currentDevice) ? discovery.currentDevice : null;
+    return '<div class="query-status" style="margin:0;display:inline-block;vertical-align:middle">' +
+      '<div class="query-status-header">' +
+        '<span class="query-spinner"></span>' +
+        '<span>Discovering…</span>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">' +
+        '<div style="min-width:0;flex:1">' +
+          '<span class="query-status-name">' + escapeHtml(name) + '</span>' +
+          (currentDevice ? '<span class="query-status-device">' + escapeHtml(currentDevice) + '</span>' : '') +
+        '</div>' +
+        '<button class="query-abort-btn" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Abort">&#x2715;</button>' +
+      '</div>' +
+    '</div>';
   }
   return '<button class="btn btn-sm btn-primary" onclick="runDiscovery(\'' + id + '\')"' +
     (disabled ? ' disabled title="Run a successful test first"' : '') + '>Discover</button>';
@@ -22,8 +35,8 @@ function _updateDiscoverButtons(discoveries) {
     var name = (wrap.closest(".integration-card") || document).querySelector("strong");
     name = name ? name.textContent : "";
     var disabled = wrap.getAttribute("data-disabled") === "1";
-    var discovering = discoveries.some(function (d) { return d.id === id; });
-    wrap.innerHTML = _discoverBtnHTML(id, name, discovering, disabled);
+    var discovery = discoveries.find(function (d) { return d.id === id; }) || null;
+    wrap.innerHTML = _discoverBtnHTML(id, name, discovery, disabled);
   });
 }
 
@@ -78,7 +91,7 @@ async function loadIntegrations() {
           '<div class="integration-card-actions">' +
             '<button class="btn btn-sm btn-secondary" onclick="testConnection(\'' + intg.id + '\', this)">Test Connection</button>' +
             '<div id="discover-wrap-' + intg.id + '" data-disabled="' + (intg.lastTestOk !== true ? '1' : '0') + '" style="display:contents">' +
-              _discoverBtnHTML(intg.id, intg.name, activeDiscoveries.some(function(d){ return d.id === intg.id; }), intg.lastTestOk !== true) +
+              _discoverBtnHTML(intg.id, intg.name, activeDiscoveries.find(function(d){ return d.id === intg.id; }) || null, intg.lastTestOk !== true) +
             '</div>' +
             (intg.type !== "windowsserver" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\')">Query API</button>' : '') +
             '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + intg.id + '\')">Edit</button>' +
@@ -449,7 +462,7 @@ async function runDiscovery(id) {
   var wrap = document.getElementById("discover-wrap-" + id);
   var name = wrap ? ((wrap.closest(".integration-card") || document).querySelector("strong") || {}).textContent || "" : "";
   // Flip button immediately; the server poll will keep it in sync
-  if (wrap) wrap.innerHTML = _discoverBtnHTML(id, name, true, false);
+  if (wrap) wrap.innerHTML = _discoverBtnHTML(id, name, { id: id, name: name, currentDevice: null }, false);
   try {
     await api.integrations.discover(id, name);
     showToast("Discovery started — running in the background. Results will appear shortly.", "success");
@@ -568,6 +581,23 @@ function showConflictModal(integrationId, conflicts) {
 
 function val(id) { return document.getElementById(id).value.trim(); }
 
+function _fmgLoadQueries() {
+  try { return JSON.parse(localStorage.getItem("shelob-fmg-queries") || "[]"); } catch (_) { return []; }
+}
+
+function _fmgPersistQueries(queries) {
+  localStorage.setItem("shelob-fmg-queries", JSON.stringify(queries));
+}
+
+function _fmgRenderSavedSelect(queries, selectValue) {
+  var sel = document.getElementById("fmg-saved-select");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— load a saved query —</option>' +
+    queries.map(function (q, i) {
+      return '<option value="' + i + '"' + (String(i) === String(selectValue) ? " selected" : "") + '>' + escapeHtml(q.name) + '</option>';
+    }).join("");
+}
+
 function openApiQueryModal(id, adom) {
   adom = adom || "root";
   var defaultParams = JSON.stringify([{
@@ -580,21 +610,36 @@ function openApiQueryModal(id, adom) {
   }], null, 2);
 
   var body =
+    '<div style="margin-bottom:0.75rem">' +
+      '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Saved Queries</p>' +
+      '<div style="display:flex;gap:6px;align-items:center">' +
+        '<select id="fmg-saved-select" style="flex:1"></select>' +
+        '<button class="btn btn-sm btn-secondary" id="fmg-load-btn">Load</button>' +
+        '<button class="btn btn-sm btn-danger" id="fmg-delete-btn">Delete</button>' +
+      '</div>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:0 0 0.75rem">' +
     '<div class="form-group">' +
       '<label>Method</label>' +
       '<select id="fmg-method" style="width:auto">' +
         '<option value="exec">exec</option>' +
         '<option value="get">get</option>' +
-        '<option value="set">set</option>' +
       '</select>' +
     '</div>' +
     '<div class="form-group">' +
       '<label>Params <span style="font-size:0.8rem;color:var(--color-text-tertiary)">(JSON array)</span></label>' +
-      '<textarea id="fmg-params" rows="10" style="font-family:monospace;font-size:0.82rem">' + escapeHtml(defaultParams) + '</textarea>' +
+      '<textarea id="fmg-params" rows="9" style="font-family:monospace;font-size:0.82rem">' + escapeHtml(defaultParams) + '</textarea>' +
+    '</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;margin-bottom:0.25rem">' +
+      '<input type="text" id="fmg-save-name" placeholder="Name this query to save it…" style="flex:1;font-size:0.85rem">' +
+      '<button class="btn btn-sm btn-secondary" id="fmg-save-btn">Save</button>' +
     '</div>' +
     '<div id="fmg-response-wrap" style="display:none;margin-top:1rem">' +
-      '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Response</p>' +
-      '<pre id="fmg-response" style="background:var(--color-surface-raised);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:0.75rem;font-size:0.78rem;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all;margin:0"></pre>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem">' +
+        '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0">Response</p>' +
+        '<button class="btn btn-sm btn-secondary" id="fmg-copy-btn" style="padding:2px 10px;font-size:0.75rem">Copy</button>' +
+      '</div>' +
+      '<pre id="fmg-response" style="background:var(--color-surface-raised);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:0.75rem;font-size:0.78rem;overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;margin:0"></pre>' +
     '</div>';
 
   var footer =
@@ -602,6 +647,46 @@ function openApiQueryModal(id, adom) {
     '<button class="btn btn-primary" id="fmg-send">Send</button>';
 
   openModal("FortiManager API Query", body, footer, { wide: true });
+
+  var savedQueries = _fmgLoadQueries();
+  _fmgRenderSavedSelect(savedQueries);
+
+  document.getElementById("fmg-load-btn").addEventListener("click", function () {
+    var idx = parseInt(document.getElementById("fmg-saved-select").value, 10);
+    if (isNaN(idx) || !savedQueries[idx]) return;
+    var q = savedQueries[idx];
+    document.getElementById("fmg-method").value = q.method;
+    document.getElementById("fmg-params").value = q.params;
+    document.getElementById("fmg-save-name").value = q.name;
+  });
+
+  document.getElementById("fmg-delete-btn").addEventListener("click", async function () {
+    var idx = parseInt(document.getElementById("fmg-saved-select").value, 10);
+    if (isNaN(idx) || !savedQueries[idx]) return;
+    var ok = await showConfirm("Delete saved query \"" + savedQueries[idx].name + "\"?");
+    if (!ok) return;
+    savedQueries.splice(idx, 1);
+    _fmgPersistQueries(savedQueries);
+    _fmgRenderSavedSelect(savedQueries);
+  });
+
+  document.getElementById("fmg-save-btn").addEventListener("click", function () {
+    var name = document.getElementById("fmg-save-name").value.trim();
+    if (!name) { showToast("Enter a name for this query", "error"); return; }
+    var method = document.getElementById("fmg-method").value;
+    var params = document.getElementById("fmg-params").value.trim();
+    var existIdx = -1;
+    savedQueries.forEach(function (q, i) { if (q.name === name) existIdx = i; });
+    if (existIdx >= 0) {
+      savedQueries[existIdx] = { name: name, method: method, params: params };
+    } else {
+      savedQueries.push({ name: name, method: method, params: params });
+      existIdx = savedQueries.length - 1;
+    }
+    _fmgPersistQueries(savedQueries);
+    _fmgRenderSavedSelect(savedQueries, existIdx);
+    showToast("Query saved");
+  });
 
   document.getElementById("fmg-send").addEventListener("click", async function () {
     var btn = this;
@@ -630,5 +715,14 @@ function openApiQueryModal(id, adom) {
       btn.disabled = false;
       btn.textContent = "Send";
     }
+  });
+
+  document.getElementById("fmg-copy-btn").addEventListener("click", function () {
+    var text = document.getElementById("fmg-response").textContent;
+    var btn = this;
+    navigator.clipboard.writeText(text).then(function () {
+      btn.textContent = "Copied!";
+      setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+    }).catch(function () { showToast("Copy failed", "error"); });
   });
 }

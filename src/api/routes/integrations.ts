@@ -1279,10 +1279,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       const proposedNotes = [
         `${isDhcpReservation ? "DHCP reservation" : "DHCP lease"} on ${entry.device} (${entry.interfaceName})`,
         entry.macAddress ? `MAC: ${entry.macAddress}` : null,
+        entry.vci ? `Model: ${entry.vci}` : null,
         entry.ssid ? `SSID: ${entry.ssid}` : null,
         entry.accessPoint ? `AP: ${entry.accessPoint}` : null,
       ].filter(Boolean).join(" — ");
-      const proposedSourceType = isDhcpReservation ? "dhcp_reservation" : "dhcp_lease";
+      // Use vci to identify FortiSwitch/FortiAP entries not caught by managed device APIs
+      const vciLower = (entry.vci || "").toLowerCase();
+      const proposedSourceType = (
+        vciLower.startsWith("fortiswitch-") ? "fortiswitch" :
+        vciLower.startsWith("fortiap-") ? "fortinap" :
+        isDhcpReservation ? "dhcp_reservation" : "dhcp_lease"
+      ) as "fortiswitch" | "fortinap" | "dhcp_reservation" | "dhcp_lease";
       const proposedExpiresAt = !isDhcpReservation && entry.expireTime ? new Date(entry.expireTime * 1000) : undefined;
 
       const existingRes = activeResMap.get(key);

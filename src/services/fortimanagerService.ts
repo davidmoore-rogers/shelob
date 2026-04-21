@@ -196,6 +196,7 @@ export interface DiscoveredDhcpEntry {
   expireTime?: number;      // Unix timestamp from expire_time (dynamic leases only)
   accessPoint?: string;     // AP name for wireless leases
   ssid?: string;            // SSID for wireless leases
+  vci?: string;             // Vendor class identifier (e.g. "FortiSwitch-108F-FPOE")
 }
 
 export interface DiscoveredInventoryDevice {
@@ -389,6 +390,8 @@ export async function discoverDhcpSubnets(
 
     // Track which interface names serve DHCP so we can look up their IPs
     const dhcpInterfaceNames: string[] = [];
+    // Record start index so the monitor phase can replace config reservations with richer data
+    const configResStart = dhcpEntries.length;
 
     try {
       const dhcpPayload: JsonRpcRequest = {
@@ -435,7 +438,7 @@ export async function discoverDhcpSubnets(
           // Skip entries with invalid netmask/IP combinations
         }
 
-        // Extract DHCP reserved addresses (static MAC-to-IP bindings)
+        // Extract DHCP reserved addresses as fallback — replaced below if system/dhcp succeeds
         const reservedAddrs = server["reserved-address"];
         if (Array.isArray(reservedAddrs)) {
           for (const entry of reservedAddrs) {
@@ -456,7 +459,9 @@ export async function discoverDhcpSubnets(
       }
       log("discover.dhcp", "info", `${deviceName}: Found ${deviceSubnetCount} DHCP subnet(s) and ${deviceReservationCount} static reservation(s)`, deviceName);
 
-      // Step 3a: Query DHCP lease table for dynamic leases
+      // Step 3a: Query live DHCP table (reservations + leases) via system/dhcp monitor endpoint.
+      // If successful, replace the config-based reservation fallback entries with this richer data
+      // which includes vci (device model), access_point, ssid, and the reserved flag.
       try {
         const leasePayload: JsonRpcRequest = {
           id: 4,
@@ -466,24 +471,22 @@ export async function discoverDhcpSubnets(
             data: {
               target: [`/adom/${adom}/device/${deviceName}`],
               action: "get",
-              resource: "/api/v2/monitor/dhcp/server-leases",
+              resource: "/api/v2/monitor/system/dhcp",
             },
           }],
         };
 
         const leaseRes = await rpc(baseUrl, leasePayload, apiUser, apiToken, verifySsl, signal);
         const leaseData = leaseRes.result?.[0]?.data;
+        const monitorStatus = Array.isArray(leaseData) ? leaseData[0]?.status?.code : undefined;
 
         // FMG wraps the FortiGate response: data[0].response.results
         const rawResults = Array.isArray(leaseData)
           ? leaseData[0]?.response?.results
           : (leaseData as any)?.response?.results;
 
-        // FortiOS returns results in one of three formats:
-        //   1. Array of server objects, each with a "leases" sub-array (older FortiOS)
-        //   2. Object keyed by server mkey, each value having a "leases" sub-array (FortiOS 7.4+)
-        //   3. Flat array where each item is a lease directly
-        // Normalise all formats to a flat list with _serverIface carried down.
+        // system/dhcp returns a flat array of all current entries (both reserved and dynamic).
+        // Older endpoints may return nested formats; normalise all to a flat list.
         let resultsArray: any[] = [];
         if (Array.isArray(rawResults)) {
           resultsArray = rawResults;
@@ -500,31 +503,31 @@ export async function discoverDhcpSubnets(
               flatLeases.push({ ...lease, _serverIface: serverIface });
             }
           } else if (entry.ip) {
-            // Flat format: entry is a lease directly
             flatLeases.push(entry);
           }
         }
 
-        log("discover.leases", "info", `${deviceName}: Raw lease entries from API: ${flatLeases.length}`, deviceName);
+        log("discover.leases", "info", `${deviceName}: Raw DHCP entries from monitor: ${flatLeases.length}`, deviceName);
+
+        if (monitorStatus === 0 && flatLeases.length > 0) {
+          // Monitor succeeded — replace config-based reservation fallback entries with monitor data
+          dhcpEntries.splice(configResStart, dhcpEntries.length - configResStart);
+        }
 
         // Subnets discovered for this device (for interface inference below)
         const deviceSubnets = discovered.slice(snBefore);
 
-        let deviceLeaseCount = 0;
+        let deviceEntryCount = 0;
         for (const lease of flatLeases) {
           const leaseIp = lease.ip;
           const leaseMac = lease.mac || "";
           let leaseIface = lease.interface || lease._serverIface || "";
           if (!leaseIp || leaseIp === "0.0.0.0") continue;
 
-          // Skip if already captured as a static reservation
-          const alreadyExists = dhcpEntries.some(
-            (e) => e.ipAddress === leaseIp && e.device === deviceName
-          );
-          if (alreadyExists) continue;
+          // Skip duplicates (can occur when monitor and config fallback both run)
+          if (dhcpEntries.some((e) => e.ipAddress === leaseIp && e.device === deviceName)) continue;
 
-          // If no interface name came from the API, infer it from whichever
-          // discovered subnet on this device contains the lease IP
+          // If no interface name came from the API, infer from whichever discovered subnet contains it
           if (!leaseIface) {
             const matched = deviceSubnets.find((s) => {
               try { return new Netmask(s.cidr).contains(leaseIp); } catch { return false; }
@@ -538,16 +541,17 @@ export async function discoverDhcpSubnets(
             ipAddress: leaseIp,
             macAddress: leaseMac,
             hostname: lease.hostname || "",
-            type: "dhcp-lease",
+            type: lease.reserved === true ? "dhcp-reservation" : "dhcp-lease",
             expireTime: lease.expire_time || undefined,
             accessPoint: lease.access_point || undefined,
             ssid: lease.ssid || undefined,
+            vci: lease.vci || undefined,
           });
-          deviceLeaseCount++;
+          deviceEntryCount++;
         }
-        log("discover.leases", "info", `${deviceName}: Found ${deviceLeaseCount} dynamic DHCP lease(s)`, deviceName);
+        log("discover.leases", "info", `${deviceName}: Found ${deviceEntryCount} DHCP entry/entries from monitor`, deviceName);
       } catch (err: any) {
-        log("discover.leases", "error", `${deviceName}: Failed to query DHCP leases — ${err.message || "Unknown error"}`, deviceName);
+        log("discover.leases", "error", `${deviceName}: Failed to query DHCP monitor — ${err.message || "Unknown error"}`, deviceName);
       }
 
       // Step 3: Query interfaces to get IPs for DHCP-serving interfaces
