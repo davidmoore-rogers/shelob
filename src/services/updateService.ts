@@ -54,14 +54,31 @@ export interface UpdateStatus {
 let _status: UpdateStatus = { state: "idle" };
 let _applying = false;
 
-function readPackageVersion(): string {
+function readPackageMinor(): string {
   try {
     for (const rel of ["../../package.json", "../package.json"]) {
       const p = join(__dirname, rel);
-      if (existsSync(p)) return JSON.parse(readFileSync(p, "utf-8")).version || "0.0.0";
+      if (existsSync(p)) {
+        const v = JSON.parse(readFileSync(p, "utf-8")).version || "0.9.0";
+        const [major, minor] = v.split(".");
+        return `${major}.${minor}`;
+      }
     }
   } catch {}
-  return "0.0.0";
+  return "0.9";
+}
+
+function computeVersion(majorMinor: string, commitCount: string | number): string {
+  return `${majorMinor}.${commitCount}`;
+}
+
+function readCurrentVersion(): string {
+  try {
+    const count = execSync("git rev-list --count HEAD", { cwd: APP_DIR, encoding: "utf-8" }).trim();
+    return computeVersion(readPackageMinor(), count);
+  } catch {
+    return readPackageMinor() + ".0";
+  }
 }
 
 function saveStatus() {
@@ -89,7 +106,7 @@ export function initUpdateStatus() {
   if (saved && saved.state === "restarting") {
     saved.state = "complete";
     saved.completedAt = new Date().toISOString();
-    saved.latestVersion = readPackageVersion();
+    saved.latestVersion = readCurrentVersion();
     // Mark all steps done
     if (saved.steps) {
       saved.steps.forEach((s) => {
@@ -122,7 +139,7 @@ export function clearUpdateStatus() {
  * Check if a newer version is available on the remote.
  */
 export async function checkForUpdates(): Promise<UpdateStatus> {
-  _status = { state: "checking", currentVersion: readPackageVersion() };
+  _status = { state: "checking", currentVersion: readCurrentVersion() };
 
   try {
     // Fetch latest from remote
@@ -144,7 +161,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     if (currentCommit === latestCommit) {
       _status = {
         state: "up-to-date",
-        currentVersion: readPackageVersion(),
+        currentVersion: readCurrentVersion(),
         currentCommit,
         latestCommit,
         commitsBehind: 0,
@@ -166,19 +183,25 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     );
     const changes = logStr.trim().split("\n").filter(Boolean);
 
-    // Try to read the remote package.json version
+    // Compute remote version: major.minor from remote package.json + remote commit count
     let latestVersion = "unknown";
     try {
       const { stdout: remotePkg } = await execAsync(
         `git show origin/HEAD:package.json 2>/dev/null || git show origin/main:package.json 2>/dev/null || git show origin/master:package.json`,
         { cwd: APP_DIR }
       );
-      latestVersion = JSON.parse(remotePkg).version || "unknown";
+      const remotePkgVersion = JSON.parse(remotePkg).version || "0.9.0";
+      const [rMajor, rMinor] = remotePkgVersion.split(".");
+      const { stdout: remoteCount } = await execAsync(
+        `git rev-list --count origin/HEAD 2>/dev/null || git rev-list --count origin/main 2>/dev/null || git rev-list --count origin/master`,
+        { cwd: APP_DIR }
+      );
+      latestVersion = computeVersion(`${rMajor}.${rMinor}`, remoteCount.trim());
     } catch {}
 
     _status = {
       state: "available",
-      currentVersion: readPackageVersion(),
+      currentVersion: readCurrentVersion(),
       latestVersion,
       currentCommit,
       latestCommit,
@@ -190,7 +213,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     _status = {
       state: "failed",
       error: "Failed to check for updates: " + (err.message || String(err)),
-      currentVersion: readPackageVersion(),
+      currentVersion: readCurrentVersion(),
     };
     return _status;
   }
@@ -216,7 +239,7 @@ export async function applyUpdate(): Promise<void> {
 
   _status = {
     state: "applying",
-    currentVersion: readPackageVersion(),
+    currentVersion: readCurrentVersion(),
     currentCommit: _status.currentCommit,
     latestVersion: _status.latestVersion,
     latestCommit: _status.latestCommit,
@@ -246,7 +269,7 @@ export async function applyUpdate(): Promise<void> {
     try {
       mkdirSync(BACKUP_DIR, { recursive: true });
       const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const backupFile = join(BACKUP_DIR, `shelob-pre-update-${readPackageVersion()}-${ts}.sql.gz`);
+      const backupFile = join(BACKUP_DIR, `shelob-pre-update-${readCurrentVersion()}-${ts}.sql.gz`);
 
       await execAsync(
         `pg_dump "${connUrl}" --no-owner --no-acl --clean --if-exists`,
@@ -326,7 +349,7 @@ export async function applyUpdate(): Promise<void> {
     // ── Step 6: Restart service ──
     setStep(5, "running", "Restarting...");
     _status.state = "restarting";
-    _status.latestVersion = readPackageVersion();
+    _status.latestVersion = readCurrentVersion();
     saveStatus();
 
     logger.info("Update applied — restarting service...");
