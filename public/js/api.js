@@ -115,6 +115,7 @@ const api = {
     register:(id, b) => request("POST", `/integrations/${id}/register`, b),
     discover:(id, name) => trackedRequest("Discovering " + (name || "DHCP"), "POST", `/integrations/${id}/discover`),
     testNew:(body)   => trackedRequest("Testing connection", "POST", "/integrations/test", body),
+    query:         (id, body) => request("POST", `/integrations/${id}/query`, body),
     discoveries:   ()    => request("GET", "/integrations/discoveries"),
     abortDiscover: (id)  => request("DELETE", `/integrations/${id}/discover`),
   },

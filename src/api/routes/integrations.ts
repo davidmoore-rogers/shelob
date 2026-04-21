@@ -323,6 +323,25 @@ router.post("/:id/test", async (req, res, next) => {
   }
 });
 
+// POST /api/v1/integrations/:id/query — proxy a manual JSON-RPC call to a FortiManager
+router.post("/:id/query", async (req, res, next) => {
+  try {
+    const integration = await prisma.integration.findUnique({ where: { id: req.params.id } });
+    if (!integration) throw new AppError(404, "Integration not found");
+    if (integration.type !== "fortimanager") throw new AppError(400, "API query is only supported for FortiManager integrations");
+
+    const { method, params } = z.object({
+      method: z.string().min(1),
+      params: z.array(z.unknown()),
+    }).parse(req.body);
+
+    const result = await fortimanager.proxyQuery(integration.config as any, method, params);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/v1/integrations/:id/register — overwrite selected fields on conflicting reservation
 router.post("/:id/register", async (req, res, next) => {
   try {

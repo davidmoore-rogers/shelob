@@ -9,10 +9,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
 function _discoverBtnHTML(id, name, discovering, disabled) {
   if (discovering) {
-    return '<button class="btn btn-sm btn-secondary" disabled style="cursor:default;opacity:0.9">Discovering\u2026</button>' +
-      '<button class="btn btn-sm btn-secondary" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Abort discovery">&#x2715;</button>';
+    return '<button class="btn btn-sm btn-primary" onclick="abortIntegrationDiscovery(\'' + id + '\',\'' + escapeHtml(name) + '\')" title="Click to abort discovery">Discovering\u2026 <span style="opacity:0.65;margin-left:2px">&#x2715;</span></button>';
   }
-  return '<button class="btn btn-sm btn-secondary" onclick="runDiscovery(\'' + id + '\')"' +
+  return '<button class="btn btn-sm btn-primary" onclick="runDiscovery(\'' + id + '\')"' +
     (disabled ? ' disabled title="Run a successful test first"' : '') + '>Discover</button>';
 }
 
@@ -81,6 +80,7 @@ async function loadIntegrations() {
             '<div id="discover-wrap-' + intg.id + '" data-disabled="' + (intg.lastTestOk !== true ? '1' : '0') + '" style="display:contents">' +
               _discoverBtnHTML(intg.id, intg.name, activeDiscoveries.some(function(d){ return d.id === intg.id; }), intg.lastTestOk !== true) +
             '</div>' +
+            (intg.type !== "windowsserver" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\')">Query API</button>' : '') +
             '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + intg.id + '\')">Edit</button>' +
             '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + intg.id + '\', \'' + escapeHtml(intg.name) + '\')">Delete</button>' +
           '</div>' +
@@ -567,3 +567,68 @@ function showConflictModal(integrationId, conflicts) {
 }
 
 function val(id) { return document.getElementById(id).value.trim(); }
+
+function openApiQueryModal(id, adom) {
+  adom = adom || "root";
+  var defaultParams = JSON.stringify([{
+    url: "/sys/proxy/json",
+    data: {
+      target: ["adom/" + adom + "/device/<device-name>"],
+      action: "get",
+      resource: "/api/v2/monitor/system/dhcp"
+    }
+  }], null, 2);
+
+  var body =
+    '<div class="form-group">' +
+      '<label>Method</label>' +
+      '<select id="fmg-method" style="width:auto">' +
+        '<option value="exec">exec</option>' +
+        '<option value="get">get</option>' +
+        '<option value="set">set</option>' +
+      '</select>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Params <span style="font-size:0.8rem;color:var(--color-text-tertiary)">(JSON array)</span></label>' +
+      '<textarea id="fmg-params" rows="10" style="font-family:monospace;font-size:0.82rem">' + escapeHtml(defaultParams) + '</textarea>' +
+    '</div>' +
+    '<div id="fmg-response-wrap" style="display:none;margin-top:1rem">' +
+      '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Response</p>' +
+      '<pre id="fmg-response" style="background:var(--color-surface-raised);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:0.75rem;font-size:0.78rem;overflow:auto;max-height:340px;white-space:pre-wrap;word-break:break-all;margin:0"></pre>' +
+    '</div>';
+
+  var footer =
+    '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' +
+    '<button class="btn btn-primary" id="fmg-send">Send</button>';
+
+  openModal("FortiManager API Query", body, footer, { wide: true });
+
+  document.getElementById("fmg-send").addEventListener("click", async function () {
+    var btn = this;
+    var method = document.getElementById("fmg-method").value;
+    var paramsRaw = document.getElementById("fmg-params").value.trim();
+    var params;
+    try {
+      params = JSON.parse(paramsRaw);
+      if (!Array.isArray(params)) throw new Error("Params must be a JSON array");
+    } catch (e) {
+      showToast("Invalid JSON: " + e.message, "error");
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Sending…";
+    var responseWrap = document.getElementById("fmg-response-wrap");
+    var responsePre = document.getElementById("fmg-response");
+    try {
+      var result = await api.integrations.query(id, { method: method, params: params });
+      responseWrap.style.display = "";
+      responsePre.textContent = JSON.stringify(result, null, 2);
+    } catch (err) {
+      responseWrap.style.display = "";
+      responsePre.textContent = "Error: " + err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Send";
+    }
+  });
+}

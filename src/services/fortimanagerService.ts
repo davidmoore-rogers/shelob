@@ -148,6 +148,19 @@ async function rpc(
   }
 }
 
+/**
+ * Proxy an arbitrary JSON-RPC call to FortiManager using stored credentials.
+ * Used by the manual API query tool in the UI.
+ */
+export async function proxyQuery(
+  config: FortiManagerConfig,
+  method: string,
+  params: unknown[],
+): Promise<unknown> {
+  const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
+  return rpc(baseUrl, { id: 1, method, params }, config.apiUser, config.apiToken, config.verifySsl);
+}
+
 // ─── DHCP Discovery ─────────────────────────────────────────────────────────
 
 export interface DiscoveredSubnet {
