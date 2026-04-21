@@ -162,7 +162,7 @@ function renderNav() {
   // Conflict dot — poll every 30 s; also exposed so events.js can refresh on resolve
   async function refreshConflictDot() {
     var dot = document.getElementById("nav-conflict-dot");
-    if (!dot) return;
+    if (!dot || !canManageNetworks()) return;
     try {
       var data = await api.conflicts.count();
       dot.style.display = (data.count > 0) ? "inline-block" : "none";
