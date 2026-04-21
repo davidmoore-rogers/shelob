@@ -718,13 +718,15 @@ export async function discoverDhcpSubnets(
         let apCount = 0;
         if (Array.isArray(apResults)) {
           for (const ap of apResults) {
+            const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || "";
+            const rawApMac = ap.base_mac || ap.mac || "";
             fortiAps.push({
               device: deviceName,
               name: ap.name || ap.wtp_id || "",
               serial: ap.serial || ap.wtp_id || "",
               model: ap.model || ap.wtp_profile || "",
-              ipAddress: ap.ip_addr || ap.ip_address || ap.local_ipv4_address || "",
-              baseMac: ap.base_mac || ap.mac || "",
+              ipAddress: rawApIp === "0.0.0.0" ? "" : rawApIp,
+              baseMac: /^0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}$/i.test(rawApMac) ? "" : rawApMac,
               status: ap.status || ap.state || "",
               osVersion: ap.version || ap.firmware_version || "",
             });

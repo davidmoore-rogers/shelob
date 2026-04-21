@@ -33,7 +33,8 @@ TableSF.prototype._setup = function () {
         '<span class="sf-label">' + escapeHtml(label) + '</span>' +
         '<span class="sf-sort-icon">⇅</span>' +
       '</div>' +
-      '<input class="sf-filter" type="text" placeholder="filter\u2026">';
+      '<input class="sf-filter" type="text" placeholder="filter…"' +
+        ' title="Type to filter. Prefix with ! to exclude rows (e.g. !foo).">';
 
     th.querySelector(".sf-header").addEventListener("click", function () {
       if (self._sortKey === key) {
@@ -50,8 +51,8 @@ TableSF.prototype._setup = function () {
     inp.addEventListener("click", function (e) { e.stopPropagation(); });
     inp.addEventListener("input", debounce(function () {
       var v = inp.value.trim();
-      if (v) self._filters[key] = v;
-      else   delete self._filters[key];
+      if (v && v !== "!") self._filters[key] = v;
+      else                delete self._filters[key];
       self._onChange();
     }, 200));
   });
@@ -89,8 +90,12 @@ TableSF.prototype.apply = function (data) {
   if (fKeys.length) {
     result = result.filter(function (row) {
       return fKeys.every(function (k) {
-        var q = self._filters[k].toLowerCase();
-        return String(self._val(row, k)).toLowerCase().includes(q);
+        var raw     = self._filters[k];
+        var exclude = raw.charAt(0) === "!";
+        var q       = (exclude ? raw.slice(1) : raw).toLowerCase();
+        if (!q) return true;
+        var match = String(self._val(row, k)).toLowerCase().includes(q);
+        return exclude ? !match : match;
       });
     });
   }
