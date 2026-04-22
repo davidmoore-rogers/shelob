@@ -695,7 +695,7 @@ export async function discoverDhcpSubnets(
               ipAddress: sw.connecting_from || "",
               fgtInterface: sw.fgt_peer_intf_name || "",
               osVersion: sw.os_version || "",
-              joinTime: sw.join_time || undefined,
+              joinTime: Number.isFinite(sw.join_time) && sw.join_time > 0 ? sw.join_time : undefined,
               state: sw.state || "",
               connected: sw.status === "Connected",
             });

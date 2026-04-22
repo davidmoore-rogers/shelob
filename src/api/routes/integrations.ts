@@ -972,7 +972,8 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   for (const sw of result.fortiSwitches || []) {
     const swStatus = sw.state === "Unauthorized" ? "storage" : "active";
-    const swJoinDate = sw.joinTime ? new Date(sw.joinTime * 1000) : null;
+    const swJoinDate = sw.joinTime && Number.isFinite(sw.joinTime) && sw.joinTime > 0
+      ? new Date(sw.joinTime * 1000) : null;
     const swNotes = `Auto-discovered from FortiGate ${sw.device}${sw.fgtInterface ? ` via ${sw.fgtInterface}` : ""} via FortiManager`;
     try {
       let existingAsset: any = sw.serial ? assetIdx.findBySerial(sw.serial) : null;
