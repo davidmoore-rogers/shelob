@@ -983,6 +983,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   for (const device of result.devices) {
     try {
+      const fgHostname = device.hostname || device.name;
       if (device.serial) {
         const existingAsset = assetIdx.findBySerial(device.serial);
         if (existingAsset) {
@@ -992,6 +993,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
               ipAddress: device.mgmtIp || existingAsset.ipAddress,
               hostname: device.hostname || existingAsset.hostname,
               model: device.model || existingAsset.model,
+              learnedLocation: existingAsset.learnedLocation || fgHostname,
               lastSeen: new Date(now),
             },
           });
@@ -999,6 +1001,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           if (device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
           if (device.hostname) existingAsset.hostname = device.hostname;
           if (device.model) existingAsset.model = device.model;
+          if (!existingAsset.learnedLocation) existingAsset.learnedLocation = fgHostname;
           assetIdx.reindex(existingAsset);
           assetNames.push(`${device.name} (updated)`);
           continue;
@@ -1008,13 +1011,14 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       const newAsset = await prisma.asset.create({
         data: {
           ipAddress: device.mgmtIp || null,
-          hostname: device.hostname || device.name,
+          hostname: fgHostname,
           serialNumber: device.serial || null,
           manufacturer: "Fortinet",
           model: device.model || "FortiGate",
           assetType: "firewall",
           status: "active",
           department: "Network Security",
+          learnedLocation: fgHostname,
           lastSeen: new Date(now),
           notes: `Auto-discovered from FortiManager integration`,
           tags: ["fortigate", "auto-discovered"],
