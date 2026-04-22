@@ -726,8 +726,13 @@ class AssetIndex {
 
   findByMac(mac: string) { return this.byMac.get(mac.toUpperCase()); }
 
-  /** Broad match: MAC → hostname → IP (same priority order as original code) */
-  findByEntry(mac?: string, hostname?: string, ip?: string): any | undefined {
+  /**
+   * Broad match: MAC → hostname → IP.
+   * Pass `{ allowIpFallback: false }` for ephemeral-identity sources (DHCP leases)
+   * where IP recycling would otherwise staple a new MAC onto an unrelated asset.
+   */
+  findByEntry(mac?: string, hostname?: string, ip?: string, opts: { allowIpFallback?: boolean } = {}): any | undefined {
+    const { allowIpFallback = true } = opts;
     if (mac) {
       const norm = mac.toUpperCase().replace(/-/g, ":");
       const hit = this.byMac.get(norm);
@@ -737,7 +742,7 @@ class AssetIndex {
       const hit = this.byHostname.get(hostname.toLowerCase());
       if (hit) return hit;
     }
-    if (ip) {
+    if (ip && allowIpFallback) {
       const hit = this.byIp.get(ip);
       if (hit) return hit;
     }
@@ -1433,7 +1438,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       if (!entry.macAddress || !entry.ipAddress) continue;
       const normalized = entry.macAddress.toUpperCase().replace(/-/g, ":");
 
-      const asset = assetIdx.findByEntry(entry.macAddress, entry.hostname, entry.ipAddress);
+      // DHCP IPs recycle across devices, so IP-only matches would staple
+      // a new device's MAC onto the previous lease-holder's asset.
+      const asset = assetIdx.findByEntry(entry.macAddress, entry.hostname, entry.ipAddress, { allowIpFallback: false });
       if (!asset) continue;
 
       // Resolve subnet up-front so we can stamp it on the MAC entry
