@@ -20,6 +20,41 @@ const router = Router();
 // Track in-flight DHCP discovery per integration — abort previous if re-saved
 const activeDiscovery = new Map<string, { controller: AbortController; name: string; currentDevice?: string }>();
 
+function inferAssetTypeFromOs(os: string | null | undefined): "workstation" | "server" | "other" {
+  if (!os) return "other";
+  const lower = os.toLowerCase();
+  if (
+    lower.includes("server") ||
+    lower.includes("centos") ||
+    lower.includes("red hat") ||
+    lower.includes("rhel") ||
+    lower.includes("rocky linux") ||
+    lower.includes("almalinux") ||
+    lower.includes("oracle linux") ||
+    lower.includes("freebsd") ||
+    lower.includes("openbsd") ||
+    lower.includes("netbsd") ||
+    lower.includes("esxi") ||
+    lower.includes("vmware")
+  ) return "server";
+  if (
+    /windows\s+(10|11|7|8|xp|vista)/i.test(os) ||
+    lower.includes("macos") ||
+    lower.includes("mac os x") ||
+    lower.includes("os x") ||
+    lower.includes("linux mint") ||
+    lower.includes("ubuntu") ||
+    lower.includes("fedora") ||
+    lower.includes("debian") ||
+    lower.includes("arch linux") ||
+    lower.includes("manjaro") ||
+    lower.includes("pop!_os") ||
+    lower.includes("elementary os") ||
+    lower.includes("zorin os")
+  ) return "workstation";
+  return "other";
+}
+
 // All integration routes require network admin or admin
 router.use(requireNetworkAdmin);
 
@@ -1264,6 +1299,42 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   }
 
   // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 4b — Update FortiGate asset associatedIps from non-management interface IPs
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  const ifaceIpsByDevice = new Map<string, Array<{ ip: string; interfaceName: string }>>();
+  for (const ifaceIp of result.interfaceIps) {
+    if (!ifaceIp.ipAddress || ifaceIp.role === "management") continue;
+    const list = ifaceIpsByDevice.get(ifaceIp.device) ?? [];
+    list.push({ ip: ifaceIp.ipAddress, interfaceName: ifaceIp.interfaceName });
+    ifaceIpsByDevice.set(ifaceIp.device, list);
+  }
+
+  for (const [deviceName, ifaces] of ifaceIpsByDevice) {
+    const matchingDevice = result.devices.find((d: any) => d.name === deviceName || d.hostname === deviceName);
+    let asset: any = matchingDevice?.serial ? assetIdx.findBySerial(matchingDevice.serial) : null;
+    if (!asset) asset = assetIdx.findByEntry(undefined, deviceName, undefined);
+    if (!asset) continue;
+
+    const existingIps: any[] = Array.isArray(asset.associatedIps) ? (asset.associatedIps as any[]) : [];
+    const manualIps = existingIps.filter((e: any) => e.source === "manual");
+    const discoveredIps = ifaces.map((iface) => ({
+      ip: iface.ip,
+      interfaceName: iface.interfaceName,
+      source: "fmg-discovery",
+      lastSeen: now,
+    }));
+
+    const newAssociatedIps = [...manualIps, ...discoveredIps];
+    try {
+      await prisma.asset.update({ where: { id: asset.id }, data: { associatedIps: newAssociatedIps } });
+      asset.associatedIps = newAssociatedIps;
+    } catch (err: any) {
+      syncLog("error", `Failed to update associatedIps for ${deviceName}: ${err.message || "Unknown error"}`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
   // Phase 5 — Create DHCP lease/reservation entries (in-memory lookups)
   // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1466,6 +1537,10 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           updateData.ipAddress = inv.ipAddress;
         }
         if (inv.os && !existingAsset.os) updateData.os = inv.os;
+        if (inv.os && (existingAsset as any).assetType === "other") {
+          const inferred = inferAssetTypeFromOs(inv.os);
+          if (inferred !== "other") updateData.assetType = inferred;
+        }
         if (inv.osVersion) updateData.osVersion = inv.osVersion;
         if (inv.hardwareVendor && !existingAsset.manufacturer) updateData.manufacturer = inv.hardwareVendor;
         if (inv.device && !existingAsset.learnedLocation) updateData.learnedLocation = inv.device;
@@ -1534,7 +1609,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
               macAddresses: normalizedMac ? [{ mac: normalizedMac, lastSeen: now, source: "device-inventory" }] : [],
               hostname: inv.hostname || null,
               manufacturer: inv.hardwareVendor || null,
-              assetType: "other",
+              assetType: inferAssetTypeFromOs(inv.os),
               status: "active",
               os: inv.os || null,
               osVersion: inv.osVersion || null,

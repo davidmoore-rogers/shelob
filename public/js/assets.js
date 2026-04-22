@@ -502,6 +502,7 @@ async function openViewModal(id) {
       viewRow("Hostname", a.hostname) +
       viewRow("DNS Name", a.dnsName) +
       viewRow("IP Address", a.ipAddress, true) +
+      associatedIpsViewHTML(a.associatedIps) +
       viewRow("MAC Address", a.macAddress, true) +
       macAddressesViewHTML(a.macAddresses) +
       viewRow("Asset Tag", a.assetTag) +
@@ -554,6 +555,22 @@ function macAddressesViewHTML(macAddresses) {
     '</div>';
   }).join("");
   return '<div class="detail-row"><span class="detail-label">All MACs (' + macAddresses.length + ')</span>' +
+    '<span class="detail-value">' + rows + '</span></div>';
+}
+
+function associatedIpsViewHTML(ips) {
+  if (!ips || ips.length === 0) return '';
+  var rows = ips.map(function (entry) {
+    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
+      '<code style="font-size:0.82rem">' + escapeHtml(entry.ip) + '</code>' +
+      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
+        (entry.interfaceName ? escapeHtml(entry.interfaceName) : '') +
+        (entry.source ? ' &middot; ' + escapeHtml(entry.source) : '') +
+        (entry.lastSeen ? ' &middot; ' + formatDate(entry.lastSeen) : '') +
+      '</span>' +
+    '</div>';
+  }).join("");
+  return '<div class="detail-row"><span class="detail-label">Associated IPs (' + ips.length + ')</span>' +
     '<span class="detail-value">' + rows + '</span></div>';
 }
 
