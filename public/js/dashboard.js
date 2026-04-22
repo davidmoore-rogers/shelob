@@ -8,7 +8,6 @@ document.addEventListener("DOMContentLoaded", async function () {
   try {
     var data = await api.utilization.global();
     renderKPIs(data);
-    renderDonut(data);
     renderBarChart(data);
     renderBlockUtil(data);
     renderRecent(data);
@@ -27,41 +26,6 @@ function renderKPIs(data) {
   grid.innerHTML = items.map(function (k) {
     return '<div class="kpi-card"><p class="kpi-label">' + escapeHtml(k.label) + '</p><p class="kpi-value">' + k.value + '</p></div>';
   }).join("");
-}
-
-function renderDonut(data) {
-  var container = document.getElementById("donut-chart");
-  var total = data.totalSubnets;
-  var s = data.subnetsByStatus;
-  var slices = [
-    { label: "Available",  value: s.available,  color: STATUS_COLORS.available },
-    { label: "Reserved",   value: s.reserved,   color: STATUS_COLORS.reserved },
-    { label: "Deprecated", value: s.deprecated, color: STATUS_COLORS.deprecated },
-  ];
-  var usedPct = total === 0 ? 0 : Math.round(((s.reserved + s.deprecated) / total) * 100);
-
-  var r = 52, cx = 70, cy = 70, circ = 2 * Math.PI * r;
-  var offset = 0;
-  var arcs = slices.map(function (d) {
-    var pct = total === 0 ? 0 : d.value / total;
-    var arc = { color: d.color, pct: pct, offset: offset, dash: pct * circ, gap: (1 - pct) * circ };
-    offset += pct;
-    return arc;
-  });
-
-  var svg = '<svg width="140" height="140" viewBox="0 0 140 140">';
-  arcs.forEach(function (arc) {
-    svg += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + arc.color + '" stroke-width="14" stroke-dasharray="' + arc.dash + ' ' + arc.gap + '" stroke-dashoffset="' + -(arc.offset * circ - circ / 4) + '"/>';
-  });
-  svg += '<text x="' + cx + '" y="' + (cy - 6) + '" text-anchor="middle" font-size="22" font-weight="700" font-family="Roboto Mono,monospace" fill="#fff">' + usedPct + '%</text>';
-  svg += '<text x="' + cx + '" y="' + (cy + 14) + '" text-anchor="middle" font-size="11" fill="#8888a0">in use</text>';
-  svg += '</svg>';
-
-  var legend = slices.map(function (d) {
-    return '<div style="margin-bottom:6px"><div class="legend-item"><span class="legend-dot" style="background:' + d.color + '"></span>' + d.label + '</div><span style="font-size:1.2rem;font-weight:500">' + d.value + '</span></div>';
-  }).join("");
-
-  container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:20px">' + svg + '<div>' + legend + '</div></div>';
 }
 
 function renderBarChart(data) {
