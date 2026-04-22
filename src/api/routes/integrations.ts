@@ -1552,10 +1552,11 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
       const handledByDhcp = normalizedMac && dhcpMacs.has(normalizedMac);
 
-      // In-memory asset lookup
+      // In-memory asset lookup. Inventory IPs are the device's last-seen DHCP
+      // IP, so they recycle just like lease IPs — skip the IP fallback.
       const existingAsset = normalizedMac
-        ? assetIdx.findByEntry(inv.macAddress, inv.hostname, inv.ipAddress)
-        : assetIdx.findByEntry(undefined, inv.hostname, inv.ipAddress);
+        ? assetIdx.findByEntry(inv.macAddress, inv.hostname, inv.ipAddress, { allowIpFallback: false })
+        : assetIdx.findByEntry(undefined, inv.hostname, inv.ipAddress, { allowIpFallback: false });
 
       const switchConn = inv.switchName
         ? (inv.switchPort ? `${inv.switchName}/port${inv.switchPort}` : inv.switchName)
