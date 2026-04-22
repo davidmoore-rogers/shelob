@@ -1453,14 +1453,26 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       const asset = assetIdx.findByEntry(entry.macAddress, entry.hostname, entry.ipAddress);
       if (!asset) continue;
 
+      // Resolve subnet up-front so we can stamp it on the MAC entry
+      const matchingSubnet = findSubnetForIp(entry.ipAddress);
+
       // Update MAC list in-memory
-      const macList: Array<{mac: string; lastSeen: string; source: string}> = Array.isArray(asset.macAddresses) ? [...(asset.macAddresses as any)] : [];
+      const macList: Array<{mac: string; lastSeen: string; source: string; subnetCidr?: string; subnetName?: string}> = Array.isArray(asset.macAddresses) ? [...(asset.macAddresses as any)] : [];
       const existingMac = macList.find((m: any) => m.mac === normalized);
       if (existingMac) {
         existingMac.lastSeen = now;
         existingMac.source = entry.type;
+        if (matchingSubnet) {
+          existingMac.subnetCidr = matchingSubnet.cidr;
+          existingMac.subnetName = matchingSubnet.name;
+        }
       } else {
-        macList.push({ mac: normalized, lastSeen: now, source: entry.type });
+        macList.push({
+          mac: normalized,
+          lastSeen: now,
+          source: entry.type,
+          ...(matchingSubnet ? { subnetCidr: matchingSubnet.cidr, subnetName: matchingSubnet.name } : {}),
+        });
       }
       macList.sort((a: any, b: any) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
 
@@ -1485,7 +1497,6 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       assetIdx.reindex(asset);
 
       // Queue reservation cross-update (in-memory lookup, no DB query)
-      const matchingSubnet = findSubnetForIp(entry.ipAddress);
       if (matchingSubnet) {
         const key = reservationKey(matchingSubnet.id, entry.ipAddress);
         const res = activeResMap.get(key);

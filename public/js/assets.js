@@ -344,10 +344,22 @@ function macCellHTML(asset) {
   // Multiple MACs — show primary with hover tooltip
   var tooltipRows = macs.map(function (m) {
     var isLatest = m.mac === displayMac;
+    var sourceLine = escapeHtml(m.source || "") + (m.lastSeen ? ' &middot; ' + formatDate(m.lastSeen) : '');
+    var subnetLine = '';
+    if (m.subnetName || m.subnetCidr) {
+      subnetLine = '<span class="mac-tooltip-subnet">';
+      if (m.subnetName) subnetLine += escapeHtml(m.subnetName);
+      if (m.subnetCidr) {
+        subnetLine += (m.subnetName ? ' ' : '') +
+          '<span class="mac-tooltip-cidr">' + escapeHtml(m.subnetCidr) + '</span>';
+      }
+      subnetLine += '</span>';
+    }
     return '<div class="mac-tooltip-row' + (isLatest ? ' mac-tooltip-latest' : '') + '">' +
       '<span class="mono copy-cell" title="Click to copy" data-copy="' + escapeHtml(m.mac) + '">' + escapeHtml(m.mac) + '</span>' +
-      '<span class="mac-tooltip-meta">' + escapeHtml(m.source || "") +
-        (m.lastSeen ? ' &middot; ' + formatDate(m.lastSeen) : '') +
+      '<span class="mac-tooltip-meta">' +
+        subnetLine +
+        '<span class="mac-tooltip-source">' + sourceLine + '</span>' +
       '</span>' +
     '</div>';
   }).join("");

@@ -2023,6 +2023,23 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   margin-left: 12px;
   text-align: right;
   white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+.mac-tooltip-subnet {
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+}
+.mac-tooltip-cidr {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+}
+.mac-tooltip-source {
+  font-size: 0.7rem;
+  color: var(--color-text-tertiary);
 }
 
 /* ── Click-to-copy cells ─────────────────────────────────────────────── */
