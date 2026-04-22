@@ -217,13 +217,15 @@ export interface DiscoveredInventoryDevice {
 }
 
 export interface DiscoveredFortiSwitch {
-  device: string;      // FortiGate controller name
-  name: string;
+  device: string;       // FortiGate controller name
+  name: string;         // switch-id
   serial: string;
-  model: string;
-  ipAddress: string;
-  status: string;
+  ipAddress: string;    // connecting_from
+  fgtInterface: string; // fgt_peer_intf_name (FortiLink interface on FortiGate)
   osVersion: string;
+  joinTime?: number;    // join_time (Unix timestamp — when first authorized)
+  state: string;        // "Authorized" | "Unauthorized"
+  connected: boolean;   // status === "Connected"
 }
 
 export interface DiscoveredFortiAP {
@@ -671,7 +673,7 @@ export async function discoverDhcpSubnets(
             data: {
               target: [`/adom/${adom}/device/${deviceName}`],
               action: "get",
-              resource: "/api/v2/monitor/switch-controller/managed-switch?format=name|switch_id|serial|hardware_version|type|ip_address|ip|status|state|os_version|version",
+              resource: "/api/v2/monitor/switch-controller/managed-switch/status?format=connecting_from|fgt_peer_intf_name|join_time|os_version|serial|switch-id|state|status",
             },
           }],
         };
@@ -688,12 +690,14 @@ export async function discoverDhcpSubnets(
           for (const sw of switchResults) {
             fortiSwitches.push({
               device: deviceName,
-              name: sw.name || sw.switch_id || "",
-              serial: sw.serial || sw.switch_id || "",
-              model: sw.hardware_version || sw.type || "",
-              ipAddress: sw.ip_address || sw.ip || "",
-              status: sw.status || sw.state || "",
-              osVersion: sw.os_version || sw.version || "",
+              name: sw["switch-id"] || "",
+              serial: sw.serial || "",
+              ipAddress: sw.connecting_from || "",
+              fgtInterface: sw.fgt_peer_intf_name || "",
+              osVersion: sw.os_version || "",
+              joinTime: sw.join_time || undefined,
+              state: sw.state || "",
+              connected: sw.status === "Connected",
             });
             switchCount++;
           }

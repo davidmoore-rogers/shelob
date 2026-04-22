@@ -408,7 +408,32 @@ Azure SAML SSO is optional; users are auto-provisioned on first login with a def
 - **DHCP leases** → Reservations (`sourceType: dhcp_lease`); captures `expire_time`, `access_point`, `ssid`
 - **Interface IPs** → Reservations (`sourceType: interface_ip`)
 - **Virtual IPs (VIPs)** → Reservations (`sourceType: vip`)
+- **FortiSwitch devices** → Asset records (`assetType: switch`); via FMG proxy to `/api/v2/monitor/switch-controller/managed-switch/status`
+- **FortiAP devices** → Asset records (`assetType: access_point`); via FMG proxy to `/api/v2/monitor/wifi/managed_ap`
 - **FortiSwitch / FortiAP MACs** → Updates Asset `lastSeenSwitch` / `lastSeenAp`
+
+### FMG proxy field filtering
+
+FortiOS monitor endpoints support field selection via the `format` query parameter (pipe-separated):
+
+```
+/api/v2/monitor/switch-controller/managed-switch/status?format=connecting_from|fgt_peer_intf_name|join_time|os_version|serial|switch-id|state|status
+```
+
+**Do not use `?fields=`** — that is the CMDB filter syntax and does not work on monitor endpoints.
+
+### FortiSwitch fields (managed-switch/status)
+
+| API field | Meaning | Maps to |
+|-----------|---------|---------|
+| `switch-id` | Switch hostname | `hostname` |
+| `serial` | Serial number | `serialNumber` |
+| `connecting_from` | Management IP of the switch | `ipAddress` |
+| `fgt_peer_intf_name` | FortiGate interface/FortiLink the switch is on | `learnedLocation` |
+| `os_version` | Firmware version | `osVersion` |
+| `join_time` | Unix timestamp when switch was first authorized | `acquiredAt` (only update if older) |
+| `state` | `Authorized` / `Unauthorized` | `status: storage` if Unauthorized |
+| `status` | `Connected` / `Disconnected` | informational |
 
 When a discovered value conflicts with an existing manual reservation, a `Conflict` record is created instead of silently overwriting. Admins accept (apply discovered values) or reject (keep existing) via the conflict slide-over panel on the Events page.
 

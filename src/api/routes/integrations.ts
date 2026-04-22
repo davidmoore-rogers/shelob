@@ -971,20 +971,26 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   // ══════════════════════════════════════════════════════════════════════════════
 
   for (const sw of result.fortiSwitches || []) {
+    const swStatus = sw.state === "Unauthorized" ? "storage" : "active";
+    const swJoinDate = sw.joinTime ? new Date(sw.joinTime * 1000) : null;
+    const swNotes = `Auto-discovered from FortiGate ${sw.device}${sw.fgtInterface ? ` via ${sw.fgtInterface}` : ""} via FortiManager`;
     try {
       let existingAsset: any = sw.serial ? assetIdx.findBySerial(sw.serial) : null;
       if (!existingAsset && sw.name) existingAsset = assetIdx.findByEntry(undefined, sw.name, sw.ipAddress || undefined);
 
       if (existingAsset) {
+        const acquiredAtUpdate = swJoinDate && (!existingAsset.acquiredAt || swJoinDate < new Date(existingAsset.acquiredAt))
+          ? swJoinDate : undefined;
         await prisma.asset.update({
           where: { id: existingAsset.id },
           data: {
             ipAddress: sw.ipAddress || existingAsset.ipAddress,
             hostname: sw.name || existingAsset.hostname,
-            model: sw.model || existingAsset.model,
             osVersion: sw.osVersion || existingAsset.osVersion,
             learnedLocation: sw.device || existingAsset.learnedLocation,
+            status: swStatus,
             lastSeen: new Date(now),
+            ...(acquiredAtUpdate ? { acquiredAt: acquiredAtUpdate } : {}),
           },
         });
         if (sw.ipAddress) existingAsset.ipAddress = sw.ipAddress;
@@ -997,13 +1003,14 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             hostname: sw.name || null,
             serialNumber: sw.serial || null,
             manufacturer: "Fortinet",
-            model: sw.model || "FortiSwitch",
+            model: "FortiSwitch",
             assetType: "switch",
-            status: "active",
+            status: swStatus,
             osVersion: sw.osVersion || null,
             learnedLocation: sw.device || null,
+            acquiredAt: swJoinDate,
             lastSeen: new Date(now),
-            notes: `Auto-discovered from FortiGate ${sw.device} via FortiManager`,
+            notes: swNotes,
             tags: ["fortiswitch", "auto-discovered"],
           },
         });
@@ -1021,7 +1028,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         const existingRes = activeResMap.get(key);
         if (existingRes) {
           if (existingRes.sourceType === "manual") {
-            await upsertConflict(existingRes.id, integrationId, { hostname: sw.name || null, owner: "network-team", projectRef: "FortiManager Integration", notes: `FortiSwitch managed by FortiGate ${sw.device}`, sourceType: "fortiswitch" }, existingRes);
+            await upsertConflict(existingRes.id, integrationId, { hostname: sw.name || null, owner: "network-team", projectRef: "FortiManager Integration", notes: swNotes, sourceType: "fortiswitch" }, existingRes);
           }
         } else {
           try {
@@ -1032,7 +1039,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
                 hostname: sw.name || null,
                 owner: "network-team",
                 projectRef: "FortiManager Integration",
-                notes: `FortiSwitch managed by FortiGate ${sw.device}`,
+                notes: swNotes,
                 status: "active",
                 sourceType: "fortiswitch",
               },
