@@ -15,6 +15,7 @@ function _ensureBlockPanelDOM() {
   overlay.className = "slideover-overlay";
   overlay.innerHTML =
     '<div class="slideover" id="block-panel">' +
+      '<div class="slideover-resize-handle"></div>' +
       '<div class="slideover-header">' +
         '<div class="slideover-header-top">' +
           '<h3 id="block-panel-title"></h3>' +
@@ -33,6 +34,8 @@ function _ensureBlockPanelDOM() {
     if (e.target === overlay) closeBlockPanel();
   });
   document.getElementById("block-panel-close").addEventListener("click", closeBlockPanel);
+
+  initSlideoverResize(document.getElementById("block-panel"), "shelob.panel.width.block");
 }
 
 function openBlockPanel(blockId) {

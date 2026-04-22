@@ -991,6 +991,40 @@ function checkPgTuning() {
   });
 }
 
+// ─── Slide-over resize ────────────────────────────────────────────────────────
+
+function initSlideoverResize(panelEl, storageKey) {
+  var handle = panelEl.querySelector(".slideover-resize-handle");
+  if (!handle) return;
+
+  var stored = parseInt(localStorage.getItem(storageKey) || "0", 10);
+  if (stored >= 380) panelEl.style.width = stored + "px";
+
+  handle.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    handle.classList.add("dragging");
+    var panelRight = panelEl.getBoundingClientRect().right;
+    var minW = 380;
+    var maxW = Math.round(window.innerWidth * 0.9);
+
+    function onMove(e) {
+      var w = Math.max(minW, Math.min(maxW, Math.round(panelRight - e.clientX)));
+      panelEl.style.width = w + "px";
+    }
+
+    function onUp(e) {
+      handle.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      var w = Math.max(minW, Math.min(maxW, Math.round(panelRight - e.clientX)));
+      localStorage.setItem(storageKey, w);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async function () {

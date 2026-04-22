@@ -1872,6 +1872,29 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 }
 .slideover-footer .util-bar-track { flex: 1; max-width: 200px; }
 
+.slideover-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 0.15s;
+}
+.slideover-resize-handle:hover {
+  background: var(--color-accent);
+  opacity: 0.35;
+}
+.slideover-resize-handle.dragging {
+  background: var(--color-accent);
+  opacity: 0.5;
+}
+@media (max-width: 900px) {
+  .slideover-resize-handle { display: none; }
+}
+
 /* IP list table inside the slide-over */
 .ip-table {
   width: 100%;
