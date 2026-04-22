@@ -22,7 +22,8 @@ shelob/
 │   ├── schema.prisma                # Database schema
 │   └── seed.ts
 ├── scripts/
-│   └── test-fmg.mjs                 # FortiManager integration test harness
+│   ├── test-fmg.mjs                 # FortiManager integration test harness
+│   └── audit-multi-mac-assets.mjs   # One-off: unstitch assets cross-stapled by old IP-fallback bug
 ├── public/                          # Vanilla JS frontend (served statically)
 │   ├── index.html                   # Dashboard
 │   ├── login.html
