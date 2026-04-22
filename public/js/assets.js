@@ -234,10 +234,33 @@ function _handleCopyClick(e) {
   });
 }
 
+async function _handleMacDeleteClick(e) {
+  var btn = e.target.closest('.mac-tooltip-delete');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  var assetId = btn.getAttribute('data-asset-id');
+  var mac = btn.getAttribute('data-mac');
+  if (!assetId || !mac) return;
+  var ok = await showConfirm('Remove MAC ' + mac + ' from this asset?');
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    await api.assets.removeMac(assetId, mac);
+    showToast('MAC removed');
+    loadAssets();
+  } catch (err) {
+    btn.disabled = false;
+    showToast(err.message, 'error');
+  }
+}
+
 function renderAssetsPage() {
   var tbody = document.getElementById("assets-tbody");
   tbody.removeEventListener("click", _handleCopyClick);
   tbody.addEventListener("click", _handleCopyClick);
+  tbody.removeEventListener("click", _handleMacDeleteClick);
+  tbody.addEventListener("click", _handleMacDeleteClick);
   if (_assetsData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No assets found. Add one to get started.</td></tr>';
     clearPageControls("pagination");
@@ -344,6 +367,8 @@ function macCellHTML(asset) {
   var displayMac = primary || (macs.length > 0 ? macs[0].mac : "-");
   if (macs.length <= 1) return '<span class="copy-cell" title="Click to copy" data-copy="' + escapeHtml(displayMac) + '">' + escapeHtml(displayMac) + '</span>';
 
+  var canDelete = canManageNetworks();
+
   // Multiple MACs — show primary with hover tooltip
   var tooltipRows = macs.map(function (m) {
     var isLatest = m.mac === displayMac;
@@ -361,6 +386,10 @@ function macCellHTML(asset) {
     var deviceLine = m.device
       ? '<span class="mac-tooltip-subnet">' + escapeHtml(m.device) + '</span>'
       : '';
+    var deleteBtn = canDelete
+      ? '<button type="button" class="mac-tooltip-delete" title="Remove this MAC from the asset" data-asset-id="' +
+          escapeHtml(asset.id) + '" data-mac="' + escapeHtml(m.mac) + '">&times;</button>'
+      : '';
     return '<div class="mac-tooltip-row' + (isLatest ? ' mac-tooltip-latest' : '') + '">' +
       '<span class="mono copy-cell" title="Click to copy" data-copy="' + escapeHtml(m.mac) + '">' + escapeHtml(m.mac) + '</span>' +
       '<span class="mac-tooltip-meta">' +
@@ -368,6 +397,7 @@ function macCellHTML(asset) {
         deviceLine +
         '<span class="mac-tooltip-source">' + sourceLine + '</span>' +
       '</span>' +
+      deleteBtn +
     '</div>';
   }).join("");
 

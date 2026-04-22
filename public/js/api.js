@@ -105,6 +105,7 @@ const api = {
     dnsLookupAll: ()    => trackedRequest("DNS Lookup", "POST", "/assets/dns-lookup"),
     ouiLookup: (id)     => request("POST", `/assets/${id}/oui-lookup`),
     ouiLookupAll: ()    => trackedRequest("OUI Lookup", "POST", "/assets/oui-lookup"),
+    removeMac: (id, mac) => request("DELETE", `/assets/${id}/macs/${encodeURIComponent(mac)}`),
   },
   integrations: {
     list:   ()       => request("GET", "/integrations"),

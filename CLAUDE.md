@@ -356,6 +356,7 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `POST   /assets/export-pdf`
 - `POST   /assets/export-csv`
 - `GET    /assets/mac-lookup/:mac`              — OUI vendor lookup
+- `DELETE /assets/:id/macs/:mac`                — Remove one MAC from an asset's history (requires network admin)
 
 ### Events — `requireAuth`
 - `GET    /events`                              — Audit log (filter by level, action, resourceType)

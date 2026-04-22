@@ -8,7 +8,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAssetsAdmin } from "../middleware/auth.js";
+import { requireAssetsAdmin, requireNetworkAdmin } from "../middleware/auth.js";
 import { logEvent, buildChanges } from "./events.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui } from "../../services/ouiService.js";
@@ -358,6 +358,55 @@ router.post("/import-pdf", requireAssetsAdmin, async (req, res, next) => {
     }
 
     res.json({ preview, created, updated, dryRun: !!dryRun });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/v1/assets/:id/macs/:mac — remove a MAC from an asset's history (network admin)
+router.delete("/:id/macs/:mac", requireNetworkAdmin, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const normalized = String(req.params.mac || "").toUpperCase().replace(/-/g, ":");
+
+    const existing = await prisma.asset.findUnique({ where: { id } });
+    if (!existing) throw new AppError(404, "Asset not found");
+
+    const macs = Array.isArray(existing.macAddresses) ? (existing.macAddresses as any[]) : [];
+    const filtered = macs.filter((m) => {
+      const mac = String(m?.mac || "").toUpperCase().replace(/-/g, ":");
+      return mac !== normalized;
+    });
+
+    if (filtered.length === macs.length) {
+      throw new AppError(404, "MAC address not found on this asset");
+    }
+
+    let primary = existing.macAddress;
+    if (primary && primary.toUpperCase().replace(/-/g, ":") === normalized) {
+      const sorted = [...filtered].sort((a, b) => {
+        const ta = a?.lastSeen ? new Date(a.lastSeen).getTime() : 0;
+        const tb = b?.lastSeen ? new Date(b.lastSeen).getTime() : 0;
+        return tb - ta;
+      });
+      primary = sorted[0]?.mac ? String(sorted[0].mac).toUpperCase().replace(/-/g, ":") : null;
+    }
+
+    const updated = await prisma.asset.update({
+      where: { id },
+      data: { macAddresses: filtered as any, macAddress: primary },
+    });
+
+    logEvent({
+      action: "asset.mac_removed",
+      resourceType: "asset",
+      resourceId: id,
+      resourceName: updated.hostname || updated.ipAddress || undefined,
+      actor: req.session?.username,
+      message: `Removed MAC ${normalized} from asset "${updated.hostname || updated.ipAddress || "unknown"}"`,
+    });
+
+    res.json(updated);
   } catch (err) {
     next(err);
   }
