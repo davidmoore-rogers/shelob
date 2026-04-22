@@ -828,10 +828,10 @@ tr.row-panel-active,
 tr.row-panel-active:hover { background: rgba(79,195,247,0.08) !important; box-shadow: inset 3px 0 0 var(--color-accent); }
 td.mono { font-family: var(--font-mono); font-size: 0.82rem; }
 td.actions {
-  display: flex;
-  gap: 4px;
-  align-items: center;
+  white-space: nowrap;
+  vertical-align: middle;
 }
+td.actions > button + button { margin-left: 4px; }
 .empty-state {
   text-align: center;
   padding: 3rem 1rem;
