@@ -18,6 +18,7 @@ function _ensurePanelDOM() {
   overlay.className = "slideover-overlay";
   overlay.innerHTML =
     '<div class="slideover" id="ip-panel">' +
+      '<div class="slideover-resize-handle"></div>' +
       '<div class="slideover-header">' +
         '<div class="slideover-header-top">' +
           '<h3 id="ip-panel-title"></h3>' +
@@ -37,6 +38,7 @@ function _ensurePanelDOM() {
   });
   document.getElementById("ip-panel-close").addEventListener("click", closeIpPanel);
 
+  initSlideoverResize(document.getElementById("ip-panel"), "shelob.panel.width.ip");
 }
 
 function openIpPanel(subnetId) {
@@ -170,7 +172,7 @@ function _renderIpList(data) {
     '<th>Owner</th>' +
     '<th>Lease Expiry</th>' +
     '<th>Status</th>' +
-    '<th style="width:100px">Actions</th>' +
+    '<th style="width:140px">Actions</th>' +
     '</tr></thead><tbody>';
 
   data.ips.forEach(function (ip) {
@@ -226,16 +228,22 @@ function _renderIpList(data) {
     var actions = "";
     var isOwner = r && r.createdBy === currentUsername;
     var canEditThis = canManageNetworks() || isOwner;
+    var assetBtn = ip.assetId
+      ? '<button class="btn btn-sm btn-secondary ip-asset-btn" data-aid="' + escapeHtml(ip.assetId) + '" title="View asset record">Asset</button>'
+      : '';
     if (isSpecial) {
       actions = "";
     } else if (r && r.status === "active") {
       actions =
+        assetBtn +
         (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
         (canEditThis ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
     } else if (r && r.status === "expired") {
-      actions = canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '';
+      actions = assetBtn + (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '');
     } else if (!r && canReserveIps()) {
-      actions = '<button class="btn btn-sm btn-primary ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '">Reserve</button>';
+      actions = assetBtn + '<button class="btn btn-sm btn-primary ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '">Reserve</button>';
+    } else {
+      actions = assetBtn;
     }
 
     var statusHtml = statusTooltip
@@ -329,6 +337,11 @@ function _renderIpList(data) {
   body.querySelectorAll(".ip-reserve-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
       _openReserveModal(_ipPanelSubnetId, btn.getAttribute("data-ip"));
+    });
+  });
+  body.querySelectorAll(".ip-asset-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      _openAssetViewModal(btn.getAttribute("data-aid"));
     });
   });
 }
@@ -686,6 +699,102 @@ function _generateIpPanelPdf(s, allIps) {
   var filename = "shelob-network-" + s.cidr.replace(/[\/]/g, "_") + "-" + now.toISOString().slice(0, 10) + ".pdf";
   doc.save(filename);
   showToast("Exported " + allIps.length + " IPs to " + filename);
+}
+
+/* ─── Asset view modal (self-contained; no dep on assets.js) ─────────────────*/
+
+var _ASSET_TYPE_LABELS = {
+  server: "Server", switch: "Switch", router: "Router", firewall: "Firewall",
+  workstation: "Workstation", printer: "Printer", access_point: "AP", other: "Other",
+};
+
+function _assetViewRow(label, value, mono) {
+  return '<div class="detail-row"><span class="detail-label">' + escapeHtml(label) + '</span>' +
+    '<span class="detail-value' + (mono ? ' mono' : '') + '">' + escapeHtml(value || "-") + '</span></div>';
+}
+
+function _assetMacAddressesHTML(macs) {
+  if (!macs || macs.length <= 1) return '';
+  var rows = macs.map(function (m) {
+    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
+      '<code style="font-size:0.82rem">' + escapeHtml(m.mac) + '</code>' +
+      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
+        escapeHtml(m.source || "") + (m.lastSeen ? ' &middot; ' + formatDate(m.lastSeen) : '') +
+      '</span></div>';
+  }).join("");
+  return '<div class="detail-row"><span class="detail-label">All MACs (' + macs.length + ')</span>' +
+    '<span class="detail-value">' + rows + '</span></div>';
+}
+
+function _assetAssocIpsHTML(ips) {
+  if (!ips || ips.length === 0) return '';
+  var rows = ips.map(function (entry) {
+    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
+      '<code style="font-size:0.82rem">' + escapeHtml(entry.ip) + '</code>' +
+      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
+        (entry.interfaceName ? escapeHtml(entry.interfaceName) : '') +
+        (entry.source ? ' &middot; ' + escapeHtml(entry.source) : '') +
+        (entry.lastSeen ? ' &middot; ' + formatDate(entry.lastSeen) : '') +
+      '</span></div>';
+  }).join("");
+  return '<div class="detail-row"><span class="detail-label">Associated IPs (' + ips.length + ')</span>' +
+    '<span class="detail-value">' + rows + '</span></div>';
+}
+
+function _assetAssocUsersHTML(users) {
+  if (!users || users.length === 0) return '';
+  var rows = users.map(function (u) {
+    var display = u.domain ? escapeHtml(u.domain) + '\\' + escapeHtml(u.user) : escapeHtml(u.user);
+    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
+      '<span style="font-size:0.85rem">' + display + '</span>' +
+      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
+        (u.source ? escapeHtml(u.source) : '') +
+        (u.lastSeen ? ' &middot; ' + formatDate(u.lastSeen) : '') +
+      '</span></div>';
+  }).join("");
+  return '<div class="detail-row"><span class="detail-label">Associated Users (' + users.length + ')</span>' +
+    '<span class="detail-value">' + rows + '</span></div>';
+}
+
+async function _openAssetViewModal(assetId) {
+  try {
+    var a = await api.assets.get(assetId);
+    var body = '<div class="asset-view-grid">' +
+      _assetViewRow("Hostname", a.hostname) +
+      _assetViewRow("DNS Name", a.dnsName) +
+      _assetViewRow("IP Address", a.ipAddress, true) +
+      _assetAssocIpsHTML(a.associatedIps) +
+      _assetViewRow("MAC Address", a.macAddress, true) +
+      _assetMacAddressesHTML(a.macAddresses) +
+      _assetViewRow("Asset Tag", a.assetTag) +
+      _assetViewRow("Serial Number", a.serialNumber) +
+      _assetViewRow("Manufacturer", a.manufacturer) +
+      _assetViewRow("Model", a.model) +
+      _assetViewRow("Type", _ASSET_TYPE_LABELS[a.assetType] || a.assetType) +
+      _assetViewRow("Status", a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : "-") +
+      _assetViewRow("Location", a.location) +
+      _assetViewRow("Learned Location", a.learnedLocation) +
+      _assetViewRow("Department", a.department) +
+      _assetViewRow("Assigned To", a.assignedTo) +
+      _assetViewRow("OS / Firmware", a.osVersion || a.os) +
+      _assetViewRow("Last Seen Switch", a.lastSeenSwitch) +
+      _assetViewRow("Last Seen AP", a.lastSeenAp) +
+      _assetAssocUsersHTML(a.associatedUsers) +
+      _assetViewRow("First Seen", a.createdAt ? formatDate(a.createdAt) : null) +
+      _assetViewRow("Last Seen", a.lastSeen ? formatDate(a.lastSeen) : null) +
+      _assetViewRow("Acquired", a.acquiredAt ? formatDate(a.acquiredAt) : null) +
+      _assetViewRow("Warranty Expires", a.warrantyExpiry ? formatDate(a.warrantyExpiry) : null) +
+      _assetViewRow("Purchase Order", a.purchaseOrder) +
+      _assetViewRow("Tags", (a.tags || []).join(", ") || null) +
+      _assetViewRow("Notes", a.notes) +
+      _assetViewRow("Created", formatDate(a.createdAt)) +
+      _assetViewRow("Updated", formatDate(a.updatedAt)) +
+    '</div>';
+    var footer = '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
+    openModal("Asset Details", body, footer, { wide: true });
+  } catch (err) {
+    showToast(err.message, "error");
+  }
 }
 
 function _generateIpPanelCsv(s, allIps) {
