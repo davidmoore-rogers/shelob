@@ -285,7 +285,7 @@ function renderAssetsPage() {
       '<td><a href="#" class="asset-name-link" data-asset-id="' + a.id + '"><strong>' + escapeHtml(a.hostname || "-") + '</strong></a>' +
         (a.assetTag ? '<br><span class="asset-tag-label">' + escapeHtml(a.assetTag) + '</span>' : '') +
       '</td>' +
-      '<td class="mono">' + _copyableCell(a.ipAddress) + '</td>' +
+      '<td class="mono">' + ipCellHTML(a) + '</td>' +
       '<td class="mono" style="font-size:0.8rem">' + macCellHTML(a) + '</td>' +
       '<td>' + _copyableCell(a.serialNumber) + '</td>' +
       '<td>' + assetTypeBadge(a.assetType) + '</td>' +
@@ -357,6 +357,39 @@ function assetStatusBadge(status) {
   var cls = "badge-" + status;
   var label = status.charAt(0).toUpperCase() + status.slice(1);
   return '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+
+function ipCellHTML(asset) {
+  var primary = asset.ipAddress;
+  var ips = Array.isArray(asset.associatedIps) ? asset.associatedIps : [];
+  if (!primary && ips.length === 0) return '-';
+  if (ips.length === 0) {
+    return '<span class="copy-cell" title="Click to copy" data-copy="' + escapeHtml(primary) + '">' + escapeHtml(primary) + '</span>';
+  }
+
+  var displayIp = primary || ips[0].ip;
+  var tooltipRows = ips.map(function (entry) {
+    var metaBits = [];
+    if (entry.interfaceName) metaBits.push('<span class="mac-tooltip-subnet">' + escapeHtml(entry.interfaceName) + '</span>');
+    var sourceLine = (entry.source ? escapeHtml(entry.source) : '') +
+      (entry.lastSeen ? ' &middot; ' + formatDate(entry.lastSeen) : '');
+    return '<div class="mac-tooltip-row">' +
+      '<span class="mono copy-cell" title="Click to copy" data-copy="' + escapeHtml(entry.ip) + '">' + escapeHtml(entry.ip) + '</span>' +
+      '<span class="mac-tooltip-meta">' +
+        metaBits.join('') +
+        '<span class="mac-tooltip-source">' + sourceLine + '</span>' +
+      '</span>' +
+    '</div>';
+  }).join("");
+
+  return '<span class="mac-hover-trigger">' +
+    '<span class="copy-cell" title="Click to copy" data-copy="' + escapeHtml(displayIp) + '">' + escapeHtml(displayIp) + '</span>' +
+    '<span class="mac-badge-count">+' + ips.length + '</span>' +
+    '<div class="mac-tooltip">' +
+      '<div class="mac-tooltip-header">Associated IPs</div>' +
+      tooltipRows +
+    '</div>' +
+  '</span>';
 }
 
 function macCellHTML(asset) {
