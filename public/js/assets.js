@@ -588,8 +588,7 @@ async function openViewModal(id) {
     var body = '<div class="asset-view-grid">' +
       viewRow("Hostname", a.hostname) +
       viewRow("DNS Name", a.dnsName) +
-      viewRow("IP Address", a.ipAddress, true) +
-      associatedIpsViewHTML(a.associatedIps) +
+      ipViewRow(a) +
       viewRow("MAC Address", a.macAddress, true) +
       macAddressesViewHTML(a.macAddresses) +
       viewRow("Asset Tag", a.assetTag) +
@@ -620,9 +619,28 @@ async function openViewModal(id) {
       ? '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
       : '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
     openModal("Asset Details", body, footer, { wide: true });
+    _wireHoverTriggersIn(document.querySelector('#modal-overlay .modal-body'));
   } catch (err) {
     showToast(err.message, "error");
   }
+}
+
+function _wireHoverTriggersIn(container) {
+  if (!container) return;
+  container.querySelectorAll('.mac-hover-trigger').forEach(function (el) {
+    el.addEventListener('mouseenter', _handleMacEnter);
+    el.addEventListener('mouseleave', _handleMacLeave);
+  });
+}
+
+function ipViewRow(asset) {
+  var ips = Array.isArray(asset.associatedIps) ? asset.associatedIps : [];
+  if (!asset.ipAddress && ips.length === 0) {
+    return '<div class="detail-row"><span class="detail-label">IP Address</span>' +
+      '<span class="detail-value mono">-</span></div>';
+  }
+  return '<div class="detail-row"><span class="detail-label">IP Address</span>' +
+    '<span class="detail-value mono">' + ipCellHTML(asset) + '</span></div>';
 }
 
 function viewRow(label, value, mono) {
@@ -642,22 +660,6 @@ function macAddressesViewHTML(macAddresses) {
     '</div>';
   }).join("");
   return '<div class="detail-row"><span class="detail-label">All MACs (' + macAddresses.length + ')</span>' +
-    '<span class="detail-value">' + rows + '</span></div>';
-}
-
-function associatedIpsViewHTML(ips) {
-  if (!ips || ips.length === 0) return '';
-  var rows = ips.map(function (entry) {
-    return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
-      '<code style="font-size:0.82rem">' + escapeHtml(entry.ip) + '</code>' +
-      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
-        (entry.interfaceName ? escapeHtml(entry.interfaceName) : '') +
-        (entry.source ? ' &middot; ' + escapeHtml(entry.source) : '') +
-        (entry.lastSeen ? ' &middot; ' + formatDate(entry.lastSeen) : '') +
-      '</span>' +
-    '</div>';
-  }).join("");
-  return '<div class="detail-row"><span class="detail-label">Associated IPs (' + ips.length + ')</span>' +
     '<span class="detail-value">' + rows + '</span></div>';
 }
 
