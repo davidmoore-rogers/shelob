@@ -51,13 +51,13 @@ function renderBlocksPage() {
   var tbody = document.getElementById("blocks-tbody");
   if (_blocksData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No IP blocks found. Create one to get started.</td></tr>';
-    document.getElementById("pagination").innerHTML = "";
+    clearPageControls("pagination");
     return;
   }
   var sfData = _blocksSF ? _blocksSF.apply(_blocksData) : _blocksData;
   if (sfData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No results match the current filters.</td></tr>';
-    document.getElementById("pagination").innerHTML = "";
+    clearPageControls("pagination");
     return;
   }
   var start = (_blocksPage - 1) * _blocksPageSize;

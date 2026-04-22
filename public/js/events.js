@@ -78,7 +78,13 @@ var _eventsCurrentPage = [];
   }
 
   function renderPagination() {
-    var container = document.getElementById("pagination");
+    var containers = [];
+    var mainEl = document.getElementById("pagination");
+    if (mainEl) containers.push(mainEl);
+    var topEl = document.getElementById("pagination-top");
+    if (topEl) containers.push(topEl);
+    if (containers.length === 0) return;
+
     var totalPages = Math.max(1, Math.ceil(currentTotal / pageSize));
     var currentPage = Math.floor(currentOffset / pageSize) + 1;
 
@@ -106,29 +112,32 @@ var _eventsCurrentPage = [];
       pageButtons += '<button class="btn btn-secondary btn-sm page-btn" data-page="' + totalPages + '">' + totalPages + '</button>';
     }
 
-    container.innerHTML =
-      '<button class="btn btn-secondary btn-sm" id="page-prev" ' + (currentPage <= 1 ? 'disabled' : '') + '>&laquo; Prev</button>' +
+    var html =
+      '<button class="btn btn-secondary btn-sm page-prev" ' + (currentPage <= 1 ? 'disabled' : '') + '>&laquo; Prev</button>' +
       pageButtons +
-      '<button class="btn btn-secondary btn-sm" id="page-next" ' + (currentPage >= totalPages ? 'disabled' : '') + '>Next &raquo;</button>' +
+      '<button class="btn btn-secondary btn-sm page-next" ' + (currentPage >= totalPages ? 'disabled' : '') + '>Next &raquo;</button>' +
       '<span style="font-size:0.82rem;color:var(--color-text-tertiary);margin-left:8px">' + currentTotal + ' events</span>';
 
-    document.getElementById("page-prev").addEventListener("click", function () {
-      if (currentOffset >= pageSize) {
-        currentOffset -= pageSize;
-        loadEvents();
-      }
-    });
-    document.getElementById("page-next").addEventListener("click", function () {
-      if (currentOffset + pageSize < currentTotal) {
-        currentOffset += pageSize;
-        loadEvents();
-      }
-    });
-    container.querySelectorAll(".page-btn").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        var page = parseInt(btn.getAttribute("data-page"), 10);
-        currentOffset = (page - 1) * pageSize;
-        loadEvents();
+    containers.forEach(function (container) {
+      container.innerHTML = html;
+      container.querySelector(".page-prev").addEventListener("click", function () {
+        if (currentOffset >= pageSize) {
+          currentOffset -= pageSize;
+          loadEvents();
+        }
+      });
+      container.querySelector(".page-next").addEventListener("click", function () {
+        if (currentOffset + pageSize < currentTotal) {
+          currentOffset += pageSize;
+          loadEvents();
+        }
+      });
+      container.querySelectorAll(".page-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var page = parseInt(btn.getAttribute("data-page"), 10);
+          currentOffset = (page - 1) * pageSize;
+          loadEvents();
+        });
       });
     });
   }

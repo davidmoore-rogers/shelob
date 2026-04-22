@@ -239,14 +239,14 @@ function renderAssetsPage() {
   tbody.addEventListener("click", _handleCopyClick);
   if (_assetsData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="empty-state">No assets found. Add one to get started.</td></tr>';
-    document.getElementById("pagination").innerHTML = "";
+    clearPageControls("pagination");
     _assetsUpdateSelectAll();
     return;
   }
   var sfData = _assetsSF ? _assetsSF.apply(_assetsData) : _assetsData;
   if (sfData.length === 0) {
     tbody.innerHTML = '<tr><td colspan="12" class="empty-state">No results match the current filters.</td></tr>';
-    document.getElementById("pagination").innerHTML = "";
+    clearPageControls("pagination");
     _assetsUpdateSelectAll();
     return;
   }

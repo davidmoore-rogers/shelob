@@ -599,9 +599,23 @@ function showFormModal(title, formHTML, confirmLabel) {
  * @param {function} onPageChange  - Called with new page number (1-based)
  * @param {function} onSizeChange  - Called with new page size
  */
+/**
+ * Clear both the bottom and optional top pagination containers.
+ */
+function clearPageControls(containerId) {
+  var mainEl = document.getElementById(containerId);
+  if (mainEl) mainEl.innerHTML = "";
+  var topEl = document.getElementById(containerId + "-top");
+  if (topEl) topEl.innerHTML = "";
+}
+
 function renderPageControls(containerId, total, pageSize, currentPage, onPageChange, onSizeChange) {
-  var container = document.getElementById(containerId);
-  if (!container) return;
+  var containers = [];
+  var mainEl = document.getElementById(containerId);
+  if (mainEl) containers.push(mainEl);
+  var topEl = document.getElementById(containerId + "-top");
+  if (topEl) containers.push(topEl);
+  if (containers.length === 0) return;
 
   var totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -627,21 +641,24 @@ function renderPageControls(containerId, total, pageSize, currentPage, onPageCha
     pageButtons += '<button class="btn btn-secondary btn-sm pg-btn" data-page="' + totalPages + '">' + totalPages + '</button>';
   }
 
-  container.innerHTML =
-    '<button class="btn btn-secondary btn-sm" id="' + containerId + '-prev" ' + (currentPage <= 1 ? 'disabled' : '') + '>&laquo; Prev</button>' +
+  var html =
+    '<button class="btn btn-secondary btn-sm pg-prev" ' + (currentPage <= 1 ? 'disabled' : '') + '>&laquo; Prev</button>' +
     pageButtons +
-    '<button class="btn btn-secondary btn-sm" id="' + containerId + '-next" ' + (currentPage >= totalPages ? 'disabled' : '') + '>Next &raquo;</button>' +
+    '<button class="btn btn-secondary btn-sm pg-next" ' + (currentPage >= totalPages ? 'disabled' : '') + '>Next &raquo;</button>' +
     '<span style="font-size:0.82rem;color:var(--color-text-tertiary);margin-left:8px">' + total + ' items</span>';
 
-  document.getElementById(containerId + '-prev').addEventListener("click", function () {
-    if (currentPage > 1) onPageChange(currentPage - 1);
-  });
-  document.getElementById(containerId + '-next').addEventListener("click", function () {
-    if (currentPage < totalPages) onPageChange(currentPage + 1);
-  });
-  container.querySelectorAll(".pg-btn").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      onPageChange(parseInt(btn.getAttribute("data-page"), 10));
+  containers.forEach(function (container) {
+    container.innerHTML = html;
+    container.querySelector('.pg-prev').addEventListener("click", function () {
+      if (currentPage > 1) onPageChange(currentPage - 1);
+    });
+    container.querySelector('.pg-next').addEventListener("click", function () {
+      if (currentPage < totalPages) onPageChange(currentPage + 1);
+    });
+    container.querySelectorAll(".pg-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        onPageChange(parseInt(btn.getAttribute("data-page"), 10));
+      });
     });
   });
 }

@@ -907,6 +907,11 @@ th.cb-col, td.cb-col { width: 36px; text-align: center; padding: 0 4px; }
   margin-bottom: 1rem;
   flex-wrap: wrap;
   align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--color-bg-secondary);
+  padding: 0.75rem 0;
 }
 .filter-bar label {
   font-size: 0.72rem;
