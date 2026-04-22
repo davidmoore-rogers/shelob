@@ -1323,18 +1323,27 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   // ══════════════════════════════════════════════════════════════════════════════
 
   const ifaceIpsByDevice = new Map<string, Array<{ ip: string; interfaceName: string }>>();
+  const totalNonMgmtIps = result.interfaceIps.filter((ip) => ip.ipAddress && ip.role !== "management").length;
   for (const ifaceIp of result.interfaceIps) {
     if (!ifaceIp.ipAddress || ifaceIp.role === "management") continue;
     const list = ifaceIpsByDevice.get(ifaceIp.device) ?? [];
     list.push({ ip: ifaceIp.ipAddress, interfaceName: ifaceIp.interfaceName });
     ifaceIpsByDevice.set(ifaceIp.device, list);
   }
+  syncLog("info", `Phase 4b: ${totalNonMgmtIps} non-management interface IP(s) across ${ifaceIpsByDevice.size} device(s)`);
 
   for (const [deviceName, ifaces] of ifaceIpsByDevice) {
     const matchingDevice = result.devices.find((d: any) => d.name === deviceName || d.hostname === deviceName);
     let asset: any = matchingDevice?.serial ? assetIdx.findBySerial(matchingDevice.serial) : null;
-    if (!asset) asset = assetIdx.findByEntry(undefined, deviceName, undefined);
-    if (!asset) continue;
+    let matchedBy = asset ? "serial" : "";
+    if (!asset) {
+      asset = assetIdx.findByEntry(undefined, deviceName, undefined);
+      if (asset) matchedBy = "hostname";
+    }
+    if (!asset) {
+      syncLog("info", `Phase 4b: ${deviceName}: no matching asset found (serial=${matchingDevice?.serial || "n/a"}, hostname=${deviceName}) — ${ifaces.length} IP(s) dropped`);
+      continue;
+    }
 
     const existingIps: any[] = Array.isArray(asset.associatedIps) ? (asset.associatedIps as any[]) : [];
     const manualIps = existingIps.filter((e: any) => e.source === "manual");
@@ -1349,6 +1358,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     try {
       await prisma.asset.update({ where: { id: asset.id }, data: { associatedIps: newAssociatedIps } });
       asset.associatedIps = newAssociatedIps;
+      syncLog("info", `Phase 4b: ${deviceName}: matched by ${matchedBy} (asset ${asset.id}) — wrote ${discoveredIps.length} discovered + ${manualIps.length} manual IP(s)`);
     } catch (err: any) {
       syncLog("error", `Failed to update associatedIps for ${deviceName}: ${err.message || "Unknown error"}`);
     }
