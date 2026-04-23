@@ -490,6 +490,7 @@ function _titleForType(type, action) {
 function openCreateModal(type) {
   type = type || "fortimanager";
   var isWin = type === "windowsserver";
+  var isEntra = type === "entraid";
   var title = _titleForType(type, "Add");
   var body = _formHTMLForType(type, {});
   var footer = '<button class="btn btn-secondary" id="btn-test-new">Test Connection</button>' +
@@ -499,7 +500,9 @@ function openCreateModal(type) {
 
   document.getElementById("btn-test-new").addEventListener("click", async function () {
     var btn = this;
-    if (isWin) {
+    if (isEntra) {
+      if (!val("f-tenantId") || !val("f-clientId") || !val("f-clientSecret")) { showToast("Fill in tenant ID, client ID, and client secret first", "error"); return; }
+    } else if (isWin) {
       if (!val("f-host") || !val("f-username")) { showToast("Fill in host and username first", "error"); return; }
     } else {
       if (!val("f-host") || !val("f-apiToken")) { showToast("Fill in host and API token first", "error"); return; }
