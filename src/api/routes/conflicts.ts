@@ -28,6 +28,17 @@ const router = Router();
 router.use(requireAuth);
 
 const ENTRA_ASSET_TAG_PREFIX = "entra:";
+const AD_ASSET_TAG_PREFIX = "ad:";
+const AD_GUID_TAG_PREFIX = "ad-guid:";
+const SID_TAG_PREFIX = "sid:";
+
+function assetTagPrefixFor(proposed: Record<string, any>): string {
+  // Newer conflicts carry the prefix explicitly; older Entra-only conflicts
+  // predate the field and default to the Entra prefix.
+  const explicit = typeof proposed.assetTagPrefix === "string" ? proposed.assetTagPrefix : "";
+  if (explicit === AD_ASSET_TAG_PREFIX || explicit === ENTRA_ASSET_TAG_PREFIX) return explicit;
+  return ENTRA_ASSET_TAG_PREFIX;
+}
 
 function visibleEntityTypes(role: string | undefined): ("reservation" | "asset")[] {
   if (role === "admin") return ["reservation", "asset"];
@@ -210,10 +221,14 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   }
 
   const existing = conflict.asset;
+  const prefix = assetTagPrefixFor(proposed);
+  const isAd = prefix === AD_ASSET_TAG_PREFIX;
+  const sourceLabel = isAd ? "Active Directory computer" : "Entra device";
+
   // Overlay proposed fields onto the existing asset, but only where the existing
   // field is empty — respect any manually-entered data already on the record.
   const update: Record<string, unknown> = {
-    assetTag: `${ENTRA_ASSET_TAG_PREFIX}${conflict.proposedDeviceId}`,
+    assetTag: `${prefix}${conflict.proposedDeviceId}`,
   };
   if (!existing.hostname && proposed.hostname) update.hostname = proposed.hostname;
   if (!existing.serialNumber && proposed.serialNumber) update.serialNumber = proposed.serialNumber;
@@ -223,19 +238,31 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   if (!existing.os && proposed.os) update.os = proposed.os;
   if (!existing.osVersion && proposed.osVersion) update.osVersion = proposed.osVersion;
   if (!existing.assignedTo && proposed.assignedTo) update.assignedTo = proposed.assignedTo;
+  if (!existing.dnsName && proposed.dnsName) update.dnsName = proposed.dnsName;
+  if (!existing.location && !existing.learnedLocation && proposed.learnedLocation) update.learnedLocation = proposed.learnedLocation;
+  if (!existing.notes && proposed.notes) update.notes = proposed.notes;
   if (proposed.lastSeen) update.lastSeen = new Date(proposed.lastSeen);
   if (!existing.acquiredAt && proposed.registrationDateTime) {
     update.acquiredAt = new Date(proposed.registrationDateTime);
   }
   if (existing.assetType === "other" && proposed.assetType) update.assetType = proposed.assetType;
+  if (isAd && proposed.disabled === true) update.status = "decommissioned";
 
-  // Merge tags — keep existing manual tags, add entra-source tags
-  const entraTags: string[] = ["entraid", "auto-discovered"];
-  if (proposed.trustType) entraTags.push(String(proposed.trustType).toLowerCase());
-  if (proposed.complianceState) entraTags.push(`intune-${String(proposed.complianceState).toLowerCase()}`);
+  // Merge tags — keep existing manual tags, add source-specific tags and
+  // cross-integration identity tags (sid: for hybrid-join, ad-guid: for AD).
+  const sourceTags: string[] = isAd ? ["activedirectory", "auto-discovered"] : ["entraid", "auto-discovered"];
+  if (isAd) {
+    sourceTags.push(`${AD_GUID_TAG_PREFIX}${String(conflict.proposedDeviceId).toLowerCase()}`);
+    if (proposed.disabled === true) sourceTags.push("ad-disabled");
+    if (proposed.objectSid) sourceTags.push(`${SID_TAG_PREFIX}${String(proposed.objectSid).toUpperCase()}`);
+  } else {
+    if (proposed.trustType) sourceTags.push(String(proposed.trustType).toLowerCase());
+    if (proposed.complianceState) sourceTags.push(`intune-${String(proposed.complianceState).toLowerCase()}`);
+    if (proposed.onPremisesSecurityIdentifier) sourceTags.push(`${SID_TAG_PREFIX}${String(proposed.onPremisesSecurityIdentifier).toUpperCase()}`);
+  }
   const existingTags = (existing.tags as string[] | null) || [];
   const merged = [...existingTags];
-  for (const t of entraTags) { if (!merged.includes(t)) merged.push(t); }
+  for (const t of sourceTags) { if (!merged.includes(t)) merged.push(t); }
   update.tags = merged;
 
   clampAcquiredToLastSeen(update, existing);
@@ -250,7 +277,7 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
     resourceId: existing.id,
     resourceName: existing.hostname ?? undefined,
     actor,
-    message: `Asset conflict accepted — adopted existing asset ${existing.hostname || existing.id} as Entra device ${conflict.proposedDeviceId}`,
+    message: `Asset conflict accepted — adopted existing asset ${existing.hostname || existing.id} as ${sourceLabel} ${conflict.proposedDeviceId}`,
   });
 }
 
@@ -259,30 +286,42 @@ async function rejectAssetConflict(conflict: any, actor?: string) {
     throw new AppError(500, "Asset conflict is missing proposedDeviceId");
   }
   const proposed = (conflict.proposedAssetFields || {}) as Record<string, any>;
+  const prefix = assetTagPrefixFor(proposed);
+  const isAd = prefix === AD_ASSET_TAG_PREFIX;
+  const sourceLabel = isAd ? "AD computer" : "Entra device";
 
-  // Create a separate asset with the entra: tag so the next discovery run finds
-  // it by assetTag and doesn't re-fire the collision.
+  const tags: string[] = isAd ? ["activedirectory", "auto-discovered"] : ["entraid", "auto-discovered"];
+  if (isAd) {
+    tags.push(`${AD_GUID_TAG_PREFIX}${String(conflict.proposedDeviceId).toLowerCase()}`);
+    if (proposed.disabled === true) tags.push("ad-disabled");
+    if (proposed.objectSid) tags.push(`${SID_TAG_PREFIX}${String(proposed.objectSid).toUpperCase()}`);
+  } else {
+    if (proposed.trustType) tags.push(String(proposed.trustType).toLowerCase());
+    if (proposed.complianceState) tags.push(`intune-${String(proposed.complianceState).toLowerCase()}`);
+    if (proposed.onPremisesSecurityIdentifier) tags.push(`${SID_TAG_PREFIX}${String(proposed.onPremisesSecurityIdentifier).toUpperCase()}`);
+  }
+
+  // Create a separate asset so the next discovery run finds it by assetTag/tag
+  // and doesn't re-fire the collision.
+  const defaultStatus: "active" | "decommissioned" = isAd && proposed.disabled === true ? "decommissioned" : "active";
   const createData: Record<string, unknown> = {
-    assetTag: `${ENTRA_ASSET_TAG_PREFIX}${conflict.proposedDeviceId}`,
+    assetTag: `${prefix}${conflict.proposedDeviceId}`,
     hostname: proposed.hostname || null,
+    dnsName: proposed.dnsName || null,
     serialNumber: proposed.serialNumber || null,
     macAddress: proposed.macAddress || null,
     manufacturer: proposed.manufacturer || null,
     model: proposed.model || null,
-    assetType: proposed.assetType || "workstation",
-    status: "active",
+    assetType: proposed.assetType || (isAd ? "other" : "workstation"),
+    status: proposed.status || defaultStatus,
     os: proposed.os || null,
     osVersion: proposed.osVersion || null,
     assignedTo: proposed.assignedTo || null,
+    learnedLocation: proposed.learnedLocation || null,
     lastSeen: proposed.lastSeen ? new Date(proposed.lastSeen) : null,
     acquiredAt: proposed.registrationDateTime ? new Date(proposed.registrationDateTime) : null,
-    notes: `Auto-created after hostname collision was rejected — Entra deviceId ${conflict.proposedDeviceId}`,
-    tags: [
-      "entraid",
-      "auto-discovered",
-      ...(proposed.trustType ? [String(proposed.trustType).toLowerCase()] : []),
-      ...(proposed.complianceState ? [`intune-${String(proposed.complianceState).toLowerCase()}`] : []),
-    ],
+    notes: proposed.notes || `Auto-created after hostname collision was rejected — ${sourceLabel} ${conflict.proposedDeviceId}`,
+    tags,
   };
   clampAcquiredToLastSeen(createData);
   const newAsset = await prisma.asset.create({ data: createData as any });
@@ -293,7 +332,7 @@ async function rejectAssetConflict(conflict: any, actor?: string) {
     resourceId: newAsset.id,
     resourceName: newAsset.hostname ?? undefined,
     actor,
-    message: `Asset conflict rejected — created separate asset ${newAsset.hostname || newAsset.id} for Entra device ${conflict.proposedDeviceId}`,
+    message: `Asset conflict rejected — created separate asset ${newAsset.hostname || newAsset.id} for ${sourceLabel} ${conflict.proposedDeviceId}`,
   });
 }
 

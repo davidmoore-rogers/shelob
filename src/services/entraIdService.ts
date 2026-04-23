@@ -28,6 +28,7 @@ export interface DiscoveredEntraDevice {
   operatingSystem: string;
   operatingSystemVersion: string;
   trustType: string;           // "AzureAd" | "Workplace" | "ServerAd" | ""
+  onPremisesSecurityIdentifier?: string; // On-prem AD SID for hybrid-joined devices (cross-link to AD integration)
   registrationDateTime?: string;
   approximateLastSignInDateTime?: string;
   isCompliant?: boolean;
@@ -294,6 +295,7 @@ export async function discoverDevices(
     "operatingSystem",
     "operatingSystemVersion",
     "trustType",
+    "onPremisesSecurityIdentifier",
     "registrationDateTime",
     "approximateLastSignInDateTime",
     "isCompliant",
@@ -357,6 +359,7 @@ export async function discoverDevices(
       operatingSystem: (intune?.operatingSystem || e.operatingSystem || "") as string,
       operatingSystemVersion: (intune?.osVersion || e.operatingSystemVersion || "") as string,
       trustType: String(e.trustType || ""),
+      onPremisesSecurityIdentifier: e.onPremisesSecurityIdentifier ? String(e.onPremisesSecurityIdentifier) : undefined,
       registrationDateTime: e.registrationDateTime || undefined,
       approximateLastSignInDateTime: e.approximateLastSignInDateTime || undefined,
       isCompliant: typeof e.isCompliant === "boolean" ? e.isCompliant : undefined,

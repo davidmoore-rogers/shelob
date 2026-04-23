@@ -38,7 +38,7 @@ async function loadIntegrations() {
     var result = await api.integrations.list();
     var integrations = result.integrations || result;
     if (integrations.length === 0) {
-      container.innerHTML = '<div class="empty-state-card"><p>No integrations configured.</p><p style="color:var(--color-text-tertiary);font-size:0.85rem;margin-top:0.5rem">Add a FortiManager, FortiGate, Windows Server, or Microsoft Entra ID connection to get started.</p></div>';
+      container.innerHTML = '<div class="empty-state-card"><p>No integrations configured.</p><p style="color:var(--color-text-tertiary);font-size:0.85rem;margin-top:0.5rem">Add a FortiManager, FortiGate, Windows Server, Microsoft Entra ID, or Active Directory connection to get started.</p></div>';
       return;
     }
     var activeDiscoveries = (window._getServerDiscoveries && window._getServerDiscoveries()) || [];
@@ -51,6 +51,7 @@ async function loadIntegrations() {
         intg.type === "windowsserver" ? "Windows Server" :
         intg.type === "fortigate" ? "FortiGate" :
         intg.type === "entraid" ? "Entra ID" :
+        intg.type === "activedirectory" ? "Active Directory" :
         "FortiManager";
 
       function filterRow(baseLabel, include, exclude) {
@@ -60,10 +61,24 @@ async function loadIntegrations() {
         var value = list.length > 0 ? escapeHtml(list.join(", ")) : '<span style="color:var(--color-text-tertiary)">None</span>';
         return '<div class="detail-row"><span class="detail-label">' + label + '</span><span class="detail-value">' + value + '</span></div>';
       }
-      var defaultPort = intg.type === "windowsserver" ? 5985 : 443;
+      var defaultPort =
+        intg.type === "windowsserver" ? 5985 :
+        intg.type === "activedirectory" ? (config.useLdaps === false ? 389 : 636) :
+        443;
 
       var detailRows;
-      if (intg.type === "entraid") {
+      if (intg.type === "activedirectory") {
+        detailRows =
+          '<div class="detail-row"><span class="detail-label">Host</span><span class="detail-value mono">' + escapeHtml(config.host || "-") + ':' + (config.port || defaultPort) + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Protocol</span><span class="detail-value">' + (config.useLdaps === false ? "LDAP" : "LDAPS") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Bind DN</span><span class="detail-value mono">' + escapeHtml(config.bindDn || "-") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Bind Password</span><span class="detail-value mono">' + escapeHtml(config.bindPassword || "-") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Base DN</span><span class="detail-value mono">' + escapeHtml(config.baseDn || "-") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Search Scope</span><span class="detail-value">' + escapeHtml(config.searchScope || "sub") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Verify TLS</span><span class="detail-value">' + (config.verifyTls ? "Yes" : "No") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Include Disabled</span><span class="detail-value">' + (config.includeDisabled === false ? "No (skipped)" : "Yes (as decommissioned)") + '</span></div>' +
+          filterRow("Computers", config.deviceInclude, config.deviceExclude);
+      } else if (intg.type === "entraid") {
         detailRows =
           '<div class="detail-row"><span class="detail-label">Tenant ID</span><span class="detail-value mono">' + escapeHtml(config.tenantId || "-") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Client ID</span><span class="detail-value mono">' + escapeHtml(config.clientId || "-") + '</span></div>' +
@@ -436,6 +451,89 @@ function getEntraFormConfig() {
   };
 }
 
+function activeDirectoryFormHTML(defaults) {
+  var d = defaults || {};
+  var useLdaps = d.useLdaps !== false;
+  var verifyTls = !!d.verifyTls;
+  var enabledChecked = d.enabled !== false ? "checked" : "";
+  var autoChecked = d.autoDiscover !== false ? "checked" : "";
+  var scope = d.searchScope || "sub";
+  var includeDisabled = d.includeDisabled !== false;
+  var devMode = (d.deviceInclude && d.deviceInclude.length > 0) ? "include" : "exclude";
+  var devNames = devMode === "include" ? (d.deviceInclude || []) : (d.deviceExclude || []);
+  var defaultPort = useLdaps ? 636 : 389;
+  return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(d.name || "") + '" placeholder="e.g. Corp AD — DC01"></div>' +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">Connects to an <strong style="color:var(--color-text-primary)">on-premise Active Directory</strong> domain controller via LDAP simple bind. Produces assets only. Hybrid-joined devices are cross-linked to the Entra ID integration via on-prem SID, so the same device never appears twice.</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Connection Settings</p>' +
+    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px">' +
+      '<div class="form-group"><label>Host / IP *</label><input type="text" id="f-host" value="' + escapeHtml(d.host || "") + '" placeholder="e.g. dc01.corp.local"></div>' +
+      '<div class="form-group"><label>Port</label><input type="number" id="f-port" value="' + (d.port || defaultPort) + '" min="1" max="65535" style="width:90px"></div>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-useLdaps" ' + (useLdaps ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-useLdaps" style="margin:0">Use LDAPS (TLS)</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-verifyTls" ' + (verifyTls ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-verifyTls" style="margin:0">Verify TLS certificate</label>' +
+    '</div>' +
+    '<div class="form-group"><label>Bind DN *</label><input type="text" id="f-bindDn" value="' + escapeHtml(d.bindDn || "") + '" placeholder="e.g. CN=shelob-svc,OU=Service Accounts,DC=corp,DC=local"><p class="hint">Distinguished name of the bind account. A read-only domain user is sufficient.</p></div>' +
+    '<div class="form-group"><label>Bind Password *</label><input type="password" id="f-bindPassword" value="' + (d.bindPasswordPlaceholder ? "" : escapeHtml(d.bindPassword || "")) + '" placeholder="' + (d.bindPasswordPlaceholder || "Password") + '"></div>' +
+    '<div class="form-group"><label>Base DN *</label><input type="text" id="f-baseDn" value="' + escapeHtml(d.baseDn || "") + '" placeholder="e.g. DC=corp,DC=local"><p class="hint">Subtree to search for computer objects. Narrow this (e.g. <code>OU=Workstations,DC=corp,DC=local</code>) if you only want part of the directory.</p></div>' +
+    '<div class="form-group"><label>Search Scope</label>' +
+      '<select id="f-searchScope" style="width:auto">' +
+        '<option value="sub"' + (scope === "sub" ? " selected" : "") + '>Subtree (recursive)</option>' +
+        '<option value="one"' + (scope === "one" ? " selected" : "") + '>One level (immediate children only)</option>' +
+      '</select>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-includeDisabled" ' + (includeDisabled ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-includeDisabled" style="margin:0">Include disabled computer accounts (as <em>decommissioned</em>)</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-enabled" ' + enabledChecked + ' style="width:auto">' +
+      '<label for="f-enabled" style="margin:0">Enabled</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-autoDiscover" ' + autoChecked + ' style="width:auto">' +
+      '<label for="f-autoDiscover" style="margin:0">Enable auto-discovery</label>' +
+    '</div>' +
+    '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to re-query AD for device updates (1–24 hours)</p></div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Computer Scope</p>' +
+    '<div class="form-group"><label>Computer Filter</label>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<select id="f-deviceMode" style="width:auto">' +
+          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="exclude"' + (devMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
+        '</select>' +
+        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these computers by common name (cn)</span>' +
+      '</div>' +
+      '<textarea id="f-deviceNames" rows="2" placeholder="One per line — e.g. DESKTOP-*&#10;SRV-HQ-*&#10;*-lab">' + escapeHtml(devNames.join("\n")) + '</textarea>' +
+      '<p class="hint">Leave empty to sync every computer in the base DN. Wildcards: <code>DESKTOP-*</code>, <code>*-lab</code>, <code>*pc*</code></p>' +
+    '</div>';
+}
+
+function getAdFormConfig() {
+  var port = document.getElementById("f-port").value;
+  var devMode = document.getElementById("f-deviceMode").value;
+  var devNames = linesToArray("f-deviceNames");
+  return {
+    host: val("f-host"),
+    port: port ? parseInt(port, 10) : 636,
+    useLdaps: document.getElementById("f-useLdaps").checked,
+    verifyTls: document.getElementById("f-verifyTls").checked,
+    bindDn: val("f-bindDn"),
+    bindPassword: val("f-bindPassword"),
+    baseDn: val("f-baseDn"),
+    searchScope: document.getElementById("f-searchScope").value === "one" ? "one" : "sub",
+    includeDisabled: document.getElementById("f-includeDisabled").checked,
+    deviceInclude: devMode === "include" ? devNames : [],
+    deviceExclude: devMode === "exclude" ? devNames : [],
+  };
+}
+
 function linesToArray(id) {
   return document.getElementById(id).value.split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
 }
@@ -460,6 +558,10 @@ function showTypePicker() {
         '<strong>Microsoft Entra ID</strong>' +
         '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">Devices via Microsoft Graph</span>' +
       '</button>' +
+      '<button class="btn btn-secondary" id="pick-ad" style="padding:1.2rem;font-size:0.95rem;display:flex;flex-direction:column;align-items:center;gap:6px">' +
+        '<strong>Active Directory</strong>' +
+        '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">On-prem computer objects via LDAP</span>' +
+      '</button>' +
     '</div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>';
   openModal("Add Integration", body, footer);
@@ -467,12 +569,14 @@ function showTypePicker() {
   document.getElementById("pick-fgt").addEventListener("click", function () { closeModal(); openCreateModal("fortigate"); });
   document.getElementById("pick-win").addEventListener("click", function () { closeModal(); openCreateModal("windowsserver"); });
   document.getElementById("pick-entra").addEventListener("click", function () { closeModal(); openCreateModal("entraid"); });
+  document.getElementById("pick-ad").addEventListener("click", function () { closeModal(); openCreateModal("activedirectory"); });
 }
 
 function _formHTMLForType(type, defaults) {
   if (type === "windowsserver") return windowsServerFormHTML(defaults);
   if (type === "fortigate") return fortiGateFormHTML(defaults);
   if (type === "entraid") return entraIdFormHTML(defaults);
+  if (type === "activedirectory") return activeDirectoryFormHTML(defaults);
   return fortiManagerFormHTML(defaults);
 }
 
@@ -480,11 +584,17 @@ function _formConfigForType(type) {
   if (type === "windowsserver") return getWinFormConfig();
   if (type === "fortigate") return getFgtFormConfig();
   if (type === "entraid") return getEntraFormConfig();
+  if (type === "activedirectory") return getAdFormConfig();
   return getFormConfig();
 }
 
 function _titleForType(type, action) {
-  var product = type === "windowsserver" ? "Windows Server" : type === "fortigate" ? "FortiGate" : "FortiManager";
+  var product =
+    type === "windowsserver" ? "Windows Server" :
+    type === "fortigate" ? "FortiGate" :
+    type === "entraid" ? "Entra ID" :
+    type === "activedirectory" ? "Active Directory" :
+    "FortiManager";
   return action + " " + product + " Integration";
 }
 
@@ -492,6 +602,7 @@ function openCreateModal(type) {
   type = type || "fortimanager";
   var isWin = type === "windowsserver";
   var isEntra = type === "entraid";
+  var isAd = type === "activedirectory";
   var title = _titleForType(type, "Add");
   var body = _formHTMLForType(type, {});
   var footer = '<button class="btn btn-secondary" id="btn-test-new">Test Connection</button>' +
@@ -503,6 +614,8 @@ function openCreateModal(type) {
     var btn = this;
     if (isEntra) {
       if (!val("f-tenantId") || !val("f-clientId") || !val("f-clientSecret")) { showToast("Fill in tenant ID, client ID, and client secret first", "error"); return; }
+    } else if (isAd) {
+      if (!val("f-host") || !val("f-bindDn") || !val("f-bindPassword") || !val("f-baseDn")) { showToast("Fill in host, bind DN, bind password, and base DN first", "error"); return; }
     } else if (isWin) {
       if (!val("f-host") || !val("f-username")) { showToast("Fill in host and username first", "error"); return; }
     } else {
@@ -563,9 +676,35 @@ async function openEditModal(id) {
     var isWin = intg.type === "windowsserver";
     var isFgt = intg.type === "fortigate";
     var isEntra = intg.type === "entraid";
+    var isAd = intg.type === "activedirectory";
     var body, formGetter;
 
-    if (isEntra) {
+    if (isAd) {
+      var defaults = {
+        name: intg.name,
+        host: config.host,
+        port: config.port,
+        useLdaps: config.useLdaps !== false,
+        verifyTls: config.verifyTls,
+        bindDn: config.bindDn,
+        bindPassword: "",
+        bindPasswordPlaceholder: "Leave blank to keep current password",
+        baseDn: config.baseDn,
+        searchScope: config.searchScope || "sub",
+        includeDisabled: config.includeDisabled !== false,
+        enabled: intg.enabled,
+        autoDiscover: intg.autoDiscover !== false,
+        pollInterval: intg.pollInterval,
+        deviceInclude: config.deviceInclude || [],
+        deviceExclude: config.deviceExclude || [],
+      };
+      body = activeDirectoryFormHTML(defaults);
+      formGetter = function () {
+        var fc = getAdFormConfig();
+        if (!fc.bindPassword) delete fc.bindPassword;
+        return fc;
+      };
+    } else if (isEntra) {
       var defaults = {
         name: intg.name,
         tenantId: config.tenantId,
@@ -674,6 +813,7 @@ async function openEditModal(id) {
         // Strip blank secrets so the server fills them in from the stored config.
         if (isWin) { if (!formConfig.password) delete formConfig.password; }
         else if (isEntra) { if (!formConfig.clientSecret) delete formConfig.clientSecret; }
+        else if (isAd) { if (!formConfig.bindPassword) delete formConfig.bindPassword; }
         else { if (!formConfig.apiToken) delete formConfig.apiToken; }
         var result = await api.integrations.testNew({
           id: id,

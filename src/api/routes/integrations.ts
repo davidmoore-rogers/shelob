@@ -11,6 +11,7 @@ import * as fortimanager from "../../services/fortimanagerService.js";
 import * as fortigate from "../../services/fortigateService.js";
 import * as windowsServer from "../../services/windowsServerService.js";
 import * as entraId from "../../services/entraIdService.js";
+import * as activeDirectory from "../../services/activeDirectoryService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
 import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice, DiscoveredVip, DiscoveryProgressCallback } from "../../services/fortimanagerService.js";
 import { logEvent } from "./events.js";
@@ -113,6 +114,20 @@ const EntraIdConfigSchema = z.object({
   deviceExclude: z.array(z.string()).optional().default([]),
 });
 
+const ActiveDirectoryConfigSchema = z.object({
+  host:            z.string().optional().default(""),
+  port:            z.number().int().min(1).max(65535).optional().default(636),
+  useLdaps:        z.boolean().optional().default(true),
+  verifyTls:       z.boolean().optional().default(false),
+  bindDn:          z.string().optional().default(""),
+  bindPassword:    z.string().optional().default(""),
+  baseDn:          z.string().optional().default(""),
+  searchScope:     z.enum(["sub", "one"]).optional().default("sub"),
+  deviceInclude:   z.array(z.string()).optional().default([]),
+  deviceExclude:   z.array(z.string()).optional().default([]),
+  includeDisabled: z.boolean().optional().default(true),
+});
+
 const CreateIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
     type:         z.literal("fortimanager"),
@@ -142,6 +157,14 @@ const CreateIntegrationSchema = z.discriminatedUnion("type", [
     type:         z.literal("entraid"),
     name:         z.string().min(1, "Name is required"),
     config:       EntraIdConfigSchema,
+    enabled:      z.boolean().optional().default(true),
+    autoDiscover: z.boolean().optional().default(true),
+    pollInterval: z.number().int().min(1).max(24).optional().default(12),
+  }),
+  z.object({
+    type:         z.literal("activedirectory"),
+    name:         z.string().min(1, "Name is required"),
+    config:       ActiveDirectoryConfigSchema,
     enabled:      z.boolean().optional().default(true),
     autoDiscover: z.boolean().optional().default(true),
     pollInterval: z.number().int().min(1).max(24).optional().default(12),
@@ -300,6 +323,9 @@ router.put("/:id", async (req, res, next) => {
       if (!input.config.clientSecret) {
         newConfig.clientSecret = currentConfig.clientSecret;
       }
+      if (!input.config.bindPassword) {
+        newConfig.bindPassword = currentConfig.bindPassword;
+      }
       data.config = newConfig;
     }
 
@@ -331,7 +357,8 @@ router.put("/:id", async (req, res, next) => {
         (finalConfig.host &&
           ((existing.type === "fortimanager" && finalConfig.apiToken) ||
            (existing.type === "fortigate" && finalConfig.apiToken) ||
-           (existing.type === "windowsserver" && finalConfig.username))) ||
+           (existing.type === "windowsserver" && finalConfig.username) ||
+           (existing.type === "activedirectory" && finalConfig.bindDn && finalConfig.bindPassword && finalConfig.baseDn))) ||
         (existing.type === "entraid" && finalConfig.tenantId && finalConfig.clientId && finalConfig.clientSecret)
       );
 
@@ -383,6 +410,8 @@ router.post("/:id/test", async (req, res, next) => {
       result = await windowsServer.testConnection(config as any);
     } else if (integration.type === "entraid") {
       result = await entraId.testConnection(config as any);
+    } else if (integration.type === "activedirectory") {
+      result = await activeDirectory.testConnection(config as any);
     } else {
       result = { ok: false, message: `Unknown integration type: ${integration.type}` };
     }
@@ -434,6 +463,19 @@ router.post("/:id/query", async (req, res, next) => {
         query: z.record(z.string()).optional(),
       }).parse(req.body);
       const result = await entraId.proxyQuery(integration.config as any, path, query);
+      res.json(result);
+      return;
+    }
+
+    if (integration.type === "activedirectory") {
+      const body = z.object({
+        filter:     z.string().optional(),
+        baseDn:     z.string().optional(),
+        scope:      z.enum(["sub", "one", "base"]).optional(),
+        attributes: z.array(z.string()).optional(),
+        sizeLimit:  z.number().int().min(1).max(500).optional(),
+      }).parse(req.body);
+      const result = await activeDirectory.proxyQuery(integration.config as any, body);
       res.json(result);
       return;
     }
@@ -494,6 +536,11 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
     if (integration.type === "fortimanager" && !config.apiToken) throw new AppError(400, "Integration has no API token configured");
     if (integration.type === "fortigate" && !config.apiToken) throw new AppError(400, "Integration has no API token configured");
     if (integration.type === "windowsserver" && !config.username) throw new AppError(400, "Integration has no username configured");
+    if (integration.type === "activedirectory") {
+      if (!config.bindDn) throw new AppError(400, "Integration has no bind DN configured");
+      if (!config.bindPassword) throw new AppError(400, "Integration has no bind password configured");
+      if (!config.baseDn) throw new AppError(400, "Integration has no base DN configured");
+    }
   }
 
   activeDiscovery.get(integrationId)?.controller.abort();
@@ -504,7 +551,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
   await prisma.integration.update({ where: { id: integrationId }, data: { lastDiscoveryAt: new Date() } });
 
   const label = actor === "auto-discovery" ? "Scheduled" : "Manual";
-  const kindLabel = integration.type === "entraid" ? "device discovery" : "DHCP discovery";
+  const kindLabel = (integration.type === "entraid" || integration.type === "activedirectory") ? "device discovery" : "DHCP discovery";
   logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} ${kindLabel} started for "${integrationName}"` });
 
   const onProgress: DiscoveryProgressCallback = (step, level, message, device) => {
@@ -536,6 +583,15 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         const result = await entraId.discoverDevices(config as any, ac.signal, onProgress);
         if (!ac.signal.aborted) {
           const r = await syncEntraDevices(integrationId, integrationName, result, actor);
+          syncTotals.created.push(...r.created);
+          syncTotals.updated.push(...r.updated);
+          syncTotals.skipped.push(...r.skipped);
+        }
+      } else if (integration.type === "activedirectory") {
+        // Active Directory discovery produces assets only — no subnets, reservations, or VIPs.
+        const result = await activeDirectory.discoverDevices(config as any, ac.signal, onProgress);
+        if (!ac.signal.aborted) {
+          const r = await syncActiveDirectoryDevices(integrationId, integrationName, result, actor);
           syncTotals.created.push(...r.created);
           syncTotals.updated.push(...r.updated);
           syncTotals.skipped.push(...r.skipped);
@@ -577,11 +633,12 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       // ── ORIGINAL BATCH SYNC (commented out — replaced by per-device callback above) ──
       // const syncResult = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
 
+      const assetsOnly = integration.type === "entraid" || integration.type === "activedirectory";
       if (ac.signal.aborted) {
-        const abortSuffix = integration.type === "entraid" ? "" : " (stale-subnet deprecation skipped)";
+        const abortSuffix = assetsOnly ? "" : " (stale-subnet deprecation skipped)";
         logEvent({ action: "integration.discover.aborted", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "warning", message: `${label} ${kindLabel} aborted for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped${abortSuffix}` });
       } else {
-        const deprecatedSuffix = integration.type === "entraid" ? "" : `, ${syncTotals.deprecated.length} deprecated`;
+        const deprecatedSuffix = assetsOnly ? "" : `, ${syncTotals.deprecated.length} deprecated`;
         logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} ${kindLabel} completed for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped${deprecatedSuffix}` });
       }
     } catch (err: any) {
@@ -627,6 +684,9 @@ router.post("/test", async (req, res, next) => {
         if (input.type === "entraid" && (!cfg.clientSecret || typeof cfg.clientSecret !== "string")) {
           cfg.clientSecret = stored.clientSecret;
         }
+        if (input.type === "activedirectory" && (!cfg.bindPassword || typeof cfg.bindPassword !== "string")) {
+          cfg.bindPassword = stored.bindPassword;
+        }
       }
     }
 
@@ -638,6 +698,8 @@ router.post("/test", async (req, res, next) => {
       result = await windowsServer.testConnection(input.config);
     } else if (input.type === "entraid") {
       result = await entraId.testConnection(input.config);
+    } else if (input.type === "activedirectory") {
+      result = await activeDirectory.testConnection(input.config);
     } else {
       result = { ok: false, message: `Unknown integration type: ${(input as any).type}` };
     }
@@ -1947,6 +2009,22 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 // ─── Entra ID asset sync ─────────────────────────────────────────────────────
 
 const ENTRA_ASSET_TAG_PREFIX = "entra:";
+const AD_ASSET_TAG_PREFIX = "ad:";
+const SID_TAG_PREFIX = "sid:";
+const AD_GUID_TAG_PREFIX = "ad-guid:";
+
+function sidTag(sid: string): string {
+  return `${SID_TAG_PREFIX}${sid.toUpperCase()}`;
+}
+
+// Tags the Entra discovery auto-assigns each run (so we strip them on update
+// before re-adding the fresh set). Cross-integration identity tags (sid:*,
+// ad-guid:*) are NOT in this list — they must be preserved.
+function isEntraManagedTag(t: string): boolean {
+  if (t.startsWith("entra")) return true;
+  if (t.startsWith("intune-")) return true;
+  return ["auto-discovered", "compliant", "noncompliant", "azuread", "workplace", "serverad"].includes(t);
+}
 
 function inferAssetTypeFromChassis(
   chassisType: string | undefined,
@@ -1978,9 +2056,12 @@ async function syncEntraDevices(
   const skipped: string[] = [];
   const now = new Date();
 
-  // Load the full asset table so we can index by (Entra) assetTag and by hostname
+  // Load the full asset table so we can index by (Entra) assetTag, by SID tag,
+  // and by hostname. SID index catches hybrid-joined devices that the on-prem
+  // AD integration discovered first (assetTag = "ad:{guid}").
   const allAssets = await prisma.asset.findMany();
   const assetByEntraId = new Map<string, any>();       // deviceId → asset
+  const assetBySid = new Map<string, any>();           // uppercase SID → asset
   const assetByHostnameNoTag = new Map<string, any>(); // hostname → asset (only those without an assetTag)
   for (const a of allAssets) {
     const tag = a.assetTag ?? "";
@@ -1988,6 +2069,11 @@ async function syncEntraDevices(
       assetByEntraId.set(tag.slice(ENTRA_ASSET_TAG_PREFIX.length).toLowerCase(), a);
     } else if (!tag && a.hostname) {
       assetByHostnameNoTag.set(a.hostname.toLowerCase(), a);
+    }
+    for (const t of (a.tags as string[] | null) || []) {
+      if (t.startsWith(SID_TAG_PREFIX)) {
+        assetBySid.set(t.slice(SID_TAG_PREFIX.length).toUpperCase(), a);
+      }
     }
   }
 
@@ -2005,21 +2091,42 @@ async function syncEntraDevices(
     if (dev.complianceState) tags.push(`intune-${dev.complianceState.toLowerCase()}`);
     else if (dev.isCompliant === true) tags.push("compliant");
     else if (dev.isCompliant === false) tags.push("noncompliant");
+    if (dev.onPremisesSecurityIdentifier) tags.push(sidTag(dev.onPremisesSecurityIdentifier));
 
     // Prefer Intune's lastSync (freshest hands-on-device signal) over Entra's sign-in time
     const lastSeenIso = dev.lastSyncDateTime || dev.approximateLastSignInDateTime;
     const lastSeen = lastSeenIso ? new Date(lastSeenIso) : null;
     const acquiredAt = dev.registrationDateTime ? new Date(dev.registrationDateTime) : null;
 
-    const existing = assetByEntraId.get(deviceIdKey);
+    // 1. Primary match: Entra assetTag
+    let existing = assetByEntraId.get(deviceIdKey);
+    let takingOver = false;
+    // 2. Secondary match (hybrid-joined): on-prem SID tag. Lets Entra claim
+    //    assets first discovered by the AD integration.
+    if (!existing && dev.onPremisesSecurityIdentifier) {
+      const sidMatch = assetBySid.get(dev.onPremisesSecurityIdentifier.toUpperCase());
+      if (sidMatch) {
+        existing = sidMatch;
+        takingOver = !(sidMatch.assetTag || "").startsWith(ENTRA_ASSET_TAG_PREFIX);
+        if (takingOver) {
+          syncLog("info", `SID cross-link: Entra device "${dev.displayName}" (${dev.deviceId}) taking over existing asset ${sidMatch.id} (was ${sidMatch.assetTag || "<untagged>"}).`);
+        }
+      }
+    }
+
     if (existing) {
-      // Update the existing Entra-sourced asset
+      // Update the existing asset (either Entra-sourced, or SID-matched take-over)
       const updateData: Record<string, unknown> = {
         hostname: dev.displayName || existing.hostname,
         os: dev.operatingSystem || existing.os,
         osVersion: dev.operatingSystemVersion || existing.osVersion,
         lastSeen: lastSeen || existing.lastSeen,
       };
+      if (takingOver) {
+        // Priority rule: Entra's assetTag always wins. AD guid is preserved
+        // via ad-guid:{guid} tag so AD sync can still find this asset later.
+        updateData.assetTag = `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`;
+      }
       if (dev.serialNumber) updateData.serialNumber = dev.serialNumber;
       if (dev.macAddress) updateData.macAddress = dev.macAddress;
       if (dev.manufacturer) updateData.manufacturer = dev.manufacturer;
@@ -2030,9 +2137,11 @@ async function syncEntraDevices(
       }
       // Only overwrite assetType if the existing one is "other" (default) — respect manual recategorization
       if (existing.assetType === "other") updateData.assetType = assetType;
-      // Merge tags: keep any manual tags, replace the auto-discovery set
-      const preserved = (existing.tags as string[] || []).filter((t) => !t.startsWith("entra") && !["auto-discovered", "compliant", "noncompliant", "azuread", "workplace", "serverad"].includes(t) && !t.startsWith("intune-"));
-      updateData.tags = [...preserved, ...tags];
+      // Merge tags: strip Entra-managed auto-tags and re-add the fresh set.
+      // Cross-integration identity tags (sid:*, ad-guid:*) and user-set tags
+      // pass through untouched.
+      const preserved = ((existing.tags as string[]) || []).filter((t) => !isEntraManagedTag(t));
+      updateData.tags = [...preserved, ...tags.filter((t) => !preserved.includes(t))];
 
       try {
         clampAcquiredToLastSeen(updateData, existing);
@@ -2044,7 +2153,7 @@ async function syncEntraDevices(
       continue;
     }
 
-    // No existing assetTag match — check for hostname collision with a non-tagged asset.
+    // No existing assetTag or SID match — check for hostname collision with a non-tagged asset.
     // If one exists, create (or refresh) a pending Conflict so an admin can decide
     // whether to merge (accept) or create a duplicate (reject). Skip the
     // create-path so we don't accidentally produce the duplicate yet.
@@ -2056,6 +2165,8 @@ async function syncEntraDevices(
             where: { entityType: "asset", status: "pending", proposedDeviceId: dev.deviceId },
           });
           const proposedFields = {
+            sourceType: "entraid",
+            assetTagPrefix: ENTRA_ASSET_TAG_PREFIX,
             deviceId: dev.deviceId,
             hostname: dev.displayName,
             serialNumber: dev.serialNumber || null,
@@ -2068,6 +2179,7 @@ async function syncEntraDevices(
             chassisType: dev.chassisType || null,
             complianceState: dev.complianceState || null,
             trustType: dev.trustType || null,
+            onPremisesSecurityIdentifier: dev.onPremisesSecurityIdentifier || null,
             assetType,
             lastSeen: dev.lastSyncDateTime || dev.approximateLastSignInDateTime || null,
             registrationDateTime: dev.registrationDateTime || null,
@@ -2122,6 +2234,9 @@ async function syncEntraDevices(
       clampAcquiredToLastSeen(createData);
       const newAsset = await prisma.asset.create({ data: createData as any });
       assetByEntraId.set(deviceIdKey, newAsset);
+      if (dev.onPremisesSecurityIdentifier) {
+        assetBySid.set(dev.onPremisesSecurityIdentifier.toUpperCase(), newAsset);
+      }
       created.push(dev.displayName || dev.deviceId);
     } catch (err: any) {
       syncLog("error", `Failed to create asset for Entra device ${dev.displayName || dev.deviceId}: ${err.message || "Unknown error"}`);
@@ -2129,6 +2244,202 @@ async function syncEntraDevices(
   }
 
   syncLog("info", `Entra ID sync: ${created.length} created, ${updated.length} updated, ${skipped.length} skipped`);
+  return { created, updated, skipped };
+}
+
+// ─── Active Directory asset sync ─────────────────────────────────────────────
+
+function isAdManagedTag(t: string): boolean {
+  if (t.startsWith("activedirectory")) return true;
+  if (t.startsWith(AD_GUID_TAG_PREFIX)) return true; // replaced fresh each run
+  return ["auto-discovered", "ad-disabled"].includes(t);
+}
+
+async function syncActiveDirectoryDevices(
+  integrationId: string,
+  integrationName: string,
+  result: { devices: activeDirectory.DiscoveredAdDevice[] },
+  actor?: string,
+): Promise<{ created: string[]; updated: string[]; skipped: string[] }> {
+  const syncLog = (level: "info" | "error" | "warning", message: string) => {
+    logEvent({ action: "integration.sync", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
+  };
+  const created: string[] = [];
+  const updated: string[] = [];
+  const skipped: string[] = [];
+
+  // Load the full asset table so we can index by AD assetTag, AD-guid tag, SID tag, and hostname.
+  const allAssets = await prisma.asset.findMany();
+  const assetByAdGuidTag = new Map<string, any>();         // guid → asset (works even after Entra took over assetTag)
+  const assetBySid = new Map<string, any>();               // uppercase SID → asset
+  const assetByHostnameNoTag = new Map<string, any>();     // hostname → asset (untagged only)
+  for (const a of allAssets) {
+    const tag = a.assetTag ?? "";
+    if (!tag && a.hostname) assetByHostnameNoTag.set(a.hostname.toLowerCase(), a);
+    if (tag.startsWith(AD_ASSET_TAG_PREFIX)) {
+      assetByAdGuidTag.set(tag.slice(AD_ASSET_TAG_PREFIX.length).toLowerCase(), a);
+    }
+    for (const t of (a.tags as string[] | null) || []) {
+      if (t.startsWith(AD_GUID_TAG_PREFIX)) {
+        assetByAdGuidTag.set(t.slice(AD_GUID_TAG_PREFIX.length).toLowerCase(), a);
+      } else if (t.startsWith(SID_TAG_PREFIX)) {
+        assetBySid.set(t.slice(SID_TAG_PREFIX.length).toUpperCase(), a);
+      }
+    }
+  }
+
+  for (const dev of result.devices) {
+    const guidKey = dev.objectGuid.toLowerCase();
+    if (!guidKey) {
+      skipped.push(`${dev.cn || "<unnamed>"} (missing objectGUID)`);
+      continue;
+    }
+
+    const displayName = dev.dnsHostName || dev.cn;
+    const hostLookupKey = (dev.dnsHostName || dev.cn || "").toLowerCase();
+    const assetType = inferAssetTypeFromOs(dev.operatingSystem);
+    const status: "active" | "decommissioned" = dev.disabled ? "decommissioned" : "active";
+
+    const tags: string[] = ["activedirectory", "auto-discovered", `${AD_GUID_TAG_PREFIX}${guidKey}`];
+    if (dev.objectSid) tags.push(sidTag(dev.objectSid));
+    if (dev.disabled) tags.push("ad-disabled");
+
+    const lastLogon = dev.lastLogonTimestamp ? new Date(dev.lastLogonTimestamp) : null;
+    const whenCreated = dev.whenCreated ? new Date(dev.whenCreated) : null;
+
+    // Match order: (1) AD guid tag/assetTag (2) SID tag (hybrid; Entra likely
+    // has assetTag) (3) hostname collision → conflict (4) create new.
+    let existing = assetByAdGuidTag.get(guidKey);
+    if (!existing && dev.objectSid) {
+      existing = assetBySid.get(dev.objectSid.toUpperCase());
+    }
+
+    if (existing) {
+      const updateData: Record<string, unknown> = {
+        os: dev.operatingSystem || existing.os,
+        osVersion: dev.operatingSystemVersion || existing.osVersion,
+        status,
+      };
+      // Hostname: prefer dnsHostName if present; otherwise cn; never blank out a
+      // human-entered hostname with the empty string.
+      if (displayName) {
+        updateData.hostname = displayName;
+        if (dev.dnsHostName) updateData.dnsName = dev.dnsHostName;
+      }
+      // learnedLocation: AD OU path if no user-set location.
+      if (!existing.location && dev.ouPath) updateData.learnedLocation = dev.ouPath;
+      // lastSeen: don't regress a newer existing value (e.g. Entra/Intune had fresher data).
+      if (lastLogon) {
+        const existingLastSeen = existing.lastSeen ? new Date(existing.lastSeen) : null;
+        if (!existingLastSeen || lastLogon > existingLastSeen) {
+          updateData.lastSeen = lastLogon;
+        }
+      }
+      // acquiredAt: backfill with AD whenCreated only if older than current.
+      if (whenCreated && (!existing.acquiredAt || whenCreated < new Date(existing.acquiredAt))) {
+        updateData.acquiredAt = whenCreated;
+      }
+      // assetType: only set if still default "other" (respect manual recategorization).
+      if (existing.assetType === "other" && assetType !== "other") updateData.assetType = assetType;
+      // Notes: only write if the existing notes field is empty.
+      if (!existing.notes && dev.description) updateData.notes = dev.description;
+
+      // Tag merge: strip AD-managed tags + stale sid/ad-guid (we re-add the fresh ones),
+      // preserve all other tags including those set by Entra (entraid, intune-*, trustType, etc.).
+      const preserved = ((existing.tags as string[]) || []).filter(
+        (t) => !isAdManagedTag(t) && !t.startsWith(SID_TAG_PREFIX),
+      );
+      updateData.tags = [...preserved, ...tags.filter((t) => !preserved.includes(t))];
+
+      try {
+        clampAcquiredToLastSeen(updateData, existing);
+        await prisma.asset.update({ where: { id: existing.id }, data: updateData });
+        updated.push(displayName || dev.objectGuid);
+      } catch (err: any) {
+        syncLog("error", `Failed to update asset for AD computer ${displayName || dev.objectGuid}: ${err.message || "Unknown error"}`);
+      }
+      continue;
+    }
+
+    // No guid or SID match — check hostname collision against untagged assets.
+    if (hostLookupKey) {
+      const collision = assetByHostnameNoTag.get(hostLookupKey);
+      if (collision) {
+        try {
+          const existingConflict = await prisma.conflict.findFirst({
+            where: { entityType: "asset", status: "pending", proposedDeviceId: dev.objectGuid },
+          });
+          const proposedFields = {
+            sourceType: "activedirectory",
+            assetTagPrefix: AD_ASSET_TAG_PREFIX,
+            deviceId: dev.objectGuid,
+            hostname: displayName,
+            dnsName: dev.dnsHostName || null,
+            os: dev.operatingSystem || null,
+            osVersion: dev.operatingSystemVersion || null,
+            notes: dev.description || null,
+            learnedLocation: dev.ouPath || null,
+            objectSid: dev.objectSid || null,
+            status,
+            assetType,
+            lastSeen: dev.lastLogonTimestamp || null,
+            registrationDateTime: dev.whenCreated || null,
+            disabled: dev.disabled,
+          };
+          if (existingConflict) {
+            await prisma.conflict.update({
+              where: { id: existingConflict.id },
+              data: { proposedAssetFields: proposedFields as any, assetId: collision.id },
+            });
+          } else {
+            await prisma.conflict.create({
+              data: {
+                entityType: "asset",
+                assetId: collision.id,
+                integrationId,
+                proposedDeviceId: dev.objectGuid,
+                proposedAssetFields: proposedFields as any,
+                conflictFields: ["hostname"],
+                status: "pending",
+              },
+            });
+          }
+          syncLog("warning", `Hostname collision queued for review — AD computer "${displayName}" (${dev.objectGuid}) matches existing asset ${collision.id}.`);
+        } catch (err: any) {
+          syncLog("error", `Failed to queue hostname-collision conflict for "${displayName}": ${err.message || "Unknown error"}`);
+        }
+        skipped.push(`${displayName} (hostname collision — pending review)`);
+        continue;
+      }
+    }
+
+    // Create a new asset
+    try {
+      const createData: Record<string, unknown> = {
+        assetTag: `${AD_ASSET_TAG_PREFIX}${dev.objectGuid}`,
+        hostname: displayName || null,
+        dnsName: dev.dnsHostName || null,
+        assetType,
+        status,
+        os: dev.operatingSystem || null,
+        osVersion: dev.operatingSystemVersion || null,
+        learnedLocation: dev.ouPath || null,
+        notes: dev.description || `Auto-discovered from Active Directory integration "${integrationName}"`,
+        lastSeen: lastLogon,
+        acquiredAt: whenCreated,
+        tags,
+      };
+      clampAcquiredToLastSeen(createData);
+      const newAsset = await prisma.asset.create({ data: createData as any });
+      assetByAdGuidTag.set(guidKey, newAsset);
+      if (dev.objectSid) assetBySid.set(dev.objectSid.toUpperCase(), newAsset);
+      created.push(displayName || dev.objectGuid);
+    } catch (err: any) {
+      syncLog("error", `Failed to create asset for AD computer ${displayName || dev.objectGuid}: ${err.message || "Unknown error"}`);
+    }
+  }
+
+  syncLog("info", `Active Directory sync: ${created.length} created, ${updated.length} updated, ${skipped.length} skipped`);
   return { created, updated, skipped };
 }
 
@@ -2142,6 +2453,9 @@ function stripSecret(integration: Record<string, any>) {
   }
   if (config.clientSecret) {
     config.clientSecret = "••••••••";
+  }
+  if (config.bindPassword) {
+    config.bindPassword = "••••••••";
   }
   return { ...integration, config };
 }

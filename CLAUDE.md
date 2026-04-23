@@ -85,6 +85,7 @@ shelob/
 │   │   ├── fortigateService.ts      # Standalone FortiGate REST API client & discovery
 │   │   ├── windowsServerService.ts  # Windows Server WinRM DHCP discovery
 │   │   ├── entraIdService.ts        # Microsoft Entra ID + Intune device discovery via Graph
+│   │   ├── activeDirectoryService.ts # On-premise Active Directory computer discovery via LDAP/LDAPS
 │   │   ├── searchService.ts         # Global typeahead search (classifies IP/CIDR/MAC/text; parallel entity queries)
 │   │   ├── allocationTemplateService.ts # Saved multi-subnet allocation templates (Setting-backed)
 │   │   ├── azureAuthService.ts      # Azure AD/Entra SAML SSO, user provisioning
@@ -362,7 +363,7 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `POST   /integrations/:id/discover`           — Trigger full discovery run
 - `GET    /integrations/:id/discovery-status`   — Poll in-progress discovery
 - `POST   /integrations/:id/abort-discovery`
-- `POST   /integrations/:id/query`              — Manual API proxy. FortiManager: `{method, params}` (JSON-RPC). FortiGate: `{method, path, query?}` (REST). Entra ID: `{path, query?}` GET-only against `graph.microsoft.com`; path must begin with `/v1.0/` or `/beta/`.
+- `POST   /integrations/:id/query`              — Manual API proxy. FortiManager: `{method, params}` (JSON-RPC). FortiGate: `{method, path, query?}` (REST). Entra ID: `{path, query?}` GET-only against `graph.microsoft.com`; path must begin with `/v1.0/` or `/beta/`. Active Directory: `{filter?, baseDn?, scope?, attributes?, sizeLimit?}` LDAP search; baseDn defaults to the integration's configured base DN.
 
 ### Assets — `requireAuth`
 - `GET    /assets`                              — List (filter by status, type, department, search, createdBy)
@@ -502,10 +503,34 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
   - Always: `GET /v1.0/devices` (paged via `@odata.nextLink`, `$top=999`, hard cap 10,000). Requires `Device.Read.All` (application permission, admin consent).
   - When `enableIntune=true`: `GET /v1.0/deviceManagement/managedDevices`. Requires `DeviceManagementManagedDevices.Read.All`. Merged onto Entra devices via `azureADDeviceId ↔ deviceId`; Intune data wins on any shared field.
 - **Device identity** — the Entra `deviceId` (GUID) is the stable key. Persisted on `Asset.assetTag` as `entra:{deviceId}`.
-- **Re-discovery** — Assets are matched first by that prefixed assetTag. If no match but the hostname collides with an existing asset that has no assetTag, a `Conflict` (entityType `"asset"`, deduped on `proposedDeviceId`) is created for admin/assetsadmin review. The slide-over panel on the Events page renders a side-by-side comparison; **Accept** adopts the existing asset (writes the Entra assetTag + fills empty fields from the snapshot), **Reject** creates a separate asset with the Entra tag so future runs find it by tag.
+- **Re-discovery** — Assets are matched in this order: (1) `assetTag = "entra:{deviceId}"`, (2) `sid:{SID}` tag match against `onPremisesSecurityIdentifier` (hybrid-joined devices the AD integration already created — Entra **takes over** the assetTag in that case; the AD GUID stays findable via the `ad-guid:{guid}` tag), (3) hostname collision against an untagged asset → a `Conflict` (entityType `"asset"`, deduped on `proposedDeviceId`) is created for admin/assetsadmin review. The slide-over panel renders a side-by-side comparison; **Accept** adopts the existing asset (writes the Entra assetTag + fills empty fields from the snapshot), **Reject** creates a separate asset with the Entra tag so future runs find it by tag.
 - **Asset type** — inferred from Intune `chassisType` (`desktop/laptop/convertible/detachable` → `workstation`; `tablet/phone` → `other`); Entra-only devices default to `workstation`. Admins can recategorize via the asset edit UI; re-discovery only overwrites `assetType` if it is still `other`.
 - **User** — Intune `userPrincipalName` → `Asset.assignedTo`. Entra-only runs do not populate this field.
 - **Filters** — `deviceInclude` / `deviceExclude` arrays match against `displayName` with wildcard support (`LAPTOP-*`, `*-lab`).
+
+---
+
+## Active Directory Discovery Workflow (On-premise)
+
+`activeDirectoryService.ts` queries an on-premise domain controller via LDAP simple bind (over LDAP or LDAPS) and syncs computer objects as assets. **Produces assets only** — no subnets, reservations, or VIPs — so it uses a dedicated `syncActiveDirectoryDevices` path in `integrations.ts`.
+
+- **Library** — `ldapts` (Promise-based LDAP client; TypeScript types bundled).
+- **Auth** — simple bind using `bindDn` (full DN of a read-only domain user) and `bindPassword`. No Kerberos/GSSAPI. Default port 636 (LDAPS) or 389 (plain LDAP).
+- **Query** — paged subtree search under `baseDn` with filter `(&(objectCategory=computer)(objectClass=computer))`, page size 1000, hard cap 10,000. Search scope `sub` (default) or `one`.
+- **Device identity** — AD `objectGUID` (decoded as lowercase hex). Persisted on `Asset.assetTag` as `ad:{guid}` when the AD integration creates the asset.
+- **Disabled accounts** — `userAccountControl & 0x2` (ACCOUNTDISABLE). When `includeDisabled=true` (default), these still sync but are created/updated with `status = decommissioned` and get an `ad-disabled` tag. When `includeDisabled=false`, they're skipped.
+- **Attribute mapping** — `dNSHostName` (fall back to `cn`) → `hostname`+`dnsName`; `operatingSystem` → `os`; `operatingSystemVersion` → `osVersion`; `description` → `notes` (only if empty); `whenCreated` → `acquiredAt` (only if older); `lastLogonTimestamp` (Windows FILETIME) → `lastSeen` **only if newer than the existing value** — never regresses fresher data from Entra/Intune; `distinguishedName` OU path → `learnedLocation`; `operatingSystem` fed through `inferAssetTypeFromOs()` → `assetType` (only if still `other`).
+- **Note on `lastLogonTimestamp`** — this attribute replicates approximately every 14 days by design. Use it as a coarse "last seen" signal; it will lag reality.
+- **Filters** — `deviceInclude` / `deviceExclude` arrays match against `cn` with wildcard support.
+
+### Hybrid-join cross-link (AD ↔ Entra ID)
+
+Active Directory and Entra ID identify the same hybrid-joined device with two unrelated GUIDs (AD `objectGUID` vs Entra `deviceId`). The reliable cross-link is the on-prem **SID** — AD's `objectSid` equals Entra's `onPremisesSecurityIdentifier`.
+
+- Both services stamp `sid:{SID}` (uppercase) in the asset's `tags` array.
+- AD additionally stamps `ad-guid:{guid}` (lowercase hex) in `tags` so the AD GUID stays findable even after Entra takes over the primary `assetTag`.
+- **Priority rule:** Entra's `assetTag = "entra:{deviceId}"` always wins when both sources have the device. If AD created the asset first, the next Entra run finds it via the SID tag and replaces the `assetTag` (the `ad-guid:{guid}` tag preserves AD's lookup key). If Entra created it first, the next AD run finds it via SID and updates in place without touching the Entra `assetTag`.
+- **Conflict records** — the asset-conflict schema now carries `proposedAssetFields.assetTagPrefix` (`"ad:"` or `"entra:"`) so the accept/reject route applies the correct tag. Entra-only conflicts predating this field still default to the Entra prefix for backward compatibility.
 
 ---
 
@@ -514,7 +539,7 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
 | Job | Schedule | Purpose |
 |-----|----------|---------|
 | `expireReservations` | Every 15 min | Mark reservations past `expiresAt` as `expired` |
-| `discoveryScheduler` | Per-integration `pollInterval` | Auto-trigger FMG / FortiGate / Windows Server / Entra ID discovery |
+| `discoveryScheduler` | Per-integration `pollInterval` | Auto-trigger FMG / FortiGate / Windows Server / Entra ID / Active Directory discovery |
 | `ouiRefresh` | Periodic | Refresh IEEE OUI database for MAC vendor lookup |
 | `pruneEvents` | Nightly | Delete Event records older than 7 days |
 | `updateCheck` | Periodic | Check for software updates |
