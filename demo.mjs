@@ -1085,6 +1085,49 @@ const EVENTS = [
   { id: "ev22", timestamp: "2026-04-16T14:30:00.000Z", level: "info", action: "integration.updated", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Integration "Production FortiManager" updated' },
 ];
 
+// ─── Conflicts (discovery conflict review) ────────────────────────────────
+
+let CONFLICTS = [
+  {
+    id: "c5000000-0000-0000-0000-000000000001",
+    entityType: "asset",
+    reservationId: null,
+    reservation: null,
+    assetId: "a1000000-0000-0000-0000-000000000001",  // k8s-worker-01 seed asset
+    asset: null, // filled in on GET
+    integrationId: "i5000000-0000-0000-0000-000000000005",  // Corporate Entra ID
+    proposedHostname: null,
+    proposedOwner: null,
+    proposedProjectRef: null,
+    proposedNotes: null,
+    proposedSourceType: null,
+    proposedDeviceId: "eab53210-dead-beef-cafe-000000000001",
+    proposedAssetFields: {
+      deviceId: "eab53210-dead-beef-cafe-000000000001",
+      hostname: "k8s-worker-01",
+      serialNumber: "5CD-ENTRA-001",
+      macAddress: "AA:BB:CC:DE:AD:01",
+      manufacturer: "Dell",
+      model: "Latitude 7440",
+      os: "Windows",
+      osVersion: "10.0.22631",
+      assignedTo: "platform-team@corp.example.com",
+      chassisType: "laptop",
+      complianceState: "compliant",
+      trustType: "AzureAd",
+      assetType: "workstation",
+      lastSeen: "2026-04-22T09:30:00.000Z",
+      registrationDateTime: "2025-08-01T14:00:00.000Z",
+    },
+    conflictFields: ["hostname"],
+    status: "pending",
+    resolvedBy: null,
+    resolvedAt: null,
+    createdAt: "2026-04-22T10:00:00.000Z",
+    updatedAt: "2026-04-22T10:00:00.000Z",
+  },
+];
+
 // ─── Archive Settings ──────────────────────────────────────────────────────
 
 let ARCHIVE_SETTINGS = {
@@ -2574,6 +2617,109 @@ async function routeAPI(method, path, params, body, res, req) {
     // fall through — handled below
   } else if (!isLoggedIn) {
     return json(res, { error: "Unauthorized" }, 401);
+  }
+
+  // Conflicts — role-scoped list + resolve
+  if (path.startsWith("/api/v1/conflicts")) {
+    const role = sessionUser?.role || "admin";
+    const visibleTypes =
+      role === "admin" ? ["reservation", "asset"] :
+      role === "networkadmin" ? ["reservation"] :
+      role === "assetsadmin" ? ["asset"] : [];
+    const canResolveFn = (etype) =>
+      role === "admin" ||
+      (role === "networkadmin" && etype === "reservation") ||
+      (role === "assetsadmin" && etype === "asset");
+
+    if (path === "/api/v1/conflicts" && method === "GET") {
+      if (visibleTypes.length === 0) return json(res, { conflicts: [], total: 0, limit: 100, offset: 0 });
+      const status = params.get("status") || "pending";
+      let list = CONFLICTS.filter((c) => visibleTypes.includes(c.entityType));
+      if (status !== "all") list = list.filter((c) => c.status === status);
+      // Hydrate related entities
+      const hydrated = list.map((c) => {
+        const out = { ...c };
+        if (c.entityType === "asset" && c.assetId) {
+          out.asset = ASSETS.find((a) => a.id === c.assetId) || null;
+        }
+        if (c.entityType === "reservation" && c.reservationId) {
+          out.reservation = RESERVATIONS.find((r) => r.id === c.reservationId) || null;
+        }
+        return out;
+      });
+      return json(res, { conflicts: hydrated, total: hydrated.length, limit: 100, offset: 0 });
+    }
+    if (path === "/api/v1/conflicts/count" && method === "GET") {
+      if (visibleTypes.length === 0) return json(res, { count: 0 });
+      const count = CONFLICTS.filter((c) => c.status === "pending" && visibleTypes.includes(c.entityType)).length;
+      return json(res, { count });
+    }
+    const resolveMatch = path.match(/^\/api\/v1\/conflicts\/([\w-]+)\/(accept|reject)$/);
+    if (resolveMatch && method === "POST") {
+      const id = resolveMatch[1];
+      const action = resolveMatch[2];
+      const conflict = CONFLICTS.find((c) => c.id === id);
+      if (!conflict) return json(res, { error: "Not found" }, 404);
+      if (conflict.status !== "pending") return json(res, { error: "Already resolved" }, 409);
+      if (!canResolveFn(conflict.entityType)) return json(res, { error: "Forbidden" }, 403);
+
+      if (conflict.entityType === "asset" && action === "accept") {
+        const asset = ASSETS.find((a) => a.id === conflict.assetId);
+        if (asset) {
+          const p = conflict.proposedAssetFields || {};
+          asset.assetTag = "entra:" + conflict.proposedDeviceId;
+          if (!asset.serialNumber && p.serialNumber) asset.serialNumber = p.serialNumber;
+          if (!asset.macAddress && p.macAddress) asset.macAddress = p.macAddress;
+          if (!asset.manufacturer && p.manufacturer) asset.manufacturer = p.manufacturer;
+          if (!asset.model && p.model) asset.model = p.model;
+          if (!asset.os && p.os) asset.os = p.os;
+          if (!asset.osVersion && p.osVersion) asset.osVersion = p.osVersion;
+          if (!asset.assignedTo && p.assignedTo) asset.assignedTo = p.assignedTo;
+          const tags = Array.isArray(asset.tags) ? [...asset.tags] : [];
+          ["entraid", "auto-discovered", (p.trustType || "").toLowerCase(), p.complianceState ? "intune-" + p.complianceState.toLowerCase() : ""].forEach((t) => { if (t && !tags.includes(t)) tags.push(t); });
+          asset.tags = tags;
+        }
+      } else if (conflict.entityType === "asset" && action === "reject") {
+        const p = conflict.proposedAssetFields || {};
+        ASSETS.push({
+          id: crypto.randomUUID(),
+          ipAddress: null,
+          macAddress: p.macAddress || null,
+          macAddresses: [],
+          hostname: p.hostname || null,
+          dnsName: null,
+          assetTag: "entra:" + conflict.proposedDeviceId,
+          serialNumber: p.serialNumber || null,
+          manufacturer: p.manufacturer || null,
+          model: p.model || null,
+          assetType: p.assetType || "workstation",
+          status: "active",
+          location: null,
+          learnedLocation: null,
+          department: null,
+          assignedTo: p.assignedTo || null,
+          os: p.os || null,
+          osVersion: p.osVersion || null,
+          lastSeenSwitch: null,
+          lastSeenAp: null,
+          associatedUsers: [],
+          acquiredAt: p.registrationDateTime || null,
+          warrantyExpiry: null,
+          purchaseOrder: null,
+          notes: "Auto-created after hostname collision was rejected (demo)",
+          tags: ["entraid", "auto-discovered"],
+          lastSeen: p.lastSeen || null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      // Reservation conflicts in demo: simpler — just mark resolved for now
+      conflict.status = action === "accept" ? "accepted" : "rejected";
+      conflict.resolvedBy = sessionUser?.username || "admin";
+      conflict.resolvedAt = new Date().toISOString();
+      logEventDemo({ action: "conflict." + (action === "accept" ? "accepted" : "rejected"), resourceType: conflict.entityType, resourceId: conflict.entityType === "asset" ? conflict.assetId : conflict.reservationId, actor: conflict.resolvedBy, message: "Conflict " + action + "ed (demo)" });
+      return json(res, { ok: true });
+    }
   }
 
   // Global search — mirrors /api/v1/search in the real service

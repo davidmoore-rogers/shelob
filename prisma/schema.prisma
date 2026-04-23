@@ -231,6 +231,8 @@ model Asset {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
+  conflicts      Conflict[]
+
   @@index([ipAddress])
   @@index([macAddress])
   @@index([hostname])
@@ -282,15 +284,28 @@ model Tag {
 
 model Conflict {
   id                 String         @id @default(uuid())
-  reservationId      String
-  reservation        Reservation    @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  entityType         String         @default("reservation")  // "reservation" | "asset"
+
+  // Reservation conflicts (discovery proposes changes to a manually-created reservation)
+  reservationId      String?
+  reservation        Reservation?   @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  // Asset conflicts (discovery proposes an asset that collides by hostname with an existing untagged asset)
+  assetId            String?
+  asset              Asset?         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
   integrationId      String?
 
+  // Reservation-conflict proposed values
   proposedHostname   String?
   proposedOwner      String?
   proposedProjectRef String?
   proposedNotes      String?        @db.Text
-  proposedSourceType String
+  proposedSourceType String?        // Required for reservations, null for assets
+
+  // Asset-conflict proposed values
+  proposedDeviceId   String?        // Entra deviceId — used to de-dupe conflicts across discovery runs
+  proposedAssetFields Json?         // Full Entra/Intune snapshot: hostname, serial, mac, model, manufacturer, os, osVersion, assignedTo, chassisType, complianceState, trustType
 
   conflictFields     String[]
 
@@ -302,7 +317,10 @@ model Conflict {
   updatedAt          DateTime       @updatedAt
 
   @@index([reservationId])
+  @@index([assetId])
+  @@index([entityType])
   @@index([status])
   @@index([integrationId])
+  @@index([proposedDeviceId])
   @@map("conflicts")
 }

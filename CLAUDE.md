@@ -265,16 +265,22 @@ Event                           -- Audit log, 7-day rolling retention
   message       String
   details       Json?
 
-Conflict                        -- Discovery conflict resolution
+Conflict                        -- Discovery conflict resolution (two variants)
   id                UUID PK
-  reservationId     UUID FK → Reservation (cascade delete)
+  entityType        String         -- "reservation" | "asset"
+  reservationId     UUID? FK → Reservation (cascade delete; null for asset conflicts)
+  assetId           UUID? FK → Asset (cascade delete; null for reservation conflicts)
   integrationId     UUID?
+  -- Reservation-conflict proposed values (null for asset conflicts):
   proposedHostname  String?
   proposedOwner     String?
   proposedProjectRef String?
   proposedNotes     String?
-  proposedSourceType String
-  conflictFields    String[]    -- Field names that differ
+  proposedSourceType String?       -- Required for reservations, null for assets
+  -- Asset-conflict proposed values (null for reservation conflicts):
+  proposedDeviceId  String?        -- Entra deviceId (dedupe key across discovery runs)
+  proposedAssetFields Json?        -- Full snapshot: hostname, serial, mac, model, manufacturer, os, osVersion, assignedTo, chassisType, complianceState, trustType
+  conflictFields    String[]       -- Field names that differ
   status            ConflictStatus @default(pending)
   resolvedBy        String?
   resolvedAt        DateTime?
@@ -371,11 +377,11 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `PUT    /events/syslog-settings`
 - `POST   /events/syslog-test`
 
-### Conflicts — `requireNetworkAdmin`
-- `GET    /conflicts`
-- `GET    /conflicts/count`                     — Badge count for nav
-- `POST   /conflicts/:id/accept`                — Apply discovered values to reservation
-- `POST   /conflicts/:id/reject`                — Keep existing, dismiss conflict
+### Conflicts — `requireAuth` (role-scoped list + resolve)
+- `GET    /conflicts`                           — List. Role-filtered: admin sees all; networkadmin sees reservation conflicts only; assetsadmin sees asset conflicts only; others see empty list.
+- `GET    /conflicts/count`                     — Badge count; same role scoping as the list.
+- `POST   /conflicts/:id/accept`                — Reservation: apply discovered values. Asset: set existing asset's `assetTag` to `entra:{deviceId}` and overlay Entra/Intune fields (only into empty existing fields). 403 if caller's role doesn't cover this conflict's entityType.
+- `POST   /conflicts/:id/reject`                — Reservation: keep existing, dismiss. Asset: create a separate new Asset with the Entra snapshot + assetTag `entra:{deviceId}` so the next discovery run finds it by tag and doesn't re-fire the collision.
 
 ### Search — `requireAuth`
 - `GET    /search?q=<query>`                    — Global typeahead. Classifies input (IP, CIDR, MAC, or text), runs 4 parallel entity queries, returns grouped results (`blocks`, `subnets`, `reservations`, `assets`, `ips`) capped at 8 per group. The `ips` hit resolves the containing subnet and any active reservation. All authenticated roles can search; front-end edit modals render in view-only mode for users without write permission.
@@ -474,7 +480,7 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
   - Always: `GET /v1.0/devices` (paged via `@odata.nextLink`, `$top=999`, hard cap 10,000). Requires `Device.Read.All` (application permission, admin consent).
   - When `enableIntune=true`: `GET /v1.0/deviceManagement/managedDevices`. Requires `DeviceManagementManagedDevices.Read.All`. Merged onto Entra devices via `azureADDeviceId ↔ deviceId`; Intune data wins on any shared field.
 - **Device identity** — the Entra `deviceId` (GUID) is the stable key. Persisted on `Asset.assetTag` as `entra:{deviceId}`.
-- **Re-discovery** — Assets are matched first by that prefixed assetTag. If no match but the hostname collides with an existing asset that has no assetTag, a warning `Event` is written and the device is skipped (no duplicate, no overwrite); an admin can merge by setting the existing asset's `assetTag` to `entra:{deviceId}`.
+- **Re-discovery** — Assets are matched first by that prefixed assetTag. If no match but the hostname collides with an existing asset that has no assetTag, a `Conflict` (entityType `"asset"`, deduped on `proposedDeviceId`) is created for admin/assetsadmin review. The slide-over panel on the Events page renders a side-by-side comparison; **Accept** adopts the existing asset (writes the Entra assetTag + fills empty fields from the snapshot), **Reject** creates a separate asset with the Entra tag so future runs find it by tag.
 - **Asset type** — inferred from Intune `chassisType` (`desktop/laptop/convertible/detachable` → `workstation`; `tablet/phone` → `other`); Entra-only devices default to `workstation`. Admins can recategorize via the asset edit UI; re-discovery only overwrites `assetType` if it is still `other`.
 - **User** — Intune `userPrincipalName` → `Asset.assignedTo`. Entra-only runs do not populate this field.
 - **Filters** — `deviceInclude` / `deviceExclude` arrays match against `displayName` with wildcard support (`LAPTOP-*`, `*-lab`).

@@ -603,9 +603,13 @@ function getRetentionFormData() {
   }
 
   function renderConflictCard(c) {
+    if (c.entityType === "asset") return renderAssetConflictCard(c);
+    return renderReservationConflictCard(c);
+  }
+
+  function renderReservationConflictCard(c) {
     var res = c.reservation || {};
     var subnet = res.subnet || {};
-    var block = subnet.block || {};
     var ip = res.ipAddress || "(full subnet)";
     var subnetLabel = subnet.cidr || "";
     if (subnet.name) subnetLabel += " — " + subnet.name;
@@ -641,6 +645,66 @@ function getRetentionFormData() {
           '<th class="conflict-field">Field</th>' +
           '<th>Current (Manual)</th>' +
           '<th>Discovered</th>' +
+        '</tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+      '<div class="conflict-card-actions">' + actions + '</div>' +
+    '</div>';
+  }
+
+  function renderAssetConflictCard(c) {
+    var existing = c.asset || {};
+    var proposed = c.proposedAssetFields || {};
+    var isResolved = c.status !== "pending";
+
+    var fields = [
+      ["hostname", "Hostname"],
+      ["serialNumber", "Serial"],
+      ["macAddress", "MAC"],
+      ["ipAddress", "IP"],
+      ["manufacturer", "Manufacturer"],
+      ["model", "Model"],
+      ["os", "OS"],
+      ["osVersion", "OS Version"],
+      ["assignedTo", "Primary User"],
+    ];
+
+    var rows = fields.map(function (pair) {
+      var key = pair[0], label = pair[1];
+      var existingVal = existing[key] || null;
+      var proposedVal = proposed[key] || null;
+      var differs = existingVal && proposedVal && String(existingVal).toLowerCase() !== String(proposedVal).toLowerCase();
+      return '<tr class="' + (differs ? "conflict-changed" : "") + '">' +
+        '<td class="conflict-field">' + escapeHtml(label) + '</td>' +
+        '<td>' + (existingVal ? escapeHtml(existingVal) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
+        '<td>' + (proposedVal ? (differs ? '<strong>' + escapeHtml(proposedVal) + '</strong>' : escapeHtml(proposedVal)) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
+        '</tr>';
+    }).join("");
+
+    var badges = [];
+    if (proposed.trustType) badges.push('<span class="badge" style="background:rgba(79,195,247,0.1);color:var(--color-accent);border:1px solid rgba(79,195,247,0.2)">' + escapeHtml(proposed.trustType) + '</span>');
+    if (proposed.complianceState) badges.push('<span class="badge ' + (proposed.complianceState === "compliant" ? "badge-active" : "badge-warning") + '">' + escapeHtml(proposed.complianceState) + '</span>');
+
+    var actions = isResolved
+      ? '<span class="badge badge-' + c.status + '" style="text-transform:capitalize">' + escapeHtml(c.status) + '</span>' +
+        (c.resolvedBy ? ' <span style="color:var(--color-text-tertiary);font-size:0.75rem">by ' + escapeHtml(c.resolvedBy) + '</span>' : '')
+      : '<button class="btn btn-secondary btn-sm" data-conflict-action="reject" data-conflict-id="' + c.id + '" title="Create a separate asset for this Entra device">Reject (keep separate)</button>' +
+        '<button class="btn btn-primary btn-sm" data-conflict-action="accept" data-conflict-id="' + c.id + '" title="Adopt the existing asset as this Entra device">Accept (merge)</button>';
+
+    return '<div class="conflict-card">' +
+      '<div class="conflict-card-header">' +
+        '<span class="badge" style="background:rgba(79,195,247,0.12);color:var(--color-accent);border:1px solid rgba(79,195,247,0.3)">Entra ID</span>' +
+        '<strong>' + escapeHtml(existing.hostname || proposed.hostname || "(asset)") + '</strong>' +
+        '<span class="conflict-card-subnet" style="font-family:var(--font-mono);font-size:0.78rem">' + escapeHtml(c.proposedDeviceId || "") + '</span>' +
+        (badges.length ? '<span style="margin-left:auto;display:flex;gap:4px">' + badges.join("") + '</span>' : '') +
+      '</div>' +
+      '<div style="padding:6px 14px;font-size:0.78rem;color:var(--color-text-secondary)">Hostname collision — this Entra device shares a name with an existing asset that has no Entra link. <strong>Accept</strong> to adopt the existing asset; <strong>Reject</strong> to create a separate asset for the Entra device.</div>' +
+      '<div class="conflict-table" style="padding:0">' +
+        '<table><thead><tr>' +
+          '<th class="conflict-field">Field</th>' +
+          '<th>Existing Asset</th>' +
+          '<th>Entra / Intune</th>' +
         '</tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
         '</table>' +

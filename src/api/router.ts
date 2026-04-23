@@ -41,5 +41,5 @@ router.use("/integrations", requireNetworkAdmin, integrationsRouter);
 router.use("/assets", assetsRouter);
 router.use("/events", eventsRouter);
 router.use("/search", searchRouter);
-router.use("/conflicts", requireNetworkAdmin, conflictsRouter);
+router.use("/conflicts", conflictsRouter);
 router.use("/server-settings", requireAdmin, serverSettingsRouter);

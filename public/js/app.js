@@ -62,6 +62,7 @@ function isNetworkAdmin() { return currentUserRole === "networkadmin"; }
 function isAssetsAdmin() { return currentUserRole === "assetsadmin"; }
 function canManageNetworks() { return currentUserRole === "admin" || currentUserRole === "networkadmin"; }
 function canManageAssets() { return currentUserRole === "admin" || currentUserRole === "assetsadmin"; }
+function canReviewConflicts() { return canManageNetworks() || canManageAssets(); }
 function canReserveIps() { return currentUserRole === "admin" || currentUserRole === "networkadmin" || currentUserRole === "user" || currentUserRole === "assetsadmin"; }
 
 // ─── Sidebar Navigation ──────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ function renderNav() {
   // Conflict dot — poll every 30 s; also exposed so events.js can refresh on resolve
   async function refreshConflictDot() {
     var dot = document.getElementById("nav-conflict-dot");
-    if (!dot || !canManageNetworks()) return;
+    if (!dot || !canReviewConflicts()) return;
     try {
       var data = await api.conflicts.count();
       dot.style.display = (data.count > 0) ? "inline-block" : "none";
@@ -1159,6 +1160,9 @@ function hideAdminOnlyElements() {
   });
   document.querySelectorAll("[data-manage-assets]").forEach(function (el) {
     if (!canManageAssets()) el.style.display = "none";
+  });
+  document.querySelectorAll("[data-review-conflicts]").forEach(function (el) {
+    if (!canReviewConflicts()) el.style.display = "none";
   });
 }
 

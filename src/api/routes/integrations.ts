@@ -2015,12 +2015,58 @@ async function syncEntraDevices(
       continue;
     }
 
-    // No existing assetTag match — check for hostname collision with a non-tagged asset
+    // No existing assetTag match — check for hostname collision with a non-tagged asset.
+    // If one exists, create (or refresh) a pending Conflict so an admin can decide
+    // whether to merge (accept) or create a duplicate (reject). Skip the
+    // create-path so we don't accidentally produce the duplicate yet.
     if (dev.displayName) {
       const collision = assetByHostnameNoTag.get(dev.displayName.toLowerCase());
       if (collision) {
-        syncLog("warning", `Hostname collision — Entra device "${dev.displayName}" (${dev.deviceId}) matches existing asset ${collision.id} with no assetTag. Skipped to avoid duplicate; merge manually by setting that asset's assetTag to "${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}".`);
-        skipped.push(`${dev.displayName} (hostname collision)`);
+        try {
+          const existingConflict = await prisma.conflict.findFirst({
+            where: { entityType: "asset", status: "pending", proposedDeviceId: dev.deviceId },
+          });
+          const proposedFields = {
+            deviceId: dev.deviceId,
+            hostname: dev.displayName,
+            serialNumber: dev.serialNumber || null,
+            macAddress: dev.macAddress || null,
+            manufacturer: dev.manufacturer || null,
+            model: dev.model || null,
+            os: dev.operatingSystem || null,
+            osVersion: dev.operatingSystemVersion || null,
+            assignedTo: dev.userPrincipalName || null,
+            chassisType: dev.chassisType || null,
+            complianceState: dev.complianceState || null,
+            trustType: dev.trustType || null,
+            assetType,
+            lastSeen: dev.lastSyncDateTime || dev.approximateLastSignInDateTime || null,
+            registrationDateTime: dev.registrationDateTime || null,
+          };
+          if (existingConflict) {
+            // Refresh the snapshot so the admin sees the latest Entra values
+            await prisma.conflict.update({
+              where: { id: existingConflict.id },
+              data: { proposedAssetFields: proposedFields as any, assetId: collision.id },
+            });
+          } else {
+            await prisma.conflict.create({
+              data: {
+                entityType: "asset",
+                assetId: collision.id,
+                integrationId,
+                proposedDeviceId: dev.deviceId,
+                proposedAssetFields: proposedFields as any,
+                conflictFields: ["hostname"],
+                status: "pending",
+              },
+            });
+          }
+          syncLog("warning", `Hostname collision queued for review — Entra device "${dev.displayName}" (${dev.deviceId}) matches existing asset ${collision.id}.`);
+        } catch (err: any) {
+          syncLog("error", `Failed to queue hostname-collision conflict for "${dev.displayName}": ${err.message || "Unknown error"}`);
+        }
+        skipped.push(`${dev.displayName} (hostname collision — pending review)`);
         continue;
       }
     }
