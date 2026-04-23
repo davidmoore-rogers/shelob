@@ -96,7 +96,8 @@ shelob/
 │   │   ├── discoveryScheduler.ts    # FMG/Windows Server auto-discovery polling
 │   │   ├── ouiRefresh.ts            # Refresh IEEE OUI database
 │   │   ├── pruneEvents.ts           # 7-day event log retention (nightly)
-│   │   └── updateCheck.ts           # Software update notifications
+│   │   ├── updateCheck.ts           # Software update notifications
+│   │   └── clampAssetAcquiredAt.ts  # One-shot startup fix: clamp acquiredAt to lastSeen
 │   ├── setup/
 │   │   ├── setupRoutes.ts           # First-run setup wizard routes
 │   │   ├── setupServer.ts           # Setup server initialization
@@ -106,7 +107,8 @@ shelob/
 │   └── utils/
 │       ├── cidr.ts                  # CIDR parsing, contains(), overlap()
 │       ├── errors.ts                # AppError class with httpStatus
-│       └── logger.ts                # Structured logging (pino)
+│       ├── logger.ts                # Structured logging (pino)
+│       └── assetInvariants.ts       # Write-time clamp: acquiredAt <= lastSeen
 └── tests/
     ├── unit/
     │   ├── cidr.test.ts
@@ -500,6 +502,7 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
 | `ouiRefresh` | Periodic | Refresh IEEE OUI database for MAC vendor lookup |
 | `pruneEvents` | Nightly | Delete Event records older than 7 days |
 | `updateCheck` | Periodic | Check for software updates |
+| `clampAssetAcquiredAt` | Once at startup | Clamp `acquiredAt` down to `lastSeen` on any Asset row where the invariant was violated |
 
 ---
 
@@ -513,6 +516,7 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
 6. **sourceType tracking** — All discovered reservations carry a `sourceType`; manual entries default to `manual`.
 7. **Conflict detection** — Discovery values differing from an existing manual reservation create a `Conflict` record rather than overwriting.
 8. **Event archival** — Events older than 7 days are pruned; syslog (CEF) and SFTP/SCP archival are configurable.
+9. **Asset `acquiredAt` ≤ `lastSeen`** — Enforced on every write via `clampAcquiredToLastSeen` in `src/utils/assetInvariants.ts`. If a write would leave `acquiredAt` later than `lastSeen`, `acquiredAt` is clamped down to match. Existing rows are repaired by the `clampAssetAcquiredAt` startup job.
 
 ---
 

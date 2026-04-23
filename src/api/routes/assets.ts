@@ -12,6 +12,7 @@ import { requireAssetsAdmin, requireNetworkAdmin } from "../middleware/auth.js";
 import { logEvent, buildChanges } from "./events.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui } from "../../services/ouiService.js";
+import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 
 const router = Router();
 
@@ -111,6 +112,7 @@ router.post("/", requireAssetsAdmin, async (req, res, next) => {
     if (input.acquiredAt) data.acquiredAt = new Date(input.acquiredAt);
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     data.createdBy = req.session?.username ?? null;
+    clampAcquiredToLastSeen(data);
     const asset = await prisma.asset.create({ data: data as any });
     logEvent({ action: "asset.created", resourceType: "asset", resourceId: asset.id, resourceName: input.hostname || input.ipAddress, actor: req.session?.username, message: `Asset "${input.hostname || input.ipAddress || "unknown"}" created` });
     res.status(201).json(asset);
@@ -132,6 +134,7 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
     else if (input.acquiredAt === undefined) delete data.acquiredAt;
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     else if (input.warrantyExpiry === undefined) delete data.warrantyExpiry;
+    clampAcquiredToLastSeen(data, existing);
     const asset = await prisma.asset.update({ where: { id }, data: data as any });
     const trackFields = ["hostname", "ipAddress", "macAddress", "manufacturer", "model", "serialNumber", "assetType", "status", "location", "notes", "dnsName"] as const;
     const before: Record<string, unknown> = {};

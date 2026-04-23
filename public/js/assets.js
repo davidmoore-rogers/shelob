@@ -160,6 +160,7 @@ async function loadAssets() {
     var result = await api.assets.list(filters);
     _assetsData = (result.assets || result).map(function (a) {
       a._server = a.location || a.learnedLocation || "";
+      a._acquired = a.acquiredAt || a.createdAt || null;
       return a;
     });
     if (statusVal === "hide-decommissioned") {
@@ -300,7 +301,7 @@ function renderAssetsPage() {
       '<td>' + assetStatusBadge(a.status) + '</td>' +
       '<td>' + escapeHtml(a.location || a.learnedLocation || "-") + '</td>' +
       '<td>' + (a.lastSeen ? formatDate(a.lastSeen) : "-") + '</td>' +
-      '<td>' + (a.createdAt ? formatDate(a.createdAt) : "-") + '</td>' +
+      '<td>' + (a._acquired ? formatDate(a._acquired) : "-") + '</td>' +
       '<td class="actions">' +
         (canManageAssets() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + a.id + '\')">Edit</button>' +
         (a.ipAddress && !a.dnsName ? '<button class="btn btn-sm btn-secondary" onclick="singleDnsLookup(\'' + a.id + '\', \'' + escapeHtml(a.hostname || a.ipAddress) + '\')" title="Reverse DNS lookup">DNS</button>' : '') +
@@ -613,9 +614,8 @@ async function openViewModal(id) {
       viewRow("Last Seen Switch", a.lastSeenSwitch) +
       viewRow("Last Seen AP", a.lastSeenAp) +
       associatedUsersViewHTML(a.associatedUsers) +
-      viewRow("First Seen", a.createdAt ? formatDate(a.createdAt) : null) +
       viewRow("Last Seen", a.lastSeen ? formatDate(a.lastSeen) : null) +
-      viewRow("Acquired", a.acquiredAt ? formatDate(a.acquiredAt) : null) +
+      viewRow("Acquired", (a.acquiredAt || a.createdAt) ? formatDate(a.acquiredAt || a.createdAt) : null) +
       viewRow("Warranty Expires", a.warrantyExpiry ? formatDate(a.warrantyExpiry) : null) +
       viewRow("Purchase Order", a.purchaseOrder) +
       viewRow("Tags", (a.tags || []).join(", ") || null) +

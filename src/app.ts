@@ -24,6 +24,7 @@ import "./jobs/pruneEvents.js";
 import "./jobs/ouiRefresh.js";
 import "./jobs/updateCheck.js";
 import "./jobs/discoveryScheduler.js";
+import "./jobs/clampAssetAcquiredAt.js";
 
 const app = express();
 

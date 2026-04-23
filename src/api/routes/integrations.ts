@@ -1156,39 +1156,38 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       if (existingAsset) {
         const acquiredAtUpdate = swJoinDate && (!existingAsset.acquiredAt || swJoinDate < new Date(existingAsset.acquiredAt))
           ? swJoinDate : undefined;
-        await prisma.asset.update({
-          where: { id: existingAsset.id },
-          data: {
-            ipAddress: sw.ipAddress || existingAsset.ipAddress,
-            hostname: sw.name || existingAsset.hostname,
-            osVersion: sw.osVersion || existingAsset.osVersion,
-            learnedLocation: sw.device || existingAsset.learnedLocation,
-            status: swStatus,
-            lastSeen: new Date(now),
-            ...(acquiredAtUpdate ? { acquiredAt: acquiredAtUpdate } : {}),
-          },
-        });
+        const updateData: Record<string, unknown> = {
+          ipAddress: sw.ipAddress || existingAsset.ipAddress,
+          hostname: sw.name || existingAsset.hostname,
+          osVersion: sw.osVersion || existingAsset.osVersion,
+          learnedLocation: sw.device || existingAsset.learnedLocation,
+          status: swStatus,
+          lastSeen: new Date(now),
+          ...(acquiredAtUpdate ? { acquiredAt: acquiredAtUpdate } : {}),
+        };
+        clampAcquiredToLastSeen(updateData, existingAsset);
+        await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
         if (sw.ipAddress) existingAsset.ipAddress = sw.ipAddress;
         assetIdx.reindex(existingAsset);
         assetNames.push(`${sw.name} (updated)`);
       } else {
-        const newAsset = await prisma.asset.create({
-          data: {
-            ipAddress: sw.ipAddress || null,
-            hostname: sw.name || null,
-            serialNumber: sw.serial || null,
-            manufacturer: "Fortinet",
-            model: "FortiSwitch",
-            assetType: "switch",
-            status: swStatus,
-            osVersion: sw.osVersion || null,
-            learnedLocation: sw.device || null,
-            acquiredAt: swJoinDate,
-            lastSeen: new Date(now),
-            notes: swNotes,
-            tags: ["fortiswitch", "auto-discovered"],
-          },
-        });
+        const createData: Record<string, unknown> = {
+          ipAddress: sw.ipAddress || null,
+          hostname: sw.name || null,
+          serialNumber: sw.serial || null,
+          manufacturer: "Fortinet",
+          model: "FortiSwitch",
+          assetType: "switch",
+          status: swStatus,
+          osVersion: sw.osVersion || null,
+          learnedLocation: sw.device || null,
+          acquiredAt: swJoinDate,
+          lastSeen: new Date(now),
+          notes: swNotes,
+          tags: ["fortiswitch", "auto-discovered"],
+        };
+        clampAcquiredToLastSeen(createData);
+        const newAsset = await prisma.asset.create({ data: createData as any });
         assetIdx.add(newAsset);
         assetNames.push(sw.name || sw.serial);
       }
@@ -1250,17 +1249,16 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       if (!existingAsset && ap.name) existingAsset = assetIdx.findByEntry(undefined, ap.name, resolvedIp || undefined);
 
       if (existingAsset) {
-        await prisma.asset.update({
-          where: { id: existingAsset.id },
-          data: {
-            ipAddress: resolvedIp || existingAsset.ipAddress,
-            hostname: ap.name || existingAsset.hostname,
-            model: ap.model || existingAsset.model,
-            osVersion: ap.osVersion || existingAsset.osVersion,
-            learnedLocation: ap.device || existingAsset.learnedLocation,
-            lastSeen: new Date(now),
-          },
-        });
+        const updateData: Record<string, unknown> = {
+          ipAddress: resolvedIp || existingAsset.ipAddress,
+          hostname: ap.name || existingAsset.hostname,
+          model: ap.model || existingAsset.model,
+          osVersion: ap.osVersion || existingAsset.osVersion,
+          learnedLocation: ap.device || existingAsset.learnedLocation,
+          lastSeen: new Date(now),
+        };
+        clampAcquiredToLastSeen(updateData, existingAsset);
+        await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
         if (resolvedIp) existingAsset.ipAddress = resolvedIp;
         assetIdx.reindex(existingAsset);
         assetNames.push(`${ap.name} (updated)`);
@@ -1748,6 +1746,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
         if (Object.keys(updateData).length > 0) {
           try {
+            clampAcquiredToLastSeen(updateData, existingAsset);
             await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
             // Update in-memory
             Object.assign(existingAsset, updateData);
@@ -2015,6 +2014,7 @@ async function syncEntraDevices(
       updateData.tags = [...preserved, ...tags];
 
       try {
+        clampAcquiredToLastSeen(updateData, existing);
         await prisma.asset.update({ where: { id: existing.id }, data: updateData });
         updated.push(dev.displayName || dev.deviceId);
       } catch (err: any) {
@@ -2081,25 +2081,25 @@ async function syncEntraDevices(
 
     // Create a new asset
     try {
-      const newAsset = await prisma.asset.create({
-        data: {
-          assetTag: `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`,
-          hostname: dev.displayName || null,
-          serialNumber: dev.serialNumber || null,
-          macAddress: dev.macAddress || null,
-          manufacturer: dev.manufacturer || null,
-          model: dev.model || null,
-          assetType,
-          status: "active",
-          os: dev.operatingSystem || null,
-          osVersion: dev.operatingSystemVersion || null,
-          assignedTo: dev.userPrincipalName || null,
-          lastSeen,
-          acquiredAt,
-          notes: `Auto-discovered from Entra ID integration "${integrationName}"${dev.trustType ? ` (trust: ${dev.trustType})` : ""}`,
-          tags,
-        },
-      });
+      const createData: Record<string, unknown> = {
+        assetTag: `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`,
+        hostname: dev.displayName || null,
+        serialNumber: dev.serialNumber || null,
+        macAddress: dev.macAddress || null,
+        manufacturer: dev.manufacturer || null,
+        model: dev.model || null,
+        assetType,
+        status: "active",
+        os: dev.operatingSystem || null,
+        osVersion: dev.operatingSystemVersion || null,
+        assignedTo: dev.userPrincipalName || null,
+        lastSeen,
+        acquiredAt,
+        notes: `Auto-discovered from Entra ID integration "${integrationName}"${dev.trustType ? ` (trust: ${dev.trustType})` : ""}`,
+        tags,
+      };
+      clampAcquiredToLastSeen(createData);
+      const newAsset = await prisma.asset.create({ data: createData as any });
       assetByEntraId.set(deviceIdKey, newAsset);
       created.push(dev.displayName || dev.deviceId);
     } catch (err: any) {

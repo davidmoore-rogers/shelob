@@ -22,6 +22,7 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { logEvent } from "./events.js";
+import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -237,6 +238,7 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   for (const t of entraTags) { if (!merged.includes(t)) merged.push(t); }
   update.tags = merged;
 
+  clampAcquiredToLastSeen(update, existing);
   await prisma.asset.update({
     where: { id: existing.id },
     data: update,
@@ -260,30 +262,30 @@ async function rejectAssetConflict(conflict: any, actor?: string) {
 
   // Create a separate asset with the entra: tag so the next discovery run finds
   // it by assetTag and doesn't re-fire the collision.
-  const newAsset = await prisma.asset.create({
-    data: {
-      assetTag: `${ENTRA_ASSET_TAG_PREFIX}${conflict.proposedDeviceId}`,
-      hostname: proposed.hostname || null,
-      serialNumber: proposed.serialNumber || null,
-      macAddress: proposed.macAddress || null,
-      manufacturer: proposed.manufacturer || null,
-      model: proposed.model || null,
-      assetType: proposed.assetType || "workstation",
-      status: "active",
-      os: proposed.os || null,
-      osVersion: proposed.osVersion || null,
-      assignedTo: proposed.assignedTo || null,
-      lastSeen: proposed.lastSeen ? new Date(proposed.lastSeen) : null,
-      acquiredAt: proposed.registrationDateTime ? new Date(proposed.registrationDateTime) : null,
-      notes: `Auto-created after hostname collision was rejected — Entra deviceId ${conflict.proposedDeviceId}`,
-      tags: [
-        "entraid",
-        "auto-discovered",
-        ...(proposed.trustType ? [String(proposed.trustType).toLowerCase()] : []),
-        ...(proposed.complianceState ? [`intune-${String(proposed.complianceState).toLowerCase()}`] : []),
-      ],
-    },
-  });
+  const createData: Record<string, unknown> = {
+    assetTag: `${ENTRA_ASSET_TAG_PREFIX}${conflict.proposedDeviceId}`,
+    hostname: proposed.hostname || null,
+    serialNumber: proposed.serialNumber || null,
+    macAddress: proposed.macAddress || null,
+    manufacturer: proposed.manufacturer || null,
+    model: proposed.model || null,
+    assetType: proposed.assetType || "workstation",
+    status: "active",
+    os: proposed.os || null,
+    osVersion: proposed.osVersion || null,
+    assignedTo: proposed.assignedTo || null,
+    lastSeen: proposed.lastSeen ? new Date(proposed.lastSeen) : null,
+    acquiredAt: proposed.registrationDateTime ? new Date(proposed.registrationDateTime) : null,
+    notes: `Auto-created after hostname collision was rejected — Entra deviceId ${conflict.proposedDeviceId}`,
+    tags: [
+      "entraid",
+      "auto-discovered",
+      ...(proposed.trustType ? [String(proposed.trustType).toLowerCase()] : []),
+      ...(proposed.complianceState ? [`intune-${String(proposed.complianceState).toLowerCase()}`] : []),
+    ],
+  };
+  clampAcquiredToLastSeen(createData);
+  const newAsset = await prisma.asset.create({ data: createData as any });
 
   logEvent({
     action: "conflict.rejected",
