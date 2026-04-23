@@ -47,7 +47,7 @@ async function loadIntegrations() {
       var statusDot = intg.lastTestOk === true ? "dot-ok" : intg.lastTestOk === false ? "dot-fail" : "dot-unknown";
       var statusText = intg.lastTestOk === true ? "Connected" : intg.lastTestOk === false ? "Failed" : "Not tested";
       var lastTest = intg.lastTestAt ? formatDate(intg.lastTestAt) : "Never";
-      var typeBadge = intg.type === "windowsserver" ? "Windows Server" : "FortiManager";
+      var typeBadge = intg.type === "windowsserver" ? "Windows Server" : intg.type === "fortigate" ? "FortiGate" : "FortiManager";
 
       function filterRow(baseLabel, include, exclude) {
         include = include || []; exclude = exclude || [];
@@ -67,6 +67,16 @@ async function loadIntegrations() {
           '<div class="detail-row"><span class="detail-label">Domain</span><span class="detail-value">' + escapeHtml(config.domain || "-") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Use SSL</span><span class="detail-value">' + (config.useSsl ? "Yes" : "No") + '</span></div>' +
           filterRow("DHCP", config.dhcpInclude, config.dhcpExclude);
+      } else if (intg.type === "fortigate") {
+        detailRows =
+          '<div class="detail-row"><span class="detail-label">Host</span><span class="detail-value mono">' + escapeHtml(config.host || "-") + ':' + (config.port || defaultPort) + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">API User</span><span class="detail-value">' + escapeHtml(config.apiUser || "-") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">API Token</span><span class="detail-value mono">' + escapeHtml(config.apiToken || "-") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">VDOM</span><span class="detail-value">' + escapeHtml(config.vdom || "root") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">SSL Verify</span><span class="detail-value">' + (config.verifySsl ? "Yes" : "No") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Mgmt Interface</span><span class="detail-value mono">' + escapeHtml(config.mgmtInterface || "-") + '</span></div>' +
+          filterRow("DHCP", config.dhcpInclude, config.dhcpExclude) +
+          filterRow("Inventory", config.inventoryIncludeInterfaces, config.inventoryExcludeInterfaces);
       } else {
         detailRows =
           '<div class="detail-row"><span class="detail-label">Host</span><span class="detail-value mono">' + escapeHtml(config.host || "-") + ':' + (config.port || defaultPort) + '</span></div>' +
@@ -109,7 +119,8 @@ async function loadIntegrations() {
             '</div>' +
           '</div>' +
           '<div class="integration-card-actions">' +
-            (intg.type !== "windowsserver" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\')">Query API</button>' : '') +
+            (intg.type === "fortimanager" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\')">Query API</button>' : '') +
+            (intg.type === "fortigate" ? '<button class="btn btn-sm btn-secondary" onclick="openFgtApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.vdom || 'root') + '\')">Query API</button>' : '') +
             '<button class="btn btn-sm btn-secondary" onclick="testConnection(\'' + intg.id + '\', this)">Test Connection</button>' +
             '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + intg.id + '\')">Edit</button>' +
             '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + intg.id + '\', \'' + escapeHtml(intg.name) + '\')">Delete</button>' +
@@ -211,6 +222,88 @@ function getFormConfig() {
   };
 }
 
+function fortiGateFormHTML(defaults) {
+  var d = defaults || {};
+  var dhcpMode = (d.dhcpInclude && d.dhcpInclude.length > 0) ? "include" : "exclude";
+  var dhcpIfaces = dhcpMode === "include" ? (d.dhcpInclude || []) : (d.dhcpExclude || []);
+  var invMode = (d.inventoryIncludeInterfaces && d.inventoryIncludeInterfaces.length > 0) ? "include" : "exclude";
+  var invIfaces = invMode === "include" ? (d.inventoryIncludeInterfaces || []) : (d.inventoryExcludeInterfaces || []);
+  return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(d.name || "") + '" placeholder="e.g. Branch Office FortiGate"></div>' +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">This integration connects <strong style="color:var(--color-text-primary)">directly to a standalone FortiGate</strong> (not managed by FortiManager). Requires an API administrator token created under <strong style="color:var(--color-text-primary)">System &gt; Administrators &gt; REST API Admin</strong>.</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Connection Settings</p>' +
+    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px">' +
+      '<div class="form-group"><label>Host / IP *</label><input type="text" id="f-host" value="' + escapeHtml(d.host || "") + '" placeholder="e.g. fortigate.example.com"></div>' +
+      '<div class="form-group"><label>Port</label><input type="number" id="f-port" value="' + (d.port || 443) + '" min="1" max="65535" style="width:90px"></div>' +
+    '</div>' +
+    '<div class="form-group"><label>API User</label><input type="text" id="f-apiUser" value="' + escapeHtml(d.apiUser || "") + '" placeholder="e.g. api-admin"></div>' +
+    '<div class="form-group"><label>API Token</label><input type="password" id="f-apiToken" value="' + (d.apiTokenPlaceholder ? "" : escapeHtml(d.apiToken || "")) + '" placeholder="' + (d.apiTokenPlaceholder || "Bearer token") + '"><p class="hint">Generate under System &gt; Administrators &gt; Create New &gt; REST API Admin</p></div>' +
+    '<div class="form-group"><label>VDOM</label><input type="text" id="f-vdom" value="' + escapeHtml(d.vdom || "root") + '" placeholder="root"><p class="hint">Virtual Domain (leave as "root" for default)</p></div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-verifySsl" ' + (d.verifySsl ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-verifySsl" style="margin:0">Verify SSL certificate</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-enabled" ' + (d.enabled !== false ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-enabled" style="margin:0">Enabled</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-autoDiscover" ' + (d.autoDiscover !== false ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-autoDiscover" style="margin:0">Enable auto-discovery</label>' +
+    '</div>' +
+    '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to automatically query for DHCP updates (1–24 hours)</p></div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate Settings</p>' +
+    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">DHCP Server Scope</p>' +
+    '<div class="form-group"><label>Interface Filter</label>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<select id="f-dhcpMode" style="width:auto">' +
+          '<option value="include"' + (dhcpMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="exclude"' + (dhcpMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
+        '</select>' +
+        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces when querying DHCP servers</span>' +
+      '</div>' +
+      '<textarea id="f-dhcpInterfaces" rows="2" placeholder="One per line — e.g. port1&#10;internal*&#10;*wan">' + escapeHtml(dhcpIfaces.join("\n")) + '</textarea>' +
+      '<p class="hint">Leave empty to query all interfaces. Wildcards supported: <code>port*</code>, <code>*wan</code>, <code>*mgmt*</code></p>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Device Inventory</p>' +
+    '<div class="form-group"><label>Interface Filter</label>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<select id="f-inventoryMode" style="width:auto">' +
+          '<option value="exclude"' + (invMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
+          '<option value="include"' + (invMode === "include" ? " selected" : "") + '>Include only</option>' +
+        '</select>' +
+        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">devices seen on these interfaces from asset discovery</span>' +
+      '</div>' +
+      '<textarea id="f-inventoryInterfaces" rows="2" placeholder="One per line — e.g. lan&#10;wifi*&#10;*guest">' + escapeHtml(invIfaces.join("\n")) + '</textarea>' +
+      '<p class="hint">Leave empty to include all interfaces. Wildcards supported: <code>port*</code>, <code>*lan</code>, <code>*mgmt*</code></p>' +
+    '</div>';
+}
+
+function getFgtFormConfig() {
+  var port = document.getElementById("f-port").value;
+  var dhcpMode = document.getElementById("f-dhcpMode").value;
+  var dhcpIfaces = linesToArray("f-dhcpInterfaces");
+  var invMode = document.getElementById("f-inventoryMode").value;
+  var invIfaces = linesToArray("f-inventoryInterfaces");
+  return {
+    host: val("f-host"),
+    port: port ? parseInt(port, 10) : 443,
+    apiUser: val("f-apiUser"),
+    apiToken: val("f-apiToken"),
+    vdom: val("f-vdom") || "root",
+    verifySsl: document.getElementById("f-verifySsl").checked,
+    mgmtInterface: val("f-mgmtInterface") || "",
+    dhcpInclude: dhcpMode === "include" ? dhcpIfaces : [],
+    dhcpExclude: dhcpMode === "exclude" ? dhcpIfaces : [],
+    inventoryExcludeInterfaces: invMode === "exclude" ? invIfaces : [],
+    inventoryIncludeInterfaces: invMode === "include" ? invIfaces : [],
+  };
+}
+
 function windowsServerFormHTML(defaults) {
   var d = defaults || {};
   var sslChecked = d.useSsl ? "checked" : "";
@@ -262,10 +355,14 @@ function linesToArray(id) {
 function showTypePicker() {
   var body =
     '<p style="font-size:0.9rem;color:var(--color-text-secondary);margin-bottom:1rem">Select the type of integration to add:</p>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">' +
       '<button class="btn btn-secondary" id="pick-fmg" style="padding:1.2rem;font-size:0.95rem;display:flex;flex-direction:column;align-items:center;gap:6px">' +
         '<strong>FortiManager</strong>' +
-        '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">Fortinet DHCP via JSON-RPC</span>' +
+        '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">Multi-FortiGate via JSON-RPC</span>' +
+      '</button>' +
+      '<button class="btn btn-secondary" id="pick-fgt" style="padding:1.2rem;font-size:0.95rem;display:flex;flex-direction:column;align-items:center;gap:6px">' +
+        '<strong>FortiGate</strong>' +
+        '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">Standalone FortiGate via REST</span>' +
       '</button>' +
       '<button class="btn btn-secondary" id="pick-win" style="padding:1.2rem;font-size:0.95rem;display:flex;flex-direction:column;align-items:center;gap:6px">' +
         '<strong>Windows Server</strong>' +
@@ -275,14 +372,32 @@ function showTypePicker() {
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>';
   openModal("Add Integration", body, footer);
   document.getElementById("pick-fmg").addEventListener("click", function () { closeModal(); openCreateModal("fortimanager"); });
+  document.getElementById("pick-fgt").addEventListener("click", function () { closeModal(); openCreateModal("fortigate"); });
   document.getElementById("pick-win").addEventListener("click", function () { closeModal(); openCreateModal("windowsserver"); });
+}
+
+function _formHTMLForType(type, defaults) {
+  if (type === "windowsserver") return windowsServerFormHTML(defaults);
+  if (type === "fortigate") return fortiGateFormHTML(defaults);
+  return fortiManagerFormHTML(defaults);
+}
+
+function _formConfigForType(type) {
+  if (type === "windowsserver") return getWinFormConfig();
+  if (type === "fortigate") return getFgtFormConfig();
+  return getFormConfig();
+}
+
+function _titleForType(type, action) {
+  var product = type === "windowsserver" ? "Windows Server" : type === "fortigate" ? "FortiGate" : "FortiManager";
+  return action + " " + product + " Integration";
 }
 
 function openCreateModal(type) {
   type = type || "fortimanager";
   var isWin = type === "windowsserver";
-  var title = isWin ? "Add Windows Server Integration" : "Add FortiManager Integration";
-  var body = isWin ? windowsServerFormHTML({}) : fortiManagerFormHTML({});
+  var title = _titleForType(type, "Add");
+  var body = _formHTMLForType(type, {});
   var footer = '<button class="btn btn-secondary" id="btn-test-new">Test Connection</button>' +
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create</button>';
@@ -301,7 +416,7 @@ function openCreateModal(type) {
       var result = await api.integrations.testNew({
         type: type,
         name: val("f-name") || "Test",
-        config: isWin ? getWinFormConfig() : getFormConfig(),
+        config: _formConfigForType(type),
       });
       showToast(result.message, result.ok ? "success" : "error");
     } catch (err) {
@@ -322,7 +437,7 @@ function openCreateModal(type) {
       var input = {
         type: type,
         name: val("f-name"),
-        config: isWin ? getWinFormConfig() : getFormConfig(),
+        config: _formConfigForType(type),
         enabled: document.getElementById("f-enabled").checked,
         autoDiscover: autoDiscoverEl ? autoDiscoverEl.checked : true,
         pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
@@ -348,6 +463,7 @@ async function openEditModal(id) {
     var intg = await api.integrations.get(id);
     var config = intg.config || {};
     var isWin = intg.type === "windowsserver";
+    var isFgt = intg.type === "fortigate";
     var body, formGetter;
 
     if (isWin) {
@@ -369,6 +485,31 @@ async function openEditModal(id) {
       formGetter = function () {
         var fc = getWinFormConfig();
         if (!fc.password) delete fc.password;
+        return fc;
+      };
+    } else if (isFgt) {
+      var defaults = {
+        name: intg.name,
+        host: config.host,
+        port: config.port,
+        apiUser: config.apiUser,
+        apiToken: "",
+        apiTokenPlaceholder: "Leave blank to keep current token",
+        vdom: config.vdom,
+        verifySsl: config.verifySsl,
+        enabled: intg.enabled,
+        autoDiscover: intg.autoDiscover !== false,
+        pollInterval: intg.pollInterval,
+        mgmtInterface: config.mgmtInterface,
+        dhcpInclude: config.dhcpInclude || [],
+        dhcpExclude: config.dhcpExclude || [],
+        inventoryIncludeInterfaces: config.inventoryIncludeInterfaces || [],
+        inventoryExcludeInterfaces: config.inventoryExcludeInterfaces || [],
+      };
+      body = fortiGateFormHTML(defaults);
+      formGetter = function () {
+        var fc = getFgtFormConfig();
+        if (!fc.apiToken) delete fc.apiToken;
         return fc;
       };
     } else {
@@ -407,7 +548,7 @@ async function openEditModal(id) {
       btn.disabled = true;
       btn.textContent = "Testing...";
       try {
-        var formConfig = isWin ? getWinFormConfig() : getFormConfig();
+        var formConfig = _formConfigForType(intg.type);
         // Strip blank secrets so the server fills them in from the stored config.
         if (isWin) { if (!formConfig.password) delete formConfig.password; }
         else { if (!formConfig.apiToken) delete formConfig.apiToken; }
@@ -737,6 +878,159 @@ function openApiQueryModal(id, adom) {
 
   document.getElementById("fmg-copy-btn").addEventListener("click", function () {
     var text = document.getElementById("fmg-response").textContent;
+    var btn = this;
+    navigator.clipboard.writeText(text).then(function () {
+      btn.textContent = "Copied!";
+      setTimeout(function () { btn.textContent = "Copy"; }, 1500);
+    }).catch(function () { showToast("Copy failed", "error"); });
+  });
+}
+
+// ─── FortiGate API Query modal ──────────────────────────────────────────────
+
+function _fgtLoadQueries() {
+  try { return JSON.parse(localStorage.getItem("shelob-fgt-queries") || "[]"); } catch (_) { return []; }
+}
+
+function _fgtPersistQueries(queries) {
+  localStorage.setItem("shelob-fgt-queries", JSON.stringify(queries));
+}
+
+function _fgtRenderSavedSelect(queries, selectValue) {
+  var sel = document.getElementById("fgt-saved-select");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— load a saved query —</option>' +
+    queries.map(function (q, i) {
+      return '<option value="' + i + '"' + (String(i) === String(selectValue) ? " selected" : "") + '>' + escapeHtml(q.name) + '</option>';
+    }).join("");
+}
+
+function openFgtApiQueryModal(id, vdom) {
+  vdom = vdom || "root";
+
+  var body =
+    '<div style="margin-bottom:0.75rem">' +
+      '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Saved Queries</p>' +
+      '<div style="display:flex;gap:6px;align-items:center">' +
+        '<select id="fgt-saved-select" style="flex:1"></select>' +
+        '<button class="btn btn-sm btn-secondary" id="fgt-load-btn">Load</button>' +
+        '<button class="btn btn-sm btn-danger" id="fgt-delete-btn">Delete</button>' +
+      '</div>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:0 0 0.75rem">' +
+    '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:end">' +
+      '<div class="form-group" style="margin:0">' +
+        '<label>Method</label>' +
+        '<select id="fgt-method" style="width:auto">' +
+          '<option value="GET">GET</option>' +
+          '<option value="POST">POST</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="form-group" style="margin:0">' +
+        '<label>Path</label>' +
+        '<input type="text" id="fgt-path" value="/api/v2/monitor/system/status" placeholder="/api/v2/monitor/system/status" style="font-family:monospace;font-size:0.85rem">' +
+      '</div>' +
+    '</div>' +
+    '<div class="form-group" style="margin-top:0.75rem">' +
+      '<label>Query Parameters <span style="font-size:0.8rem;color:var(--color-text-tertiary)">(one per line — <code>key=value</code>)</span></label>' +
+      '<textarea id="fgt-query" rows="4" style="font-family:monospace;font-size:0.82rem" placeholder="vdom=' + escapeHtml(vdom) + '&#10;format=mac|ip|hostname">vdom=' + escapeHtml(vdom) + '</textarea>' +
+      '<p class="hint">VDOM is set here; add other parameters like <code>format=…</code> or <code>filter=…</code> as needed.</p>' +
+    '</div>' +
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:0.75rem"><button class="btn btn-primary" id="fgt-send">Send</button></div>' +
+    '<div style="display:flex;gap:6px;align-items:center;margin-bottom:0.25rem">' +
+      '<input type="text" id="fgt-save-name" placeholder="Name this query to save it…" style="flex:1;font-size:0.85rem">' +
+      '<button class="btn btn-sm btn-secondary" id="fgt-save-btn">Save</button>' +
+    '</div>' +
+    '<div id="fgt-response-wrap" style="display:none;margin-top:1rem">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem">' +
+        '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0">Response</p>' +
+        '<button class="btn btn-sm btn-secondary" id="fgt-copy-btn" style="padding:2px 10px;font-size:0.75rem">Copy</button>' +
+      '</div>' +
+      '<pre id="fgt-response" style="background:var(--color-surface-raised);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:0.75rem;font-size:0.78rem;overflow:auto;max-height:300px;white-space:pre-wrap;word-break:break-all;margin:0"></pre>' +
+    '</div>';
+
+  var footer = '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
+
+  openModal("FortiGate API Query", body, footer, { wide: true });
+
+  var savedQueries = _fgtLoadQueries();
+  _fgtRenderSavedSelect(savedQueries);
+
+  document.getElementById("fgt-load-btn").addEventListener("click", function () {
+    var idx = parseInt(document.getElementById("fgt-saved-select").value, 10);
+    if (isNaN(idx) || !savedQueries[idx]) return;
+    var q = savedQueries[idx];
+    document.getElementById("fgt-method").value = q.method || "GET";
+    document.getElementById("fgt-path").value = q.path || "";
+    document.getElementById("fgt-query").value = q.query || "";
+    document.getElementById("fgt-save-name").value = q.name;
+  });
+
+  document.getElementById("fgt-delete-btn").addEventListener("click", async function () {
+    var idx = parseInt(document.getElementById("fgt-saved-select").value, 10);
+    if (isNaN(idx) || !savedQueries[idx]) return;
+    var ok = await showConfirm("Delete saved query \"" + savedQueries[idx].name + "\"?");
+    if (!ok) return;
+    savedQueries.splice(idx, 1);
+    _fgtPersistQueries(savedQueries);
+    _fgtRenderSavedSelect(savedQueries);
+  });
+
+  document.getElementById("fgt-save-btn").addEventListener("click", function () {
+    var name = document.getElementById("fgt-save-name").value.trim();
+    if (!name) { showToast("Enter a name for this query", "error"); return; }
+    var method = document.getElementById("fgt-method").value;
+    var path = document.getElementById("fgt-path").value.trim();
+    var query = document.getElementById("fgt-query").value;
+    var existIdx = -1;
+    savedQueries.forEach(function (q, i) { if (q.name === name) existIdx = i; });
+    var entry = { name: name, method: method, path: path, query: query };
+    if (existIdx >= 0) {
+      savedQueries[existIdx] = entry;
+    } else {
+      savedQueries.push(entry);
+      existIdx = savedQueries.length - 1;
+    }
+    _fgtPersistQueries(savedQueries);
+    _fgtRenderSavedSelect(savedQueries, existIdx);
+    showToast("Query saved");
+  });
+
+  document.getElementById("fgt-send").addEventListener("click", async function () {
+    var btn = this;
+    var method = document.getElementById("fgt-method").value;
+    var path = document.getElementById("fgt-path").value.trim();
+    if (!path) { showToast("Enter a path (e.g. /api/v2/monitor/system/status)", "error"); return; }
+    var queryRaw = document.getElementById("fgt-query").value;
+    var query = {};
+    queryRaw.split("\n").forEach(function (line) {
+      var trimmed = line.trim();
+      if (!trimmed) return;
+      var eq = trimmed.indexOf("=");
+      if (eq < 0) { query[trimmed] = ""; return; }
+      var key = trimmed.slice(0, eq).trim();
+      var value = trimmed.slice(eq + 1).trim();
+      if (key) query[key] = value;
+    });
+    btn.disabled = true;
+    btn.textContent = "Sending…";
+    var responseWrap = document.getElementById("fgt-response-wrap");
+    var responsePre = document.getElementById("fgt-response");
+    try {
+      var result = await api.integrations.query(id, { method: method, path: path, query: query });
+      responseWrap.style.display = "";
+      responsePre.textContent = JSON.stringify(result, null, 2);
+    } catch (err) {
+      responseWrap.style.display = "";
+      responsePre.textContent = "Error: " + err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Send";
+    }
+  });
+
+  document.getElementById("fgt-copy-btn").addEventListener("click", function () {
+    var text = document.getElementById("fgt-response").textContent;
     var btn = this;
     navigator.clipboard.writeText(text).then(function () {
       btn.textContent = "Copied!";

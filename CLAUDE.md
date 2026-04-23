@@ -68,7 +68,7 @@ shelob/
 │   │       ├── reservations.ts      # Reservation CRUD
 │   │       ├── utilization.ts       # Reporting endpoints
 │   │       ├── users.ts             # User CRUD & role management
-│   │       ├── integrations.ts      # FMG / Windows Server config & discovery
+│   │       ├── integrations.ts      # FMG / FortiGate / Windows Server config & discovery
 │   │       ├── assets.ts            # Device inventory CRUD, PDF/CSV export
 │   │       ├── events.ts            # Audit log, syslog, SFTP archival
 │   │       ├── conflicts.ts         # Discovery conflict review & resolution
@@ -80,6 +80,7 @@ shelob/
 │   │   ├── reservationService.ts    # Reservation business logic
 │   │   ├── utilizationService.ts    # Utilization reporting
 │   │   ├── fortimanagerService.ts   # FMG JSON-RPC client & discovery orchestration
+│   │   ├── fortigateService.ts      # Standalone FortiGate REST API client & discovery
 │   │   ├── windowsServerService.ts  # Windows Server WinRM DHCP discovery
 │   │   ├── azureAuthService.ts      # Azure AD/Entra SAML SSO, user provisioning
 │   │   ├── dnsService.ts            # Reverse DNS lookup for assets
@@ -145,7 +146,7 @@ shelob/
 IpVersion:               v4 | v6
 SubnetStatus:            available | reserved | deprecated
 ReservationStatus:       active | expired | released
-ReservationSourceType:   manual | dhcp_reservation | dhcp_lease | interface_ip | vip | fortiswitch | fortinap | fortimanager
+ReservationSourceType:   manual | dhcp_reservation | dhcp_lease | interface_ip | vip | fortiswitch | fortinap | fortimanager | fortigate
 ConflictStatus:          pending | accepted | rejected
 UserRole:                admin | networkadmin | assetsadmin | user | readonly
 AssetStatus:             active | maintenance | decommissioned | storage
@@ -196,7 +197,7 @@ Reservation
 
 Integration
   id            UUID PK
-  type          String            -- e.g. "fortimanager", "windowsserver"
+  type          String            -- e.g. "fortimanager", "fortigate", "windowsserver"
   name          String
   config        Json              -- Type-specific connection settings (host, port, adom, credentials, etc.)
   enabled       Boolean           @default(true)
@@ -399,7 +400,7 @@ Rate limiting: 10 login attempts / 15 min per IP.
 
 Azure SAML SSO is optional; users are auto-provisioned on first login with a default role.
 
-**FMG auth note:** FortiManager 7.4.7+ / 7.6.2+ removed `access_token` query string support. The service uses the Bearer `Authorization` header exclusively.
+**FMG auth note:** FortiManager 7.4.7+ / 7.6.2+ removed `access_token` query string support. The service uses the Bearer `Authorization` header exclusively. The standalone FortiGate integration (`fortigateService.ts`) uses the same Bearer header pattern against a REST API Admin token.
 
 ---
 
@@ -442,6 +443,19 @@ FortiOS monitor endpoints support field selection via the `format` query paramet
 When a discovered value conflicts with an existing manual reservation, a `Conflict` record is created instead of silently overwriting. Admins accept (apply discovered values) or reject (keep existing) via the conflict slide-over panel on the Events page.
 
 Discovery can be triggered manually or runs automatically on each integration's `pollInterval` via `discoveryScheduler.ts`.
+
+---
+
+## FortiGate Discovery Workflow (Standalone)
+
+`fortigateService.ts` talks directly to a single standalone FortiGate (one not managed by FortiManager) via the FortiOS REST API. It consumes the same `DiscoveryResult` shape as `fortimanagerService` — the sync pipeline in `integrations.ts` handles both identically.
+
+Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VIPs, managed FortiSwitches, managed FortiAPs, device inventory). Key differences from the FMG path:
+
+- **Endpoint style** — requests go straight to `/api/v2/cmdb/...` and `/api/v2/monitor/...` on the FortiGate, no JSON-RPC wrapper
+- **Scoping** — `vdom` query param (default `root`) instead of FMG `adom`
+- **Device identity** — the FortiGate itself is the single entry in `result.devices`; its hostname is resolved from `/api/v2/monitor/system/status`
+- **Auth** — Bearer API token from System > Administrators > REST API Admin (optional `access_user` header for parity with FMG; FortiOS ignores it)
 
 ---
 

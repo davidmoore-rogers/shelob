@@ -24,7 +24,7 @@ const APP_VERSION = JSON.parse(readFileSync(join(__dirname, "package.json"), "ut
 // ─── Real FortiManager API Client ───────────────────────────────────────────
 // Used when non-mock FMG integrations are added to the demo.
 
-const MOCK_FMG_HOSTS = ["fmg.example.com", "lab-fmg.example.com"];
+const MOCK_FMG_HOSTS = ["fmg.example.com", "lab-fmg.example.com", "10.0.50.1"];
 
 function _isMockFmg(config) {
   return !config?.host || MOCK_FMG_HOSTS.includes(config.host);
@@ -638,6 +638,30 @@ const INTEGRATIONS = [
     lastTestOk: false,
     createdAt: "2026-02-01T10:00:00.000Z",
     updatedAt: "2026-02-28T11:00:00.000Z",
+  },
+  {
+    id: "i4000000-0000-0000-0000-000000000004",
+    type: "fortigate",
+    name: "Branch Office FortiGate",
+    config: {
+      host: "10.0.50.1",
+      port: 443,
+      apiUser: "api-readonly",
+      apiToken: "••••••••",
+      vdom: "root",
+      verifySsl: false,
+      mgmtInterface: "port1",
+      dhcpInclude: [],
+      dhcpExclude: [],
+      inventoryIncludeInterfaces: [],
+      inventoryExcludeInterfaces: ["guest*"],
+    },
+    enabled: true,
+    pollInterval: 12,
+    lastTestAt: "2026-04-18T08:15:00.000Z",
+    lastTestOk: true,
+    createdAt: "2026-04-05T10:00:00.000Z",
+    updatedAt: "2026-04-18T08:15:00.000Z",
   },
   {
     id: "i3000000-0000-0000-0000-000000000003",

@@ -38,6 +38,7 @@ enum ReservationSourceType {
   fortiswitch
   fortinap
   fortimanager
+  fortigate
 }
 
 enum ConflictStatus {

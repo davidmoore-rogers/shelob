@@ -8,6 +8,7 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireNetworkAdmin } from "../middleware/auth.js";
 import * as fortimanager from "../../services/fortimanagerService.js";
+import * as fortigate from "../../services/fortigateService.js";
 import * as windowsServer from "../../services/windowsServerService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
 import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice, DiscoveredVip, DiscoveryProgressCallback } from "../../services/fortimanagerService.js";
@@ -74,6 +75,20 @@ const FortiManagerConfigSchema = z.object({
   inventoryIncludeInterfaces: z.array(z.string()).optional().default([]),
 });
 
+const FortiGateConfigSchema = z.object({
+  host:      z.string().optional().default(""),
+  port:      z.number().int().min(1).max(65535).optional().default(443),
+  apiUser:   z.string().optional().default(""),
+  apiToken:  z.string().optional().default(""),
+  vdom:      z.string().optional().default("root"),
+  verifySsl: z.boolean().optional().default(false),
+  mgmtInterface: z.string().optional().default(""),
+  dhcpInclude:   z.array(z.string()).optional().default([]),
+  dhcpExclude:   z.array(z.string()).optional().default([]),
+  inventoryExcludeInterfaces: z.array(z.string()).optional().default([]),
+  inventoryIncludeInterfaces: z.array(z.string()).optional().default([]),
+});
+
 const WindowsServerConfigSchema = z.object({
   host:      z.string().optional().default(""),
   port:      z.number().int().min(1).max(65535).optional().default(5985),
@@ -90,6 +105,14 @@ const CreateIntegrationSchema = z.discriminatedUnion("type", [
     type:         z.literal("fortimanager"),
     name:         z.string().min(1, "Name is required"),
     config:       FortiManagerConfigSchema,
+    enabled:      z.boolean().optional().default(true),
+    autoDiscover: z.boolean().optional().default(true),
+    pollInterval: z.number().int().min(1).max(24).optional().default(12),
+  }),
+  z.object({
+    type:         z.literal("fortigate"),
+    name:         z.string().min(1, "Name is required"),
+    config:       FortiGateConfigSchema,
     enabled:      z.boolean().optional().default(true),
     autoDiscover: z.boolean().optional().default(true),
     pollInterval: z.number().int().min(1).max(24).optional().default(12),
@@ -182,9 +205,9 @@ router.post("/", async (req, res, next) => {
 
     const response: Record<string, unknown> = stripSecret(integration);
 
-    // Auto-register FortiManager IP as asset/reservation
-    if (input.type === "fortimanager" && input.config.host) {
-      const registration = await registerFortiManager(input.config.host, input.name, false);
+    // Auto-register FortiManager/FortiGate IP as asset/reservation
+    if ((input.type === "fortimanager" || input.type === "fortigate") && input.config.host) {
+      const registration = await registerFortinetHost(input.type, input.config.host, input.name, false);
       if (registration?.conflicts?.length) {
         response.conflicts = registration.conflicts;
       }
@@ -203,6 +226,8 @@ router.post("/", async (req, res, next) => {
         if (input.type === "windowsserver") {
           const subnets = await windowsServer.discoverDhcpScopes(input.config as any, ac.signal);
           discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], fortiSwitches: [], fortiAps: [], vips: [] };
+        } else if (input.type === "fortigate") {
+          discoveryResult = await fortigate.discoverDhcpSubnets(input.config as any, ac.signal);
         } else {
           discoveryResult = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal);
         }
@@ -261,9 +286,9 @@ router.put("/:id", async (req, res, next) => {
     const finalConfig = (updated.config as Record<string, unknown>) || {};
     const response: Record<string, unknown> = stripSecret(updated);
 
-    // Auto-register FortiManager IP as asset/reservation
-    if (existing.type === "fortimanager" && finalConfig.host && typeof finalConfig.host === "string") {
-      const registration = await registerFortiManager(finalConfig.host, updated.name, false);
+    // Auto-register FortiManager/FortiGate IP as asset/reservation
+    if ((existing.type === "fortimanager" || existing.type === "fortigate") && finalConfig.host && typeof finalConfig.host === "string") {
+      const registration = await registerFortinetHost(existing.type, finalConfig.host, updated.name, false);
       if (registration?.conflicts?.length) {
         response.conflicts = registration.conflicts;
       }
@@ -277,6 +302,7 @@ router.put("/:id", async (req, res, next) => {
       updated.autoDiscover &&
       finalConfig.host &&
       ((existing.type === "fortimanager" && finalConfig.apiToken) ||
+       (existing.type === "fortigate" && finalConfig.apiToken) ||
        (existing.type === "windowsserver" && finalConfig.username));
 
     if (canDiscover) {
@@ -321,6 +347,8 @@ router.post("/:id/test", async (req, res, next) => {
 
     if (integration.type === "fortimanager") {
       result = await fortimanager.testConnection(config as any);
+    } else if (integration.type === "fortigate") {
+      result = await fortigate.testConnection(config as any);
     } else if (integration.type === "windowsserver") {
       result = await windowsServer.testConnection(config as any);
     } else {
@@ -341,20 +369,34 @@ router.post("/:id/test", async (req, res, next) => {
   }
 });
 
-// POST /api/v1/integrations/:id/query — proxy a manual JSON-RPC call to a FortiManager
+// POST /api/v1/integrations/:id/query — proxy a manual API call to a FortiManager or FortiGate
 router.post("/:id/query", async (req, res, next) => {
   try {
     const integration = await prisma.integration.findUnique({ where: { id: req.params.id } });
     if (!integration) throw new AppError(404, "Integration not found");
-    if (integration.type !== "fortimanager") throw new AppError(400, "API query is only supported for FortiManager integrations");
 
-    const { method, params } = z.object({
-      method: z.string().min(1),
-      params: z.array(z.unknown()),
-    }).parse(req.body);
+    if (integration.type === "fortimanager") {
+      const { method, params } = z.object({
+        method: z.string().min(1),
+        params: z.array(z.unknown()),
+      }).parse(req.body);
+      const result = await fortimanager.proxyQuery(integration.config as any, method, params);
+      res.json(result);
+      return;
+    }
 
-    const result = await fortimanager.proxyQuery(integration.config as any, method, params);
-    res.json(result);
+    if (integration.type === "fortigate") {
+      const { method, path, query } = z.object({
+        method: z.enum(["GET", "POST"]).optional().default("GET"),
+        path: z.string().min(1),
+        query: z.record(z.string()).optional(),
+      }).parse(req.body);
+      const result = await fortigate.proxyQuery(integration.config as any, method, path, query);
+      res.json(result);
+      return;
+    }
+
+    throw new AppError(400, "API query is not supported for this integration type");
   } catch (err) {
     next(err);
   }
@@ -375,7 +417,7 @@ router.post("/:id/register", async (req, res, next) => {
 
     // fields: which proposed fields to apply to the existing reservation
     const fields: string[] = Array.isArray(req.body?.fields) ? req.body.fields : [];
-    const result = await registerFortiManager(config.host as string, integration.name, true, fields);
+    const result = await registerFortinetHost(integration.type, config.host as string, integration.name, true, fields);
     res.json(result);
   } catch (err) {
     next(err);
@@ -403,6 +445,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
   const config = integration.config as Record<string, unknown>;
   if (!config.host) throw new AppError(400, "Integration has no host configured");
   if (integration.type === "fortimanager" && !config.apiToken) throw new AppError(400, "Integration has no API token configured");
+  if (integration.type === "fortigate" && !config.apiToken) throw new AppError(400, "Integration has no API token configured");
   if (integration.type === "windowsserver" && !config.username) throw new AppError(400, "Integration has no username configured");
 
   activeDiscovery.get(integrationId)?.controller.abort();
@@ -448,6 +491,16 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         syncTotals.updated.push(...r.updated);
         syncTotals.skipped.push(...r.skipped);
         syncTotals.deprecated.push(...r.deprecated);
+      } else if (integration.type === "fortigate") {
+        // Single FortiGate — no per-device iteration, sync the full result in one pass
+        discoveryResult = await fortigate.discoverDhcpSubnets(config as any, ac.signal, onProgress);
+        if (!ac.signal.aborted) {
+          const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
+          syncTotals.created.push(...r.created);
+          syncTotals.updated.push(...r.updated);
+          syncTotals.skipped.push(...r.skipped);
+          syncTotals.deprecated.push(...r.deprecated);
+        }
       } else {
         // FortiManager: onDeviceComplete fires after each managed FortiGate is queried,
         // syncing subnets/assets/reservations incrementally.
@@ -504,7 +557,7 @@ router.post("/test", async (req, res, next) => {
       if (existing) {
         const stored = existing.config as Record<string, unknown>;
         const cfg = input.config as Record<string, unknown>;
-        if (input.type === "fortimanager" && (!cfg.apiToken || typeof cfg.apiToken !== "string")) {
+        if ((input.type === "fortimanager" || input.type === "fortigate") && (!cfg.apiToken || typeof cfg.apiToken !== "string")) {
           cfg.apiToken = stored.apiToken;
         }
         if (input.type === "windowsserver" && (!cfg.password || typeof cfg.password !== "string")) {
@@ -515,6 +568,8 @@ router.post("/test", async (req, res, next) => {
 
     if (input.type === "fortimanager") {
       result = await fortimanager.testConnection(input.config);
+    } else if (input.type === "fortigate") {
+      result = await fortigate.testConnection(input.config);
     } else if (input.type === "windowsserver") {
       result = await windowsServer.testConnection(input.config);
     } else {
@@ -548,11 +603,11 @@ interface ConflictEntry {
 }
 
 /**
- * Register a FortiManager's IP as a subnet reservation and asset.
+ * Register a FortiManager or FortiGate host IP as a subnet reservation and asset.
  * If force=false, returns conflicts instead of overwriting.
  * If force=true, overwrites selected fields on the existing reservation.
  */
-async function registerFortiManager(host: string, integrationName: string, force: boolean, fields: string[] = []) {
+async function registerFortinetHost(integrationType: string, host: string, integrationName: string, force: boolean, fields: string[] = []) {
   if (!isValidIpAddress(host)) return { conflicts: [], created: [] };
 
   const subnets = await prisma.subnet.findMany();
@@ -563,16 +618,19 @@ async function registerFortiManager(host: string, integrationName: string, force
   const conflicts: ConflictEntry[] = [];
   const created: string[] = [];
   const hostname = integrationName.toLowerCase().replace(/\s+/g, "-");
+  const isFortiGate = integrationType === "fortigate";
+  const productLabel = isFortiGate ? "FortiGate" : "FortiManager";
+  const assetType: "firewall" | "server" = isFortiGate ? "firewall" : "server";
 
   // ── Reservation ──
   const proposedReservation = {
     ipAddress: host,
     hostname,
     owner: "network-team",
-    projectRef: "FortiManager Integration",
-    notes: `Auto-registered from FortiManager integration: ${integrationName}`,
+    projectRef: `${productLabel} Integration`,
+    notes: `Auto-registered from ${productLabel} integration: ${integrationName}`,
     status: "active" as const,
-    sourceType: "fortimanager" as const,
+    sourceType: (isFortiGate ? "fortigate" : "fortimanager") as "fortigate" | "fortimanager",
   };
 
   if (matchingSubnet) {
@@ -625,13 +683,13 @@ async function registerFortiManager(host: string, integrationName: string, force
   const proposedAsset = {
     ipAddress: host,
     hostname,
-    assetType: "server" as const,
+    assetType,
     status: "active" as const,
     manufacturer: "Fortinet",
-    model: "FortiManager",
+    model: productLabel,
     department: "Network Security",
-    notes: `Auto-registered from FortiManager integration: ${integrationName}`,
-    tags: ["fortimanager", "auto-registered"],
+    notes: `Auto-registered from ${productLabel} integration: ${integrationName}`,
+    tags: [integrationType, "auto-registered"],
   };
 
   await prisma.asset.create({ data: proposedAsset });
@@ -773,6 +831,11 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   const syncLog = (level: "info" | "error", message: string) => {
     logEvent({ action: "integration.sync", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
   };
+  const integrationLabel =
+    integrationType === "windowsserver" ? "Windows Server" :
+    integrationType === "fortigate" ? "FortiGate" :
+    "FortiManager";
+  const projectRefLabel = `${integrationLabel} Integration`;
   const created: string[] = [];
   const updated: string[] = [];
   const skipped: string[] = [];
@@ -896,7 +959,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           blockId: matchingBlock.id,
           cidr,
           name: `DHCP: ${entry.name} (${entry.fortigateDevice})`,
-          purpose: `Discovered from ${integrationType === "windowsserver" ? "Windows Server" : "FortiManager"} DHCP`,
+          purpose: `Discovered from ${integrationLabel} DHCP`,
           status: "available",
           discoveredBy: integrationId,
           fortigateDevice: entry.fortigateDevice,
@@ -1010,7 +1073,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           department: "Network Security",
           learnedLocation: fgHostname,
           lastSeen: new Date(now),
-          notes: `Auto-discovered from FortiManager integration`,
+          notes: `Auto-discovered from ${integrationLabel} integration`,
           tags: ["fortigate", "auto-discovered"],
         },
       });
@@ -1029,7 +1092,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     const swStatus = sw.state === "Unauthorized" ? "storage" : "active";
     const swJoinDate = sw.joinTime && Number.isFinite(sw.joinTime) && sw.joinTime > 0
       ? new Date(sw.joinTime * 1000) : null;
-    const swNotes = `Auto-discovered from FortiGate ${sw.device}${sw.fgtInterface ? ` via ${sw.fgtInterface}` : ""} via FortiManager`;
+    const swNotes = `Auto-discovered from FortiGate ${sw.device}${sw.fgtInterface ? ` via ${sw.fgtInterface}` : ""} via ${integrationLabel}`;
     try {
       let existingAsset: any = sw.serial ? assetIdx.findBySerial(sw.serial) : null;
       if (!existingAsset && sw.name) existingAsset = assetIdx.findByEntry(undefined, sw.name, sw.ipAddress || undefined);
@@ -1084,7 +1147,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         const existingRes = activeResMap.get(key);
         if (existingRes) {
           if (existingRes.sourceType === "manual") {
-            await upsertConflict(existingRes.id, integrationId, { hostname: sw.name || null, owner: "network-team", projectRef: "FortiManager Integration", notes: swNotes, sourceType: "fortiswitch" }, existingRes);
+            await upsertConflict(existingRes.id, integrationId, { hostname: sw.name || null, owner: "network-team", projectRef: projectRefLabel, notes: swNotes, sourceType: "fortiswitch" }, existingRes);
           }
         } else {
           try {
@@ -1094,7 +1157,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
                 ipAddress: sw.ipAddress,
                 hostname: sw.name || null,
                 owner: "network-team",
-                projectRef: "FortiManager Integration",
+                projectRef: projectRefLabel,
                 notes: swNotes,
                 status: "active",
                 sourceType: "fortiswitch",
@@ -1160,7 +1223,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             osVersion: ap.osVersion || null,
             learnedLocation: ap.device || null,
             lastSeen: new Date(now),
-            notes: `Auto-discovered from FortiGate ${ap.device} via FortiManager`,
+            notes: `Auto-discovered from FortiGate ${ap.device} via ${integrationLabel}`,
             tags: ["fortiap", "auto-discovered"],
           },
         });
@@ -1178,7 +1241,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         const existingRes = activeResMap.get(key);
         if (existingRes) {
           if (existingRes.sourceType === "manual") {
-            await upsertConflict(existingRes.id, integrationId, { hostname: ap.name || null, owner: "network-team", projectRef: "FortiManager Integration", notes: `FortiAP managed by FortiGate ${ap.device}`, sourceType: "fortinap" }, existingRes);
+            await upsertConflict(existingRes.id, integrationId, { hostname: ap.name || null, owner: "network-team", projectRef: projectRefLabel, notes: `FortiAP managed by FortiGate ${ap.device}`, sourceType: "fortinap" }, existingRes);
           }
         } else {
           try {
@@ -1188,7 +1251,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
                 ipAddress: resolvedIp,
                 hostname: ap.name || null,
                 owner: "network-team",
-                projectRef: "FortiManager Integration",
+                projectRef: projectRefLabel,
                 notes: `FortiAP managed by FortiGate ${ap.device}`,
                 status: "active",
                 sourceType: "fortinap",
@@ -1292,7 +1355,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     const existingRes = activeResMap.get(key);
     if (existingRes) {
       if (existingRes.sourceType === "manual") {
-        const proposed = { hostname: ifaceIp.device, owner: "network-team", projectRef: "FortiManager Integration", notes: `${ifaceIp.role === "management" ? "Management" : "DHCP server"} interface (${ifaceIp.interfaceName}) on ${ifaceIp.device}`, sourceType: "interface_ip" };
+        const proposed = { hostname: ifaceIp.device, owner: "network-team", projectRef: projectRefLabel, notes: `${ifaceIp.role === "management" ? "Management" : "DHCP server"} interface (${ifaceIp.interfaceName}) on ${ifaceIp.device}`, sourceType: "interface_ip" };
         await upsertConflict(existingRes.id, integrationId, proposed, existingRes);
       }
       continue;
@@ -1305,7 +1368,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           ipAddress: ifaceIp.ipAddress,
           hostname: ifaceIp.device,
           owner: "network-team",
-          projectRef: "FortiManager Integration",
+          projectRef: projectRefLabel,
           notes: `${ifaceIp.role === "management" ? "Management" : "DHCP server"} interface (${ifaceIp.interfaceName}) on ${ifaceIp.device}`,
           status: "active",
           sourceType: "interface_ip",
@@ -1405,7 +1468,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       const existingRes = activeResMap.get(key);
       if (existingRes) {
         if (existingRes.sourceType === "manual") {
-          await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: "FortiManager Integration", notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
+          await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
         }
         continue;
       }
@@ -1417,7 +1480,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             ipAddress: entry.ipAddress,
             hostname: proposedHostname,
             owner: proposedOwner,
-            projectRef: "FortiManager Integration",
+            projectRef: projectRefLabel,
             notes: proposedNotes,
             status: "active",
             sourceType: proposedSourceType,
