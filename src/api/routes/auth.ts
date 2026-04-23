@@ -2,7 +2,7 @@
  * src/api/routes/auth.ts — Login / Logout / Session check / Azure SAML SSO
  */
 
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import bcrypt from "bcrypt";
 import { prisma } from "../../db.js";
@@ -22,6 +22,15 @@ import { logEvent } from "./events.js";
 
 const router = Router();
 
+// Rotate the session ID on login to prevent fixation: if an attacker planted
+// a session ID on the client pre-auth, the post-auth identity binds to a new
+// ID the attacker doesn't know.
+function regenerateSession(req: Request): Promise<void> {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
 const LoginSchema = z.object({
   username: z.string().min(1, "Username is required"),
   password: z.string().min(1, "Password is required"),
@@ -37,6 +46,7 @@ router.post("/login", async (req, res, next) => {
       throw new AppError(401, "Invalid username or password");
     }
 
+    await regenerateSession(req);
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.role = user.role;
@@ -127,6 +137,9 @@ router.post("/azure/callback", async (req, res) => {
     const profile = await validateSamlResponse(req.body);
     const user = await findOrProvisionSamlUser(profile);
 
+    // Regenerate after the relay-state check above has consumed the pre-auth
+    // session; the new session drops the old ID (and samlRelayState with it).
+    await regenerateSession(req);
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.role = user.role;
@@ -134,7 +147,6 @@ router.post("/azure/callback", async (req, res) => {
     req.session.lastActivity = Date.now();
     req.session.samlNameID = profile.nameID;
     req.session.samlSessionIndex = profile.sessionIndex;
-    delete (req.session as any).samlRelayState;
 
     logEvent({
       action: "auth.login.azure",
