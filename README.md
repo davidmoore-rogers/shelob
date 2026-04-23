@@ -1,13 +1,13 @@
 # Shelob
 
-An IP address management (IPAM) tool for tracking and reserving IPv4/IPv6 space, managing network assets, and auto-discovering devices from FortiManager, standalone FortiGate, Windows Server DHCP, and Microsoft Entra ID / Intune.
+An IP address management (IPAM) tool for tracking and reserving IPv4/IPv6 space, managing network assets, and auto-discovering devices from FortiManager, standalone FortiGate, Windows Server DHCP, Microsoft Entra ID / Intune, and on-premise Active Directory.
 
 ## Features
 
 - **IP Blocks, Subnets & Reservations** — Central registry with manual entry, next-available allocation, conflict detection, and VLAN tracking.
 - **Bulk site allocation** — Save a multi-subnet template (e.g. `RGIHardware /25`, `RGIUsers /25`, `RGIVoice /26`…) and stamp it out for each site. Allocations are anchor-aligned (default `/24`, per-user) so each site's subnets stay grouped instead of filling prior gaps.
 - **Asset Management** — Servers, switches, firewalls, APs, and other devices with MAC history, serials, warranty/procurement info, and auto-decommission after configurable inactivity.
-- **FortiManager / FortiGate / Windows Server / Entra ID discovery** — Auto-discover DHCP scopes, interface IPs, VIPs, leases, FortiSwitches/FortiAPs, and Intune-registered devices. Discovery values that collide with manual records become `Conflict` records for admin review.
+- **FortiManager / FortiGate / Windows Server / Entra ID / Active Directory discovery** — Auto-discover DHCP scopes, interface IPs, VIPs, leases, FortiSwitches/FortiAPs, Intune-registered devices, and on-prem AD computer objects. Hybrid-joined devices are cross-linked by SID so the same device never appears twice. Discovery values that collide with manual records become `Conflict` records for admin review.
 - **Global typeahead search** — Header search classifies IP / CIDR / MAC / text and returns blocks, subnets, reservations, assets, and individual IPs in one dropdown.
 - **Azure SAML SSO** — SAML 2.0 with Azure AD / Entra ID, auto-provisioning, single logout, optional "skip login page" redirect.
 - **Role-Based Access** — Admin, Network Admin, Assets Admin, User, Read-Only.
@@ -191,6 +191,12 @@ Microsoft Graph via OAuth2 client credentials. **Produces assets only** — no s
 - **Intune** (optional toggle): serial, MAC, manufacturer, model, primary user, compliance state. Merged onto Entra devices via `azureADDeviceId ↔ deviceId`. Requires `DeviceManagementManagedDevices.Read.All`.
 
 The Entra `deviceId` is stored on `Asset.assetTag` as `entra:{deviceId}` and is the correlation key for re-discovery. Hostname collisions with existing manual assets become `Conflict` records for admin/assetsadmin review. Default poll interval 12h.
+
+### Active Directory (on-premise)
+
+An on-premise domain controller via LDAP or LDAPS (simple bind, read-only domain user). **Produces assets only** — no subnets or reservations. Syncs computer objects under a configured base DN, mapping hostname, DNS name, OS, OS version, OU path (→ `learnedLocation`), `whenCreated`, `lastLogonTimestamp`, and `description`. Disabled computer accounts are imported as `decommissioned` (or skipped, configurable). Default poll interval 12h. Wildcard include/exclude filters on `cn`.
+
+The AD `objectGUID` is stored on `Asset.assetTag` as `ad:{guid}`. Hybrid-joined devices are identified across AD and Entra ID via the on-prem SID (`objectSid` ↔ Entra `onPremisesSecurityIdentifier`), persisted as a `sid:{SID}` tag on the asset. If both integrations see the same device, **Entra's `assetTag` always wins**; the AD GUID is preserved via an `ad-guid:{guid}` tag so future AD runs still match without re-creating the asset.
 
 ## Authentication
 
