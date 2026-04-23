@@ -211,10 +211,8 @@ export async function testConnection(config: EntraIdConfig): Promise<{
   try {
     // Invalidate any cached token so the test always exercises the fresh secret
     invalidateToken(config);
-    const org = await graphGet(config, "https://graph.microsoft.com/v1.0/organization?$select=displayName,verifiedDomains");
-    const name = org?.value?.[0]?.displayName;
 
-    // Also verify device read scope by fetching a single device
+    // Primary probe — Device.Read.All is the minimum required permission
     await graphGet(config, "https://graph.microsoft.com/v1.0/devices?$top=1&$select=id");
 
     if (config.enableIntune) {
@@ -228,7 +226,16 @@ export async function testConnection(config: EntraIdConfig): Promise<{
       }
     }
 
-    return { ok: true, message: name ? `Connected — tenant "${name}"` : "Connected successfully" };
+    // Optional — fetch the tenant display name for a friendlier success message.
+    // Requires Organization.Read.All, which most integrations won't have; swallow
+    // any failure and fall back to a generic message.
+    let tenantName: string | undefined;
+    try {
+      const org = await graphGet(config, "https://graph.microsoft.com/v1.0/organization?$select=displayName");
+      tenantName = org?.value?.[0]?.displayName;
+    } catch { /* no Organization.Read.All — that's fine */ }
+
+    return { ok: true, message: tenantName ? `Connected — tenant "${tenantName}"` : "Connected successfully" };
   } catch (err: any) {
     if (err instanceof AppError) {
       return { ok: false, message: err.message };
