@@ -174,6 +174,8 @@ function _renderIpList(data) {
   data.ips.forEach(function (ip) {
     var isSpecial = ip.type === "network" || ip.type === "broadcast";
     var r = ip.reservation;
+    // A released reservation means the IP has been freed — treat it as available.
+    if (r && r.status === "released") r = null;
     var rowClass = isSpecial ? ' class="ip-row-special"' : '';
 
     var dotClass, statusLabel, statusTooltip = "";
@@ -647,6 +649,7 @@ function _generateIpPanelPdf(s, allIps) {
   var body = allIps.map(function (ip) {
     var isSpecial = ip.type === "network" || ip.type === "broadcast";
     var r = ip.reservation;
+    if (r && r.status === "released") r = null;
     var statusLabel;
     if (isSpecial) {
       statusLabel = ip.type === "network" ? "Network" : "Broadcast";
@@ -660,8 +663,6 @@ function _generateIpPanelPdf(s, allIps) {
       statusLabel = "Active";
     } else if (r && r.status === "expired") {
       statusLabel = "Expired";
-    } else if (r && r.status === "released") {
-      statusLabel = "Released";
     } else {
       statusLabel = "Available";
     }
@@ -812,6 +813,7 @@ function _generateIpPanelCsv(s, allIps) {
   var rows = allIps.map(function (ip) {
     var isSpecial = ip.type === "network" || ip.type === "broadcast";
     var r = ip.reservation;
+    if (r && r.status === "released") r = null;
     var statusLabel;
     if (isSpecial) {
       statusLabel = ip.type === "network" ? "Network" : "Broadcast";
@@ -825,8 +827,6 @@ function _generateIpPanelCsv(s, allIps) {
       statusLabel = "Active";
     } else if (r && r.status === "expired") {
       statusLabel = "Expired";
-    } else if (r && r.status === "released") {
-      statusLabel = "Released";
     } else {
       statusLabel = "Available";
     }
