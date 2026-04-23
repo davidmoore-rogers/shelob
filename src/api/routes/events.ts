@@ -4,6 +4,7 @@
 
 import { Router } from "express";
 import { prisma } from "../../db.js";
+import { requireAdmin } from "../middleware/auth.js";
 import {
   getArchiveSettings,
   updateArchiveSettings,
@@ -55,7 +56,8 @@ router.get("/", async (req, res, next) => {
 });
 
 // GET /api/v1/events/archive-settings — get archive export settings
-router.get("/archive-settings", async (_req, res, next) => {
+// Reveals SSH host/username/path; admin-only even with password masked.
+router.get("/archive-settings", requireAdmin, async (_req, res, next) => {
   try {
     const settings = await getArchiveSettings();
     // Strip password from response
@@ -68,7 +70,7 @@ router.get("/archive-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/archive-settings — update archive export settings
-router.put("/archive-settings", async (req, res, next) => {
+router.put("/archive-settings", requireAdmin, async (req, res, next) => {
   try {
     const body = req.body;
     // Don't overwrite password if placeholder was sent back
@@ -83,7 +85,7 @@ router.put("/archive-settings", async (req, res, next) => {
 });
 
 // POST /api/v1/events/archive-test — test SFTP/SCP connection
-router.post("/archive-test", async (req, res, next) => {
+router.post("/archive-test", requireAdmin, async (req, res, next) => {
   try {
     const settings = req.body;
     // If password is placeholder, fetch the real one
@@ -99,7 +101,8 @@ router.post("/archive-test", async (req, res, next) => {
 });
 
 // GET /api/v1/events/syslog-settings — get syslog forwarding settings
-router.get("/syslog-settings", async (_req, res, next) => {
+// Reveals host/port/TLS paths; admin-only.
+router.get("/syslog-settings", requireAdmin, async (_req, res, next) => {
   try {
     const settings = await getSyslogSettings();
     res.json(settings);
@@ -109,7 +112,7 @@ router.get("/syslog-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/syslog-settings — update syslog forwarding settings
-router.put("/syslog-settings", async (req, res, next) => {
+router.put("/syslog-settings", requireAdmin, async (req, res, next) => {
   try {
     const updated = await updateSyslogSettings(req.body);
     res.json(updated);
@@ -119,7 +122,7 @@ router.put("/syslog-settings", async (req, res, next) => {
 });
 
 // POST /api/v1/events/syslog-test — test syslog connection
-router.post("/syslog-test", async (req, res, next) => {
+router.post("/syslog-test", requireAdmin, async (req, res, next) => {
   try {
     const result = await testSyslogConnection(req.body);
     res.json(result);
@@ -138,7 +141,7 @@ router.get("/retention-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/retention-settings
-router.put("/retention-settings", async (req, res, next) => {
+router.put("/retention-settings", requireAdmin, async (req, res, next) => {
   try {
     res.json(await updateRetentionSettings(req.body));
   } catch (err) {
@@ -156,7 +159,7 @@ router.get("/asset-decommission-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/asset-decommission-settings
-router.put("/asset-decommission-settings", async (req, res, next) => {
+router.put("/asset-decommission-settings", requireAdmin, async (req, res, next) => {
   try {
     res.json(await updateAssetDecommissionSettings(req.body));
   } catch (err) {

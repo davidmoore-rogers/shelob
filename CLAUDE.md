@@ -371,16 +371,18 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `GET    /assets/mac-lookup/:mac`              — OUI vendor lookup
 - `DELETE /assets/:id/macs/:mac`                — Remove one MAC from an asset's history (requires network admin)
 
-### Events — `requireAuth`
-- `GET    /events`                              — Audit log (filter by level, action, resourceType)
-- `GET    /events/archive-settings`
-- `PUT    /events/archive-settings`
-- `POST   /events/archive-test`
-- `GET    /events/syslog-settings`
-- `PUT    /events/syslog-settings`
-- `POST   /events/syslog-test`
-- `GET    /events/asset-decommission-settings`
-- `PUT    /events/asset-decommission-settings` — `{ inactivityMonths }`; 0 disables auto-decommission
+### Events — mixed scoping
+- `GET    /events`                              *(auth)* — Audit log (filter by level, action, resourceType)
+- `GET    /events/archive-settings`             *(admin)* — reveals SSH host/user/path even with password masked
+- `PUT    /events/archive-settings`             *(admin)*
+- `POST   /events/archive-test`                 *(admin)*
+- `GET    /events/syslog-settings`              *(admin)* — reveals host/port/TLS paths
+- `PUT    /events/syslog-settings`              *(admin)*
+- `POST   /events/syslog-test`                  *(admin)*
+- `GET    /events/retention-settings`           *(auth)*
+- `PUT    /events/retention-settings`           *(admin)*
+- `GET    /events/asset-decommission-settings`  *(auth)*
+- `PUT    /events/asset-decommission-settings`  *(admin)* — `{ inactivityMonths }`; 0 disables auto-decommission
 
 ### Conflicts — `requireAuth` (role-scoped list + resolve)
 - `GET    /conflicts`                           — List. Role-filtered: admin sees all; networkadmin sees reservation conflicts only; assetsadmin sees asset conflicts only; others see empty list.
