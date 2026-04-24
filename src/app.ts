@@ -62,7 +62,17 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"],
+        // Inline <script> blocks are DISALLOWED — all page JS is served
+        // from external files under /js. This blocks the most dangerous
+        // XSS vector (injected <script> tags that can define new functions,
+        // fetch remote code, etc).
+        scriptSrc: ["'self'"],
+        // Inline on* handler attributes are still permitted via scriptSrcAttr
+        // because many pages generate HTML with onclick="foo(...)" via
+        // innerHTML. Migrating these to addEventListener delegation is a
+        // larger follow-up; until then this keeps the feature working while
+        // still closing the bigger <script>-tag hole above.
+        scriptSrcAttr: ["'unsafe-inline'"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         imgSrc: ["'self'", "data:", "blob:"],
@@ -71,7 +81,6 @@ app.use(
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'", "https://login.microsoftonline.com"],
-        scriptSrcAttr: null,
         upgradeInsecureRequests: null,
       },
     },

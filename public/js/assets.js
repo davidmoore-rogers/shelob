@@ -62,6 +62,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   // MAC tooltips are promoted to <body>, so delegate on document so the
   // delete button works regardless of where the tooltip lives.
   document.addEventListener("click", _handleMacDeleteClick);
+  document.getElementById("assets-bulk-delete-btn").addEventListener("click", bulkDeleteAssets);
   await userReady;
   _restoreAssetsPrefs();
   loadAssets();

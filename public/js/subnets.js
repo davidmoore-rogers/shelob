@@ -65,6 +65,7 @@ function _restoreSubnetsPrefs() {
 
 document.addEventListener("DOMContentLoaded", async function () {
   _subnetsSF = new TableSF("subnets-tbody", function () { _subnetsPage = 1; renderSubnetsPage(); _saveSubnetsPrefs(); });
+  document.getElementById("subnets-bulk-delete-btn").addEventListener("click", bulkDeleteSubnets);
   await userReady;
   _restoreSubnetsPrefs();
   await loadBlockOptions();
