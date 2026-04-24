@@ -64,6 +64,13 @@ function canManageNetworks() { return currentUserRole === "admin" || currentUser
 function canManageAssets() { return currentUserRole === "admin" || currentUserRole === "assetsadmin"; }
 function canReviewConflicts() { return canManageNetworks() || canManageAssets(); }
 function canReserveIps() { return currentUserRole === "admin" || currentUserRole === "networkadmin" || currentUserRole === "user" || currentUserRole === "assetsadmin"; }
+function canCreateNetworks() { return currentUserRole && currentUserRole !== "readonly"; }
+function canEditSubnet(subnet) {
+  return canManageNetworks() || (subnet && subnet.createdBy && subnet.createdBy === currentUsername);
+}
+function canEditReservation(reservation) {
+  return canManageNetworks() || (reservation && reservation.createdBy && reservation.createdBy === currentUsername);
+}
 
 // ─── Sidebar Navigation ──────────────────────────────────────────────────────
 
@@ -1184,6 +1191,9 @@ function hideAdminOnlyElements() {
   });
   document.querySelectorAll("[data-manage-networks]").forEach(function (el) {
     if (!canManageNetworks()) el.style.display = "none";
+  });
+  document.querySelectorAll("[data-create-networks]").forEach(function (el) {
+    if (!canCreateNetworks()) el.style.display = "none";
   });
   document.querySelectorAll("[data-manage-assets]").forEach(function (el) {
     if (!canManageAssets()) el.style.display = "none";

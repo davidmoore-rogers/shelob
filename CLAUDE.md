@@ -456,10 +456,12 @@ Sessions are PostgreSQL-backed (`connect-pg-simple`), 8-hour max age, HttpOnly/S
 | Role | Access |
 |------|--------|
 | `admin` | Full access to all routes |
-| `networkadmin` | Integrations, conflicts + all `requireAuth` routes |
-| `assetsadmin` | Assets + all `requireAuth` routes |
-| `user` | All `requireAuth` routes |
-| `readonly` | Read-only on `requireAuth` routes |
+| `networkadmin` | Integrations, conflicts, + full CRUD on any subnet/reservation |
+| `assetsadmin` | Assets, asset conflicts, + create subnets/reservations and edit/delete their own |
+| `user` | Create subnets/reservations and edit/delete their own; read-only on everything else |
+| `readonly` | Read-only on all `requireAuth` routes |
+
+**Ownership model for networks and reservations.** `user` and `assetsadmin` callers can create subnets (`POST /subnets`, `POST /subnets/next-available`) and reservations, but can only edit/delete records where `createdBy` matches their own username. `admin` and `networkadmin` bypass the ownership check. Enforced via the `requireUserOrAbove` middleware + inline `isNetworkAdminOrAbove(req)` check on PUT/DELETE handlers. The `requireNetworkAdmin` guard still applies to block CRUD and bulk subnet allocation.
 
 Rate limiting: 10 login attempts / 15 min per IP.
 

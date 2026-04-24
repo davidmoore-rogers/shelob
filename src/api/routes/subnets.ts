@@ -5,7 +5,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as subnetService from "../../services/subnetService.js";
-import { requireNetworkAdmin } from "../middleware/auth.js";
+import { requireNetworkAdmin, requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
+import { AppError } from "../../utils/errors.js";
 import { logEvent, buildChanges } from "./events.js";
 
 const router = Router();
@@ -73,7 +74,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // POST /subnets/next-available  (must come before /:id)
-router.post("/next-available", requireNetworkAdmin, async (req, res, next) => {
+router.post("/next-available", requireUserOrAbove, async (req, res, next) => {
   try {
     const { blockId, prefixLength, ...metadata } = AllocateNextSchema.parse(req.body);
     const subnet = await subnetService.allocateNextSubnet(blockId, prefixLength, { ...metadata, createdBy: req.session?.username ?? undefined });
@@ -149,7 +150,7 @@ router.get("/:id", async (req, res, next) => {
 });
 
 // POST /subnets
-router.post("/", requireNetworkAdmin, async (req, res, next) => {
+router.post("/", requireUserOrAbove, async (req, res, next) => {
   try {
     const input = CreateSubnetSchema.parse(req.body);
     const subnet = await subnetService.createSubnet({ ...input, createdBy: req.session?.username ?? undefined });
@@ -161,11 +162,14 @@ router.post("/", requireNetworkAdmin, async (req, res, next) => {
 });
 
 // PUT /subnets/:id
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", requireUserOrAbove, async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const input = UpdateSubnetSchema.parse(req.body);
     const before = await subnetService.getSubnet(id);
+    if (!isNetworkAdminOrAbove(req) && before.createdBy !== req.session?.username) {
+      throw new AppError(403, "Forbidden — you can only edit networks you created");
+    }
     const subnet = await subnetService.updateSubnet(id, { ...input, vlan: input.vlan ?? undefined });
     const changes = buildChanges(
       { name: before.name, purpose: before.purpose, status: before.status, vlan: before.vlan, tags: before.tags },
@@ -179,9 +183,15 @@ router.put("/:id", async (req, res, next) => {
 });
 
 // DELETE /subnets/:id
-router.delete("/:id", requireNetworkAdmin, async (req, res, next) => {
+router.delete("/:id", requireUserOrAbove, async (req, res, next) => {
   try {
     const id = req.params.id as string;
+    if (!isNetworkAdminOrAbove(req)) {
+      const existing = await subnetService.getSubnet(id);
+      if (existing.createdBy !== req.session?.username) {
+        throw new AppError(403, "Forbidden — you can only delete networks you created");
+      }
+    }
     const result = await subnetService.deleteSubnet(id);
     const resCount = result.deletedReservations.length;
     const message = resCount > 0

@@ -3,14 +3,15 @@
  *
  * Authorization:
  *   - admin / networkadmin: full CRUD on all reservations
- *   - user: can create reservations and edit/delete only their own (createdBy match)
- *   - assetsadmin / readonly: read-only
+ *   - user / assetsadmin: can create reservations and edit/delete only their own (createdBy match)
+ *   - readonly: read-only
  */
 
 import { Router } from "express";
 import { z } from "zod";
 import * as reservationService from "../../services/reservationService.js";
 import { AppError } from "../../utils/errors.js";
+import { requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
 import { logEvent, buildChanges } from "./events.js";
 
 const router = Router();
@@ -44,26 +45,11 @@ const UpdateReservationSchema = z.object({
   notes: z.string().optional(),
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function canWriteReservations(req: any): boolean {
-  const role = req.session?.role;
-  return role === "admin" || role === "networkadmin" || role === "user" || role === "assetsadmin";
-}
-
-function canWriteAny(req: any): boolean {
-  const role = req.session?.role;
-  return role === "admin" || role === "networkadmin";
-}
-
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // POST /reservations/next-available  (must come before /:id)
-router.post("/next-available", async (req, res, next) => {
+router.post("/next-available", requireUserOrAbove, async (req, res, next) => {
   try {
-    if (!canWriteReservations(req)) {
-      throw new AppError(403, "Forbidden — you do not have permission to create reservations");
-    }
     const input = NextAvailableSchema.parse(req.body);
     const reservation = await reservationService.nextAvailableReservation({
       ...input,
@@ -102,11 +88,8 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", requireUserOrAbove, async (req, res, next) => {
   try {
-    if (!canWriteReservations(req)) {
-      throw new AppError(403, "Forbidden — you do not have permission to create reservations");
-    }
     const input = CreateReservationSchema.parse(req.body);
     const reservation = await reservationService.createReservation({
       ...input,
@@ -119,45 +102,37 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", requireUserOrAbove, async (req, res, next) => {
   try {
-    if (!canWriteReservations(req)) {
-      throw new AppError(403, "Forbidden — you do not have permission to edit reservations");
-    }
-    const before = await reservationService.getReservation(req.params.id);
-    // User role can only edit their own reservations
-    if (!canWriteAny(req)) {
-      if (before.createdBy !== req.session?.username) {
-        throw new AppError(403, "Forbidden — you can only edit reservations you created");
-      }
+    const id = req.params.id as string;
+    const before = await reservationService.getReservation(id);
+    if (!isNetworkAdminOrAbove(req) && before.createdBy !== req.session?.username) {
+      throw new AppError(403, "Forbidden — you can only edit reservations you created");
     }
     const input = UpdateReservationSchema.parse(req.body);
-    const reservation = await reservationService.updateReservation(req.params.id, input);
+    const reservation = await reservationService.updateReservation(id, input);
     const changes = buildChanges(
       { hostname: before.hostname, owner: before.owner, projectRef: before.projectRef, expiresAt: before.expiresAt, notes: before.notes },
       { hostname: reservation.hostname, owner: reservation.owner, projectRef: reservation.projectRef, expiresAt: reservation.expiresAt, notes: reservation.notes },
     );
-    logEvent({ action: "reservation.updated", resourceType: "reservation", resourceId: req.params.id, resourceName: input.hostname, actor: req.session?.username, message: `Reservation updated`, details: changes ? { changes } : undefined });
+    logEvent({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: input.hostname, actor: req.session?.username, message: `Reservation updated`, details: changes ? { changes } : undefined });
     res.json(reservation);
   } catch (err) {
     next(err);
   }
 });
 
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", requireUserOrAbove, async (req, res, next) => {
   try {
-    if (!canWriteReservations(req)) {
-      throw new AppError(403, "Forbidden — you do not have permission to release reservations");
-    }
-    // User role can only release their own reservations
-    if (!canWriteAny(req)) {
-      const existing = await reservationService.getReservation(req.params.id);
+    const id = req.params.id as string;
+    if (!isNetworkAdminOrAbove(req)) {
+      const existing = await reservationService.getReservation(id);
       if (existing.createdBy !== req.session?.username) {
         throw new AppError(403, "Forbidden — you can only release reservations you created");
       }
     }
-    await reservationService.releaseReservation(req.params.id);
-    logEvent({ action: "reservation.released", resourceType: "reservation", resourceId: req.params.id, actor: req.session?.username, message: `Reservation released` });
+    await reservationService.releaseReservation(id);
+    logEvent({ action: "reservation.released", resourceType: "reservation", resourceId: id, actor: req.session?.username, message: `Reservation released` });
     res.status(204).send();
   } catch (err) {
     next(err);

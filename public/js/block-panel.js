@@ -93,7 +93,7 @@ function _renderBlockPanelHeader(block) {
   if (block.description) {
     meta += '<span style="color:var(--color-text-tertiary)">' + escapeHtml(block.description) + '</span>';
   }
-  if (canManageNetworks()) {
+  if (canCreateNetworks()) {
     meta += '<span style="margin-left:auto">' +
       '<button class="btn btn-sm btn-primary" id="block-panel-add-btn">+ Add Network</button>' +
       '</span>';
@@ -117,7 +117,7 @@ function _renderBlockSubnetList(subnets) {
     return;
   }
 
-  var canManage = canManageNetworks();
+  var showActions = canCreateNetworks();
   var html = '<table class="ip-table"><thead><tr>' +
     '<th>Name</th>' +
     '<th>Network</th>' +
@@ -125,7 +125,7 @@ function _renderBlockSubnetList(subnets) {
     '<th>Server</th>' +
     '<th>Integration</th>' +
     '<th>Reservations</th>' +
-    (canManage ? '<th style="width:100px">Actions</th>' : '') +
+    (showActions ? '<th style="width:100px">Actions</th>' : '') +
     '</tr></thead><tbody>';
 
   subnets.forEach(function (s) {
@@ -149,13 +149,15 @@ function _renderBlockSubnetList(subnets) {
       '<td style="font-size:0.8rem">' + server + '</td>' +
       '<td style="font-size:0.8rem">' + integration + '</td>' +
       '<td>' + reservations + '</td>' +
-      (canManage
+      (showActions
         ? '<td class="actions">' +
-            '<button class="btn btn-sm btn-secondary subnet-panel-edit-btn" data-sid="' + s.id + '">Edit</button>' +
-            '<button class="btn btn-sm btn-danger subnet-panel-del-btn"' +
-              ' data-sid="' + s.id + '"' +
-              ' data-cidr="' + escapeHtml(s.cidr) + '"' +
-              ' data-reservations="' + reservations + '">Del</button>' +
+            (canEditSubnet(s)
+              ? '<button class="btn btn-sm btn-secondary subnet-panel-edit-btn" data-sid="' + s.id + '">Edit</button>' +
+                '<button class="btn btn-sm btn-danger subnet-panel-del-btn"' +
+                  ' data-sid="' + s.id + '"' +
+                  ' data-cidr="' + escapeHtml(s.cidr) + '"' +
+                  ' data-reservations="' + reservations + '">Del</button>'
+              : '') +
           '</td>'
         : '') +
       '</tr>';

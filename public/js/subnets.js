@@ -239,7 +239,7 @@ function renderSubnetsPage() {
       '<td>' + source + '</td>' +
       '<td>' + (s._count ? s._count.reservations : 0) + '</td>' +
       '<td class="actions">' +
-        (canManageNetworks() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
+        (canEditSubnet(s) ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
         '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\', ' + (s._count ? s._count.reservations : 0) + ')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
@@ -961,7 +961,7 @@ async function openEditModal(id) {
   try {
     var results = await Promise.all([api.subnets.get(id), _ensureTagCache()]);
     var subnet = results[0];
-    var readOnly = !canManageNetworks();
+    var readOnly = !canEditSubnet(subnet);
     var isIntegration = !!subnet.discoveredBy;
     var isDeprecatedIntegration = isIntegration && subnet.status === "deprecated" && canManageNetworks();
     var allLocked = readOnly ? ' disabled class="field-locked"' : '';
