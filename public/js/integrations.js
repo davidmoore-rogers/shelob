@@ -1060,9 +1060,14 @@ var _FMG_PRESET_QUERIES = [
     method: "exec",
     params: '[\n  {\n    "url": "/sys/proxy/json",\n    "data": {\n      "target": ["adom/<adom>/device/<device-name>"],\n      "action": "get",\n      "resource": "/api/v2/cmdb/firewall/vip"\n    }\n  }\n]',
   },
+  {
+    name: "Device inventory (ADOM)",
+    method: "get",
+    params: '[\n  {\n    "url": "/dvmdb/adom/<adom>/device",\n    "data": { "fields": ["name", "sn", "ip", "os_ver", "platform_str", "ha_mode", "conn_status", "last_checked"] }\n  }\n]',
+  },
 ];
 
-var _FMG_QUERIES_VERSION = 1;
+var _FMG_QUERIES_VERSION = 2;
 
 function _fmgLoadQueries() {
   try {
