@@ -695,6 +695,10 @@ function _onAllocTemplateChange(e) {
   container.innerHTML = "";
   (tpl.entries || []).forEach(function (entry) { _addAllocEntryRow(entry); });
   if (!tpl.entries || tpl.entries.length === 0) _addAllocEntryRow();
+  if (tpl.anchorPrefix) {
+    var anchorEl = document.getElementById("f-anchor");
+    if (anchorEl) { anchorEl.value = tpl.anchorPrefix; _saveAllocAnchor(tpl.anchorPrefix); }
+  }
 }
 
 async function _onAllocTemplateDelete() {
@@ -730,9 +734,12 @@ async function _onAllocSaveTemplate() {
     if (!choice) return;
   }
 
+  var anchorRaw = parseInt(document.getElementById("f-anchor")?.value, 10);
+  var anchorPrefix = (Number.isInteger(anchorRaw) && anchorRaw >= 8 && anchorRaw <= 32) ? anchorRaw : undefined;
+
   try {
     if (choice === "update" && loaded) {
-      var updated = await api.allocationTemplates.update(loaded.id, { name: loaded.name, entries: entries });
+      var updated = await api.allocationTemplates.update(loaded.id, { name: loaded.name, entries: entries, anchorPrefix: anchorPrefix });
       var idx = _allocTemplates.findIndex(function (t) { return t.id === loaded.id; });
       if (idx >= 0) _allocTemplates[idx] = updated;
       showToast('Template "' + updated.name + '" updated');
@@ -743,7 +750,7 @@ async function _onAllocSaveTemplate() {
         loaded ? loaded.name + " (copy)" : ""
       );
       if (!name) return;
-      var created = await api.allocationTemplates.create({ name: name, entries: entries });
+      var created = await api.allocationTemplates.create({ name: name, entries: entries, anchorPrefix: anchorPrefix });
       _allocTemplates.push(created);
       _allocSelectedTemplateId = created.id;
       showToast('Template "' + created.name + '" saved');

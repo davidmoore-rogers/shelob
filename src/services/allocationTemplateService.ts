@@ -29,12 +29,14 @@ export interface AllocationTemplate {
   id: string;
   name: string;
   entries: TemplateEntry[];
+  anchorPrefix?: number;
 }
 
 export interface SaveTemplateInput {
   id?: string;
   name: string;
   entries: TemplateEntry[];
+  anchorPrefix?: number;
 }
 
 function normalizeEntry(e: TemplateEntry): TemplateEntry {
@@ -114,7 +116,7 @@ export async function saveTemplate(input: SaveTemplateInput): Promise<Allocation
     if (all.some((t, i) => i !== idx && t.name.toLowerCase() === name.toLowerCase())) {
       throw new AppError(409, `A template named "${name}" already exists`);
     }
-    all[idx] = { id: input.id, name, entries };
+    all[idx] = { id: input.id, name, entries, ...(input.anchorPrefix !== undefined && { anchorPrefix: input.anchorPrefix }) };
     await persistAll(all);
     return all[idx];
   }
@@ -122,7 +124,7 @@ export async function saveTemplate(input: SaveTemplateInput): Promise<Allocation
   if (all.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
     throw new AppError(409, `A template named "${name}" already exists`);
   }
-  const created: AllocationTemplate = { id: randomUUID(), name, entries };
+  const created: AllocationTemplate = { id: randomUUID(), name, entries, ...(input.anchorPrefix !== undefined && { anchorPrefix: input.anchorPrefix }) };
   all.push(created);
   await persistAll(all);
   return created;
