@@ -1174,7 +1174,9 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   width: 100%;
   max-width: 480px;
   max-height: 85vh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   transform: translateY(12px);
   transition: transform 0.2s;
 }
@@ -1268,13 +1270,14 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .modal-header {
   display: flex;
   justify-content: space-between;
+  cursor: move;
   align-items: center;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg-tertiary);
 }
 .modal-header h3 { font-size: 1rem; font-weight: 600; color: #fff; }
-.modal-body { padding: 1.25rem; }
+.modal-body { padding: 1.25rem; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .modal-footer {
   display: flex;
   justify-content: flex-end;
