@@ -613,6 +613,7 @@ async function openViewModal(id) {
       viewRow("Model", a.model) +
       viewRow("Type", ASSET_TYPE_LABELS[a.assetType] || a.assetType) +
       viewRow("Status", a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : "-") +
+      disabledInHTML(a.tags) +
       viewRow("Location", a.location) +
       viewRow("Learned Location", a.learnedLocation) +
       viewRow("Department", a.department) +
@@ -661,6 +662,18 @@ function ipViewRow(asset) {
 function viewRow(label, value, mono) {
   return '<div class="detail-row"><span class="detail-label">' + escapeHtml(label) + '</span>' +
     '<span class="detail-value' + (mono ? ' mono' : '') + '">' + escapeHtml(value || "-") + '</span></div>';
+}
+
+function disabledInHTML(tags) {
+  var t = Array.isArray(tags) ? tags : [];
+  var sources = [];
+  if (t.indexOf("entra-disabled") !== -1) sources.push("Entra ID");
+  if (t.indexOf("ad-disabled") !== -1) sources.push("Active Directory");
+  if (sources.length === 0) return '';
+  var badges = sources.map(function (s) {
+    return '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:0.8rem;background:var(--color-warning-bg,#7c4a00);color:var(--color-warning,#fbbf24);margin-right:4px">' + escapeHtml(s) + '</span>';
+  }).join('');
+  return '<div class="detail-row"><span class="detail-label">Disabled In</span><span class="detail-value">' + badges + '</span></div>';
 }
 
 function macAddressesViewHTML(macAddresses) {
