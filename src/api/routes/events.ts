@@ -31,6 +31,7 @@ router.get("/", async (req, res, next) => {
     const level = req.query.level as string | undefined;
     const action = req.query.action as string | undefined;
     const resourceType = req.query.resourceType as string | undefined;
+    const message = req.query.message as string | undefined;
 
     const { retentionDays } = await getRetentionSettings();
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
@@ -38,6 +39,7 @@ router.get("/", async (req, res, next) => {
     if (level) where.level = level;
     if (action) where.action = { contains: action };
     if (resourceType) where.resourceType = resourceType;
+    if (message) where.message = { contains: message, mode: "insensitive" };
 
     const [events, total] = await Promise.all([
       prisma.event.findMany({

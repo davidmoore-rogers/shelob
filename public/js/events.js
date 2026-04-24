@@ -17,6 +17,7 @@ var _eventsCurrentPage = [];
     var resourceType = document.getElementById("filter-resource").value;
     var action = document.getElementById("filter-action").value.trim();
     var actor = document.getElementById("filter-actor").value.trim();
+    var message = document.getElementById("filter-message").value.trim();
 
     try {
       var data = await api.events.list({
@@ -26,6 +27,7 @@ var _eventsCurrentPage = [];
         resourceType: resourceType || undefined,
         action: action || undefined,
         actor: actor || undefined,
+        message: message || undefined,
       });
 
       var events = data.events || [];
@@ -161,6 +163,12 @@ var _eventsCurrentPage = [];
   document.getElementById("filter-actor").addEventListener("input", function () {
     clearTimeout(actorTimer);
     actorTimer = setTimeout(function () { currentOffset = 0; loadEvents(); }, 400);
+  });
+
+  var messageTimer;
+  document.getElementById("filter-message").addEventListener("input", function () {
+    clearTimeout(messageTimer);
+    messageTimer = setTimeout(function () { currentOffset = 0; loadEvents(); }, 400);
   });
 
   document.getElementById("btn-refresh").addEventListener("click", function () { loadEvents(); });
@@ -745,6 +753,7 @@ function _getEventFilters() {
     resourceType: document.getElementById("filter-resource").value || undefined,
     action: document.getElementById("filter-action").value.trim() || undefined,
     actor: document.getElementById("filter-actor").value.trim() || undefined,
+    message: document.getElementById("filter-message").value.trim() || undefined,
   };
 }
 

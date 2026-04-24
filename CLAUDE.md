@@ -414,7 +414,7 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `PUT    /assets/ip-history-settings`          *(assets admin)* — `{ retentionDays }`; saving immediately prunes any history rows with `lastSeen` older than the new cutoff.
 
 ### Events — mixed scoping
-- `GET    /events`                              *(auth)* — Audit log (filter by level, action, resourceType)
+- `GET    /events`                              *(auth)* — Audit log (filter by level, action, resourceType, message — message is case-insensitive substring)
 - `GET    /events/archive-settings`             *(admin)* — reveals SSH host/user/path even with password masked
 - `PUT    /events/archive-settings`             *(admin)*
 - `POST   /events/archive-test`                 *(admin)*
