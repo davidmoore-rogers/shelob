@@ -464,7 +464,7 @@ router.post("/:id/test", async (req, res, next) => {
     if (!integration) throw new AppError(404, "Integration not found");
 
     const config = integration.config as Record<string, unknown>;
-    let result: { ok: boolean; message: string; version?: string };
+    let result: { ok: boolean; message: string; version?: string; notifications?: Array<{ ok: boolean; message: string }> };
 
     logEvent({ action: "integration.test.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, message: `Connection test started for "${integration.name}"` });
 
@@ -858,7 +858,7 @@ router.post("/:id/discover", async (req, res, next) => {
 router.post("/test", async (req, res, next) => {
   try {
     const input = CreateIntegrationSchema.parse(req.body);
-    let result: { ok: boolean; message: string; version?: string };
+    let result: { ok: boolean; message: string; version?: string; notifications?: Array<{ ok: boolean; message: string }> };
 
     // If an existing integration id is provided, merge unmasked secrets
     // from the stored config when the form fields were left blank.

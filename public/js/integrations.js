@@ -7,6 +7,20 @@ document.addEventListener("DOMContentLoaded", function () {
   document.getElementById("btn-add-integration").addEventListener("click", showTypePicker);
 });
 
+// Fan out a test-connection result into one toast per step when the server
+// returns a `notifications` array (e.g. FMG + randomly-selected FortiGate).
+// Falls back to the single `message` field for older shapes.
+function _showTestResultToasts(result) {
+  if (!result) return;
+  if (Array.isArray(result.notifications) && result.notifications.length > 0) {
+    result.notifications.forEach(function (n) {
+      showToast(n.message, n.ok ? "success" : "error");
+    });
+    return;
+  }
+  showToast(result.message, result.ok ? "success" : "error");
+}
+
 // Toggle FMG integration form between proxy and direct modes.
 // Shows/hides the FortiGate credentials block and locks the parallelism input.
 function _fmgToggleProxyMode(useProxy) {
@@ -888,7 +902,7 @@ async function openEditModal(id) {
           name: val("f-name") || intg.name,
           config: formConfig,
         });
-        showToast(result.message, result.ok ? "success" : "error");
+        _showTestResultToasts(result);
         if (result.ok) loadIntegrations();
       } catch (err) {
         if (err.name === "AbortError") { showToast("Test aborted", "error"); }
@@ -937,7 +951,7 @@ async function testConnection(id, btn) {
   var name = btn.closest(".integration-card").querySelector("strong").textContent;
   try {
     var result = await api.integrations.test(id, name);
-    showToast(result.message, result.ok ? "success" : "error");
+    _showTestResultToasts(result);
     loadIntegrations();
   } catch (err) {
     if (err.name === "AbortError") { showToast("Test aborted", "error"); }

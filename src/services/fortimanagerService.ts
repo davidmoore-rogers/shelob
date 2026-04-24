@@ -60,6 +60,7 @@ export async function testConnection(config: FortiManagerConfig): Promise<{
   ok: boolean;
   message: string;
   version?: string;
+  notifications?: Array<{ ok: boolean; message: string }>;
 }> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
 
@@ -91,18 +92,19 @@ export async function testConnection(config: FortiManagerConfig): Promise<{
     // roster, pick one at random, and run a FortiGate test against it.
     if (config.useProxy === false) {
       const fgResult = await testRandomFortiGate(config);
-      if (!fgResult.ok) {
-        return {
-          ok: false,
-          message: `${fmgLabel} reachable, but randomly selected FortiGate "${fgResult.deviceName}" failed: ${fgResult.message}`,
-          version,
-        };
-      }
-      const fgSuffix = fgResult.version ? ` (FortiOS ${fgResult.version})` : "";
+      const fmgMsg = `Connected — ${fmgLabel}`;
+      const fgMsg = fgResult.ok
+        ? `Randomly selected FortiGate "${fgResult.deviceName}" reachable${fgResult.version ? ` (FortiOS ${fgResult.version})` : ""}`
+        : `Randomly selected FortiGate "${fgResult.deviceName}" failed: ${fgResult.message}`;
       return {
-        ok: true,
-        message: `Connected — ${fmgLabel}; randomly selected FortiGate "${fgResult.deviceName}" reachable${fgSuffix}`,
+        ok: fgResult.ok,
+        // Overall summary — kept for older clients that only show `message`.
+        message: fgResult.ok ? `${fmgMsg}; ${fgMsg}` : `${fmgLabel} reachable, but ${fgMsg.charAt(0).toLowerCase() + fgMsg.slice(1)}`,
         version,
+        notifications: [
+          { ok: true, message: fmgMsg },
+          { ok: fgResult.ok, message: fgMsg },
+        ],
       };
     }
 
