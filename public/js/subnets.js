@@ -704,6 +704,25 @@ function _promptText(title, label, initial) {
   });
 }
 
+function _showAllocResults(result) {
+  var n = result.created.length;
+  var rows = result.created.map(function (s) {
+    return '<tr><td>' + escapeHtml(s.name) + '</td><td><code>' + escapeHtml(s.cidr) + '</code></td></tr>';
+  }).join("");
+
+  var anchorNote = result.anchorCidr
+    ? '<p style="margin:0 0 12px;color:var(--color-text-secondary);font-size:0.875rem">All allocated inside <strong>' + escapeHtml(result.anchorCidr) + '</strong></p>'
+    : "";
+
+  var body = anchorNote +
+    '<table class="table" style="margin:0"><thead><tr><th>Name</th><th>CIDR</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>';
+
+  var footer = '<button type="button" class="btn btn-primary" onclick="closeModal()">Done</button>';
+
+  openModal(n + ' Network' + (n !== 1 ? 's' : '') + ' Allocated', body, footer);
+}
+
 async function _onAllocSubmit() {
   var btn = document.getElementById("btn-allocate");
   var blockId = val("f-blockId");
@@ -734,11 +753,8 @@ async function _onAllocSubmit() {
       tags: tags,
       anchorPrefix: anchor,
     });
-    closeModal();
-    var createdN = result.created.length;
-    var anchorNote = result.anchorCidr ? " in " + result.anchorCidr : "";
-    showToast("Allocated " + createdN + " network" + (createdN !== 1 ? "s" : "") + anchorNote);
     loadSubnets();
+    _showAllocResults(result);
   } catch (err) {
     showToast(err.message, "error");
   } finally {
