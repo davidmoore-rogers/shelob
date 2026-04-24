@@ -6,31 +6,19 @@ An IP address management (IPAM) tool for tracking and reserving IPv4/IPv6 space,
 
 - **IP Blocks, Subnets & Reservations** — Central registry with manual entry, next-available allocation, conflict detection, and VLAN tracking.
 - **Bulk site allocation** — Save a multi-subnet template (e.g. `RGIHardware /25`, `RGIUsers /25`, `RGIVoice /26`…) and stamp it out for each site. Allocations are anchor-aligned (default `/24`, per-user) so each site's subnets stay grouped instead of filling prior gaps.
-- **Asset Management** — Servers, switches, firewalls, APs, and other devices with MAC history, serials, warranty/procurement info, and auto-decommission after configurable inactivity.
+- **Asset Management** — Servers, switches, firewalls, APs, and other devices with MAC history, serials, warranty/procurement info, IP source tracking (where each IP was last set from), and auto-decommission after configurable inactivity. Status changes record who made them (user, integration, or system) and when — shown as a tooltip on the status badge and in the detail panel.
 - **FortiManager / FortiGate / Windows Server / Entra ID / Active Directory discovery** — Auto-discover DHCP scopes, interface IPs, VIPs, leases, FortiSwitches/FortiAPs, Intune-registered devices, and on-prem AD computer objects. Hybrid-joined devices are cross-linked by SID so the same device never appears twice. Discovery values that collide with manual records become `Conflict` records for admin review.
+- **DNS resolution** — Per-asset reverse PTR lookup (IP → hostname) and forward A/AAAA lookup (hostname → IP), both using the configured DNS resolver (standard, DoH, or DoT). Results are TTL-cached so repeated discovery runs don't blast the DNS server.
 - **Global typeahead search** — Header search classifies IP / CIDR / MAC / text and returns blocks, subnets, reservations, assets, and individual IPs in one dropdown.
 - **Azure SAML SSO** — SAML 2.0 with Azure AD / Entra ID, auto-provisioning, single logout, optional "skip login page" redirect.
+- **TOTP second factor** — Optional TOTP (RFC 6238) for local accounts: QR-code enrollment, single-use backup codes, admin reset for lost devices.
 - **Role-Based Access** — Admin, Network Admin, Assets Admin, User, Read-Only.
 - **Event log** — Audit trail with syslog (CEF) forwarding, SFTP/SCP archival, 7-day rolling retention.
-- **HTTPS & Security Hardening** — Built-in cert management (TLS 1.2+, AEAD-only), Helmet CSP, rate-limited login, session timeout, SAML RelayState CSRF.
+- **HTTPS & Security Hardening** — Built-in cert management (TLS 1.2+, AEAD-only), Helmet CSP, HSTS, synchronizer-token CSRF protection, rate-limited login, per-account lockout, session timeout.
 - **Backup / Restore** — Encrypted database backups and in-app restore from the Server Settings page.
 - **MAC OUI Lookup** — IEEE vendor lookup with admin-defined overrides.
 - **PDF / CSV Export** — Assets, networks, events, and IP panel data.
-- **Light / dark theme**, **first-run setup wizard**.
-
-## Screenshots
-
-| Dashboard | IP Blocks |
-|-----------|-----------|
-| ![Dashboard](dashboard.png) | ![IP Blocks](ip_blocks.png) |
-
-| Networks | Reservations |
-|----------|--------------|
-| ![Networks](networks.png) | ![Reservations](reservations.png) |
-
-| Assets | Events |
-|--------|--------|
-| ![Assets](assets.png) | ![Events](events.png) |
+- **Light / dark theme**, **draggable modals**, **first-run setup wizard**.
 
 ## System Requirements
 
@@ -200,14 +188,16 @@ The AD `objectGUID` is stored on `Asset.assetTag` as `ad:{guid}`. Hybrid-joined 
 
 ## Authentication
 
-- **Local accounts** — bcrypt-hashed. Passwords require 8+ characters with mixed case, a digit, and a special character.
+- **Local accounts** — argon2id-hashed passwords. Passwords require 8+ characters with mixed case, a digit, and a special character. Accounts lock temporarily after repeated failures.
+- **TOTP second factor** — Local accounts can enroll an authenticator app (Google Authenticator, Authy, etc.). Login becomes a two-step flow; admins can reset a lost device from the Users page. Single-use backup codes are provided at enrollment.
 - **Azure AD SAML SSO** — configured in Settings > SSO. SP Entity ID / ACS / SLS URLs are auto-derived. Supports `wantAssertionsSigned`, `wantAuthnResponseSigned`, optional "Skip Login Page" to redirect straight to Azure, configurable inactivity timeout, and user auto-provisioning on first login.
 
 ## Security
 
 - TLS 1.2+ with AEAD-only cipher suites and configurable certificates
 - Helmet.js Content Security Policy, HSTS, X-Frame-Options
-- 10 login attempts / 15-minute window per IP
+- Synchronizer-token CSRF protection on all state-changing API calls (`shelob_csrf` cookie + `X-CSRF-Token` header)
+- 10 login attempts / 15-minute window per IP; per-account temporary lockout after repeated failures
 - HttpOnly + SameSite=Lax session cookies, session ID regenerated on login, configurable inactivity timeout
 - SAML RelayState CSRF protection on SSO callbacks
 - 1 MB max request body
