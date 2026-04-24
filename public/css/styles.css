@@ -1478,7 +1478,6 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 }
 .detail-value.mono { font-family: var(--font-mono); font-size: 0.82rem; }
 .detail-row.stacked {
-  grid-column: 1 / -1;
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
