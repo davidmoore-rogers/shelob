@@ -184,6 +184,7 @@ enum AssetStatus {
   maintenance
   decommissioned
   storage
+  disabled
 }
 
 enum AssetType {
@@ -200,6 +201,7 @@ enum AssetType {
 model Asset {
   id             String      @id @default(uuid())
   ipAddress      String?                           // IPv4 or IPv6
+  ipSource       String?                           // Where ipAddress was last set from: "manual", "fortimanager", "fortigate", etc.
   macAddress     String?                           // Most recently seen MAC, e.g. "AA:BB:CC:DD:EE:FF"
   macAddresses   Json?       @default("[]")       // [{mac, lastSeen, source?}] — all associated MACs
   hostname       String?
@@ -219,7 +221,7 @@ model Asset {
   lastSeenSwitch String?                           // FortiSwitch name/port, e.g. "FS-248E-01/port15"
   lastSeenAp     String?                           // FortiAP name, e.g. "FAP-431F-01"
   lastSeen       DateTime?                         // Most recent discovery sighting
-  associatedIps  Json?      @default("[]")        // [{ip, interfaceName?, source?, lastSeen?}] — additional interface IPs (e.g. firewall ports)
+  associatedIps  Json?      @default("[]")        // [{ip, interfaceName?, source?, lastSeen?, ptrName?}] — additional interface IPs (e.g. firewall ports)
   associatedUsers Json?     @default("[]")        // [{user, domain?, lastSeen, source?}] — logged-in / registered users
   acquiredAt     DateTime?                         // Acquisition / purchase date
   warrantyExpiry DateTime?                         // Warranty end date

@@ -1201,6 +1201,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             model: device.model || existingAsset.model,
             learnedLocation: existingAsset.learnedLocation || fgHostname,
             lastSeen: new Date(now),
+            ...(existingAsset.status === "decommissioned" ? { status: "active" } : {}),
           };
           clampAcquiredToLastSeen(updateData, existingAsset);
           await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
@@ -1209,6 +1210,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           if (device.hostname) existingAsset.hostname = device.hostname;
           if (device.model) existingAsset.model = device.model;
           if (!existingAsset.learnedLocation) existingAsset.learnedLocation = fgHostname;
+          if (existingAsset.status === "decommissioned") existingAsset.status = "active";
           assetIdx.reindex(existingAsset);
           assetNames.push(`${device.name} (updated)`);
           continue;
@@ -1354,10 +1356,12 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           osVersion: ap.osVersion || existingAsset.osVersion,
           learnedLocation: ap.device || existingAsset.learnedLocation,
           lastSeen: new Date(now),
+          ...(existingAsset.status === "decommissioned" ? { status: "active" } : {}),
         };
         clampAcquiredToLastSeen(updateData, existingAsset);
         await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
         if (resolvedIp) existingAsset.ipAddress = resolvedIp;
+        if (existingAsset.status === "decommissioned") existingAsset.status = "active";
         assetIdx.reindex(existingAsset);
         assetNames.push(`${ap.name} (updated)`);
       } else {
@@ -1701,6 +1705,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           macAddresses: macList,
           ipAddress: entry.ipAddress,
           status: "active",
+          lastSeen: new Date(now),
           ...(entry.device ? { learnedLocation: entry.device } : {}),
         },
       });
@@ -1710,6 +1715,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       asset.macAddresses = macList;
       asset.ipAddress = entry.ipAddress;
       asset.status = "active";
+      asset.lastSeen = now;
       if (entry.device) asset.learnedLocation = entry.device;
       assetIdx.reindex(asset);
 
@@ -1792,6 +1798,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
       if (existingAsset) {
         const updateData: Record<string, unknown> = { lastSeen: new Date(now) };
+        if (existingAsset.status === "decommissioned") updateData.status = "active";
         if (!handledByDhcp && inv.ipAddress && inv.ipAddress !== existingAsset.ipAddress) {
           updateData.ipAddress = inv.ipAddress;
         }
@@ -2109,7 +2116,7 @@ async function syncEntraDevices(
 
     const assetType = inferAssetTypeFromChassis(dev.chassisType, dev.operatingSystem);
     const disabled = !dev.accountEnabled;
-    const status: "active" | "decommissioned" = disabled ? "decommissioned" : "active";
+    const status: "active" | "disabled" = disabled ? "disabled" : "active";
 
     const tags: string[] = ["entraid", "auto-discovered"];
     if (disabled) tags.push("entra-disabled");
@@ -2325,7 +2332,7 @@ async function syncActiveDirectoryDevices(
     const displayName = dev.dnsHostName || dev.cn;
     const hostLookupKey = (dev.dnsHostName || dev.cn || "").toLowerCase();
     const assetType = inferAssetTypeFromOs(dev.operatingSystem);
-    const status: "active" | "decommissioned" = dev.disabled ? "decommissioned" : "active";
+    const status: "active" | "disabled" = dev.disabled ? "disabled" : "active";
 
     const tags: string[] = ["activedirectory", "auto-discovered", `${AD_GUID_TAG_PREFIX}${guidKey}`];
     if (dev.objectSid) tags.push(sidTag(dev.objectSid));
