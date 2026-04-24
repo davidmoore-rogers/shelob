@@ -799,11 +799,18 @@ async function openViewModal(id) {
     '</div>';
     var histLabel = escapeHtml(a.hostname || a.ipAddress || a.id);
     var historyBtn = '<button class="btn btn-secondary" onclick="openIpHistoryModal(\'' + a.id + '\',\'' + histLabel + '\')">History</button>';
+    var copyBtns =
+      '<button type="button" class="btn btn-secondary" id="btn-asset-copy">Copy</button>' +
+      '<button type="button" class="btn btn-secondary" id="btn-asset-screenshot">Screenshot</button>';
     var footer = canManageAssets()
-      ? historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
-      : historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
+      ? historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' + copyBtns + '<button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
+      : historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' + copyBtns;
     openModal("Asset Details", body, footer, { wide: true });
     _wireHoverTriggersIn(document.querySelector('#modal-overlay .modal-body'));
+    document.getElementById("btn-asset-copy").addEventListener("click", _copyAssetDetails);
+    document.getElementById("btn-asset-screenshot").addEventListener("click", function () {
+      _screenshotAssetDetails(a);
+    });
   } catch (err) {
     showToast(err.message, "error");
   }
@@ -837,6 +844,127 @@ async function openIpHistoryModal(assetId, label) {
     closeModal();
     showToast(err.message || "Failed to load IP history", "error");
   }
+}
+
+function _assetDetailPairs() {
+  var body = document.querySelector('#modal-overlay .modal-body');
+  if (!body) return [];
+  var pairs = [];
+  body.querySelectorAll('.detail-row').forEach(function (row) {
+    var label = row.querySelector('.detail-label');
+    var value = row.querySelector('.detail-value');
+    if (!label || !value) return;
+    var labelText = (label.innerText || label.textContent || '').trim();
+    var valueText = (value.innerText || value.textContent || '').trim();
+    pairs.push({ label: labelText, value: valueText });
+  });
+  return pairs;
+}
+
+function _copyAssetDetails() {
+  var pairs = _assetDetailPairs();
+  if (pairs.length === 0) { showToast("Nothing to copy", "error"); return; }
+  var text = pairs.map(function (p) {
+    if (p.value.indexOf('\n') !== -1) {
+      var indented = p.value.split('\n').map(function (l) { return '  ' + l; }).join('\n');
+      return p.label + ':\n' + indented;
+    }
+    return p.label + ': ' + (p.value || '-');
+  }).join('\n');
+  navigator.clipboard.writeText(text).then(function () {
+    showToast("Asset details copied to clipboard");
+  }).catch(function () {
+    showToast("Copy failed", "error");
+  });
+}
+
+function _screenshotAssetDetails(asset) {
+  var pairs = _assetDetailPairs();
+  if (pairs.length === 0) { showToast("Nothing to screenshot", "error"); return; }
+
+  var cs = getComputedStyle(document.documentElement);
+  var bgPrimary = cs.getPropertyValue("--color-bg-primary").trim() || "#ffffff";
+  var bgSurface = cs.getPropertyValue("--color-surface").trim() || "#f5f5f5";
+  var clrBorder = cs.getPropertyValue("--color-border").trim() || "#e0e0e0";
+  var clrText   = cs.getPropertyValue("--color-text-primary").trim() || "#111";
+  var clrMuted  = cs.getPropertyValue("--color-text-tertiary").trim() || "#888";
+
+  var scale = 2;
+  var pad = 24;
+  var titleH = 48;
+  var labelColW = 180;
+  var valueColW = 480;
+  var tableW = labelColW + valueColW;
+  var lineH = 18;
+  var rowPadV = 10;
+  var w = tableW + pad * 2;
+
+  var rows = pairs.map(function (p) {
+    var lines = p.value.split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l.length > 0; });
+    if (lines.length === 0) lines = ['-'];
+    return { label: p.label, lines: lines, h: Math.max(30, lines.length * lineH + rowPadV) };
+  });
+
+  var totalRowsH = rows.reduce(function (acc, r) { return acc + r.h; }, 0);
+  var h = titleH + totalRowsH + pad;
+
+  var canvas = document.createElement("canvas");
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  var ctx = canvas.getContext("2d");
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = bgPrimary;
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.fillStyle = clrText;
+  ctx.font = "bold 17px system-ui,-apple-system,sans-serif";
+  var title = "Asset Details" + (asset && asset.hostname ? " — " + asset.hostname : "");
+  ctx.fillText(title, pad, 32);
+
+  var y = titleH;
+  rows.forEach(function (r, i) {
+    if (i % 2 === 1) {
+      ctx.fillStyle = bgSurface;
+      ctx.fillRect(pad, y, tableW, r.h);
+    }
+
+    ctx.fillStyle = clrMuted;
+    ctx.font = "600 10px system-ui,-apple-system,sans-serif";
+    ctx.fillText(r.label.toUpperCase(), pad + 10, y + 20);
+
+    ctx.fillStyle = clrText;
+    ctx.font = "13px system-ui,-apple-system,sans-serif";
+    var maxW = valueColW - 20;
+    r.lines.forEach(function (line, li) {
+      var txt = line;
+      while (ctx.measureText(txt).width > maxW && txt.length > 3) {
+        txt = txt.slice(0, -4) + '…';
+      }
+      ctx.fillText(txt, pad + labelColW + 10, y + 20 + li * lineH);
+    });
+
+    ctx.fillStyle = clrBorder;
+    ctx.fillRect(pad, y + r.h - 1, tableW, 1);
+    y += r.h;
+  });
+
+  ctx.strokeStyle = clrBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad + 0.5, titleH + 0.5, tableW - 1, totalRowsH - 1);
+
+  canvas.toBlob(function (blob) {
+    if (!blob) { showToast("Screenshot failed", "error"); return; }
+    if (!navigator.clipboard || typeof ClipboardItem === "undefined" || !navigator.clipboard.write) {
+      showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+      return;
+    }
+    navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(function () {
+      showToast("Screenshot copied to clipboard");
+    }).catch(function () {
+      showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+    });
+  }, "image/png");
 }
 
 function _wireHoverTriggersIn(container) {
