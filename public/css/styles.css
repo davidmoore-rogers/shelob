@@ -1697,7 +1697,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   grid-template-columns: 1fr 1fr 1fr;
   gap: 1rem;
   margin-bottom: 1rem;
-  align-items: start;
+  align-items: stretch;
 }
 .settings-cards-row-3 .settings-card { margin-bottom: 0; }
 @media (max-width: 1000px) {
