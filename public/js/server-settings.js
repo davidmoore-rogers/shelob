@@ -1787,7 +1787,7 @@ function renderCustomizationTab() {
         '</div>' +
         '<div style="flex:1;min-width:200px">' +
           '<div class="upload-area" id="logo-upload-area">' +
-            '<input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/webp,image/svg+xml">' +
+            '<input type="file" id="logo-file-input" accept="image/png,image/jpeg,image/webp">' +
             '<strong style="color:var(--color-text-primary)">Upload New Logo</strong>' +
             '<p>Click to select an image file</p>' +
           '</div>' +

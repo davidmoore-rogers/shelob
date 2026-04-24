@@ -5,12 +5,14 @@
 import { Router } from "express";
 import multer from "multer";
 import { execSync } from "node:child_process";
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gzipSync, createGunzip } from "node:zlib";
 import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
   scryptSync,
+  X509Certificate,
+  createPrivateKey,
 } from "node:crypto";
 import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { totalmem } from "node:os";
@@ -56,6 +58,26 @@ function bufferToPem(buf: Buffer, filename: string): string {
   const b64 = buf.toString("base64");
   const lines = b64.match(/.{1,64}/g) || [];
   return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+}
+
+function validatePem(pem: string, filename: string): void {
+  const isKey = filename.endsWith(".key");
+  try {
+    if (isKey) {
+      createPrivateKey(pem);
+    } else {
+      new X509Certificate(pem);
+    }
+  } catch {
+    throw new AppError(400, isKey ? "File is not a valid PEM private key" : "File is not a valid PEM certificate");
+  }
+}
+
+function detectImageMagic(buf: Buffer): ".png" | ".jpg" | ".webp" | null {
+  if (buf.length >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return ".png";
+  if (buf.length >= 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return ".jpg";
+  if (buf.length >= 12 && buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP") return ".webp";
+  return null;
 }
 
 const router = Router();
@@ -251,10 +273,28 @@ router.post("/database/restore", restoreUpload.single("file"), async (req, res, 
       }
     }
 
-    // Decompress
+    // Decompress — streaming so we can enforce a decompressed-size cap (zip bomb guard)
+    const MAX_DECOMPRESSED = 4 * 1024 * 1024 * 1024;
     try {
-      payload = gunzipSync(payload);
-    } catch {
+      payload = await new Promise<Buffer>((resolve, reject) => {
+        const gunzip = createGunzip();
+        const chunks: Buffer[] = [];
+        let total = 0;
+        gunzip.on("data", (chunk: Buffer) => {
+          total += chunk.length;
+          if (total > MAX_DECOMPRESSED) {
+            gunzip.destroy();
+            reject(new AppError(400, "Backup exceeds maximum decompressed size (4 GB)"));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        gunzip.on("end", () => resolve(Buffer.concat(chunks)));
+        gunzip.on("error", () => reject(new AppError(400, "Decompression failed — file is not a valid gzip archive")));
+        gunzip.end(payload);
+      });
+    } catch (err) {
+      if (err instanceof AppError) throw err;
       throw new AppError(400, "Decompression failed — file is not a valid gzip archive");
     }
 
@@ -489,6 +529,7 @@ router.post("/certificates", upload.single("file"), async (req, res, next) => {
     }
     const category = req.body.category === "server" ? "server" : "ca";
     const pem = bufferToPem(req.file.buffer, req.file.originalname);
+    validatePem(pem, req.file.originalname);
     const record = await addCertificate(category as any, req.file.originalname, pem);
     res.status(201).json({ ...record, pem: undefined });
   } catch (err) {
@@ -960,12 +1001,8 @@ const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize:
 router.post("/branding/logo", logoUpload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new AppError(400, "No file uploaded");
-    const ext = req.file.mimetype === "image/svg+xml" ? ".svg"
-      : req.file.mimetype === "image/png" ? ".png"
-      : req.file.mimetype === "image/webp" ? ".webp"
-      : req.file.mimetype === "image/jpeg" ? ".jpg"
-      : null;
-    if (!ext) throw new AppError(400, "Unsupported image format");
+    const ext = detectImageMagic(req.file.buffer);
+    if (!ext) throw new AppError(400, "Unsupported image format — PNG, JPEG, or WebP required");
 
     mkdirSync(LOGO_DIR, { recursive: true });
     const filename = `custom-logo${ext}`;

@@ -314,7 +314,7 @@ function _renderSearchDropdown(results) {
     if (!hits.length) return "";
     var rows = hits.map(function (h) {
       return '<div class="gs-item" data-type="' + h.type + '" data-id="' + escapeHtml(h.id) + '"' +
-        (h.context ? ' data-context=\'' + escapeHtml(JSON.stringify(h.context)) + '\'' : '') + '>' +
+        (h.context ? ' data-context="' + escapeHtml(JSON.stringify(h.context)) + '"' : '') + '>' +
         '<div class="gs-item-title">' + escapeHtml(h.title) + '</div>' +
         (h.subtitle ? '<div class="gs-item-sub">' + escapeHtml(h.subtitle) + '</div>' : '') +
       '</div>';
