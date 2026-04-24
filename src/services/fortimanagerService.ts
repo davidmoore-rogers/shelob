@@ -481,7 +481,10 @@ export async function discoverDhcpSubnets(
   const devicesPayload: JsonRpcRequest = {
     id: 1,
     method: "get",
-    params: [{ url: `/dvmdb/adom/${adom}/device`, fields: ["name", "hostname", "sn", "platform_str", "ip", "conn_status"] }],
+    // `latitude`/`longitude` live on each FMG device record when "Geographical
+    // Location" is set in Device Manager — cheaper than a per-device CMDB call
+    // and matches where most users actually configure coordinates.
+    params: [{ url: `/dvmdb/adom/${adom}/device`, fields: ["name", "hostname", "sn", "platform_str", "ip", "conn_status", "latitude", "longitude"] }],
   };
 
   let devicesRes: JsonRpcResponse;
@@ -614,15 +617,24 @@ export async function discoverDhcpSubnets(
         for (const ap of fgResult.fortiAps)       ap.device         = ap.device === fgDeviceName ? deviceName : ap.device;
         for (const inv of fgResult.deviceInventory) inv.device      = inv.device === fgDeviceName ? deviceName : inv.device;
 
+        // Prefer FMG-configured coordinates (Device Manager → Geographical
+        // Location) and fall back to whatever the FortiGate itself returned
+        // via /api/v2/cmdb/system/global.
+        const fmgLat = parseFloat(String(rawDevice.latitude ?? ""));
+        const fmgLng = parseFloat(String(rawDevice.longitude ?? ""));
+        const fmgCoordsOk = Number.isFinite(fmgLat) && Number.isFinite(fmgLng) && !(fmgLat === 0 && fmgLng === 0);
         const localDev: DiscoveredDevice = {
           name: deviceName,
           hostname: rawDevice.hostname || deviceName,
           serial:   rawDevice.sn || fgResult.devices[0]?.serial || "",
           model:    rawDevice.platform_str || fgResult.devices[0]?.model || "",
           mgmtIp:   directHost,
-          latitude:  fgResult.devices[0]?.latitude,
-          longitude: fgResult.devices[0]?.longitude,
+          latitude:  fmgCoordsOk ? fmgLat : fgResult.devices[0]?.latitude,
+          longitude: fmgCoordsOk ? fmgLng : fgResult.devices[0]?.longitude,
         };
+        if (fmgCoordsOk) {
+          log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
+        }
 
         log("discover.device.complete", "info", `Completed direct discovery for ${deviceName}`, deviceName);
         return {
@@ -642,13 +654,24 @@ export async function discoverDhcpSubnets(
       }
     }
 
+    // Seed coordinates from FMG's device record (Device Manager → Geographical
+    // Location). These are the authoritative source when the operator set the
+    // site location in FortiManager. The CMDB `system/global` fallback below
+    // only fires when FMG has no coords for this device.
+    const fmgLat = parseFloat(String(rawDevice.latitude ?? ""));
+    const fmgLng = parseFloat(String(rawDevice.longitude ?? ""));
+    const fmgCoordsOk = Number.isFinite(fmgLat) && Number.isFinite(fmgLng) && !(fmgLat === 0 && fmgLng === 0);
     const localDevice: DiscoveredDevice = {
       name: deviceName,
       hostname: rawDevice.hostname || deviceName,
       serial: rawDevice.sn || "",
       model: rawDevice.platform_str || "",
       mgmtIp: rawDevice.ip || "",
+      ...(fmgCoordsOk ? { latitude: fmgLat, longitude: fmgLng } : {}),
     };
+    if (fmgCoordsOk) {
+      log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
+    }
     const localSubnets: DiscoveredSubnet[] = [];
     const localInterfaceIps: DiscoveredInterfaceIp[] = [];
     const localDhcpEntries: DiscoveredDhcpEntry[] = [];
@@ -1053,38 +1076,48 @@ export async function discoverDhcpSubnets(
       log("discover.ap-uplinks", "info", `${deviceName}: detected-device query skipped — ${err.message || "Unknown error"}`, deviceName);
     }
 
-    // Step 3d.6: Geo coordinates from `config system global` (FortiGate's location config)
-    // Proxies a live CMDB read to each FortiGate so we pick up changes without waiting for
-    // FMG's config sync. Silently no-ops on older FortiOS that doesn't expose the fields.
-    try {
-      const geoPayload: JsonRpcRequest = {
-        id: 13,
-        method: "exec",
-        params: [{
-          url: `/sys/proxy/json`,
-          data: {
-            target: [`/adom/${adom}/device/${deviceName}`],
-            action: "get",
-            resource: "/api/v2/cmdb/system/global?format=longitude|latitude|alias|hostname",
-          },
-        }],
-      };
-      const geoRes = await rpc(baseUrl, geoPayload, apiUser, apiToken, verifySsl, signal);
-      const geoData = geoRes.result?.[0]?.data;
-      const geoEntry = Array.isArray(geoData) ? geoData[0] : geoData as any;
-      const geoStatus = geoEntry?.status?.code ?? 0;
-      const geoResults = geoEntry?.response?.results;
-      if (geoStatus === 0 && geoResults && typeof geoResults === "object" && !Array.isArray(geoResults)) {
-        const lat = parseFloat(String(geoResults.latitude ?? ""));
-        const lng = parseFloat(String(geoResults.longitude ?? ""));
-        if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
-          localDevice.latitude = lat;
-          localDevice.longitude = lng;
-          log("discover.geo", "info", `${deviceName}: Resolved coordinates ${lat.toFixed(4)}, ${lng.toFixed(4)}`, deviceName);
+    // Step 3d.6: Geo coordinates fallback — only runs when FMG's device record
+    // didn't already provide coords (see `fmgCoordsOk` above). Reads the live
+    // FortiGate `config system global` via FMG's proxy. CMDB endpoints filter
+    // with `?fields=` (not `?format=`, which is monitor-only); passing the
+    // wrong param on older FortiOS silently returns the whole object anyway.
+    if (localDevice.latitude === undefined || localDevice.longitude === undefined) {
+      try {
+        const geoPayload: JsonRpcRequest = {
+          id: 13,
+          method: "exec",
+          params: [{
+            url: `/sys/proxy/json`,
+            data: {
+              target: [`/adom/${adom}/device/${deviceName}`],
+              action: "get",
+              resource: "/api/v2/cmdb/system/global",
+            },
+          }],
+        };
+        const geoRes = await rpc(baseUrl, geoPayload, apiUser, apiToken, verifySsl, signal);
+        const geoData = geoRes.result?.[0]?.data;
+        const geoEntry = Array.isArray(geoData) ? geoData[0] : geoData as any;
+        const geoStatus = geoEntry?.status?.code ?? 0;
+        const geoResults = geoEntry?.response?.results;
+        if (geoStatus === 0 && geoResults && typeof geoResults === "object" && !Array.isArray(geoResults)) {
+          const lat = parseFloat(String(geoResults.latitude ?? ""));
+          const lng = parseFloat(String(geoResults.longitude ?? ""));
+          if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
+            localDevice.latitude = lat;
+            localDevice.longitude = lng;
+            log("discover.geo", "info", `${deviceName}: Resolved coordinates from system/global: ${lat.toFixed(4)}, ${lng.toFixed(4)}`, deviceName);
+          } else {
+            // Surface where coords are (or aren't) so the operator can locate them
+            const keys = Object.keys(geoResults).slice(0, 30).join(", ");
+            log("discover.geo", "info", `${deviceName}: No latitude/longitude in system/global (keys: ${keys || "(empty)"})`, deviceName);
+          }
+        } else {
+          log("discover.geo", "info", `${deviceName}: system/global proxy returned status ${geoStatus} — check API admin trusthost/scope`, deviceName);
         }
+      } catch (err: any) {
+        log("discover.geo", "info", `${deviceName}: Geo lookup skipped — ${err.message || "Unknown error"}`, deviceName);
       }
-    } catch (err: any) {
-      log("discover.geo", "info", `${deviceName}: Geo lookup skipped — ${err.message || "Unknown error"}`, deviceName);
     }
 
     // Step 3e: Firewall VIPs

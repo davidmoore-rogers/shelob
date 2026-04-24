@@ -557,23 +557,29 @@ export async function discoverDhcpSubnets(
     log("discover.ap-uplinks", "info", `${deviceHostname}: ${isNotFound ? "detected-device not available — skipping" : `AP uplink query skipped — ${err.message || "Unknown error"}`}`, deviceHostname);
   }
 
-  // Step 3e.6: Geo coordinates from `config system global`
+  // Step 3e.6: Geo coordinates from `config system global`.
+  // CMDB endpoints use `?fields=` (not `?format=`, which is monitor-only).
+  // Dropping the filter entirely — the full system/global object is small,
+  // and pulling every key means we log them when lat/lng are absent so the
+  // operator can see exactly where the gate does (or doesn't) store coords.
   try {
     const sysGlobal = await fgRequest<any>(config, "GET", "/api/v2/cmdb/system/global", {
-      query: { ...queryBase, format: "longitude|latitude|alias|hostname" },
+      query: queryBase,
       signal,
     });
-    // CMDB single-object responses can come back either as a bare object or wrapped in results
     const globalObj = sysGlobal && typeof sysGlobal === "object" && !Array.isArray(sysGlobal)
       ? sysGlobal
       : null;
-    if (globalObj) {
+    if (globalObj && devices[0]) {
       const lat = parseFloat(String(globalObj.latitude ?? ""));
       const lng = parseFloat(String(globalObj.longitude ?? ""));
-      if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0) && devices[0]) {
+      if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
         devices[0].latitude = lat;
         devices[0].longitude = lng;
         log("discover.geo", "info", `${deviceHostname}: Resolved coordinates ${lat.toFixed(4)}, ${lng.toFixed(4)}`, deviceHostname);
+      } else {
+        const keys = Object.keys(globalObj).slice(0, 30).join(", ");
+        log("discover.geo", "info", `${deviceHostname}: No latitude/longitude in system/global (keys: ${keys || "(empty)"})`, deviceHostname);
       }
     }
   } catch (err: any) {
