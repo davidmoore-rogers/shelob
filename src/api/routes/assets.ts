@@ -24,7 +24,7 @@ const AssetTypeEnum = z.enum([
 ]);
 
 const AssetStatusEnum = z.enum([
-  "active", "maintenance", "decommissioned", "storage",
+  "active", "maintenance", "decommissioned", "storage", "disabled",
 ]);
 
 const macRegex = /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/;
@@ -177,7 +177,7 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
 router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
   try {
     const assets = await prisma.asset.findMany({
-      where: { ipAddress: { not: null }, dnsName: null, status: { not: "decommissioned" } },
+      where: { ipAddress: { not: null }, dnsName: null, status: { notIn: ["decommissioned", "disabled"] } },
       select: { id: true, ipAddress: true, hostname: true },
     });
 
@@ -242,7 +242,7 @@ router.post("/:id/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
 router.post("/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
   try {
     const assets = await prisma.asset.findMany({
-      where: { macAddress: { not: null }, manufacturer: null, status: { not: "decommissioned" } },
+      where: { macAddress: { not: null }, manufacturer: null, status: { notIn: ["decommissioned", "disabled"] } },
       select: { id: true, macAddress: true, hostname: true, ipAddress: true },
     });
 

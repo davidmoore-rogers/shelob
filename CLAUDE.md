@@ -163,7 +163,7 @@ ReservationStatus:       active | expired | released
 ReservationSourceType:   manual | dhcp_reservation | dhcp_lease | interface_ip | vip | fortiswitch | fortinap | fortimanager | fortigate
 ConflictStatus:          pending | accepted | rejected
 UserRole:                admin | networkadmin | assetsadmin | user | readonly
-AssetStatus:             active | maintenance | decommissioned | storage
+AssetStatus:             active | maintenance | decommissioned | storage | disabled
 AssetType:               server | switch | router | firewall | workstation | printer | access_point | other
 ```
 

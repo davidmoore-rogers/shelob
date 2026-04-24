@@ -76,7 +76,7 @@ async function loadIntegrations() {
           '<div class="detail-row"><span class="detail-label">Base DN</span><span class="detail-value mono">' + escapeHtml(config.baseDn || "-") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Search Scope</span><span class="detail-value">' + escapeHtml(config.searchScope || "sub") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Verify TLS</span><span class="detail-value">' + (config.verifyTls ? "Yes" : "No") + '</span></div>' +
-          '<div class="detail-row"><span class="detail-label">Include Disabled</span><span class="detail-value">' + (config.includeDisabled === false ? "No (skipped)" : "Yes (as decommissioned)") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Include Disabled</span><span class="detail-value">' + (config.includeDisabled === false ? "No (skipped)" : "Yes (as disabled)") + '</span></div>' +
           filterRow("OUs", config.ouInclude, config.ouExclude);
       } else if (intg.type === "entraid") {
         detailRows =
@@ -84,7 +84,7 @@ async function loadIntegrations() {
           '<div class="detail-row"><span class="detail-label">Client ID</span><span class="detail-value mono">' + escapeHtml(config.clientId || "-") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Client Secret</span><span class="detail-value mono">' + escapeHtml(config.clientSecret || "-") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Intune Sync</span><span class="detail-value">' + (config.enableIntune ? "Enabled" : "Disabled") + '</span></div>' +
-          '<div class="detail-row"><span class="detail-label">Include Disabled</span><span class="detail-value">' + (config.includeDisabled === false ? "No (skipped)" : "Yes (as decommissioned)") + '</span></div>' +
+          '<div class="detail-row"><span class="detail-label">Include Disabled</span><span class="detail-value">' + (config.includeDisabled === false ? "No (skipped)" : "Yes (as disabled)") + '</span></div>' +
           filterRow("Devices", config.deviceInclude, config.deviceExclude);
       } else if (intg.type === "windowsserver") {
         detailRows =
@@ -422,7 +422,7 @@ function entraIdFormHTML(defaults) {
     '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-top:0.5rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">When on, overlays richer data (serial, MAC, model, primary user, compliance) from <code>/deviceManagement/managedDevices</code> onto Entra devices. Requires an Intune license and the extra Graph permission above.</div>' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
       '<input type="checkbox" id="f-includeDisabled" ' + (includeDisabled ? "checked" : "") + ' style="width:auto">' +
-      '<label for="f-includeDisabled" style="margin:0">Include disabled devices (as <em>decommissioned</em>)</label>' +
+      '<label for="f-includeDisabled" style="margin:0">Include disabled devices (as <em>disabled</em>)</label>' +
     '</div>' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
       '<input type="checkbox" id="f-enabled" ' + enabledChecked + ' style="width:auto">' +
@@ -500,7 +500,7 @@ function activeDirectoryFormHTML(defaults) {
     '</div>' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
       '<input type="checkbox" id="f-includeDisabled" ' + (includeDisabled ? "checked" : "") + ' style="width:auto">' +
-      '<label for="f-includeDisabled" style="margin:0">Include disabled computer accounts (as <em>decommissioned</em>)</label>' +
+      '<label for="f-includeDisabled" style="margin:0">Include disabled computer accounts (as <em>disabled</em>)</label>' +
     '</div>' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
       '<input type="checkbox" id="f-enabled" ' + enabledChecked + ' style="width:auto">' +

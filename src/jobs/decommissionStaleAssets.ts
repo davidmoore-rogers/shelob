@@ -25,7 +25,7 @@ async function decommissionStaleAssets(): Promise<void> {
 
     const stale = await prisma.asset.findMany({
       where: {
-        status: { not: "decommissioned" },
+        status: { notIn: ["decommissioned", "disabled"] },
         lastSeen: { lt: cutoff },
       },
       select: { id: true, hostname: true, ipAddress: true },

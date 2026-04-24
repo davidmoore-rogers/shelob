@@ -166,7 +166,7 @@ async function loadAssets() {
       return a;
     });
     if (statusVal === "hide-decommissioned") {
-      _assetsData = _assetsData.filter(function (a) { return a.status !== "decommissioned"; });
+      _assetsData = _assetsData.filter(function (a) { return a.status !== "decommissioned" && a.status !== "disabled"; });
     }
     renderAssetsPage();
   } catch (err) {
@@ -591,6 +591,7 @@ function assetFormHTML(defaults) {
       '<option value="active"' + (d.status === "active" ? " selected" : "") + '>Active</option>' +
       '<option value="maintenance"' + (d.status === "maintenance" ? " selected" : "") + '>Maintenance</option>' +
       '<option value="decommissioned"' + (d.status === "decommissioned" ? " selected" : "") + '>Decommissioned</option>' +
+      '<option value="disabled"' + (d.status === "disabled" ? " selected" : "") + '>Disabled</option>' +
     '</select></div>' +
   '</div>' +
   '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
@@ -1301,6 +1302,7 @@ async function openImportPdfModal(file) {
           '<option value="storage">Storage</option>' +
           '<option value="maintenance">Maintenance</option>' +
           '<option value="decommissioned">Decommissioned</option>' +
+          '<option value="disabled">Disabled</option>' +
         '</select></div>' +
     '</div>';
   }
