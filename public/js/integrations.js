@@ -220,14 +220,17 @@ function fortiManagerFormHTML(defaults) {
     '</div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Per-Device Query Transport</p>' +
-    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
-      '<input type="checkbox" id="f-useProxy" ' + (d.useProxy !== false ? "checked" : "") + ' style="width:auto" onchange="_fmgToggleProxyMode(this.checked)">' +
-      '<label for="f-useProxy" style="margin:0">Use FortiManager proxy for per-device queries</label>' +
-    '</div>' +
-    '<p class="hint" style="margin-top:-0.25rem">When checked (default), all per-device DHCP/interface/switch/AP/VIP queries are proxied through FortiManager. When unchecked, Shelob talks directly to each FortiGate\'s management IP using the REST API credentials below — bypasses FMG\'s proxy entirely and supports higher parallelism.</p>' +
-    '<div id="f-fgt-creds-block" style="' + (d.useProxy !== false ? "display:none;" : "") + 'background:rgba(79,195,247,0.05);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:0.75rem;margin-top:0.5rem">' +
-      '<div class="form-group"><label>FortiGate API User</label><input type="text" id="f-fortigateApiUser" value="' + escapeHtml(d.fortigateApiUser || "") + '" placeholder="e.g. shelob-ro"><p class="hint">REST API admin username configured on each managed FortiGate</p></div>' +
-      '<div class="form-group"><label>FortiGate API Token</label><input type="password" id="f-fortigateApiToken" value="' + (d.fortigateApiTokenPlaceholder ? "" : escapeHtml(d.fortigateApiToken || "")) + '" placeholder="' + (d.fortigateApiTokenPlaceholder || "Bearer token") + '"><p class="hint">Bearer token for the above admin. Must be the same across all managed FortiGates.</p></div>' +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
+        '<input type="checkbox" id="f-useProxy" ' + (d.useProxy !== false ? "checked" : "") + ' style="width:auto" onchange="_fmgToggleProxyMode(this.checked)">' +
+        '<label for="f-useProxy" style="margin:0;font-weight:500">Use FortiManager proxy for per-device queries</label>' +
+      '</div>' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.75rem 0">When checked (default), all per-device DHCP/interface/switch/AP/VIP queries are proxied through FortiManager. When unchecked, Shelob talks directly to each FortiGate\'s management IP using the REST API credentials below — bypasses FMG\'s proxy entirely and supports higher parallelism.</p>' +
+      '<div class="form-group" style="margin-bottom:0"><label>Parallel FortiGate Queries</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-discoveryParallelism" value="' + (d.useProxy !== false ? 1 : (d.discoveryParallelism || 5)) + '" min="1" max="20" style="width:80px"' + (d.useProxy !== false ? " disabled" : "") + '><span id="f-parallelism-note" style="color:var(--color-text-tertiary);font-size:0.85rem">' + (d.useProxy !== false ? "locked to 1 when proxy is enabled" : "gates at once") + '</span></div><p class="hint">With proxy enabled this is forced to 1 (FortiManager drops parallel connections past very low parallelism). Disable proxy to query up to 20 FortiGates concurrently.</p></div>' +
+      '<div id="f-fgt-creds-block" style="' + (d.useProxy !== false ? "display:none;" : "") + 'border-top:1px solid rgba(79,195,247,0.2);padding-top:0.75rem;margin-top:0.5rem">' +
+        '<div class="form-group"><label>FortiGate API User</label><input type="text" id="f-fortigateApiUser" value="' + escapeHtml(d.fortigateApiUser || "") + '" placeholder="e.g. shelob-ro"><p class="hint">REST API admin username configured on each managed FortiGate</p></div>' +
+        '<div class="form-group" style="margin-bottom:0"><label>FortiGate API Token</label><input type="password" id="f-fortigateApiToken" value="' + (d.fortigateApiTokenPlaceholder ? "" : escapeHtml(d.fortigateApiToken || "")) + '" placeholder="' + (d.fortigateApiTokenPlaceholder || "Bearer token") + '"><p class="hint">Bearer token for the above admin. Must be the same across all managed FortiGates.</p></div>' +
+      '</div>' +
     '</div>' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
       '<input type="checkbox" id="f-enabled" ' + (d.enabled !== false ? "checked" : "") + ' style="width:auto">' +
@@ -254,7 +257,6 @@ function fortiManagerFormHTML(defaults) {
       '<textarea id="f-deviceNames" rows="2" placeholder="One per line — e.g. FG-HQ-01&#10;FG-DC-*&#10;*-lab">' + escapeHtml(devNames.join("\n")) + '</textarea>' +
       '<p class="hint">Leave empty to query all managed FortiGates. Matched against device name or hostname. Wildcards supported: <code>FG-*</code>, <code>*-lab</code>, <code>*dc*</code></p>' +
     '</div>' +
-    '<div class="form-group"><label>Parallel FortiGate Queries</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-discoveryParallelism" value="' + (d.useProxy !== false ? 1 : (d.discoveryParallelism || 5)) + '" min="1" max="20" style="width:80px"' + (d.useProxy !== false ? " disabled" : "") + '><span id="f-parallelism-note" style="color:var(--color-text-tertiary);font-size:0.85rem">' + (d.useProxy !== false ? "locked to 1 when proxy is enabled" : "gates at once") + '</span></div><p class="hint">With proxy enabled this is forced to 1 (FortiManager drops parallel connections past very low parallelism). Disable proxy to query up to 20 FortiGates concurrently.</p></div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface Scope</p>' +
     '<div class="form-group"><label>Interface Filter</label>' +
