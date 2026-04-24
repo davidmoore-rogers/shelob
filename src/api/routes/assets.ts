@@ -136,6 +136,7 @@ router.post("/", requireAssetsAdmin, async (req, res, next) => {
     if (input.macAddress) data.macAddress = input.macAddress.toUpperCase().replace(/-/g, ":");
     if (input.acquiredAt) data.acquiredAt = new Date(input.acquiredAt);
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
+    if (input.ipAddress) data.ipSource = "manual";
     data.createdBy = req.session?.username ?? null;
     clampAcquiredToLastSeen(data);
     const asset = await prisma.asset.create({ data: data as any });
@@ -159,6 +160,7 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
     else if (input.acquiredAt === undefined) delete data.acquiredAt;
     if (input.warrantyExpiry) data.warrantyExpiry = new Date(input.warrantyExpiry);
     else if (input.warrantyExpiry === undefined) delete data.warrantyExpiry;
+    if (input.ipAddress) data.ipSource = "manual";
     clampAcquiredToLastSeen(data, existing);
     const asset = await prisma.asset.update({ where: { id }, data: data as any });
     const trackFields = ["hostname", "ipAddress", "macAddress", "manufacturer", "model", "serialNumber", "assetType", "status", "location", "notes", "dnsName"] as const;
@@ -173,12 +175,18 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
   }
 });
 
-// POST /api/v1/assets/dns-lookup — bulk reverse DNS lookup for assets missing dnsName
+// POST /api/v1/assets/dns-lookup — bulk reverse DNS lookup for assets missing dnsName + associated IP PTR names
 router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
   try {
     const assets = await prisma.asset.findMany({
       where: { ipAddress: { not: null }, dnsName: null, status: { notIn: ["decommissioned", "disabled"] } },
       select: { id: true, ipAddress: true, hostname: true },
+    });
+
+    // Also fetch assets with associated IPs that are missing ptrName
+    const assocAssets = await prisma.asset.findMany({
+      where: { status: { notIn: ["decommissioned", "disabled"] } },
+      select: { id: true, associatedIps: true },
     });
 
     const resolver = await getConfiguredResolver();
@@ -203,36 +211,84 @@ router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
       }
     }
 
-    logEvent({ action: "asset.dns.bulk", resourceType: "asset", message: `Bulk DNS lookup: ${resolved} resolved, ${failed} failed out of ${assets.length} assets`, actor: req.session?.username });
-    res.json({ total: assets.length, resolved, failed, results });
+    // Second pass: PTR for associated IPs lacking ptrName
+    let assocResolved = 0;
+    for (const asset of assocAssets) {
+      const entries: any[] = Array.isArray(asset.associatedIps) ? (asset.associatedIps as any[]) : [];
+      if (entries.length === 0) continue;
+      const needsLookup = entries.some((e: any) => e.ip && !e.ptrName);
+      if (!needsLookup) continue;
+
+      const updated = await Promise.all(entries.map(async (entry: any) => {
+        if (!entry.ip || entry.ptrName) return entry;
+        try {
+          const hostnames = await resolver.reverse(entry.ip);
+          if (hostnames.length > 0) { assocResolved++; return { ...entry, ptrName: hostnames[0] }; }
+        } catch {}
+        return entry;
+      }));
+      await prisma.asset.update({ where: { id: asset.id }, data: { associatedIps: updated } });
+    }
+
+    logEvent({ action: "asset.dns.bulk", resourceType: "asset", message: `Bulk DNS lookup: ${resolved} resolved, ${failed} failed out of ${assets.length} assets; ${assocResolved} associated IP PTR(s) resolved`, actor: req.session?.username });
+    res.json({ total: assets.length, resolved, failed, assocResolved, results });
   } catch (err) {
     next(err);
   }
 });
 
-// POST /api/v1/assets/:id/dns-lookup — reverse DNS lookup for a single asset
+// POST /api/v1/assets/:id/dns-lookup — reverse DNS lookup for a single asset (primary IP + associated IPs)
 router.post("/:id/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({ where: { id: req.params.id as string } });
     if (!asset) throw new AppError(404, "Asset not found");
-    if (!asset.ipAddress) throw new AppError(400, "Asset has no IP address");
+
+    const assocIps: any[] = Array.isArray(asset.associatedIps) ? (asset.associatedIps as any[]) : [];
+    if (!asset.ipAddress && assocIps.length === 0) throw new AppError(400, "Asset has no IP address");
 
     const resolver = await getConfiguredResolver();
     let dnsName: string | null = null;
-    try {
-      const hostnames = await resolver.reverse(asset.ipAddress);
-      if (hostnames.length > 0) dnsName = hostnames[0];
-    } catch {
-      // PTR lookup failed — no record
+
+    if (asset.ipAddress) {
+      try {
+        const hostnames = await resolver.reverse(asset.ipAddress);
+        if (hostnames.length > 0) dnsName = hostnames[0];
+      } catch {
+        // PTR lookup failed — no record
+      }
     }
 
-    if (!dnsName) {
-      return res.json({ ok: false, message: `No PTR record found for ${asset.ipAddress}` });
+    // PTR for each associated IP
+    let assocResolved = 0;
+    const updatedAssocIps = await Promise.all(assocIps.map(async (entry: any) => {
+      if (!entry.ip) return entry;
+      try {
+        const hostnames = await resolver.reverse(entry.ip);
+        if (hostnames.length > 0) { assocResolved++; return { ...entry, ptrName: hostnames[0] }; }
+      } catch {}
+      return entry;
+    }));
+
+    const updateData: Record<string, unknown> = {};
+    if (dnsName) updateData.dnsName = dnsName;
+    if (assocResolved > 0) updateData.associatedIps = updatedAssocIps;
+
+    if (Object.keys(updateData).length > 0) {
+      await prisma.asset.update({ where: { id: asset.id }, data: updateData });
     }
 
-    await prisma.asset.update({ where: { id: asset.id }, data: { dnsName } });
-    logEvent({ action: "asset.dns.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress, actor: req.session?.username, message: `DNS resolved: ${asset.ipAddress} → ${dnsName}` });
-    res.json({ ok: true, dnsName, message: `${asset.ipAddress} → ${dnsName}` });
+    if (!dnsName && assocResolved === 0) {
+      const testedIp = asset.ipAddress || assocIps[0]?.ip;
+      return res.json({ ok: false, message: `No PTR records found for ${testedIp}${assocIps.length > 1 ? " or its associated IPs" : ""}` });
+    }
+
+    const parts: string[] = [];
+    if (dnsName) parts.push(`${asset.ipAddress} → ${dnsName}`);
+    if (assocResolved > 0) parts.push(`${assocResolved} associated IP PTR(s) resolved`);
+    const message = parts.join("; ");
+
+    logEvent({ action: "asset.dns.resolved", resourceType: "asset", resourceId: asset.id, resourceName: asset.hostname || asset.ipAddress || undefined, actor: req.session?.username, message: `DNS resolved: ${message}` });
+    res.json({ ok: true, dnsName, assocResolved, message });
   } catch (err) {
     next(err);
   }

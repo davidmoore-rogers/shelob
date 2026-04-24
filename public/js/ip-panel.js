@@ -740,13 +740,17 @@ function _assetMacAddressesHTML(macs) {
 function _assetAssocIpsHTML(ips) {
   if (!ips || ips.length === 0) return '';
   var rows = ips.map(function (entry) {
+    var meta = [];
+    if (entry.ptrName) meta.push(escapeHtml(entry.ptrName));
+    if (entry.interfaceName) meta.push(escapeHtml(entry.interfaceName));
+    if (entry.source) meta.push(escapeHtml(entry.source));
+    if (entry.lastSeen) meta.push(formatDate(entry.lastSeen));
     return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
       '<code style="font-size:0.82rem">' + escapeHtml(entry.ip) + '</code>' +
-      '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
-        (entry.interfaceName ? escapeHtml(entry.interfaceName) : '') +
-        (entry.source ? ' &middot; ' + escapeHtml(entry.source) : '') +
-        (entry.lastSeen ? ' &middot; ' + formatDate(entry.lastSeen) : '') +
-      '</span></div>';
+      (meta.length > 0
+        ? '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' + meta.join(' &middot; ') + '</span>'
+        : '') +
+    '</div>';
   }).join("");
   return '<div class="detail-row"><span class="detail-label">Associated IPs (' + ips.length + ')</span>' +
     '<span class="detail-value">' + rows + '</span></div>';
@@ -773,7 +777,11 @@ async function _openAssetViewModal(assetId) {
     var body = '<div class="asset-view-grid">' +
       _assetViewRow("Hostname", a.hostname) +
       _assetViewRow("DNS Name", a.dnsName) +
-      _assetViewRow("IP Address", a.ipAddress, true) +
+      (function() {
+        var ipVal = a.ipAddress || '-';
+        var src = a.ipSource ? '<span style="font-size:0.75rem;color:var(--color-text-tertiary);margin-left:8px">' + escapeHtml(a.ipSource) + '</span>' : '';
+        return '<div class="detail-row"><span class="detail-label">IP Address</span><span class="detail-value mono">' + escapeHtml(ipVal) + src + '</span></div>';
+      })() +
       _assetAssocIpsHTML(a.associatedIps) +
       _assetViewRow("MAC Address", a.macAddress, true) +
       _assetMacAddressesHTML(a.macAddresses) +

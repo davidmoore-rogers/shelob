@@ -64,6 +64,8 @@ document.addEventListener("DOMContentLoaded", async function () {
   document.addEventListener("click", _handleMacDeleteClick);
   document.getElementById("assets-bulk-delete-btn").addEventListener("click", bulkDeleteAssets);
   document.getElementById("assets-bulk-edit-btn").addEventListener("click", openBulkEditModal);
+  var settingsBtn = document.getElementById("btn-asset-settings");
+  if (settingsBtn) settingsBtn.addEventListener("click", openAssetSettingsModal);
   await userReady;
   _restoreAssetsPrefs();
   loadAssets();
@@ -347,6 +349,46 @@ function _assetsUpdateBulkBar() {
   if (el) el.textContent = count + " selected";
 }
 
+async function openAssetSettingsModal() {
+  var defaults = { inactivityMonths: 0 };
+  try {
+    var s = await api.events.getAssetDecommissionSettings();
+    var m = Number(s.inactivityMonths);
+    defaults.inactivityMonths = Number.isFinite(m) && m >= 0 ? Math.floor(m) : 0;
+  } catch (_) {}
+
+  var body =
+    '<div class="form-group">' +
+      '<label>Auto-Decommission Threshold (months)</label>' +
+      '<input type="number" id="f-assets-inactivity-months" value="' + escapeHtml(String(defaults.inactivityMonths)) + '" min="0" max="120" style="max-width:120px">' +
+      '<p class="hint">Assets whose <strong>Last Seen</strong> date is older than this many months are automatically moved to <strong>decommissioned</strong> status. ' +
+        'Set to <strong>0</strong> to disable. The job runs every 24 hours.</p>' +
+    '</div>';
+
+  var footer =
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" id="btn-asset-settings-save">Save</button>';
+
+  openModal("Asset Settings", body, footer);
+
+  document.getElementById("btn-asset-settings-save").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var v = parseInt(document.getElementById("f-assets-inactivity-months").value, 10);
+      await api.events.updateAssetDecommissionSettings({
+        inactivityMonths: Number.isFinite(v) && v >= 0 ? v : 0,
+      });
+      closeModal();
+      showToast("Asset settings saved");
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 async function bulkDeleteAssets() {
   var ids = Array.from(_assetsSelected);
   if (!ids.length) return;
@@ -481,6 +523,7 @@ function ipCellHTML(asset) {
   var displayIp = primary || ips[0].ip;
   var tooltipRows = ips.map(function (entry) {
     var metaBits = [];
+    if (entry.ptrName) metaBits.push('<span class="mac-tooltip-subnet">' + escapeHtml(entry.ptrName) + '</span>');
     if (entry.interfaceName) metaBits.push('<span class="mac-tooltip-subnet">' + escapeHtml(entry.interfaceName) + '</span>');
     var sourceLine = (entry.source ? escapeHtml(entry.source) : '') +
       (entry.lastSeen ? ' &middot; ' + formatDate(entry.lastSeen) : '');
@@ -751,8 +794,11 @@ function ipViewRow(asset) {
     return '<div class="detail-row"><span class="detail-label">IP Address</span>' +
       '<span class="detail-value mono">-</span></div>';
   }
+  var src = asset.ipSource
+    ? '<span style="font-size:0.75rem;color:var(--color-text-tertiary);margin-left:8px">' + escapeHtml(asset.ipSource) + '</span>'
+    : '';
   return '<div class="detail-row"><span class="detail-label">IP Address</span>' +
-    '<span class="detail-value mono">' + ipCellHTML(asset) + '</span></div>';
+    '<span class="detail-value mono">' + ipCellHTML(asset) + src + '</span></div>';
 }
 
 function viewRow(label, value, mono) {
