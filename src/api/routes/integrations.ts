@@ -2105,8 +2105,11 @@ async function syncEntraDevices(
     }
 
     const assetType = inferAssetTypeFromChassis(dev.chassisType, dev.operatingSystem);
+    const disabled = !dev.accountEnabled;
+    const status: "active" | "decommissioned" = disabled ? "decommissioned" : "active";
 
     const tags: string[] = ["entraid", "auto-discovered"];
+    if (disabled) tags.push("entra-disabled");
     if (dev.trustType) tags.push(dev.trustType.toLowerCase());
     if (dev.complianceState) tags.push(`intune-${dev.complianceState.toLowerCase()}`);
     else if (dev.isCompliant === true) tags.push("compliant");
@@ -2141,6 +2144,7 @@ async function syncEntraDevices(
         os: dev.operatingSystem || existing.os,
         osVersion: dev.operatingSystemVersion || existing.osVersion,
         lastSeen: lastSeen || existing.lastSeen,
+        status,
       };
       if (takingOver) {
         // Priority rule: Entra's assetTag always wins. AD guid is preserved
@@ -2242,7 +2246,7 @@ async function syncEntraDevices(
         manufacturer: dev.manufacturer || null,
         model: dev.model || null,
         assetType,
-        status: "active",
+        status,
         os: dev.operatingSystem || null,
         osVersion: dev.operatingSystemVersion || null,
         assignedTo: dev.userPrincipalName || null,

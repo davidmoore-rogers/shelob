@@ -18,6 +18,7 @@ export interface EntraIdConfig {
   clientId: string;
   clientSecret: string;
   enableIntune?: boolean;
+  includeDisabled?: boolean;  // Default true — disabled (accountEnabled=false) devices become `decommissioned` assets
   deviceInclude?: string[];  // Match against displayName; wildcards supported
   deviceExclude?: string[];
 }
@@ -28,6 +29,7 @@ export interface DiscoveredEntraDevice {
   operatingSystem: string;
   operatingSystemVersion: string;
   trustType: string;           // "AzureAd" | "Workplace" | "ServerAd" | ""
+  accountEnabled: boolean;     // false → disabled in Entra; maps to `decommissioned` status
   onPremisesSecurityIdentifier?: string; // On-prem AD SID for hybrid-joined devices (cross-link to AD integration)
   registrationDateTime?: string;
   approximateLastSignInDateTime?: string;
@@ -295,6 +297,7 @@ export async function discoverDevices(
     "operatingSystem",
     "operatingSystemVersion",
     "trustType",
+    "accountEnabled",
     "onPremisesSecurityIdentifier",
     "registrationDateTime",
     "approximateLastSignInDateTime",
@@ -359,6 +362,7 @@ export async function discoverDevices(
       operatingSystem: (intune?.operatingSystem || e.operatingSystem || "") as string,
       operatingSystemVersion: (intune?.osVersion || e.operatingSystemVersion || "") as string,
       trustType: String(e.trustType || ""),
+      accountEnabled: e.accountEnabled !== false,
       onPremisesSecurityIdentifier: e.onPremisesSecurityIdentifier ? String(e.onPremisesSecurityIdentifier) : undefined,
       registrationDateTime: e.registrationDateTime || undefined,
       approximateLastSignInDateTime: e.approximateLastSignInDateTime || undefined,
@@ -384,6 +388,7 @@ export async function discoverDevices(
       operatingSystem: String(intune.operatingSystem || ""),
       operatingSystemVersion: String(intune.osVersion || ""),
       trustType: "",
+      accountEnabled: true, // Intune-only devices have no Entra accountEnabled — assume active
       serialNumber: intune.serialNumber || undefined,
       macAddress: pickMac(intune) || undefined,
       manufacturer: intune.manufacturer || undefined,
@@ -402,6 +407,16 @@ export async function discoverDevices(
     log("discover.filter", "info", `Device filter: ${filtered.length} included, ${dropped} excluded`);
   } else {
     log("discover.filter", "info", `Merged total: ${filtered.length} device(s)`);
+  }
+
+  // 5. If includeDisabled is explicitly false, skip disabled devices entirely
+  if (config.includeDisabled === false) {
+    const active = filtered.filter((d) => d.accountEnabled);
+    const disabledCount = filtered.length - active.length;
+    if (disabledCount > 0) {
+      log("discover.filter.disabled", "info", `Skipping ${disabledCount} disabled Entra device(s) (includeDisabled=false)`);
+    }
+    return { devices: active };
   }
 
   return { devices: filtered };
