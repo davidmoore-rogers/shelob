@@ -1052,19 +1052,22 @@ var _FMG_PRESET_QUERIES = [
   },
 ];
 
+var _FMG_QUERIES_VERSION = 1;
+
 function _fmgLoadQueries() {
   try {
     var stored = JSON.parse(localStorage.getItem("shelob-fmg-queries") || "null");
-    if (!stored) {
-      localStorage.setItem("shelob-fmg-queries", JSON.stringify(_FMG_PRESET_QUERIES));
+    if (!stored || stored.v !== _FMG_QUERIES_VERSION) {
+      var initial = { v: _FMG_QUERIES_VERSION, queries: _FMG_PRESET_QUERIES.slice() };
+      localStorage.setItem("shelob-fmg-queries", JSON.stringify(initial));
       return _FMG_PRESET_QUERIES.slice();
     }
-    return stored;
+    return stored.queries;
   } catch (_) { return []; }
 }
 
 function _fmgPersistQueries(queries) {
-  localStorage.setItem("shelob-fmg-queries", JSON.stringify(queries));
+  localStorage.setItem("shelob-fmg-queries", JSON.stringify({ v: _FMG_QUERIES_VERSION, queries: queries }));
 }
 
 function _fmgRenderSavedSelect(queries, selectValue) {
@@ -1264,19 +1267,22 @@ var _FGT_PRESET_QUERIES = [
   },
 ];
 
+var _FGT_QUERIES_VERSION = 1;
+
 function _fgtLoadQueries() {
   try {
     var stored = JSON.parse(localStorage.getItem("shelob-fgt-queries") || "null");
-    if (!stored) {
-      localStorage.setItem("shelob-fgt-queries", JSON.stringify(_FGT_PRESET_QUERIES));
+    if (!stored || stored.v !== _FGT_QUERIES_VERSION) {
+      var initial = { v: _FGT_QUERIES_VERSION, queries: _FGT_PRESET_QUERIES.slice() };
+      localStorage.setItem("shelob-fgt-queries", JSON.stringify(initial));
       return _FGT_PRESET_QUERIES.slice();
     }
-    return stored;
+    return stored.queries;
   } catch (_) { return []; }
 }
 
 function _fgtPersistQueries(queries) {
-  localStorage.setItem("shelob-fgt-queries", JSON.stringify(queries));
+  localStorage.setItem("shelob-fgt-queries", JSON.stringify({ v: _FGT_QUERIES_VERSION, queries: queries }));
 }
 
 function _fgtRenderSavedSelect(queries, selectValue) {
@@ -1467,19 +1473,22 @@ var _ENTRA_PRESET_QUERIES = [
   },
 ];
 
+var _ENTRA_QUERIES_VERSION = 1;
+
 function _entraLoadQueries() {
   try {
     var stored = JSON.parse(localStorage.getItem("shelob-entra-queries") || "null");
-    if (!stored) {
-      localStorage.setItem("shelob-entra-queries", JSON.stringify(_ENTRA_PRESET_QUERIES));
+    if (!stored || stored.v !== _ENTRA_QUERIES_VERSION) {
+      var initial = { v: _ENTRA_QUERIES_VERSION, queries: _ENTRA_PRESET_QUERIES.slice() };
+      localStorage.setItem("shelob-entra-queries", JSON.stringify(initial));
       return _ENTRA_PRESET_QUERIES.slice();
     }
-    return stored;
+    return stored.queries;
   } catch (_) { return []; }
 }
 
 function _entraPersistQueries(queries) {
-  localStorage.setItem("shelob-entra-queries", JSON.stringify(queries));
+  localStorage.setItem("shelob-entra-queries", JSON.stringify({ v: _ENTRA_QUERIES_VERSION, queries: queries }));
 }
 
 function _entraRenderSavedSelect(queries, selectValue) {
@@ -1664,19 +1673,22 @@ var _AD_PRESET_QUERIES = [
   },
 ];
 
+var _AD_QUERIES_VERSION = 1;
+
 function _adLoadQueries() {
   try {
     var stored = JSON.parse(localStorage.getItem("shelob-ad-queries") || "null");
-    if (!stored) {
-      localStorage.setItem("shelob-ad-queries", JSON.stringify(_AD_PRESET_QUERIES));
+    if (!stored || stored.v !== _AD_QUERIES_VERSION) {
+      var initial = { v: _AD_QUERIES_VERSION, queries: _AD_PRESET_QUERIES.slice() };
+      localStorage.setItem("shelob-ad-queries", JSON.stringify(initial));
       return _AD_PRESET_QUERIES.slice();
     }
-    return stored;
+    return stored.queries;
   } catch (_) { return []; }
 }
 
 function _adPersistQueries(queries) {
-  localStorage.setItem("shelob-ad-queries", JSON.stringify(queries));
+  localStorage.setItem("shelob-ad-queries", JSON.stringify({ v: _AD_QUERIES_VERSION, queries: queries }));
 }
 
 function _adRenderSavedSelect(queries, selectValue) {
