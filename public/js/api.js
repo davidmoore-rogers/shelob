@@ -145,6 +145,9 @@ const api = {
     ouiLookup: (id)     => request("POST", `/assets/${id}/oui-lookup`),
     ouiLookupAll: ()    => trackedRequest("OUI Lookup", "POST", "/assets/oui-lookup"),
     removeMac: (id, mac) => request("DELETE", `/assets/${id}/macs/${encodeURIComponent(mac)}`),
+    getIpHistory:         (id)  => request("GET",  `/assets/${id}/ip-history`),
+    getHistorySettings:   ()    => request("GET",  "/assets/ip-history-settings"),
+    updateHistorySettings:(body) => request("PUT",  "/assets/ip-history-settings", body),
   },
   integrations: {
     list:   ()       => request("GET", "/integrations"),

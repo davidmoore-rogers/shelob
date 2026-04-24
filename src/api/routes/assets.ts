@@ -13,6 +13,7 @@ import { logEvent, buildChanges } from "./events.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
+import { getIpHistory, getHistorySettings, updateHistorySettings, pruneOldHistory } from "../../services/assetIpHistoryService.js";
 
 const router = Router();
 
@@ -119,12 +120,46 @@ router.get("/", async (req, res, next) => {
   }
 });
 
+// GET /api/v1/assets/ip-history-settings — get history retention settings (all authenticated users)
+// Must be defined before /:id to avoid route shadowing.
+router.get("/ip-history-settings", async (_req, res, next) => {
+  try {
+    res.json(await getHistorySettings());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/v1/assets/ip-history-settings — update retention settings (assets admin)
+router.put("/ip-history-settings", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const { retentionDays } = z.object({ retentionDays: z.number().int().min(0).max(3650) }).parse(req.body);
+    await updateHistorySettings({ retentionDays });
+    const pruned = await pruneOldHistory();
+    logEvent({ action: "asset.history_settings.updated", actor: req.session?.username, message: `IP history retention set to ${retentionDays} day(s)${pruned ? `; pruned ${pruned} old record(s)` : ""}` });
+    res.json({ ok: true, pruned });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/v1/assets/:id — get single asset (all authenticated users)
 router.get("/:id", async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({ where: { id: req.params.id as string } });
     if (!asset) throw new AppError(404, "Asset not found");
     res.json(asset);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/v1/assets/:id/ip-history — IP address history for an asset (all authenticated users)
+router.get("/:id/ip-history", async (req, res, next) => {
+  try {
+    const asset = await prisma.asset.findUnique({ where: { id: req.params.id as string }, select: { id: true } });
+    if (!asset) throw new AppError(404, "Asset not found");
+    res.json(await getIpHistory(req.params.id as string));
   } catch (err) {
     next(err);
   }

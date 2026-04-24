@@ -89,6 +89,7 @@ shelob/
 │   │   ├── activeDirectoryService.ts # On-premise Active Directory computer discovery via LDAP/LDAPS
 │   │   ├── searchService.ts         # Global typeahead search (classifies IP/CIDR/MAC/text; parallel entity queries)
 │   │   ├── allocationTemplateService.ts # Saved multi-subnet allocation templates (Setting-backed)
+│   │   ├── assetIpHistoryService.ts # Asset IP history reads, retention settings, pruning (Setting-backed)
 │   │   ├── azureAuthService.ts      # Azure AD/Entra SAML SSO, user provisioning
 │   │   ├── totpService.ts           # RFC 6238 TOTP secret / code / backup-code helpers
 │   │   ├── dnsService.ts            # Reverse DNS lookup for assets
@@ -256,6 +257,15 @@ Asset
   tags            String[]
   createdBy       String?
 
+AssetIpHistory                  -- Auto-populated log of every IP each asset has held
+  id            UUID PK
+  assetId       UUID FK → Asset (cascade delete)
+  ip            String
+  source        String          -- "manual", "fortimanager", "fortigate", "dns", etc.
+  firstSeen     DateTime
+  lastSeen      DateTime
+  @@unique([assetId, ip])       -- one row per (asset, ip); lastSeen and source update on re-sighting
+
 User
   id            UUID PK
   username      String @unique
@@ -397,6 +407,9 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `POST   /assets/:id/dns-lookup`               — Reverse PTR lookup (IP → hostname); per-asset, user-triggered
 - `POST   /assets/:id/forward-lookup`           — Forward A/AAAA lookup (hostname/dnsName → IP); fills ipAddress when missing
 - `DELETE /assets/:id/macs/:mac`                — Remove one MAC from an asset's history (requires network admin)
+- `GET    /assets/:id/ip-history`               — List IP history entries for an asset (filtered by retention days). Auto-populated by the Prisma query extension in `src/db.ts` whenever any `asset.create` / `asset.update` writes an `ipAddress`, so discovery-sourced IPs are captured without changes to integration services.
+- `GET    /assets/ip-history-settings`          — `{ retentionDays }`; 0 = keep forever (default).
+- `PUT    /assets/ip-history-settings`          *(assets admin)* — `{ retentionDays }`; saving immediately prunes any history rows with `lastSeen` older than the new cutoff.
 
 ### Events — mixed scoping
 - `GET    /events`                              *(auth)* — Audit log (filter by level, action, resourceType)

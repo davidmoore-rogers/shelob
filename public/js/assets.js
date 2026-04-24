@@ -349,11 +349,16 @@ function _assetsUpdateBulkBar() {
 }
 
 async function openAssetSettingsModal() {
-  var defaults = { inactivityMonths: 0 };
+  var defaults = { inactivityMonths: 0, historyRetentionDays: 0 };
   try {
     var s = await api.events.getAssetDecommissionSettings();
     var m = Number(s.inactivityMonths);
     defaults.inactivityMonths = Number.isFinite(m) && m >= 0 ? Math.floor(m) : 0;
+  } catch (_) {}
+  try {
+    var hs = await api.assets.getHistorySettings();
+    var d = Number(hs.retentionDays);
+    defaults.historyRetentionDays = Number.isFinite(d) && d >= 0 ? Math.floor(d) : 0;
   } catch (_) {}
 
   var body =
@@ -362,6 +367,12 @@ async function openAssetSettingsModal() {
       '<input type="number" id="f-assets-inactivity-months" value="' + escapeHtml(String(defaults.inactivityMonths)) + '" min="0" max="120" style="max-width:120px">' +
       '<p class="hint">Assets whose <strong>Last Seen</strong> date is older than this many months are automatically moved to <strong>decommissioned</strong> status. ' +
         'Set to <strong>0</strong> to disable. The job runs every 24 hours.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>IP History Retention (days)</label>' +
+      '<input type="number" id="f-assets-history-retention" value="' + escapeHtml(String(defaults.historyRetentionDays)) + '" min="0" max="3650" style="max-width:120px">' +
+      '<p class="hint">IP address history older than this many days is removed. ' +
+        'Set to <strong>0</strong> to disable retention limits and keep history indefinitely.</p>' +
     '</div>';
 
   var footer =
@@ -375,9 +386,15 @@ async function openAssetSettingsModal() {
     btn.disabled = true;
     try {
       var v = parseInt(document.getElementById("f-assets-inactivity-months").value, 10);
-      await api.events.updateAssetDecommissionSettings({
-        inactivityMonths: Number.isFinite(v) && v >= 0 ? v : 0,
-      });
+      var r = parseInt(document.getElementById("f-assets-history-retention").value, 10);
+      await Promise.all([
+        api.events.updateAssetDecommissionSettings({
+          inactivityMonths: Number.isFinite(v) && v >= 0 ? v : 0,
+        }),
+        api.assets.updateHistorySettings({
+          retentionDays: Number.isFinite(r) && r >= 0 ? r : 0,
+        }),
+      ]);
       closeModal();
       showToast("Asset settings saved");
     } catch (err) {
@@ -780,13 +797,45 @@ async function openViewModal(id) {
       viewRow("Created", formatDate(a.createdAt)) +
       viewRow("Updated", formatDate(a.updatedAt)) +
     '</div>';
+    var histLabel = escapeHtml(a.hostname || a.ipAddress || a.id);
+    var historyBtn = '<button class="btn btn-secondary" onclick="openIpHistoryModal(\'' + a.id + '\',\'' + histLabel + '\')">History</button>';
     var footer = canManageAssets()
-      ? '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
-      : '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
+      ? historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button><button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
+      : historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
     openModal("Asset Details", body, footer, { wide: true });
     _wireHoverTriggersIn(document.querySelector('#modal-overlay .modal-body'));
   } catch (err) {
     showToast(err.message, "error");
+  }
+}
+
+async function openIpHistoryModal(assetId, label) {
+  var title = "IP History — " + (label || assetId);
+  var closeFooter = '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
+  openModal(title, '<p style="color:var(--color-text-secondary);padding:1rem 0">Loading…</p>', closeFooter, { wide: true });
+  try {
+    var history = await api.assets.getIpHistory(assetId);
+    var body;
+    if (!Array.isArray(history) || history.length === 0) {
+      body = '<p style="color:var(--color-text-secondary);padding:1rem 0">No IP history recorded for this asset.</p>';
+    } else {
+      var rows = history.map(function (h) {
+        return '<tr>' +
+          '<td class="mono">' + escapeHtml(h.ip || "-") + '</td>' +
+          '<td>' + escapeHtml(h.source || "-") + '</td>' +
+          '<td>' + (h.firstSeen ? escapeHtml(formatDate(h.firstSeen)) : "-") + '</td>' +
+          '<td>' + (h.lastSeen ? escapeHtml(formatDate(h.lastSeen)) : "-") + '</td>' +
+          '</tr>';
+      }).join("");
+      body =
+        '<div class="table-wrapper"><table class="data-table"><thead><tr>' +
+          '<th>IP Address</th><th>Source</th><th>First Seen</th><th>Last Seen</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    openModal(title, body, closeFooter, { wide: true });
+  } catch (err) {
+    closeModal();
+    showToast(err.message || "Failed to load IP history", "error");
   }
 }
 
