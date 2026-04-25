@@ -1989,6 +1989,12 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .slideover-overlay.open .slideover {
   transform: translateX(0);
 }
+/* Nested interface details panel: wider default so the stats row
+   ("in avg / in peak / out avg / out peak / errors") and the bps
+   throughput charts read on a single line. */
+#iface-panel {
+  width: clamp(760px, 60vw, 1500px);
+}
 .slideover-header {
   padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--color-border);
