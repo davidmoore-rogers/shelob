@@ -594,33 +594,51 @@ export async function discoverDhcpSubnets(
   const mgmtIfaceName = config.mgmtInterface || "mgmt";
   const useProxy = config.useProxy !== false; // default true
 
-  // Pre-resolve every FortiGate's management IP against FMG SERIALLY when
-  // we're in direct mode. FMG only handles one request at a time for this
-  // API user (see project memo "FMG concurrency limit"), so even though
-  // the per-device FortiGate work runs N-wide below, the FMG-side lookup
-  // that feeds it must be one-at-a-time to avoid locking the account.
-  //
-  // Proxy mode skips this pass entirely — processDevice still calls
-  // resolveDeviceMgmtIp inline there, but with concurrency forced to 1.
+  // Direct-mode dispatch is pipelined: a serial mgmt-IP resolver streams
+  // each FortiGate into the worker pool the moment its management IP is
+  // known, instead of resolving all 193 (or however many) IPs up front.
+  // FMG only handles one request at a time for this API user (see project
+  // memo "FMG concurrency limit"), so the resolver itself stays strictly
+  // serial — but each FortiGate is hit independently after that, so the
+  // workers (`discoveryParallelism`-wide) can run in parallel with the
+  // remaining lookups. Proxy mode skips the resolver entirely; processDevice
+  // calls resolveDeviceMgmtIp inline there with concurrency forced to 1.
   const mgmtIpByDevice = new Map<string, string>();
-  if (!useProxy) {
-    const connectedDevices = devicesData.filter(
-      (d) => d.conn_status === undefined || d.conn_status === 1,
-    );
-    log("discover.mgmtip.pre", "info", `Pre-resolving management IPs for ${connectedDevices.length} device(s) (serial, to protect FMG)`);
-    for (const raw of connectedDevices) {
-      if (signal?.aborted) break;
-      const name: string = raw.name || raw.hostname;
-      if (!name) continue;
-      try {
-        const ip = await resolveDeviceMgmtIp(baseUrl, config, name, mgmtIfaceName, signal);
-        if (ip) mgmtIpByDevice.set(name, ip);
-      } catch (err: any) {
-        log("discover.mgmtip.pre", "error", `${name}: Failed to resolve management IP — ${err.message || "Unknown error"}`, name);
-      }
+  const yieldDevicesAsReady = async function* (): AsyncGenerator<any> {
+    if (useProxy) {
+      for (const raw of devicesData) yield raw;
+      return;
     }
-    log("discover.mgmtip.pre", "info", `Pre-resolved ${mgmtIpByDevice.size} of ${connectedDevices.length} management IP(s)`);
-  }
+    const connectedCount = devicesData.filter(
+      (d) => d.conn_status === undefined || d.conn_status === 1,
+    ).length;
+    log("discover.mgmtip.pre", "info", `Streaming mgmt-IP resolution for ${connectedCount} connected device(s); FortiGate workers will start as IPs land`);
+    let resolved = 0;
+    let failed = 0;
+    for (const raw of devicesData) {
+      if (signal?.aborted) break;
+      const isConnected = raw.conn_status === undefined || raw.conn_status === 1;
+      const name: string = raw.name || raw.hostname;
+      if (isConnected && name) {
+        try {
+          const ip = await resolveDeviceMgmtIp(baseUrl, config, name, mgmtIfaceName, signal);
+          if (ip) {
+            mgmtIpByDevice.set(name, ip);
+            resolved++;
+          } else {
+            failed++;
+          }
+        } catch (err: any) {
+          failed++;
+          log("discover.mgmtip.pre", "error", `${name}: Failed to resolve management IP — ${err.message || "Unknown error"}`, name);
+        }
+      }
+      // Yield disconnected devices and resolve-failures too, so processDevice
+      // emits its standard skip log for each.
+      yield raw;
+    }
+    log("discover.mgmtip.pre", "info", `mgmt-IP resolution complete: ${resolved} resolved, ${failed} failed`);
+  };
 
   // Per-device discovery: runs all 8 RPC steps and returns local result arrays.
   // Isolated from shared state — safe to run concurrently across devices.
@@ -1251,7 +1269,7 @@ export async function discoverDhcpSubnets(
   const concurrency = useProxy ? 1 : Math.max(1, config.discoveryParallelism ?? 5);
   const executing = new Set<Promise<void>>();
 
-  for (const rawDevice of devicesData) {
+  for await (const rawDevice of yieldDevicesAsReady()) {
     if (signal?.aborted) break;
 
     const task: Promise<void> = (async () => {
