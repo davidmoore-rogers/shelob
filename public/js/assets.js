@@ -1238,6 +1238,25 @@ function _renderMonitorChart(container, data) {
     return '<line x1="' + x + '" y1="' + padT + '" x2="' + x + '" y2="' + (padT + innerH) + '" stroke="rgba(211,47,47,0.35)" stroke-width="1"/>';
   }).join("");
 
+  function fmtTooltipTs(ts) {
+    var d = new Date(ts);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+      " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+  }
+  function hitAttrs(s) {
+    return ' data-ts="' + escapeHtml(String(s.timestamp)) +
+      '" data-rtt="' + (typeof s.responseTimeMs === "number" ? s.responseTimeMs : "") +
+      '" data-ok="' + (s.success ? "1" : "0") +
+      '" data-err="' + escapeHtml(s.error || "") + '"';
+  }
+  // Transparent hit targets (r=7) on top of every sample so hover is forgiving
+  // for both the 1.5px dots and the 1px failure lines.
+  var hitTargets = samples.map(function (s) {
+    var x = xFor(s.timestamp);
+    var y = (s.success && typeof s.responseTimeMs === "number") ? yFor(s.responseTimeMs) : (padT + innerH / 2);
+    return '<circle class="monitor-hit" cx="' + x + '" cy="' + y + '" r="7" fill="transparent" style="cursor:crosshair"' + hitAttrs(s) + '/>';
+  }).join("");
+
   // Y-axis ticks
   var ticks = "";
   for (var i = 0; i <= 4; i++) {
@@ -1276,10 +1295,50 @@ function _renderMonitorChart(container, data) {
       oks.map(function (s) {
         return '<circle cx="' + xFor(s.timestamp) + '" cy="' + yFor(s.responseTimeMs) + '" r="1.5" fill="var(--color-accent)"/>';
       }).join("") +
-    '</svg>';
+      hitTargets +
+    '</svg>' +
+    '<div class="monitor-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
   container.innerHTML = svg;
   container.style.alignItems = "stretch";
   container.style.justifyContent = "flex-start";
+  container.style.position = "relative";
+
+  var tip = container.querySelector(".monitor-tooltip");
+  var svgEl = container.querySelector("svg");
+  function showTip(target, evt) {
+    var ts = target.getAttribute("data-ts");
+    var rtt = target.getAttribute("data-rtt");
+    var ok = target.getAttribute("data-ok") === "1";
+    var err = target.getAttribute("data-err");
+    var rttLine = ok && rtt !== "" ? (rtt + " ms") : '<span style="color:var(--color-danger,#d32f2f)">no response</span>';
+    var lossLine = ok ? "no" : '<span style="color:var(--color-danger,#d32f2f)">yes</span>';
+    var errLine = !ok && err ? '<div style="color:var(--color-text-secondary);margin-top:2px">' + escapeHtml(err) + '</div>' : '';
+    tip.innerHTML =
+      '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(fmtTooltipTs(ts)) + '</div>' +
+      '<div>Response: ' + rttLine + '</div>' +
+      '<div>Packet loss: ' + lossLine + '</div>' +
+      errLine;
+    tip.style.display = "block";
+    var rect = container.getBoundingClientRect();
+    var x = evt.clientX - rect.left + 12;
+    var y = evt.clientY - rect.top + 12;
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    if (x + tw > container.clientWidth - 4) x = evt.clientX - rect.left - tw - 12;
+    if (y + th > container.clientHeight - 4) y = evt.clientY - rect.top - th - 12;
+    if (x < 4) x = 4;
+    if (y < 4) y = 4;
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
+  }
+  svgEl.addEventListener("mousemove", function (evt) {
+    var t = evt.target;
+    if (t && t.classList && t.classList.contains("monitor-hit")) {
+      showTip(t, evt);
+    } else {
+      tip.style.display = "none";
+    }
+  });
+  svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
 }
 
 async function openIpHistoryModal(assetId, label) {
