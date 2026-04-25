@@ -1075,8 +1075,48 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
         })),
       });
     }
+    // Mirror per-interface IPs+MACs into Asset.associatedIps. Replaces what
+    // the old FMG/FortiGate Phase 4b used to write — discovery no longer
+    // populates interface IPs, so the System tab is the single source for
+    // them once monitoring is on. Manual entries (`source: "manual"`) are
+    // preserved across pulls.
+    const associatedIps = buildAssociatedIpsFromInterfaces(assetId, d.interfaces, now);
+    if (associatedIps !== null) {
+      await prisma.asset.update({ where: { id: assetId }, data: { associatedIps: associatedIps as any } });
+    }
   }
   await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
+}
+
+/**
+ * Build the new Asset.associatedIps payload from a fresh interface scrape.
+ * Returns null when the asset doesn't exist or the scrape returned no
+ * interface IPs (in which case we leave whatever is there alone — better to
+ * keep a stale-ish list than wipe it on a transient empty result).
+ */
+async function buildAssociatedIpsFromInterfaces(
+  assetId: string,
+  interfaces: InterfaceSample[],
+  now: Date,
+): Promise<unknown[] | null> {
+  const monitorEntries: Array<Record<string, unknown>> = [];
+  for (const i of interfaces) {
+    if (!i.ipAddress) continue;
+    monitorEntries.push({
+      ip:            i.ipAddress,
+      interfaceName: i.ifName,
+      ...(i.macAddress ? { mac: i.macAddress } : {}),
+      source:        "monitor-system-info",
+      lastSeen:      now.toISOString(),
+    });
+  }
+  if (monitorEntries.length === 0) return null;
+
+  const asset = await prisma.asset.findUnique({ where: { id: assetId }, select: { associatedIps: true } });
+  if (!asset) return null;
+  const existing: any[] = Array.isArray(asset.associatedIps) ? (asset.associatedIps as any[]) : [];
+  const manualEntries = existing.filter((e: any) => e?.source === "manual");
+  return [...manualEntries, ...monitorEntries];
 }
 
 // ─── Persisting a probe result ──────────────────────────────────────────────

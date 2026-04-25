@@ -1875,50 +1875,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   }
 
   // ══════════════════════════════════════════════════════════════════════════════
-  // Phase 4b — Update FortiGate asset associatedIps from non-management interface IPs
+  // Phase 4b — (intentionally removed) FortiGate associatedIps from interface IPs
   // ══════════════════════════════════════════════════════════════════════════════
-
-  const ifaceIpsByDevice = new Map<string, Array<{ ip: string; interfaceName: string }>>();
-  const totalNonMgmtIps = result.interfaceIps.filter((ip) => ip.ipAddress && ip.role !== "management").length;
-  for (const ifaceIp of result.interfaceIps) {
-    if (!ifaceIp.ipAddress || ifaceIp.role === "management") continue;
-    const list = ifaceIpsByDevice.get(ifaceIp.device) ?? [];
-    list.push({ ip: ifaceIp.ipAddress, interfaceName: ifaceIp.interfaceName });
-    ifaceIpsByDevice.set(ifaceIp.device, list);
-  }
-  syncLog("info", `Phase 4b: ${totalNonMgmtIps} non-management interface IP(s) across ${ifaceIpsByDevice.size} device(s)`);
-
-  for (const [deviceName, ifaces] of ifaceIpsByDevice) {
-    const matchingDevice = result.devices.find((d: any) => d.name === deviceName || d.hostname === deviceName);
-    let asset: any = matchingDevice?.serial ? assetIdx.findBySerial(matchingDevice.serial) : null;
-    let matchedBy = asset ? "serial" : "";
-    if (!asset) {
-      asset = assetIdx.findByEntry(undefined, deviceName, undefined);
-      if (asset) matchedBy = "hostname";
-    }
-    if (!asset) {
-      syncLog("info", `Phase 4b: ${deviceName}: no matching asset found (serial=${matchingDevice?.serial || "n/a"}, hostname=${deviceName}) — ${ifaces.length} IP(s) dropped`);
-      continue;
-    }
-
-    const existingIps: any[] = Array.isArray(asset.associatedIps) ? (asset.associatedIps as any[]) : [];
-    const manualIps = existingIps.filter((e: any) => e.source === "manual");
-    const discoveredIps = ifaces.map((iface) => ({
-      ip: iface.ip,
-      interfaceName: iface.interfaceName,
-      source: "fmg-discovery",
-      lastSeen: now,
-    }));
-
-    const newAssociatedIps = [...manualIps, ...discoveredIps];
-    try {
-      await prisma.asset.update({ where: { id: asset.id }, data: { associatedIps: newAssociatedIps } });
-      asset.associatedIps = newAssociatedIps;
-      syncLog("info", `Phase 4b: ${deviceName}: matched by ${matchedBy} (asset ${asset.id}) — wrote ${discoveredIps.length} discovered + ${manualIps.length} manual IP(s)`);
-    } catch (err: any) {
-      syncLog("error", `Failed to update associatedIps for ${deviceName}: ${err.message || "Unknown error"}`);
-    }
-  }
+  //
+  // Per-interface IPs and MACs for the FortiGate itself are now populated by
+  // the System tab's interface scrape (monitoringService.collectSystemInfo +
+  // recordSystemInfoResult), which runs on the configurable telemetry cadence
+  // once monitoring is enabled on the asset. Discovery no longer races to
+  // overwrite associatedIps here — the live monitor pull is the single source.
+  // Manual associatedIps entries (`source: "manual"`) survive the monitor pull
+  // by the same merge logic that used to live in this phase.
+  syncLog("info", "Phase 4b: skipped — interface IPs/MACs are now managed by the System tab when monitoring is enabled");
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 5 — Create DHCP lease/reservation entries (in-memory lookups)
