@@ -18,13 +18,23 @@ export interface SnmpV2cConfig {
   port?: number;
 }
 
+export type SnmpV3AuthProtocol = "MD5" | "SHA" | "SHA224" | "SHA256" | "SHA384" | "SHA512";
+export type SnmpV3PrivProtocol = "DES" | "AES" | "AES256B" | "AES256R";
+
+export const SNMP_V3_AUTH_PROTOCOLS: readonly SnmpV3AuthProtocol[] = [
+  "MD5", "SHA", "SHA224", "SHA256", "SHA384", "SHA512",
+];
+export const SNMP_V3_PRIV_PROTOCOLS: readonly SnmpV3PrivProtocol[] = [
+  "DES", "AES", "AES256B", "AES256R",
+];
+
 export interface SnmpV3Config {
   version: "v3";
   username: string;
   securityLevel: "noAuthNoPriv" | "authNoPriv" | "authPriv";
-  authProtocol?: "MD5" | "SHA";
+  authProtocol?: SnmpV3AuthProtocol;
   authKey?: string;
-  privProtocol?: "DES" | "AES";
+  privProtocol?: SnmpV3PrivProtocol;
   privKey?: string;
   port?: number;
 }
@@ -121,16 +131,22 @@ function validateSnmpConfig(config: Record<string, unknown>): void {
       throw new AppError(400, "SNMP v3 requires securityLevel noAuthNoPriv, authNoPriv, or authPriv");
     }
     if (level === "authNoPriv" || level === "authPriv") {
-      if (config.authProtocol !== "MD5" && config.authProtocol !== "SHA") {
-        throw new AppError(400, "SNMP v3 authProtocol must be MD5 or SHA when auth is enabled");
+      if (!SNMP_V3_AUTH_PROTOCOLS.includes(config.authProtocol as SnmpV3AuthProtocol)) {
+        throw new AppError(
+          400,
+          `SNMP v3 authProtocol must be one of ${SNMP_V3_AUTH_PROTOCOLS.join(", ")} when auth is enabled`,
+        );
       }
       if (typeof config.authKey !== "string" || !config.authKey) {
         throw new AppError(400, "SNMP v3 authKey is required when auth is enabled");
       }
     }
     if (level === "authPriv") {
-      if (config.privProtocol !== "DES" && config.privProtocol !== "AES") {
-        throw new AppError(400, "SNMP v3 privProtocol must be DES or AES when authPriv is selected");
+      if (!SNMP_V3_PRIV_PROTOCOLS.includes(config.privProtocol as SnmpV3PrivProtocol)) {
+        throw new AppError(
+          400,
+          `SNMP v3 privProtocol must be one of ${SNMP_V3_PRIV_PROTOCOLS.join(", ")} when authPriv is selected`,
+        );
       }
       if (typeof config.privKey !== "string" || !config.privKey) {
         throw new AppError(400, "SNMP v3 privKey is required when authPriv is selected");

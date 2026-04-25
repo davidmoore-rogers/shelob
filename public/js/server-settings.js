@@ -2537,8 +2537,12 @@ function credSnmpForm(cfg) {
       '</div>' +
       '<div class="form-group"><label>Auth Protocol</label>' +
         '<select id="f-snmp-authproto">' +
-          '<option value="SHA"' + (v3.authProtocol === "SHA" ? " selected" : "") + '>SHA</option>' +
-          '<option value="MD5"' + (v3.authProtocol === "MD5" ? " selected" : "") + '>MD5</option>' +
+          '<option value="SHA"'    + (v3.authProtocol === "SHA"    ? " selected" : "") + '>SHA-1 (HMAC-SHA-96)</option>' +
+          '<option value="MD5"'    + (v3.authProtocol === "MD5"    ? " selected" : "") + '>MD5 (HMAC-MD5-96)</option>' +
+          '<option value="SHA224"' + (v3.authProtocol === "SHA224" ? " selected" : "") + '>SHA-224</option>' +
+          '<option value="SHA256"' + (v3.authProtocol === "SHA256" ? " selected" : "") + '>SHA-256</option>' +
+          '<option value="SHA384"' + (v3.authProtocol === "SHA384" ? " selected" : "") + '>SHA-384</option>' +
+          '<option value="SHA512"' + (v3.authProtocol === "SHA512" ? " selected" : "") + '>SHA-512</option>' +
         '</select>' +
       '</div>' +
       '<div class="form-group"><label>Auth Key</label>' +
@@ -2546,8 +2550,10 @@ function credSnmpForm(cfg) {
       '</div>' +
       '<div class="form-group"><label>Priv Protocol</label>' +
         '<select id="f-snmp-privproto">' +
-          '<option value="AES"' + (v3.privProtocol === "AES" ? " selected" : "") + '>AES</option>' +
-          '<option value="DES"' + (v3.privProtocol === "DES" ? " selected" : "") + '>DES</option>' +
+          '<option value="AES"'     + (v3.privProtocol === "AES"     ? " selected" : "") + '>AES-128 (CFB)</option>' +
+          '<option value="DES"'     + (v3.privProtocol === "DES"     ? " selected" : "") + '>DES (CBC, 56-bit)</option>' +
+          '<option value="AES256B"' + (v3.privProtocol === "AES256B" ? " selected" : "") + '>AES-256 (Blumenthal draft)</option>' +
+          '<option value="AES256R"' + (v3.privProtocol === "AES256R" ? " selected" : "") + '>AES-256 (Reeder draft / Cisco)</option>' +
         '</select>' +
       '</div>' +
       '<div class="form-group"><label>Priv Key</label>' +

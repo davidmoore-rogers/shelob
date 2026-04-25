@@ -310,6 +310,8 @@ Credential                      -- Named credentials for monitoring probes (SNMP
   config        Json            -- Type-specific:
                                 --   snmp v2c: { version: "v2c", community, port? }
                                 --   snmp v3:  { version: "v3", username, securityLevel, authProtocol?, authKey?, privProtocol?, privKey?, port? }
+                                --             authProtocol: "MD5" | "SHA" (SHA-1) | "SHA224" | "SHA256" | "SHA384" | "SHA512"
+                                --             privProtocol: "DES" | "AES" (AES-128) | "AES256B" (Blumenthal draft) | "AES256R" (Reeder draft / Cisco)
                                 --   winrm:    { username, password, port?, useHttps? }
                                 --   ssh:      { username, password? | privateKey?, port? }
   -- Sensitive fields (community, authKey, privKey, password, privateKey) are stored plaintext and masked

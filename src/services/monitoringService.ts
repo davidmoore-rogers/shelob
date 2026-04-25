@@ -217,6 +217,28 @@ async function probeIcmp(host: string, start: number): Promise<ProbeResult> {
   });
 }
 
+function mapSnmpAuthProtocol(value: unknown): unknown {
+  switch (value) {
+    case "MD5":    return snmp.AuthProtocols.md5;
+    case "SHA":    return snmp.AuthProtocols.sha;
+    case "SHA224": return snmp.AuthProtocols.sha224;
+    case "SHA256": return snmp.AuthProtocols.sha256;
+    case "SHA384": return snmp.AuthProtocols.sha384;
+    case "SHA512": return snmp.AuthProtocols.sha512;
+    default: throw new Error(`Unsupported SNMP v3 authProtocol "${String(value)}"`);
+  }
+}
+
+function mapSnmpPrivProtocol(value: unknown): unknown {
+  switch (value) {
+    case "DES":     return snmp.PrivProtocols.des;
+    case "AES":     return snmp.PrivProtocols.aes;
+    case "AES256B": return snmp.PrivProtocols.aes256b;
+    case "AES256R": return snmp.PrivProtocols.aes256r;
+    default: throw new Error(`Unsupported SNMP v3 privProtocol "${String(value)}"`);
+  }
+}
+
 async function probeSnmp(host: string, config: Record<string, unknown>, start: number): Promise<ProbeResult> {
   const port = toPositiveInt(config.port, 161);
   const version = config.version === "v3" ? "v3" : "v2c";
@@ -245,18 +267,16 @@ async function probeSnmp(host: string, config: Record<string, unknown>, start: n
           : config.securityLevel === "authNoPriv"
             ? snmp.SecurityLevel.authNoPriv
             : snmp.SecurityLevel.authPriv;
-        const authProtocol = config.authProtocol === "MD5" ? snmp.AuthProtocols.md5 : snmp.AuthProtocols.sha;
-        const privProtocol = config.privProtocol === "DES" ? snmp.PrivProtocols.des : snmp.PrivProtocols.aes;
         const user: any = {
           name: String(config.username || ""),
           level: securityLevel,
         };
         if (securityLevel !== snmp.SecurityLevel.noAuthNoPriv) {
-          user.authProtocol = authProtocol;
+          user.authProtocol = mapSnmpAuthProtocol(config.authProtocol);
           user.authKey      = String(config.authKey || "");
         }
         if (securityLevel === snmp.SecurityLevel.authPriv) {
-          user.privProtocol = privProtocol;
+          user.privProtocol = mapSnmpPrivProtocol(config.privProtocol);
           user.privKey      = String(config.privKey || "");
         }
         session = snmp.createV3Session(host, user, {
