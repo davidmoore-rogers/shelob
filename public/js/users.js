@@ -28,7 +28,7 @@ async function loadUsers() {
   try {
     var users = await api.users.list();
     if (users.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No users found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No users found.</td></tr>';
       return;
     }
     tbody.innerHTML = users.map(function (u) {
@@ -46,7 +46,7 @@ async function loadUsers() {
         : '<span style="color:var(--color-text-tertiary)">Never</span>';
       var displayName = u.displayName ? ' <span style="color:var(--color-text-tertiary);font-size:0.85em">(' + escapeHtml(u.displayName) + ')</span>' : '';
       var onlineDot = u.isOnline
-        ? '<span class="ip-status-dot ip-dot-available" title="Currently logged in" style="margin-right:6px;vertical-align:middle"></span>'
+        ? '<span class="ip-status-dot ip-dot-available" title="Currently logged in" style="vertical-align:middle"></span>'
         : '';
       var passwordBtn = u.authProvider === "azure" ? '' :
         '<button class="btn btn-sm btn-secondary" data-action="password" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Password</button>';
@@ -68,7 +68,8 @@ async function loadUsers() {
         }
       }
       return '<tr>' +
-        '<td>' + onlineDot + '<strong>' + escapeHtml(u.username) + '</strong>' + displayName + '</td>' +
+        '<td style="text-align:center">' + onlineDot + '</td>' +
+        '<td><strong>' + escapeHtml(u.username) + '</strong>' + displayName + '</td>' +
         '<td>' + authBadge + '</td>' +
         '<td>' + roleBadge + '</td>' +
         '<td>' + totpCell + '</td>' +
@@ -82,7 +83,7 @@ async function loadUsers() {
         '</td></tr>';
     }).join("");
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
 }
 
