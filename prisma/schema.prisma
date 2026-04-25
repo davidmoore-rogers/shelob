@@ -278,11 +278,19 @@ model Asset {
   monitorType         String?     // "fortimanager" | "fortigate" | "snmp" | "winrm" | "ssh" | "icmp"
   monitorCredentialId String?
   monitorCredential   Credential? @relation(fields: [monitorCredentialId], references: [id], onDelete: SetNull)
-  monitorIntervalSec  Int?        // Per-asset override; falls back to the global default when null
+  monitorIntervalSec  Int?        // Per-asset override for response-time probes; falls back to monitor.intervalSeconds
   monitorStatus       String?     // "up" | "down" | "unknown"
   lastMonitorAt       DateTime?
   lastResponseTimeMs  Int?
   consecutiveFailures Int         @default(0)
+
+  // System tab cadences. Telemetry = CPU% + memory snapshot, taken once per minute by default.
+  // System info = full interface + storage scrape, taken once per ten minutes by default.
+  // The per-asset *IntervalSec columns override the global setting when non-null.
+  telemetryIntervalSec   Int?
+  systemInfoIntervalSec  Int?
+  lastTelemetryAt        DateTime?
+  lastSystemInfoAt       DateTime?
 
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
@@ -290,6 +298,9 @@ model Asset {
   conflicts      Conflict[]
   ipHistory      AssetIpHistory[]
   monitorSamples AssetMonitorSample[]
+  telemetrySamples AssetTelemetrySample[]
+  interfaceSamples AssetInterfaceSample[]
+  storageSamples   AssetStorageSample[]
 
   @@index([ipAddress])
   @@index([macAddress])
@@ -319,6 +330,62 @@ model AssetMonitorSample {
 
   @@index([assetId, timestamp])
   @@map("asset_monitor_samples")
+}
+
+// CPU and memory snapshot, written once per `monitor.telemetryIntervalSeconds`
+// by the System tab cadence in monitorAssets. Only populated when the asset's
+// monitor type can deliver these (FortiOS/SNMP/WinRM); ICMP/SSH yield nothing.
+// `cpuPct` is a 0-100 percentage; memory is bytes (BigInt to avoid overflow on
+// large servers).
+model AssetTelemetrySample {
+  id             String   @id @default(uuid())
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  timestamp      DateTime @default(now())
+  cpuPct         Float?
+  memUsedBytes   BigInt?
+  memTotalBytes  BigInt?
+
+  @@index([assetId, timestamp])
+  @@map("asset_telemetry_samples")
+}
+
+// Per-interface snapshot, written once per `monitor.systemInfoIntervalSeconds`.
+// Many rows per scrape — one per interface returned by the device. inOctets /
+// outOctets are cumulative SNMP/FortiOS counters; subtracting consecutive
+// samples gives throughput for charting.
+model AssetInterfaceSample {
+  id             String   @id @default(uuid())
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  timestamp      DateTime @default(now())
+  ifName         String
+  adminStatus    String?
+  operStatus     String?
+  speedBps       BigInt?
+  ipAddress      String?
+  macAddress     String?
+  inOctets       BigInt?
+  outOctets      BigInt?
+
+  @@index([assetId, timestamp])
+  @@index([assetId, ifName, timestamp])
+  @@map("asset_interface_samples")
+}
+
+// Per-mountpoint storage snapshot, written alongside interface samples.
+model AssetStorageSample {
+  id             String   @id @default(uuid())
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  timestamp      DateTime @default(now())
+  mountPath      String
+  totalBytes     BigInt?
+  usedBytes      BigInt?
+
+  @@index([assetId, timestamp])
+  @@index([assetId, mountPath, timestamp])
+  @@map("asset_storage_samples")
 }
 
 model AssetIpHistory {
