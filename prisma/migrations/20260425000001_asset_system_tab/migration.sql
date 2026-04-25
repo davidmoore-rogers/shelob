@@ -12,6 +12,10 @@ CREATE TABLE "asset_telemetry_samples" (
     "assetId" TEXT NOT NULL,
     "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "cpuPct" DOUBLE PRECISION,
+    -- memPct is set when the source reports memory only as a percentage
+    -- (FortiOS); memUsedBytes/memTotalBytes are set when the source reports
+    -- absolute bytes (SNMP, WMI). Either pair may be present.
+    "memPct" DOUBLE PRECISION,
     "memUsedBytes" BIGINT,
     "memTotalBytes" BIGINT,
 

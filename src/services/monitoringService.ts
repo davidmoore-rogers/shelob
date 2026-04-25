@@ -57,6 +57,15 @@ export interface MonitorSettings {
   intervalSeconds: number;
   failureThreshold: number;
   sampleRetentionDays: number;
+  // System tab cadences. Telemetry = CPU% + memory snapshot (lightweight,
+  // ~60s by default). System info = full interface + storage scrape
+  // (heavier, ~600s/10min by default). Retention is per stream so we can
+  // keep CPU/mem trends longer than per-interface counters if storage
+  // pressure becomes an issue.
+  telemetryIntervalSeconds:  number;
+  systemInfoIntervalSeconds: number;
+  telemetryRetentionDays:    number;
+  systemInfoRetentionDays:   number;
 }
 
 const SETTING_KEY = "monitorSettings";
@@ -65,6 +74,10 @@ const DEFAULT_SETTINGS: MonitorSettings = {
   intervalSeconds: 30,
   failureThreshold: 3,
   sampleRetentionDays: 30,
+  telemetryIntervalSeconds:  60,
+  systemInfoIntervalSeconds: 600,
+  telemetryRetentionDays:    30,
+  systemInfoRetentionDays:   30,
 };
 
 const PROBE_TIMEOUT_MS = 10_000;
@@ -90,18 +103,27 @@ export async function getMonitorSettings(): Promise<MonitorSettings> {
   const row = await prisma.setting.findUnique({ where: { key: SETTING_KEY } });
   const v = (row?.value as Record<string, unknown> | null) ?? {};
   return {
-    intervalSeconds:     toPositiveInt(v.intervalSeconds,     DEFAULT_SETTINGS.intervalSeconds),
-    failureThreshold:    toPositiveInt(v.failureThreshold,    DEFAULT_SETTINGS.failureThreshold),
-    sampleRetentionDays: toPositiveInt(v.sampleRetentionDays, DEFAULT_SETTINGS.sampleRetentionDays),
+    intervalSeconds:           toPositiveInt(v.intervalSeconds,           DEFAULT_SETTINGS.intervalSeconds),
+    failureThreshold:          toPositiveInt(v.failureThreshold,          DEFAULT_SETTINGS.failureThreshold),
+    sampleRetentionDays:       toPositiveInt(v.sampleRetentionDays,       DEFAULT_SETTINGS.sampleRetentionDays),
+    telemetryIntervalSeconds:  toPositiveInt(v.telemetryIntervalSeconds,  DEFAULT_SETTINGS.telemetryIntervalSeconds),
+    systemInfoIntervalSeconds: toPositiveInt(v.systemInfoIntervalSeconds, DEFAULT_SETTINGS.systemInfoIntervalSeconds),
+    telemetryRetentionDays:    toPositiveInt(v.telemetryRetentionDays,    DEFAULT_SETTINGS.telemetryRetentionDays),
+    systemInfoRetentionDays:   toPositiveInt(v.systemInfoRetentionDays,   DEFAULT_SETTINGS.systemInfoRetentionDays),
   };
 }
 
 export async function updateMonitorSettings(input: Partial<MonitorSettings>): Promise<MonitorSettings> {
   const current = await getMonitorSettings();
+  const pick = (v: unknown, fallback: number): number => v != null ? toPositiveInt(v, fallback) : fallback;
   const next: MonitorSettings = {
-    intervalSeconds:     input.intervalSeconds     != null ? toPositiveInt(input.intervalSeconds,     current.intervalSeconds)     : current.intervalSeconds,
-    failureThreshold:    input.failureThreshold    != null ? toPositiveInt(input.failureThreshold,    current.failureThreshold)    : current.failureThreshold,
-    sampleRetentionDays: input.sampleRetentionDays != null ? toPositiveInt(input.sampleRetentionDays, current.sampleRetentionDays) : current.sampleRetentionDays,
+    intervalSeconds:           pick(input.intervalSeconds,           current.intervalSeconds),
+    failureThreshold:          pick(input.failureThreshold,          current.failureThreshold),
+    sampleRetentionDays:       pick(input.sampleRetentionDays,       current.sampleRetentionDays),
+    telemetryIntervalSeconds:  pick(input.telemetryIntervalSeconds,  current.telemetryIntervalSeconds),
+    systemInfoIntervalSeconds: pick(input.systemInfoIntervalSeconds, current.systemInfoIntervalSeconds),
+    telemetryRetentionDays:    pick(input.telemetryRetentionDays,    current.telemetryRetentionDays),
+    systemInfoRetentionDays:   pick(input.systemInfoRetentionDays,   current.systemInfoRetentionDays),
   };
   await prisma.setting.upsert({
     where:  { key: SETTING_KEY },
@@ -463,6 +485,600 @@ async function probeSsh(host: string, config: Record<string, unknown>, start: nu
   });
 }
 
+// ─── System tab: telemetry + system-info collection ────────────────────────
+//
+// These run on independent cadences from the response-time probe. Telemetry
+// (CPU/memory) ticks every ~60s; system info (interfaces + storage) ticks
+// every ~10min. ICMP and SSH cannot deliver this data. WinRM is not yet
+// supported — see `collectTelemetryWinRm` / `collectSystemInfoWinRm` below.
+
+export interface TelemetrySample {
+  cpuPct?:        number | null;
+  memPct?:        number | null;
+  memUsedBytes?:  number | null;
+  memTotalBytes?: number | null;
+}
+
+export interface InterfaceSample {
+  ifName:       string;
+  adminStatus?: string | null;
+  operStatus?:  string | null;
+  speedBps?:    number | null;
+  ipAddress?:   string | null;
+  macAddress?:  string | null;
+  inOctets?:    number | null;
+  outOctets?:   number | null;
+}
+
+export interface StorageSample {
+  mountPath:   string;
+  totalBytes?: number | null;
+  usedBytes?:  number | null;
+}
+
+export interface SystemInfoSample {
+  interfaces: InterfaceSample[];
+  storage:    StorageSample[];
+}
+
+export interface CollectionResult<T> {
+  /** false → monitor type can't deliver this data; caller should not stamp lastXxxAt */
+  supported: boolean;
+  /** Set on a successful collection (even if some sub-fields are null). */
+  data?: T;
+  /** Short failure reason; only set when supported && data is undefined. */
+  error?: string;
+}
+
+/** Cap on the amount of work a single subtree walk will do. Guards against pathological devices that publish huge ifTables. */
+const SNMP_WALK_MAX = 1000;
+
+export async function collectTelemetry(assetId: string): Promise<CollectionResult<TelemetrySample>> {
+  const asset = await prisma.asset.findUnique({
+    where: { id: assetId },
+    include: { monitorCredential: true, discoveredByIntegration: true },
+  });
+  if (!asset)            return { supported: false, error: "Asset not found" };
+  if (!asset.monitored)  return { supported: false };
+  if (!asset.monitorType) return { supported: false };
+  const type = asset.monitorType as MonitorType;
+  const targetIp =
+    asset.ipAddress ||
+    (type === "activedirectory" ? (asset.dnsName || asset.hostname) : null);
+  if (!targetIp) return { supported: false, error: "Asset has no IP address" };
+
+  try {
+    if (type === "fortimanager" || type === "fortigate") {
+      if (!asset.discoveredByIntegration) return { supported: true, error: "Originating integration not found" };
+      const data = await collectTelemetryFortinet(targetIp, asset.discoveredByIntegration as any);
+      return { supported: true, data };
+    }
+    if (type === "snmp") {
+      if (!asset.monitorCredential) return { supported: true, error: "No SNMP credential selected" };
+      const data = await collectTelemetrySnmp(targetIp, asset.monitorCredential.config as Record<string, unknown>);
+      return { supported: true, data };
+    }
+    if (type === "winrm" || type === "activedirectory") {
+      // TODO: implement WMI Enumerate over WS-Management. Tracked separately.
+      return { supported: false };
+    }
+    return { supported: false };
+  } catch (err: any) {
+    return { supported: true, error: err?.message || "Telemetry collection failed" };
+  }
+}
+
+export async function collectSystemInfo(assetId: string): Promise<CollectionResult<SystemInfoSample>> {
+  const asset = await prisma.asset.findUnique({
+    where: { id: assetId },
+    include: { monitorCredential: true, discoveredByIntegration: true },
+  });
+  if (!asset)            return { supported: false, error: "Asset not found" };
+  if (!asset.monitored)  return { supported: false };
+  if (!asset.monitorType) return { supported: false };
+  const type = asset.monitorType as MonitorType;
+  const targetIp =
+    asset.ipAddress ||
+    (type === "activedirectory" ? (asset.dnsName || asset.hostname) : null);
+  if (!targetIp) return { supported: false, error: "Asset has no IP address" };
+
+  try {
+    if (type === "fortimanager" || type === "fortigate") {
+      if (!asset.discoveredByIntegration) return { supported: true, error: "Originating integration not found" };
+      const data = await collectSystemInfoFortinet(targetIp, asset.discoveredByIntegration as any);
+      return { supported: true, data };
+    }
+    if (type === "snmp") {
+      if (!asset.monitorCredential) return { supported: true, error: "No SNMP credential selected" };
+      const data = await collectSystemInfoSnmp(targetIp, asset.monitorCredential.config as Record<string, unknown>);
+      return { supported: true, data };
+    }
+    if (type === "winrm" || type === "activedirectory") {
+      return { supported: false };
+    }
+    return { supported: false };
+  } catch (err: any) {
+    return { supported: true, error: err?.message || "System info collection failed" };
+  }
+}
+
+// ─── FortiOS collectors ─────────────────────────────────────────────────────
+//
+// FortiOS exposes CPU and memory only as percentages via the resource/usage
+// monitor, so memUsedBytes/memTotalBytes are left null. The interface monitor
+// returns the cumulative tx/rx counters and link state. There's no real
+// notion of mountable storage on a FortiGate, so the storage list stays empty.
+
+function buildFortinetConfig(host: string, integration: { type: string; config: Record<string, unknown> }): FortiGateConfig | { error: string } {
+  const cfg = integration.config || {};
+  let apiUser  = "";
+  let apiToken = "";
+  if (integration.type === "fortimanager") {
+    apiUser  = String(cfg.fortigateApiUser  || "");
+    apiToken = String(cfg.fortigateApiToken || "");
+    if (!apiToken) return { error: "FortiManager direct-mode API token not configured" };
+  } else {
+    apiUser  = String(cfg.apiUser  || "");
+    apiToken = String(cfg.apiToken || "");
+    if (!apiToken) return { error: "FortiGate API token not configured" };
+  }
+  return {
+    host,
+    apiUser,
+    apiToken,
+    verifySsl: cfg.verifySsl !== true ? false : true,
+  };
+}
+
+async function collectTelemetryFortinet(host: string, integration: { type: string; config: Record<string, unknown> }): Promise<TelemetrySample> {
+  const fg = buildFortinetConfig(host, integration);
+  if ("error" in fg) throw new Error(fg.error);
+
+  // /api/v2/monitor/system/resource/usage returns a `results` object keyed by
+  // resource name (cpu, mem, disk, session, ...). Each entry can be either an
+  // array of {interval, current, historical} samples or a single object,
+  // depending on FortiOS version. Pull whatever's freshest.
+  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/resource/usage", { query: { scope: "global" } });
+  const cpuPct = pickFortinetUsage(res?.cpu);
+  const memPct = pickFortinetUsage(res?.mem ?? res?.memory);
+  return { cpuPct, memPct, memUsedBytes: null, memTotalBytes: null };
+}
+
+function pickFortinetUsage(node: unknown): number | null {
+  if (node == null) return null;
+  // Flat number?
+  if (typeof node === "number" && Number.isFinite(node)) return clampPct(node);
+  // Object with `current`?
+  if (typeof node === "object" && !Array.isArray(node)) {
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.current === "number") return clampPct(obj.current);
+    // historical may be the freshest; take the last entry
+    if (Array.isArray(obj.historical) && obj.historical.length > 0) {
+      const last = obj.historical[obj.historical.length - 1];
+      if (typeof last === "number") return clampPct(last);
+    }
+  }
+  // Array of {interval, current, historical} — pick the entry with shortest
+  // interval (typically "1-min"), falling back to the first.
+  if (Array.isArray(node) && node.length > 0) {
+    const sorted = [...node].sort((a, b) => intervalRank(a?.interval) - intervalRank(b?.interval));
+    for (const entry of sorted) {
+      if (entry == null) continue;
+      if (typeof entry.current === "number") return clampPct(entry.current);
+      if (Array.isArray(entry.historical) && entry.historical.length > 0) {
+        const last = entry.historical[entry.historical.length - 1];
+        if (typeof last === "number") return clampPct(last);
+      }
+    }
+  }
+  return null;
+}
+
+function intervalRank(s: unknown): number {
+  // 1-min < 10-min < 30-min < 1-hour < 1-day < anything else
+  switch (s) {
+    case "1-min":  return 0;
+    case "10-min": return 1;
+    case "30-min": return 2;
+    case "1-hour": return 3;
+    case "1-day":  return 4;
+    default:       return 5;
+  }
+}
+
+function clampPct(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return Math.round(n * 100) / 100;
+}
+
+async function collectSystemInfoFortinet(host: string, integration: { type: string; config: Record<string, unknown> }): Promise<SystemInfoSample> {
+  const fg = buildFortinetConfig(host, integration);
+  if ("error" in fg) throw new Error(fg.error);
+
+  const interfaces: InterfaceSample[] = [];
+  try {
+    // The interface monitor returns a results object keyed by interface name.
+    const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface", { query: { scope: "vdom" } });
+    const obj = (res && typeof res === "object" && !Array.isArray(res)) ? res as Record<string, any> : {};
+    for (const [name, info] of Object.entries(obj)) {
+      if (!info || typeof info !== "object") continue;
+      const i = info as any;
+      // Pick the first IPv4 if the device exposes a list, else fall back to the legacy `ip` string.
+      let ip: string | null = null;
+      if (Array.isArray(i.ipv4_addresses) && i.ipv4_addresses.length > 0) {
+        const a = i.ipv4_addresses[0];
+        ip = typeof a === "string" ? a : (a?.ip || null);
+      } else if (typeof i.ip === "string") {
+        ip = i.ip.split(" ")[0];
+      }
+      const speedMbps = typeof i.speed === "number" ? i.speed : null;
+      interfaces.push({
+        ifName:      name,
+        adminStatus: i.status === "down" ? "down" : i.status === "up" ? "up" : (i.status ?? null),
+        operStatus:  i.link === false ? "down" : i.link === true ? "up" : null,
+        speedBps:    speedMbps != null ? Math.round(speedMbps * 1_000_000) : null,
+        ipAddress:   ip,
+        macAddress:  typeof i.mac === "string" ? i.mac.toUpperCase() : null,
+        inOctets:    pickFiniteNumber(i.rx_bytes),
+        outOctets:   pickFiniteNumber(i.tx_bytes),
+      });
+    }
+  } catch (err: any) {
+    // Re-throw — partial collection of interfaces is fine, but no interfaces
+    // means the call genuinely failed.
+    if (interfaces.length === 0) throw err;
+  }
+  return { interfaces, storage: [] };
+}
+
+function pickFiniteNumber(v: unknown): number | null {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ─── SNMP collectors ────────────────────────────────────────────────────────
+//
+// HOST-RESOURCES-MIB delivers CPU (hrProcessorLoad), memory (hrStorage rows
+// where hrStorageType = hrStorageRam), and storage (hrStorage rows where the
+// type is hrStorageFixedDisk). IF-MIB delivers per-interface counters. Both
+// are walked once per system-info pass.
+
+const OID = {
+  hrProcessorLoad:           "1.3.6.1.2.1.25.3.3.1.2",
+  hrStorageType:             "1.3.6.1.2.1.25.2.3.1.2",
+  hrStorageDescr:            "1.3.6.1.2.1.25.2.3.1.3",
+  hrStorageAllocationUnits:  "1.3.6.1.2.1.25.2.3.1.4",
+  hrStorageSize:             "1.3.6.1.2.1.25.2.3.1.5",
+  hrStorageUsed:             "1.3.6.1.2.1.25.2.3.1.6",
+  hrStorageRam:              "1.3.6.1.2.1.25.2.1.2",
+  hrStorageFixedDisk:        "1.3.6.1.2.1.25.2.1.4",
+  hrStorageRemovableDisk:    "1.3.6.1.2.1.25.2.1.5",
+  // IF-MIB
+  ifDescr:        "1.3.6.1.2.1.2.2.1.2",
+  ifSpeed:        "1.3.6.1.2.1.2.2.1.5",
+  ifPhysAddress:  "1.3.6.1.2.1.2.2.1.6",
+  ifAdminStatus:  "1.3.6.1.2.1.2.2.1.7",
+  ifOperStatus:   "1.3.6.1.2.1.2.2.1.8",
+  ifInOctets:     "1.3.6.1.2.1.2.2.1.10",
+  ifOutOctets:    "1.3.6.1.2.1.2.2.1.16",
+  ifName:         "1.3.6.1.2.1.31.1.1.1.1",
+  ifHCInOctets:   "1.3.6.1.2.1.31.1.1.1.6",
+  ifHCOutOctets:  "1.3.6.1.2.1.31.1.1.1.10",
+  ifHighSpeed:    "1.3.6.1.2.1.31.1.1.1.15",
+  ipAdEntIfIndex: "1.3.6.1.2.1.4.20.1.2",
+};
+
+function buildSnmpSession(host: string, config: Record<string, unknown>): any {
+  const port = toPositiveInt(config.port, 161);
+  const version = config.version === "v3" ? "v3" : "v2c";
+  if (version === "v2c") {
+    return snmp.createSession(host, String(config.community || ""), {
+      port,
+      version: snmp.Version2c,
+      timeout: PROBE_TIMEOUT_MS,
+      retries: 0,
+    });
+  }
+  const securityLevel = config.securityLevel === "noAuthNoPriv"
+    ? snmp.SecurityLevel.noAuthNoPriv
+    : config.securityLevel === "authNoPriv"
+      ? snmp.SecurityLevel.authNoPriv
+      : snmp.SecurityLevel.authPriv;
+  const user: any = { name: String(config.username || ""), level: securityLevel };
+  if (securityLevel !== snmp.SecurityLevel.noAuthNoPriv) {
+    user.authProtocol = mapSnmpAuthProtocol(config.authProtocol);
+    user.authKey      = String(config.authKey || "");
+  }
+  if (securityLevel === snmp.SecurityLevel.authPriv) {
+    user.privProtocol = mapSnmpPrivProtocol(config.privProtocol);
+    user.privKey      = String(config.privKey || "");
+  }
+  return snmp.createV3Session(host, user, {
+    port,
+    version: snmp.Version3,
+    timeout: PROBE_TIMEOUT_MS,
+    retries: 0,
+  });
+}
+
+/**
+ * Walk an OID subtree and return varbinds keyed by the index suffix that
+ * follows `baseOid.`. Stops once SNMP_WALK_MAX rows have been collected.
+ */
+function snmpWalk(session: any, baseOid: string): Promise<Map<string, any>> {
+  return new Promise((resolve, reject) => {
+    const out = new Map<string, any>();
+    const prefix = baseOid + ".";
+    let done = false;
+    const finish = (err?: Error) => {
+      if (done) return;
+      done = true;
+      if (err) reject(err);
+      else resolve(out);
+    };
+    try {
+      session.subtree(
+        baseOid,
+        20, // maxRepetitions
+        (varbinds: any[]) => {
+          for (const vb of varbinds) {
+            if (snmp.isVarbindError(vb)) continue;
+            if (typeof vb.oid !== "string" || !vb.oid.startsWith(prefix)) continue;
+            const suffix = vb.oid.slice(prefix.length);
+            out.set(suffix, vb.value);
+            if (out.size >= SNMP_WALK_MAX) return finish();
+          }
+        },
+        (err?: Error) => finish(err),
+      );
+    } catch (err: any) {
+      finish(err);
+    }
+  });
+}
+
+function snmpVbToString(v: unknown): string {
+  if (v == null) return "";
+  if (Buffer.isBuffer(v)) return v.toString("utf8").replace(/ +$/, "");
+  return String(v);
+}
+
+function snmpVbToNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "bigint") return Number(v);
+  if (Buffer.isBuffer(v) && v.length <= 8) {
+    let n = 0n;
+    for (const b of v) n = (n << 8n) | BigInt(b);
+    return Number(n);
+  }
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function snmpMacFromBuffer(v: unknown): string | null {
+  if (!Buffer.isBuffer(v) || v.length !== 6) return null;
+  return Array.from(v).map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
+}
+
+async function withSnmpSession<T>(host: string, config: Record<string, unknown>, fn: (s: any) => Promise<T>): Promise<T> {
+  const session = buildSnmpSession(host, config);
+  // net-snmp emits 'error' rather than throwing for socket/listener errors;
+  // attach a no-op listener so a stray error doesn't kill the process. The
+  // walk itself will still propagate the error through its callback.
+  session.on?.("error", () => {});
+  try {
+    return await fn(session);
+  } finally {
+    try { session.close?.(); } catch {}
+  }
+}
+
+async function collectTelemetrySnmp(host: string, config: Record<string, unknown>): Promise<TelemetrySample> {
+  return await withSnmpSession(host, config, async (session) => {
+    // CPU: average all hrProcessorLoad rows.
+    let cpuPct: number | null = null;
+    try {
+      const cpuRows = await snmpWalk(session, OID.hrProcessorLoad);
+      const vals: number[] = [];
+      for (const v of cpuRows.values()) {
+        const n = snmpVbToNumber(v);
+        if (n != null) vals.push(n);
+      }
+      if (vals.length > 0) cpuPct = clampPct(vals.reduce((a, b) => a + b, 0) / vals.length);
+    } catch { /* fall through; CPU stays null */ }
+
+    // Memory: walk hrStorage and locate the row whose hrStorageType is hrStorageRam.
+    let memUsedBytes: number | null = null;
+    let memTotalBytes: number | null = null;
+    let memPct: number | null = null;
+    try {
+      const types = await snmpWalk(session, OID.hrStorageType);
+      const ramIdx = [...types.entries()].find(([, v]) => snmpVbToString(v) === OID.hrStorageRam)?.[0];
+      if (ramIdx) {
+        const [units, size, used] = await Promise.all([
+          snmpWalk(session, OID.hrStorageAllocationUnits + "." + ramIdx).catch(() => new Map()),
+          snmpWalk(session, OID.hrStorageSize             + "." + ramIdx).catch(() => new Map()),
+          snmpWalk(session, OID.hrStorageUsed             + "." + ramIdx).catch(() => new Map()),
+        ]);
+        const u = snmpVbToNumber(units.get("")) ?? 1;
+        const s = snmpVbToNumber(size.get(""));
+        const ud = snmpVbToNumber(used.get(""));
+        if (s != null) memTotalBytes = s * u;
+        if (ud != null) memUsedBytes = ud * u;
+        if (memTotalBytes && memTotalBytes > 0 && memUsedBytes != null) {
+          memPct = clampPct((memUsedBytes / memTotalBytes) * 100);
+        }
+      }
+    } catch { /* fall through */ }
+
+    return { cpuPct, memPct, memUsedBytes, memTotalBytes };
+  });
+}
+
+async function collectSystemInfoSnmp(host: string, config: Record<string, unknown>): Promise<SystemInfoSample> {
+  return await withSnmpSession(host, config, async (session) => {
+    // Storage: walk hrStorage and pick rows tagged as fixed/removable disk.
+    const storage: StorageSample[] = [];
+    try {
+      const types = await snmpWalk(session, OID.hrStorageType);
+      const diskIdxs = [...types.entries()].filter(([, v]) => {
+        const t = snmpVbToString(v);
+        return t === OID.hrStorageFixedDisk || t === OID.hrStorageRemovableDisk;
+      }).map(([k]) => k);
+      if (diskIdxs.length > 0) {
+        const [descrs, units, sizes, useds] = await Promise.all([
+          snmpWalk(session, OID.hrStorageDescr).catch(() => new Map()),
+          snmpWalk(session, OID.hrStorageAllocationUnits).catch(() => new Map()),
+          snmpWalk(session, OID.hrStorageSize).catch(() => new Map()),
+          snmpWalk(session, OID.hrStorageUsed).catch(() => new Map()),
+        ]);
+        for (const idx of diskIdxs) {
+          const u = snmpVbToNumber(units.get(idx)) ?? 1;
+          const s = snmpVbToNumber(sizes.get(idx));
+          const ud = snmpVbToNumber(useds.get(idx));
+          storage.push({
+            mountPath:  snmpVbToString(descrs.get(idx)) || `disk-${idx}`,
+            totalBytes: s != null  ? s * u  : null,
+            usedBytes:  ud != null ? ud * u : null,
+          });
+        }
+      }
+    } catch { /* fall through; storage stays empty */ }
+
+    // Interfaces: build a map keyed by ifIndex from IF-MIB columns. Prefer
+    // ifName / ifHC*Octets / ifHighSpeed when present; otherwise fall back
+    // to the legacy 32-bit columns.
+    const interfaces: InterfaceSample[] = [];
+    try {
+      const [
+        names, descrs, admin, oper, speeds, hiSpeeds, mac,
+        in32, out32, inHC, outHC, ipMap,
+      ] = await Promise.all([
+        snmpWalk(session, OID.ifName).catch(() => new Map()),
+        snmpWalk(session, OID.ifDescr).catch(() => new Map()),
+        snmpWalk(session, OID.ifAdminStatus).catch(() => new Map()),
+        snmpWalk(session, OID.ifOperStatus).catch(() => new Map()),
+        snmpWalk(session, OID.ifSpeed).catch(() => new Map()),
+        snmpWalk(session, OID.ifHighSpeed).catch(() => new Map()),
+        snmpWalk(session, OID.ifPhysAddress).catch(() => new Map()),
+        snmpWalk(session, OID.ifInOctets).catch(() => new Map()),
+        snmpWalk(session, OID.ifOutOctets).catch(() => new Map()),
+        snmpWalk(session, OID.ifHCInOctets).catch(() => new Map()),
+        snmpWalk(session, OID.ifHCOutOctets).catch(() => new Map()),
+        snmpWalk(session, OID.ipAdEntIfIndex).catch(() => new Map()),
+      ]);
+
+      // Build ifIndex → first IP map by inverting ipAdEntIfIndex (suffix is the IP itself).
+      const ipByIfIndex = new Map<string, string>();
+      for (const [ip, idxRaw] of ipMap.entries()) {
+        const idx = String(snmpVbToNumber(idxRaw) ?? "");
+        if (!idx) continue;
+        if (!ipByIfIndex.has(idx)) ipByIfIndex.set(idx, ip);
+      }
+
+      const allIdx = new Set<string>([
+        ...names.keys(), ...descrs.keys(), ...admin.keys(), ...oper.keys(),
+      ]);
+      for (const idx of allIdx) {
+        const name = snmpVbToString(names.get(idx)) || snmpVbToString(descrs.get(idx)) || `if-${idx}`;
+        const speedHi = snmpVbToNumber(hiSpeeds.get(idx));
+        const speed32 = snmpVbToNumber(speeds.get(idx));
+        const speedBps = speedHi && speedHi > 0
+          ? speedHi * 1_000_000
+          : (speed32 != null ? speed32 : null);
+        const inHi = snmpVbToNumber(inHC.get(idx));
+        const outHi = snmpVbToNumber(outHC.get(idx));
+        interfaces.push({
+          ifName:      name,
+          adminStatus: ifStatusLabel(snmpVbToNumber(admin.get(idx))),
+          operStatus:  ifStatusLabel(snmpVbToNumber(oper.get(idx))),
+          speedBps,
+          ipAddress:   ipByIfIndex.get(idx) || null,
+          macAddress:  snmpMacFromBuffer(mac.get(idx)),
+          inOctets:    inHi != null  ? inHi  : snmpVbToNumber(in32.get(idx)),
+          outOctets:   outHi != null ? outHi : snmpVbToNumber(out32.get(idx)),
+        });
+      }
+    } catch { /* fall through */ }
+
+    return { interfaces, storage };
+  });
+}
+
+function ifStatusLabel(n: number | null): string | null {
+  switch (n) {
+    case 1: return "up";
+    case 2: return "down";
+    case 3: return "testing";
+    case 4: return "unknown";
+    case 5: return "dormant";
+    case 6: return "notPresent";
+    case 7: return "lowerLayerDown";
+    default: return null;
+  }
+}
+
+// ─── Persisting telemetry / system info ─────────────────────────────────────
+
+export async function recordTelemetryResult(assetId: string, result: CollectionResult<TelemetrySample>): Promise<void> {
+  if (!result.supported) return;
+  const now = new Date();
+  if (result.data) {
+    const d = result.data;
+    await prisma.assetTelemetrySample.create({
+      data: {
+        assetId,
+        timestamp: now,
+        cpuPct:        d.cpuPct ?? null,
+        memPct:        d.memPct ?? null,
+        memUsedBytes:  d.memUsedBytes  != null ? BigInt(Math.round(d.memUsedBytes))  : null,
+        memTotalBytes: d.memTotalBytes != null ? BigInt(Math.round(d.memTotalBytes)) : null,
+      },
+    });
+  }
+  // Always advance the cadence stamp so a transient failure doesn't make us
+  // hammer the device every 5 s.
+  await prisma.asset.update({ where: { id: assetId }, data: { lastTelemetryAt: now } });
+}
+
+export async function recordSystemInfoResult(assetId: string, result: CollectionResult<SystemInfoSample>): Promise<void> {
+  if (!result.supported) return;
+  const now = new Date();
+  if (result.data) {
+    const d = result.data;
+    if (d.interfaces.length > 0) {
+      await prisma.assetInterfaceSample.createMany({
+        data: d.interfaces.map((i) => ({
+          assetId,
+          timestamp: now,
+          ifName:      i.ifName,
+          adminStatus: i.adminStatus ?? null,
+          operStatus:  i.operStatus ?? null,
+          speedBps:    i.speedBps != null ? BigInt(Math.round(i.speedBps)) : null,
+          ipAddress:   i.ipAddress ?? null,
+          macAddress:  i.macAddress ?? null,
+          inOctets:    i.inOctets  != null ? BigInt(Math.round(i.inOctets))  : null,
+          outOctets:   i.outOctets != null ? BigInt(Math.round(i.outOctets)) : null,
+        })),
+      });
+    }
+    if (d.storage.length > 0) {
+      await prisma.assetStorageSample.createMany({
+        data: d.storage.map((s) => ({
+          assetId,
+          timestamp: now,
+          mountPath:  s.mountPath,
+          totalBytes: s.totalBytes != null ? BigInt(Math.round(s.totalBytes)) : null,
+          usedBytes:  s.usedBytes  != null ? BigInt(Math.round(s.usedBytes))  : null,
+        })),
+      });
+    }
+  }
+  await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
+}
+
 // ─── Persisting a probe result ──────────────────────────────────────────────
 
 /**
@@ -545,12 +1161,16 @@ interface RunStats {
   probed:    number;
   succeeded: number;
   failed:    number;
+  /** System tab cadences. Tallied separately so a slow telemetry call doesn't look like a probe failure. */
+  telemetry:  { collected: number; failed: number };
+  systemInfo: { collected: number; failed: number };
 }
 
 /**
- * One iteration of the monitor job: pick assets that are due and probe
- * them in parallel (small concurrency cap). Each asset's per-asset
- * `monitorIntervalSec` overrides the global default.
+ * One iteration of the monitor job. Picks assets due for any of the three
+ * cadences (response-time probe, telemetry, system info) and runs the due
+ * work in parallel. Each cadence has its own due check + per-asset interval
+ * override (`monitorIntervalSec`, `telemetryIntervalSec`, `systemInfoIntervalSec`).
  */
 export async function runMonitorPass(opts?: { concurrency?: number }): Promise<RunStats> {
   const settings = await getMonitorSettings();
@@ -559,37 +1179,88 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
 
   const candidates = await prisma.asset.findMany({
     where: { monitored: true, monitorType: { not: null } },
-    select: { id: true, lastMonitorAt: true, monitorIntervalSec: true },
+    select: {
+      id: true,
+      lastMonitorAt: true, monitorIntervalSec: true,
+      lastTelemetryAt: true, telemetryIntervalSec: true,
+      lastSystemInfoAt: true, systemInfoIntervalSec: true,
+    },
   });
 
-  const due = candidates.filter((a) => {
-    const intervalSec = a.monitorIntervalSec || settings.intervalSeconds;
-    if (!a.lastMonitorAt) return true;
-    return now.getTime() - a.lastMonitorAt.getTime() >= intervalSec * 1000;
-  });
+  function isDue(last: Date | null, perAsset: number | null, defaultSec: number): boolean {
+    if (defaultSec <= 0) return false;
+    const intervalSec = perAsset || defaultSec;
+    if (!last) return true;
+    return now.getTime() - last.getTime() >= intervalSec * 1000;
+  }
 
-  if (due.length === 0) return { probed: 0, succeeded: 0, failed: 0 };
+  type Work = {
+    id: string;
+    probe:      boolean;
+    telemetry:  boolean;
+    systemInfo: boolean;
+  };
+  const work: Work[] = candidates.map((a) => ({
+    id: a.id,
+    probe:      isDue(a.lastMonitorAt,    a.monitorIntervalSec,    settings.intervalSeconds),
+    telemetry:  isDue(a.lastTelemetryAt,  a.telemetryIntervalSec,  settings.telemetryIntervalSeconds),
+    systemInfo: isDue(a.lastSystemInfoAt, a.systemInfoIntervalSec, settings.systemInfoIntervalSeconds),
+  })).filter((w) => w.probe || w.telemetry || w.systemInfo);
 
-  const stats: RunStats = { probed: 0, succeeded: 0, failed: 0 };
+  const stats: RunStats = {
+    probed: 0, succeeded: 0, failed: 0,
+    telemetry:  { collected: 0, failed: 0 },
+    systemInfo: { collected: 0, failed: 0 },
+  };
+  if (work.length === 0) return stats;
+
   let cursor = 0;
   async function worker(): Promise<void> {
-    while (cursor < due.length) {
+    while (cursor < work.length) {
       const idx = cursor++;
-      const id = due[idx].id;
-      try {
-        const result = await probeAsset(id);
-        await recordProbeResult(id, result);
-        stats.probed++;
-        if (result.success) stats.succeeded++;
-        else stats.failed++;
-      } catch (err) {
-        logger.error({ err, assetId: id }, "Monitor probe crashed");
-        stats.probed++;
-        stats.failed++;
+      const w = work[idx];
+      if (w.probe) {
+        try {
+          const result = await probeAsset(w.id);
+          await recordProbeResult(w.id, result);
+          stats.probed++;
+          if (result.success) stats.succeeded++;
+          else stats.failed++;
+        } catch (err) {
+          logger.error({ err, assetId: w.id }, "Monitor probe crashed");
+          stats.probed++;
+          stats.failed++;
+        }
+      }
+      if (w.telemetry) {
+        try {
+          const tr = await collectTelemetry(w.id);
+          await recordTelemetryResult(w.id, tr);
+          if (tr.supported) {
+            if (tr.data) stats.telemetry.collected++;
+            else stats.telemetry.failed++;
+          }
+        } catch (err) {
+          logger.error({ err, assetId: w.id }, "Telemetry collection crashed");
+          stats.telemetry.failed++;
+        }
+      }
+      if (w.systemInfo) {
+        try {
+          const sr = await collectSystemInfo(w.id);
+          await recordSystemInfoResult(w.id, sr);
+          if (sr.supported) {
+            if (sr.data) stats.systemInfo.collected++;
+            else stats.systemInfo.failed++;
+          }
+        } catch (err) {
+          logger.error({ err, assetId: w.id }, "System info collection crashed");
+          stats.systemInfo.failed++;
+        }
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, due.length) }, () => worker()));
+  await Promise.all(Array.from({ length: Math.min(concurrency, work.length) }, () => worker()));
   return stats;
 }
 
@@ -605,4 +1276,32 @@ export async function pruneMonitorSamples(): Promise<number> {
     where: { timestamp: { lt: cutoff } },
   });
   return count;
+}
+
+/**
+ * Trim AssetTelemetrySample rows older than the telemetry retention window.
+ */
+export async function pruneTelemetrySamples(): Promise<number> {
+  const { telemetryRetentionDays } = await getMonitorSettings();
+  if (!telemetryRetentionDays || telemetryRetentionDays <= 0) return 0;
+  const cutoff = new Date(Date.now() - telemetryRetentionDays * 24 * 3600 * 1000);
+  const { count } = await prisma.assetTelemetrySample.deleteMany({
+    where: { timestamp: { lt: cutoff } },
+  });
+  return count;
+}
+
+/**
+ * Trim AssetInterfaceSample + AssetStorageSample rows older than the system
+ * info retention window. Returns total rows removed across both tables.
+ */
+export async function pruneSystemInfoSamples(): Promise<number> {
+  const { systemInfoRetentionDays } = await getMonitorSettings();
+  if (!systemInfoRetentionDays || systemInfoRetentionDays <= 0) return 0;
+  const cutoff = new Date(Date.now() - systemInfoRetentionDays * 24 * 3600 * 1000);
+  const [ifaces, storage] = await Promise.all([
+    prisma.assetInterfaceSample.deleteMany({ where: { timestamp: { lt: cutoff } } }),
+    prisma.assetStorageSample.deleteMany({   where: { timestamp: { lt: cutoff } } }),
+  ]);
+  return ifaces.count + storage.count;
 }

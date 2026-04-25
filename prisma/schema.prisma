@@ -343,6 +343,11 @@ model AssetTelemetrySample {
   asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp      DateTime @default(now())
   cpuPct         Float?
+  // memPct is populated when the source reports memory only as a percentage
+  // (FortiOS); memUsedBytes / memTotalBytes are populated when the source
+  // reports absolute bytes (SNMP HOST-RESOURCES-MIB, WMI). Either pair may
+  // be present — the UI prefers bytes when both are available.
+  memPct         Float?
   memUsedBytes   BigInt?
   memTotalBytes  BigInt?
 
