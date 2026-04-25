@@ -776,8 +776,8 @@ function assetMonitoringFormHTML(asset) {
                                             "FortiManager: ";
     var lockedLabel = sourcePrefix + (integrationName || "(unknown)");
     var lockedHint = monitorType === "activedirectory"
-      ? 'Monitoring source is locked because this Windows host was discovered by ' +
-        escapeHtml(integrationName || "an integration") + '. Probes use WinRM with the integration’s bind credentials (bind DN must be in UPN form, e.g. <code>user@domain.com</code>).'
+      ? 'Monitoring source is locked because this host was discovered by ' +
+        escapeHtml(integrationName || "an integration") + '. Probes reuse the integration’s bind credentials — WinRM for Windows hosts, SSH for realm-joined Linux hosts. Bind DN must be in UPN form, e.g. <code>user@domain.com</code>.'
       : 'Monitoring source is locked because this firewall was discovered by ' +
         escapeHtml(integrationName || "an integration") + '. Probes go through the integration’s direct-mode API token.';
     typeSelect =

@@ -19,6 +19,7 @@ import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
+import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 
 const router = Router();
 
@@ -2691,10 +2692,10 @@ async function syncActiveDirectoryDevices(
     const hostLookupKey = (dev.dnsHostName || dev.cn || "").toLowerCase();
     const assetType = inferAssetTypeFromOs(dev.operatingSystem);
     const status: "active" | "disabled" = dev.disabled ? "disabled" : "active";
-    // Windows hosts get monitor-locked to this AD integration so the bind
-    // credentials double as the WinRM credentials, mirroring how FMG owns
-    // its discovered firewalls.
-    const isWindows = (dev.operatingSystem || "").toLowerCase().includes("windows");
+    // Realm-monitorable hosts (Windows via WinRM, Linux via SSH) get locked to
+    // this AD integration so the bind credentials double as the probe
+    // credentials, mirroring how FMG owns its discovered firewalls.
+    const adMonitorable = getAdMonitorProtocol(dev.operatingSystem) !== null;
 
     const tags: string[] = ["activedirectory", "auto-discovered", `${AD_GUID_TAG_PREFIX}${guidKey}`];
     if (dev.objectSid) tags.push(sidTag(dev.objectSid));
@@ -2748,17 +2749,17 @@ async function syncActiveDirectoryDevices(
       );
       updateData.tags = [...preserved, ...tags.filter((t) => !preserved.includes(t))];
 
-      // Lock monitoring source to this AD integration for Windows hosts. Skip
-      // if the asset is already locked to a different integration (e.g. an
-      // FMG-discovered firewall — defensive, shouldn't happen in practice).
+      // Lock monitoring source to this AD integration for realm-monitorable
+      // hosts. Skip if the asset is already locked to a different integration
+      // (e.g. an FMG-discovered firewall — defensive, shouldn't happen).
       const alreadyLockedToOtherIntegration =
         existing.discoveredByIntegrationId &&
         existing.discoveredByIntegrationId !== integrationId &&
         (existing.monitorType === "fortimanager" || existing.monitorType === "fortigate");
-      if (isWindows && !alreadyLockedToOtherIntegration) {
+      if (adMonitorable && !alreadyLockedToOtherIntegration) {
         updateData.discoveredByIntegrationId = integrationId;
         updateData.monitorType = "activedirectory";
-        // WinRM uses the integration's bindDn/bindPassword, not a stored Credential row.
+        // WinRM/SSH use the integration's bindDn/bindPassword, not a Credential row.
         updateData.monitorCredentialId = null;
       }
 
@@ -2841,9 +2842,10 @@ async function syncActiveDirectoryDevices(
         lastSeen: lastLogon,
         acquiredAt: whenCreated,
         tags,
-        // Windows hosts: lock monitoring source to this AD integration so the
-        // bind credentials are reused for WinRM probes.
-        ...(isWindows ? { discoveredByIntegrationId: integrationId, monitorType: "activedirectory" } : {}),
+        // Realm-monitorable hosts: lock monitoring source to this AD integration
+        // so the bind credentials are reused for the probe (WinRM for Windows,
+        // SSH for Linux).
+        ...(adMonitorable ? { discoveredByIntegrationId: integrationId, monitorType: "activedirectory" } : {}),
       };
       clampAcquiredToLastSeen(createData);
       const newAsset = await prisma.asset.create({ data: createData as any });

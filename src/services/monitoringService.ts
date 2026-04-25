@@ -4,7 +4,9 @@
  * Asset uptime / response-time monitoring. Runs an authenticated probe per
  * asset based on `Asset.monitorType`:
  *   - fortimanager / fortigate → FortiOS REST GET /api/v2/monitor/system/status
- *   - activedirectory          → WinRM SOAP Identify reusing the AD integration's bindDn/bindPassword
+ *   - activedirectory          → reuses the AD integration's bindDn/bindPassword;
+ *                                Windows hosts get a WinRM SOAP Identify, Linux
+ *                                hosts (realm-joined) get an SSH connect+auth
  *   - snmp                     → net-snmp authenticated GET on sysUpTime
  *   - winrm                    → SOAP Identify with HTTP basic auth
  *   - ssh                      → ssh2 connect+authenticate
@@ -67,6 +69,22 @@ const DEFAULT_SETTINGS: MonitorSettings = {
 
 const PROBE_TIMEOUT_MS = 10_000;
 const sysUpTimeOid = "1.3.6.1.2.1.1.3.0";
+
+/**
+ * Decide which protocol the AD-locked monitor should use for a given asset OS.
+ * Returns null when the OS isn't realm-monitorable, in which case the AD sync
+ * leaves the asset unlocked and the operator picks ICMP/SNMP manually.
+ *
+ * Exported so the AD sync (in integrations.ts) can apply the same lock policy
+ * at discovery time as the probe applies at run time.
+ */
+export function getAdMonitorProtocol(os: string | null | undefined): "winrm" | "ssh" | null {
+  if (!os) return null;
+  const lower = os.toLowerCase();
+  if (lower.includes("windows")) return "winrm";
+  if (lower.includes("linux")) return "ssh";
+  return null;
+}
 
 export async function getMonitorSettings(): Promise<MonitorSettings> {
   const row = await prisma.setting.findUnique({ where: { key: SETTING_KEY } });
@@ -138,7 +156,7 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
       if (asset.discoveredByIntegration.type !== "activedirectory") {
         return finish(start, false, "Originating integration is not Active Directory");
       }
-      return await probeActiveDirectory(targetIp, asset.discoveredByIntegration as any, start);
+      return await probeActiveDirectory(targetIp, asset.os, asset.discoveredByIntegration as any, start);
     }
     if (type === "icmp") {
       return await probeIcmp(targetIp, start);
@@ -201,12 +219,14 @@ async function probeFortinet(
   }
 }
 
-// AD-discovered Windows assets reuse the integration's bind credentials for a
-// WinRM probe, mirroring how FMG/FortiGate-discovered firewalls reuse the
-// integration's API token. The bind DN must be in UPN form (user@domain.com)
-// or down-level form (DOMAIN\user) for WinRM to accept it.
+// AD-discovered hosts reuse the integration's bind credentials for the probe,
+// mirroring how FMG/FortiGate-discovered firewalls reuse the integration's API
+// token. Windows hosts get WinRM (5986/HTTPS Basic); realm-joined Linux hosts
+// get SSH (22). The bind DN must be in UPN form (user@domain.com) or down-level
+// form (DOMAIN\user) for both WinRM and SSH-to-realmd to accept it.
 async function probeActiveDirectory(
   host: string,
+  os: string | null | undefined,
   integration: { type: string; config: Record<string, unknown> },
   start: number,
 ): Promise<ProbeResult> {
@@ -216,7 +236,14 @@ async function probeActiveDirectory(
   if (!username || !password) {
     return finish(start, false, "Active Directory bind credentials not configured");
   }
-  return await probeWinRm(host, { username, password, useHttps: true, port: 5986 }, start);
+  const protocol = getAdMonitorProtocol(os);
+  if (protocol === "winrm") {
+    return await probeWinRm(host, { username, password, useHttps: true, port: 5986 }, start);
+  }
+  if (protocol === "ssh") {
+    return await probeSsh(host, { username, password, port: 22 }, start);
+  }
+  return finish(start, false, "Asset OS is not Windows or Linux — cannot pick AD probe protocol");
 }
 
 async function probeIcmp(host: string, start: number): Promise<ProbeResult> {
