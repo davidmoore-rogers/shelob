@@ -71,7 +71,7 @@ export interface MonitorSettings {
 const SETTING_KEY = "monitorSettings";
 
 const DEFAULT_SETTINGS: MonitorSettings = {
-  intervalSeconds: 30,
+  intervalSeconds: 60,
   failureThreshold: 3,
   sampleRetentionDays: 30,
   telemetryIntervalSeconds:  60,

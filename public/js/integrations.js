@@ -24,18 +24,21 @@ function _runFortigateSampleProbe(runner) {
 }
 
 // Toggle FMG integration form between proxy and direct modes.
-// Shows/hides the FortiGate credentials block and locks the parallelism input.
-function _fmgToggleProxyMode(useProxy) {
+// `useDirect=true` means bypass FMG and query each FortiGate directly;
+// the on-disk integration field stays `useProxy` (true=proxy) — only the
+// UI semantics are inverted. Shows/hides the FortiGate credentials block
+// and locks the parallelism input.
+function _fmgToggleDirectMode(useDirect) {
   var credsBlock = document.getElementById("f-fgt-creds-block");
   var parallelInput = document.getElementById("f-discoveryParallelism");
   var parallelNote = document.getElementById("f-parallelism-note");
-  if (credsBlock) credsBlock.style.display = useProxy ? "none" : "";
+  if (credsBlock) credsBlock.style.display = useDirect ? "" : "none";
   if (parallelInput) {
-    parallelInput.disabled = !!useProxy;
-    if (useProxy) parallelInput.value = 1;
+    parallelInput.disabled = !useDirect;
+    if (!useDirect) parallelInput.value = 1;
   }
   if (parallelNote) {
-    parallelNote.textContent = useProxy ? "locked to 1 when proxy is enabled" : "gates at once";
+    parallelNote.textContent = useDirect ? "gates at once" : "locked to 1 when proxy is enabled";
   }
 }
 
@@ -210,6 +213,83 @@ async function loadIntegrations() {
   }
 }
 
+// ─── Tab helpers (FMG / FortiGate modal — General + Monitoring) ────────────
+//
+// Mirror of the assets.js tab pattern. Keeps `f-...` form IDs intact across
+// tabs so the existing getFormConfig / getFgtFormConfig don't need to change.
+
+function _intRenderTabbedBody(prefix, tabs) {
+  var tabBar = '<div class="page-tabs" id="' + prefix + '-tabs" style="margin-bottom:1rem">' +
+    tabs.map(function (t, i) {
+      return '<button type="button" class="page-tab' + (i === 0 ? " active" : "") + '" data-tab="' + t.key + '">' + escapeHtml(t.label) + '</button>';
+    }).join("") +
+    '</div>';
+  var panels = tabs.map(function (t, i) {
+    return '<div class="page-tab-panel' + (i === 0 ? " active" : "") + '" id="' + prefix + '-tab-' + t.key + '">' + t.html + '</div>';
+  }).join("");
+  return tabBar + panels;
+}
+
+function _intWireModalTabs(prefix) {
+  document.querySelectorAll("#" + prefix + "-tabs .page-tab").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var key = btn.getAttribute("data-tab");
+      document.querySelectorAll("#" + prefix + "-tabs .page-tab").forEach(function (b) { b.classList.remove("active"); });
+      document.querySelectorAll('[id^="' + prefix + '-tab-"]').forEach(function (p) { p.classList.remove("active"); });
+      btn.classList.add("active");
+      var panel = document.getElementById(prefix + "-tab-" + key);
+      if (panel) panel.classList.add("active");
+    });
+  });
+}
+
+// Renders the Monitoring tab. Edits the *global* monitor settings, not any
+// per-integration field — these settings affect every monitored asset across
+// all integrations. Same fields would be reachable from Server Settings if
+// that page ever grows a monitoring section.
+function monitorSettingsFormHTML(s) {
+  s = s || {};
+  function num(id, label, value, defaultValue, min, max, hint) {
+    return '<div class="form-group"><label>' + escapeHtml(label) + '</label>' +
+      '<input type="number" id="f-mon-' + id + '" value="' + (value != null ? value : defaultValue) + '" min="' + min + '" max="' + max + '" style="width:120px">' +
+      (hint ? '<p class="hint">' + hint + '</p>' : '') +
+    '</div>';
+  }
+  return '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
+      'These settings are <strong style="color:var(--color-text-primary)">global</strong> — they apply to every monitored asset across all integrations, not just this one. Changes are saved when you Save the integration.' +
+    '</div>' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Response-time polling</p>' +
+    num("intervalSeconds", "Polling interval (seconds)", s.intervalSeconds, 60, 5, 86400, "How often each monitored asset is probed for an up/down ping. Default 60 s.") +
+    num("failureThreshold", "Failure threshold (consecutive misses)", s.failureThreshold, 3, 1, 100, "Number of consecutive failed probes before an asset is marked Down.") +
+    num("sampleRetentionDays", "Sample retention (days)", s.sampleRetentionDays, 30, 0, 3650, "How long each asset\'s response-time samples are kept. 0 = forever.") +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Telemetry (CPU + memory)</p>' +
+    num("telemetryIntervalSeconds", "Telemetry interval (seconds)", s.telemetryIntervalSeconds, 60, 15, 86400, "How often each monitored asset\'s CPU and memory snapshot is taken. Default 60 s.") +
+    num("telemetryRetentionDays", "Telemetry retention (days)", s.telemetryRetentionDays, 30, 0, 3650, "How long telemetry samples are kept. 0 = forever.") +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate interface &amp; storage discovery</p>' +
+    num("systemInfoIntervalSeconds", "Discovery interval (seconds)", s.systemInfoIntervalSeconds, 600, 60, 86400, "How often each monitored asset\'s interfaces and storage are scraped — for FortiGates this also refreshes <code>Asset.associatedIps</code>. Default 600 s (10 min).") +
+    num("systemInfoRetentionDays", "Sample retention (days)", s.systemInfoRetentionDays, 30, 0, 3650, "How long interface and storage samples are kept. 0 = forever.");
+}
+
+function getMonitorSettingsFromForm() {
+  function n(id) {
+    var el = document.getElementById("f-mon-" + id);
+    if (!el) return undefined;
+    var v = parseInt(el.value, 10);
+    return Number.isFinite(v) ? v : undefined;
+  }
+  return {
+    intervalSeconds:           n("intervalSeconds"),
+    failureThreshold:          n("failureThreshold"),
+    sampleRetentionDays:       n("sampleRetentionDays"),
+    telemetryIntervalSeconds:  n("telemetryIntervalSeconds"),
+    telemetryRetentionDays:    n("telemetryRetentionDays"),
+    systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
+    systemInfoRetentionDays:   n("systemInfoRetentionDays"),
+  };
+}
+
 function fortiManagerFormHTML(defaults) {
   var d = defaults || {};
   var ifaceInclude = d.interfaceInclude || [];
@@ -243,12 +323,14 @@ function fortiManagerFormHTML(defaults) {
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Per-Device Query Transport</p>' +
     '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
-        '<input type="checkbox" id="f-useProxy" ' + (d.useProxy !== false ? "checked" : "") + ' style="width:auto" onchange="_fmgToggleProxyMode(this.checked)">' +
-        '<label for="f-useProxy" style="margin:0;font-weight:500">Use FortiManager proxy for per-device queries</label>' +
+        // Backend field is still `useProxy`; UI shows the inverse — checked = direct, unchecked = proxy.
+        '<input type="checkbox" id="f-useDirect" ' + (d.useProxy === false ? "checked" : "") + ' style="width:auto" onchange="_fmgToggleDirectMode(this.checked)">' +
+        '<label for="f-useDirect" style="margin:0;font-weight:500">Query each FortiGate directly (bypass FortiManager proxy)</label>' +
       '</div>' +
-      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.75rem 0">When checked (default), all per-device DHCP/interface/switch/AP/VIP queries are proxied through FortiManager. When unchecked, Shelob talks directly to each FortiGate\'s management IP using the REST API credentials below — bypasses FMG\'s proxy entirely and supports higher parallelism.</p>' +
-      '<div class="form-group" style="margin-bottom:0"><label>Parallel FortiGate Queries</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-discoveryParallelism" value="' + (d.useProxy !== false ? 1 : (d.discoveryParallelism || 5)) + '" min="1" max="20" style="width:80px"' + (d.useProxy !== false ? " disabled" : "") + '><span id="f-parallelism-note" style="color:var(--color-text-tertiary);font-size:0.85rem">' + (d.useProxy !== false ? "locked to 1 when proxy is enabled" : "gates at once") + '</span></div><p class="hint">With proxy enabled this is forced to 1 (FortiManager drops parallel connections past very low parallelism). Disable proxy to query up to 20 FortiGates concurrently.</p></div>' +
-      '<div id="f-fgt-creds-block" style="' + (d.useProxy !== false ? "display:none;" : "") + 'border-top:1px solid rgba(79,195,247,0.2);padding-top:0.75rem;margin-top:0.5rem">' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.75rem 0">When checked, Shelob skips FortiManager\'s <code>/sys/proxy/json</code> and talks straight to each managed FortiGate\'s management IP using the REST API credentials below — supports up to 20 parallel queries. When unchecked (default), all per-device DHCP/interface/switch/AP/VIP queries are proxied through FortiManager, which serializes them to one at a time.</p>' +
+      '<p style="font-size:0.82rem;color:var(--color-warning);line-height:1.5;margin:0 0 0.75rem 0;background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.25);border-radius:4px;padding:0.5rem 0.65rem"><strong>Tip:</strong> If your environment has more than 20 managed FortiGates, switching to direct queries is strongly recommended — proxy mode polls them one at a time, so a full discovery run scales linearly with device count.</p>' +
+      '<div class="form-group" style="margin-bottom:0"><label>Parallel FortiGate Queries</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-discoveryParallelism" value="' + (d.useProxy === false ? (d.discoveryParallelism || 5) : 1) + '" min="1" max="20" style="width:80px"' + (d.useProxy === false ? "" : " disabled") + '><span id="f-parallelism-note" style="color:var(--color-text-tertiary);font-size:0.85rem">' + (d.useProxy === false ? "gates at once" : "locked to 1 when proxy is enabled") + '</span></div><p class="hint">With proxy enabled this is forced to 1 (FortiManager drops parallel connections past very low parallelism). Enable direct queries to use up to 20 FortiGates concurrently.</p></div>' +
+      '<div id="f-fgt-creds-block" style="' + (d.useProxy === false ? "" : "display:none;") + 'border-top:1px solid rgba(79,195,247,0.2);padding-top:0.75rem;margin-top:0.5rem">' +
         '<div class="form-group"><label>FortiGate API User</label><input type="text" id="f-fortigateApiUser" value="' + escapeHtml(d.fortigateApiUser || "") + '" placeholder="e.g. shelob-ro"><p class="hint">REST API admin username configured on each managed FortiGate</p></div>' +
         '<div class="form-group"><label>FortiGate API Token</label><input type="password" id="f-fortigateApiToken" value="' + (d.fortigateApiTokenPlaceholder ? "" : escapeHtml(d.fortigateApiToken || "")) + '" placeholder="' + (d.fortigateApiTokenPlaceholder || "Bearer token") + '"><p class="hint">Bearer token for the above admin. Must be the same across all managed FortiGates.</p></div>' +
         '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0">' +
@@ -333,7 +415,9 @@ function getFormConfig() {
   var invIfaces = linesToArray("f-inventoryInterfaces");
   var devMode = document.getElementById("f-deviceMode").value;
   var devNames = linesToArray("f-deviceNames");
-  var useProxy = document.getElementById("f-useProxy").checked;
+  // UI checkbox is inverted vs. the on-disk field: checked = direct, unchecked = proxy.
+  var useDirect = document.getElementById("f-useDirect").checked;
+  var useProxy = !useDirect;
   return {
     host: val("f-host"),
     port: port ? parseInt(port, 10) : 443,
@@ -693,17 +777,32 @@ function _titleForType(type, action) {
   return action + " " + product + " Integration";
 }
 
-function openCreateModal(type) {
+async function openCreateModal(type) {
   type = type || "fortimanager";
   var isWin = type === "windowsserver";
   var isEntra = type === "entraid";
   var isAd = type === "activedirectory";
+  var isFmg = type === "fortimanager";
+  var isFgt = type === "fortigate";
   var title = _titleForType(type, "Add");
-  var body = _formHTMLForType(type, {});
+  // FMG + FortiGate get a Monitoring tab alongside General; the rest still
+  // render a single flat form (their telemetry isn't wired up yet).
+  var body;
+  if (isFmg || isFgt) {
+    var monSettings = {};
+    try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
+    body = _intRenderTabbedBody("intg-edit", [
+      { key: "general",    label: "General",    html: _formHTMLForType(type, {}) },
+      { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings) },
+    ]);
+  } else {
+    body = _formHTMLForType(type, {});
+  }
   var footer = '<button class="btn btn-secondary" id="btn-test-new">Test Connection</button>' +
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create</button>';
   openModal(title, body, footer);
+  if (isFmg || isFgt) _intWireModalTabs("intg-edit");
 
   document.getElementById("btn-test-new").addEventListener("click", async function () {
     var btn = this;
@@ -749,6 +848,12 @@ function openCreateModal(type) {
         pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
       };
       var result = await api.integrations.create(input);
+      // Save the global monitor settings if the Monitoring tab was rendered.
+      // Failures here aren't fatal — the integration is already created.
+      if (isFmg || isFgt) {
+        try { await api.assets.updateMonitorSettings(getMonitorSettingsFromForm()); }
+        catch (e) { showToast("Integration created, but monitor settings couldn\'t be saved: " + (e.message || "unknown error"), "error"); }
+      }
       closeModal();
       showToast("Integration created");
       loadIntegrations();
@@ -903,10 +1008,24 @@ async function openEditModal(id) {
       };
     }
 
+    // FMG + FortiGate get a Monitoring tab. The settings are global, so they
+    // apply across all integrations — the tab here is just a convenient
+    // editor surface (saved alongside the integration on Save Changes).
+    var isFmgOrFgt = (intg.type === "fortimanager" || intg.type === "fortigate");
+    if (isFmgOrFgt) {
+      var monSettings = {};
+      try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
+      body = _intRenderTabbedBody("intg-edit", [
+        { key: "general",    label: "General",    html: body },
+        { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings) },
+      ]);
+    }
+
     var footer = '<button class="btn btn-secondary" id="btn-test-existing">Test Connection</button>' +
       '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Integration", body, footer);
+    if (isFmgOrFgt) _intWireModalTabs("intg-edit");
 
     document.getElementById("btn-test-existing").addEventListener("click", async function () {
       var btn = this;
@@ -965,6 +1084,12 @@ async function openEditModal(id) {
           pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
         };
         var result = await api.integrations.update(id, input);
+        // Persist the global monitor settings if the Monitoring tab was rendered.
+        // Failures here aren't fatal — the integration is already updated.
+        if (isFmgOrFgt) {
+          try { await api.assets.updateMonitorSettings(getMonitorSettingsFromForm()); }
+          catch (e) { showToast("Integration updated, but monitor settings couldn\'t be saved: " + (e.message || "unknown error"), "error"); }
+        }
         closeModal();
         showToast("Integration updated");
         loadIntegrations();
