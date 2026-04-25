@@ -2056,6 +2056,11 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   .slideover-resize-handle { display: none; }
 }
 
+/* Asset details panel content padding (slideover-body has padding:0) */
+.asset-panel-content {
+  padding: 1rem 1.25rem;
+}
+
 /* IP list table inside the slide-over */
 .ip-table {
   width: 100%;

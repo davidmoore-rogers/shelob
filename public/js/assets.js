@@ -918,7 +918,53 @@ async function openEditModal(id) {
   }
 }
 
+function _ensureAssetPanelDOM() {
+  if (document.getElementById("asset-panel-overlay")) return;
+  var overlay = document.createElement("div");
+  overlay.id = "asset-panel-overlay";
+  overlay.className = "slideover-overlay";
+  overlay.innerHTML =
+    '<div class="slideover" id="asset-panel">' +
+      '<div class="slideover-resize-handle"></div>' +
+      '<div class="slideover-header">' +
+        '<div class="slideover-header-top">' +
+          '<h3 id="asset-panel-title">Asset Details</h3>' +
+          '<button class="btn-icon" id="asset-panel-close" title="Close">&times;</button>' +
+        '</div>' +
+        '<div class="slideover-meta" id="asset-panel-meta"></div>' +
+      '</div>' +
+      '<div class="slideover-body" id="asset-panel-body"><p class="empty-state">Loading...</p></div>' +
+      '<div class="slideover-footer" id="asset-panel-footer"></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", function (e) {
+    if (e.target === overlay) closeAssetPanel();
+  });
+  document.getElementById("asset-panel-close").addEventListener("click", closeAssetPanel);
+
+  initSlideoverResize(document.getElementById("asset-panel"), "shelob.panel.width.asset");
+}
+
+function closeAssetPanel() {
+  var overlay = document.getElementById("asset-panel-overlay");
+  if (overlay) overlay.classList.remove("open");
+}
+
 async function openViewModal(id) {
+  _ensureAssetPanelDOM();
+  var titleEl  = document.getElementById("asset-panel-title");
+  var metaEl   = document.getElementById("asset-panel-meta");
+  var bodyEl   = document.getElementById("asset-panel-body");
+  var footerEl = document.getElementById("asset-panel-footer");
+  titleEl.textContent = "Asset Details";
+  metaEl.innerHTML = "";
+  bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading...</p>';
+  footerEl.innerHTML = "";
+  requestAnimationFrame(function () {
+    document.getElementById("asset-panel-overlay").classList.add("open");
+  });
+
   try {
     var a = await api.assets.get(id);
     var generalHTML = '<div class="asset-view-grid">' +
@@ -953,26 +999,40 @@ async function openViewModal(id) {
     '</div>';
 
     var monitoringHTML = assetMonitoringViewHTML(a);
-    var body = _renderTabbedBody("asset-view", [
+    var tabsHTML = _renderTabbedBody("asset-view", [
       { key: "general",    label: "General",    html: generalHTML },
       { key: "monitoring", label: "Monitoring", html: monitoringHTML },
     ]);
+    bodyEl.innerHTML = '<div class="asset-panel-content">' + tabsHTML + '</div>';
+
+    titleEl.innerHTML = 'Asset Details' + (a.hostname
+      ? ' <span style="color:var(--color-text-secondary);font-weight:400;margin-left:6px">— ' + escapeHtml(a.hostname) + '</span>'
+      : '');
 
     var histLabel = escapeHtml(a.hostname || a.ipAddress || a.id);
-    var historyBtn = '<button class="btn btn-secondary" onclick="openIpHistoryModal(\'' + a.id + '\',\'' + histLabel + '\')">History</button>';
+    var historyBtn = '<button class="btn btn-sm btn-secondary" onclick="openIpHistoryModal(\'' + a.id + '\',\'' + histLabel + '\')">History</button>';
     var copyBtns =
-      '<button type="button" class="btn btn-secondary" id="btn-asset-copy">Copy</button>' +
-      '<button type="button" class="btn btn-secondary" id="btn-asset-screenshot">Screenshot</button>';
-    var footer = canManageAssets()
-      ? historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' + copyBtns + '<button class="btn btn-primary" onclick="closeModal();openEditModal(\'' + a.id + '\')">Edit</button>'
-      : historyBtn + '<button class="btn btn-secondary" onclick="closeModal()">Close</button>' + copyBtns;
-    openModal("Asset Details", body, footer, { wide: true });
+      '<button type="button" class="btn btn-sm btn-secondary" id="btn-asset-copy">Copy</button>' +
+      '<button type="button" class="btn btn-sm btn-secondary" id="btn-asset-screenshot">Screenshot</button>';
+    var leftBtns = historyBtn + copyBtns;
+    var rightBtns = '<button class="btn btn-sm btn-secondary" id="btn-asset-panel-close-btn">Close</button>' +
+      (canManageAssets() ? '<button class="btn btn-sm btn-primary" id="btn-asset-panel-edit-btn">Edit</button>' : '');
+    footerEl.innerHTML = leftBtns + '<span style="flex:1"></span>' + rightBtns;
+
     _wireModalTabs("asset-view");
-    _wireHoverTriggersIn(document.querySelector('#modal-overlay .modal-body'));
+    _wireHoverTriggersIn(bodyEl);
     document.getElementById("btn-asset-copy").addEventListener("click", _copyAssetDetails);
     document.getElementById("btn-asset-screenshot").addEventListener("click", function () {
       _screenshotAssetDetails(a);
     });
+    document.getElementById("btn-asset-panel-close-btn").addEventListener("click", closeAssetPanel);
+    var editBtn = document.getElementById("btn-asset-panel-edit-btn");
+    if (editBtn) {
+      editBtn.addEventListener("click", function () {
+        closeAssetPanel();
+        openEditModal(a.id);
+      });
+    }
     if (a.monitored) _loadMonitorHistoryFor(a.id, "24h");
     var probeBtn = document.getElementById("btn-asset-probe-now");
     if (probeBtn) {
@@ -998,6 +1058,7 @@ async function openViewModal(id) {
     });
   } catch (err) {
     showToast(err.message, "error");
+    closeAssetPanel();
   }
 }
 
@@ -1159,7 +1220,8 @@ async function openIpHistoryModal(assetId, label) {
 }
 
 function _assetDetailPairs() {
-  var body = document.querySelector('#modal-overlay .modal-body');
+  var body = document.getElementById('asset-panel-body') ||
+             document.querySelector('#modal-overlay .modal-body');
   if (!body) return [];
   var pairs = [];
   body.querySelectorAll('.detail-row').forEach(function (row) {
