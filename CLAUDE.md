@@ -275,10 +275,10 @@ Asset
   notes           String?
   tags            String[]
   createdBy       String?
-  discoveredByIntegrationId UUID? FK → Integration (set null on delete) -- Stamped on FortiGate firewall asset writes (FMG + standalone) so the Monitoring tab can lock the type to the discovering integration
+  discoveredByIntegrationId UUID? FK → Integration (set null on delete) -- Stamped on FortiGate firewall asset writes (FMG + standalone) and on Windows-OS Active Directory asset writes, so the Monitoring tab can lock the type to the discovering integration and route probes through the integration's stored credentials
   monitored       Boolean         @default(false)
-  monitorType     String?         -- "fortimanager" | "fortigate" | "snmp" | "winrm" | "ssh" | "icmp"
-  monitorCredentialId UUID? FK → Credential (set null on delete) -- Used for snmp/winrm/ssh; null for icmp and integration-locked fortinet probes
+  monitorType     String?         -- "fortimanager" | "fortigate" | "activedirectory" | "snmp" | "winrm" | "ssh" | "icmp"
+  monitorCredentialId UUID? FK → Credential (set null on delete) -- Used for snmp/winrm/ssh; null for icmp, integration-locked fortinet probes, and AD-locked WinRM probes (those reuse the AD integration's bindDn/bindPassword)
   monitorIntervalSec Int?         -- Per-asset poll interval override; null falls back to monitor.intervalSeconds
   monitorStatus   String?         -- "up" | "down" | "unknown"
   lastMonitorAt   DateTime?
@@ -463,7 +463,7 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `PUT    /assets/ip-history-settings`          *(assets admin)* — `{ retentionDays }`; saving immediately prunes any history rows with `lastSeen` older than the new cutoff.
 - `GET    /assets/monitor-settings`             — Global monitor defaults: `{ intervalSeconds, failureThreshold, sampleRetentionDays }`.
 - `PUT    /assets/monitor-settings`             *(assets admin)* — Update global monitor defaults.
-- `POST   /assets/bulk-monitor`                 *(assets admin)* — `{ ids, monitored, monitorType?, monitorCredentialId?, monitorIntervalSec? }`. Applies one type+credential to every selected row; FMG/FortiGate-discovered firewalls keep their integration-locked type (request type ignored for those rows). Returns `{ updated, errors: [{id, error}] }`.
+- `POST   /assets/bulk-monitor`                 *(assets admin)* — `{ ids, monitored, monitorType?, monitorCredentialId?, monitorIntervalSec? }`. Applies one type+credential to every selected row; integration-owned assets (FMG/FortiGate firewalls, AD-discovered Windows hosts) keep their integration-locked type — request type is ignored for those rows. Returns `{ updated, errors: [{id, error}] }`.
 - `GET    /assets/:id/monitor-history?range=1h|24h|7d|30d` *or* `?from=ISO&to=ISO`  — Sample stream for the chart. With `range`, the window ends at *now*; with `from`/`to`, both bounds come from the query (span capped at 1 year). Returns `{ range, since, until, samples, stats: { total, failed, successRate, packetLossRate, avgMs, minMs, maxMs } }`; `range` is `"custom"` when `from`/`to` was used. `responseTimeMs` is null on failed samples (the "packet loss" signal).
 - `POST   /assets/:id/probe-now`                *(assets admin)* — Run an immediate probe and persist the result; returns `{ success, responseTimeMs, error? }`.
 
@@ -632,6 +632,7 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
 - **Attribute mapping** — `dNSHostName` (fall back to `cn`) → `hostname`+`dnsName`; `operatingSystem` → `os`; `operatingSystemVersion` → `osVersion`; `description` → `notes` (only if empty); `whenCreated` → `acquiredAt` (only if older); `lastLogonTimestamp` (Windows FILETIME) → `lastSeen` **only if newer than the existing value** — never regresses fresher data from Entra/Intune; `distinguishedName` OU path → `learnedLocation`; `operatingSystem` fed through `inferAssetTypeFromOs()` → `assetType` (only if still `other`).
 - **Note on `lastLogonTimestamp`** — this attribute replicates approximately every 14 days by design. Use it as a coarse "last seen" signal; it will lag reality.
 - **Filters** — `ouInclude` / `ouExclude` arrays match against the computer's full `distinguishedName` with wildcard support (e.g. `*OU=Workstations*`, `*OU=Servers,OU=HQ*`).
+- **Monitor lock for Windows hosts** — Windows-OS computer objects (whose `operatingSystem` contains "windows") are stamped with `discoveredByIntegrationId` and `monitorType = "activedirectory"` on every sync. The Asset Monitoring tab grays out the type dropdown for these rows; probes use a WinRM SOAP Identify against `https://<host>:5986` reusing the integration's `bindDn`/`bindPassword` — no separate Credential row is needed. **The bind DN must be in UPN form (`user@domain.com`) or down-level form (`DOMAIN\user`)** for WinRM to accept it; raw LDAP DN form (`CN=svc,OU=...`) will authenticate against the LDAP bind but fail WinRM auth. Non-Windows AD-discovered hosts (Linux, Mac) are not locked — operators select ICMP/SNMP/SSH manually for them. Mirrors the FMG/FortiGate firewall lock pattern.
 
 ### Hybrid-join cross-link (AD ↔ Entra ID)
 
@@ -656,7 +657,7 @@ Active Directory and Entra ID identify the same hybrid-joined device with two un
 | `clampAssetAcquiredAt` | Once at startup | Clamp `acquiredAt` down to `lastSeen` on any Asset row where the invariant was violated |
 | `decommissionStaleAssets` | Every 24 hours | Move assets whose `lastSeen` is older than the configured inactivity threshold (months) to `decommissioned` status. Configured via Events → Settings → Assets tab; 0 disables. |
 | `discoverySlowCheck` | Every 30 s | Compares each in-flight discovery's elapsed time to its rolling-duration baseline (`discoveryDurationService`). Emits one `integration.discover.slow` event per run (and one per FortiGate inside an FMG run) when elapsed exceeds `max(avg + 2σ, avg × 1.5, avg + 60 s)`; baseline requires ≥3 prior successful runs. The `/integrations/discoveries` endpoint also calls the same checker inline so the sidebar and Integrations page flip amber within one 4 s poll cycle. |
-| `monitorAssets` | Every 5 s | Probes any monitored assets whose `lastMonitorAt + (Asset.monitorIntervalSec ?? monitor.intervalSeconds)` has elapsed. Each probe is authenticated end-to-end (FortiOS REST GET, SNMP `sysUpTime` GET, WinRM SOAP Identify, SSH connect+auth, ICMP ping) so a successful sample means the credential worked. Writes one `AssetMonitorSample` per probe (`responseTimeMs` null = packet loss), updates `Asset.monitorStatus` / `lastResponseTimeMs` / `consecutiveFailures`, and emits one `monitor.status_changed` Event on `up ↔ down` transitions (threshold is `monitor.failureThreshold`). Once a day the same job prunes samples older than `monitor.sampleRetentionDays`. |
+| `monitorAssets` | Every 5 s | Probes any monitored assets whose `lastMonitorAt + (Asset.monitorIntervalSec ?? monitor.intervalSeconds)` has elapsed. Each probe is authenticated end-to-end (FortiOS REST GET, SNMP `sysUpTime` GET, WinRM SOAP Identify — including the `activedirectory` variant that reuses the AD integration's bind credentials, SSH connect+auth, ICMP ping) so a successful sample means the credential worked. Writes one `AssetMonitorSample` per probe (`responseTimeMs` null = packet loss), updates `Asset.monitorStatus` / `lastResponseTimeMs` / `consecutiveFailures`, and emits one `monitor.status_changed` Event on `up ↔ down` transitions (threshold is `monitor.failureThreshold`). Once a day the same job prunes samples older than `monitor.sampleRetentionDays`. |
 
 ---
 
@@ -686,7 +687,7 @@ Vanilla JavaScript SPA served from `/public/`. No build step — plain ES module
 - Conflict resolution slide-over panel (Events page)
 - First-run setup wizard (`setup.html`) backed by `src/setup/`
 - Asset list shows a Monitor pill column (Monitored / Pending / Down / Unmonitored). The bulk-action toolbar opens a Monitoring modal that applies one type + credential to every selected row.
-- Asset edit and details modals are tab-based (General + Monitoring). The Monitoring tab on the edit modal grays out the type dropdown for FMG/FortiGate-discovered firewalls; the details modal renders an SVG response-time chart (24h / 7d / 30d) plus a "Probe now" button for assets admins.
+- Asset edit and details modals are tab-based (General + Monitoring). The Monitoring tab on the edit modal grays out the type dropdown for integration-owned assets (FMG/FortiGate-discovered firewalls and AD-discovered Windows hosts); the details modal renders an SVG response-time chart (24h / 7d / 30d) plus a "Probe now" button for assets admins.
 - Server Settings → **Credentials** tab manages the stored SNMP / WinRM / SSH credentials (admin-only). Secrets are masked in every GET; resubmitting the mask preserves the stored value on PUT.
 
 ---

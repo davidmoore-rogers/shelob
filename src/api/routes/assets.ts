@@ -53,7 +53,12 @@ const CreateAssetSchema = z.object({
   tags:          z.array(z.string()).optional(),
 });
 
-const MonitorTypeEnum = z.enum(["fortimanager", "fortigate", "snmp", "winrm", "ssh", "icmp"]);
+const MonitorTypeEnum = z.enum(["fortimanager", "fortigate", "activedirectory", "snmp", "winrm", "ssh", "icmp"]);
+
+const INTEGRATION_LOCKED_MONITOR_TYPES = ["fortimanager", "fortigate", "activedirectory"] as const;
+function isIntegrationLockedType(t: string | null | undefined): boolean {
+  return !!t && (INTEGRATION_LOCKED_MONITOR_TYPES as readonly string[]).includes(t);
+}
 
 const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   monitored:           z.boolean().optional(),
@@ -76,11 +81,11 @@ function validateMonitorConfig(data: Record<string, unknown>, existing: { discov
       ? existing.monitorCredentialId
       : (data.monitorCredentialId as string | null);
 
-  // Lock monitorType for FMG/FortiGate-discovered firewalls — the discovering
-  // integration owns it and the UI mirrors that by graying out the dropdown.
+  // Lock monitorType for assets owned by their discovering integration —
+  // FMG/FortiGate firewalls and AD-discovered Windows hosts. The UI mirrors
+  // this by graying out the dropdown.
   const integrationLocked =
-    existing.discoveredByIntegrationId &&
-    (existing.monitorType === "fortimanager" || existing.monitorType === "fortigate");
+    !!existing.discoveredByIntegrationId && isIntegrationLockedType(existing.monitorType);
   if (integrationLocked && data.monitorType !== undefined && data.monitorType !== existing.monitorType) {
     throw new AppError(400, "Monitoring source for this asset is locked to its discovering integration");
   }
@@ -228,8 +233,9 @@ router.put("/monitor-settings", requireAssetsAdmin, async (req, res, next) => {
 // POST /api/v1/assets/bulk-monitor — enable/disable monitoring on a set of assets.
 // Body: { ids, monitored, monitorType?, monitorCredentialId?, monitorIntervalSec? }.
 // On enable: applies the same monitorType + credential to every selected asset
-// (FMG-discovered firewalls keep their integration-locked type — request type is ignored
-// for those rows). Returns per-id error list for any rejected rows.
+// (assets locked to a discovering integration — FMG/FortiGate firewalls, AD-discovered
+// Windows hosts — keep their integration-locked type; request type is ignored for those
+// rows). Returns per-id error list for any rejected rows.
 router.post("/bulk-monitor", requireAssetsAdmin, async (req, res, next) => {
   try {
     const body = z.object({
@@ -253,8 +259,7 @@ router.post("/bulk-monitor", requireAssetsAdmin, async (req, res, next) => {
       if (!a) { errors.push({ id, error: "Asset not found" }); continue; }
       const data: Record<string, unknown> = { monitored: body.monitored };
       const integrationLocked =
-        a.discoveredByIntegrationId &&
-        (a.monitorType === "fortimanager" || a.monitorType === "fortigate");
+        !!a.discoveredByIntegrationId && isIntegrationLockedType(a.monitorType);
       if (!integrationLocked && body.monitorType !== undefined) data.monitorType = body.monitorType;
       if (body.monitorCredentialId !== undefined) data.monitorCredentialId = body.monitorCredentialId;
       if (body.monitorIntervalSec !== undefined) data.monitorIntervalSec = body.monitorIntervalSec;

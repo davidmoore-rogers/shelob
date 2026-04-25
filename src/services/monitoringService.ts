@@ -4,6 +4,7 @@
  * Asset uptime / response-time monitoring. Runs an authenticated probe per
  * asset based on `Asset.monitorType`:
  *   - fortimanager / fortigate → FortiOS REST GET /api/v2/monitor/system/status
+ *   - activedirectory          → WinRM SOAP Identify reusing the AD integration's bindDn/bindPassword
  *   - snmp                     → net-snmp authenticated GET on sysUpTime
  *   - winrm                    → SOAP Identify with HTTP basic auth
  *   - ssh                      → ssh2 connect+authenticate
@@ -36,6 +37,7 @@ import { logger } from "../utils/logger.js";
 export type MonitorType =
   | "fortimanager"
   | "fortigate"
+  | "activedirectory"
   | "snmp"
   | "winrm"
   | "ssh"
@@ -115,16 +117,28 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
     if (!asset.monitored) return finish(start, false, "Monitoring disabled");
     if (!asset.monitorType) return finish(start, false, "No monitor type configured");
 
-    const targetIp = asset.ipAddress;
-    if (!targetIp) return finish(start, false, "Asset has no IP address");
-
     const type = asset.monitorType as MonitorType;
+    // AD-discovered Windows hosts often have no IP yet (only dnsName/hostname),
+    // and WinRM resolves FQDNs fine — fall back so the probe can still run.
+    const targetIp =
+      asset.ipAddress ||
+      (type === "activedirectory" ? (asset.dnsName || asset.hostname) : null);
+    if (!targetIp) return finish(start, false, "Asset has no IP address");
 
     if (type === "fortimanager" || type === "fortigate") {
       if (!asset.discoveredByIntegration) {
         return finish(start, false, "Originating integration not found");
       }
       return await probeFortinet(targetIp, asset.discoveredByIntegration as any, start);
+    }
+    if (type === "activedirectory") {
+      if (!asset.discoveredByIntegration) {
+        return finish(start, false, "Originating integration not found");
+      }
+      if (asset.discoveredByIntegration.type !== "activedirectory") {
+        return finish(start, false, "Originating integration is not Active Directory");
+      }
+      return await probeActiveDirectory(targetIp, asset.discoveredByIntegration as any, start);
     }
     if (type === "icmp") {
       return await probeIcmp(targetIp, start);
@@ -185,6 +199,24 @@ async function probeFortinet(
   } catch (err: any) {
     return finish(start, false, err?.message || "FortiOS request failed");
   }
+}
+
+// AD-discovered Windows assets reuse the integration's bind credentials for a
+// WinRM probe, mirroring how FMG/FortiGate-discovered firewalls reuse the
+// integration's API token. The bind DN must be in UPN form (user@domain.com)
+// or down-level form (DOMAIN\user) for WinRM to accept it.
+async function probeActiveDirectory(
+  host: string,
+  integration: { type: string; config: Record<string, unknown> },
+  start: number,
+): Promise<ProbeResult> {
+  const cfg = integration.config || {};
+  const username = String(cfg.bindDn || "");
+  const password = String(cfg.bindPassword || "");
+  if (!username || !password) {
+    return finish(start, false, "Active Directory bind credentials not configured");
+  }
+  return await probeWinRm(host, { username, password, useHttps: true, port: 5986 }, start);
 }
 
 async function probeIcmp(host: string, start: number): Promise<ProbeResult> {

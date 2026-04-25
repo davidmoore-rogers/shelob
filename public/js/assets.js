@@ -755,7 +755,9 @@ function getAssetFormData() {
 
 function _isMonitorIntegrationLocked(asset) {
   return !!(asset && asset.discoveredByIntegrationId &&
-    (asset.monitorType === "fortimanager" || asset.monitorType === "fortigate"));
+    (asset.monitorType === "fortimanager" ||
+     asset.monitorType === "fortigate" ||
+     asset.monitorType === "activedirectory"));
 }
 
 function assetMonitoringFormHTML(asset) {
@@ -768,13 +770,21 @@ function assetMonitoringFormHTML(asset) {
 
   var typeSelect;
   if (locked) {
-    var lockedLabel = (monitorType === "fortigate" ? "FortiGate: " : "FortiManager: ") + (integrationName || "(unknown)");
+    var sourcePrefix =
+      monitorType === "fortigate"        ? "FortiGate: " :
+      monitorType === "activedirectory"  ? "Active Directory: " :
+                                            "FortiManager: ";
+    var lockedLabel = sourcePrefix + (integrationName || "(unknown)");
+    var lockedHint = monitorType === "activedirectory"
+      ? 'Monitoring source is locked because this Windows host was discovered by ' +
+        escapeHtml(integrationName || "an integration") + '. Probes use WinRM with the integration’s bind credentials (bind DN must be in UPN form, e.g. <code>user@domain.com</code>).'
+      : 'Monitoring source is locked because this firewall was discovered by ' +
+        escapeHtml(integrationName || "an integration") + '. Probes go through the integration’s direct-mode API token.';
     typeSelect =
       '<select id="f-monitorType" disabled>' +
         '<option value="' + escapeHtml(monitorType) + '" selected>' + escapeHtml(lockedLabel) + '</option>' +
       '</select>' +
-      '<p class="hint">Monitoring source is locked because this firewall was discovered by ' +
-        escapeHtml(integrationName || "an integration") + '. Probes go through the integration’s direct-mode API token.</p>';
+      '<p class="hint">' + lockedHint + '</p>';
   } else {
     typeSelect =
       '<select id="f-monitorType">' +
@@ -1114,7 +1124,11 @@ function assetMonitoringViewHTML(a) {
   }
   var sourceLabel = a.monitorType || "—";
   if (_isMonitorIntegrationLocked(a) && a.discoveredByIntegration) {
-    sourceLabel = (a.monitorType === "fortigate" ? "FortiGate: " : "FortiManager: ") + a.discoveredByIntegration.name;
+    var lockedPrefix =
+      a.monitorType === "fortigate"       ? "FortiGate: " :
+      a.monitorType === "activedirectory" ? "Active Directory: " :
+                                            "FortiManager: ";
+    sourceLabel = lockedPrefix + a.discoveredByIntegration.name;
   } else if (a.monitorType === "snmp" || a.monitorType === "winrm" || a.monitorType === "ssh") {
     if (a.monitorCredential) sourceLabel = a.monitorType.toUpperCase() + " · " + a.monitorCredential.name;
   } else if (a.monitorType === "icmp") {
@@ -2320,9 +2334,9 @@ function _credentialOptionsFor(type, selectedId) {
 }
 
 // One-click bulk monitoring toggle. Defaults to ICMP for assets that aren't
-// integration-locked; FMG/FortiGate-discovered firewalls keep their locked
-// `monitorType` because the backend's bulk-monitor route ignores incoming
-// `monitorType` for those rows.
+// integration-locked; integration-owned assets (FMG/FortiGate firewalls,
+// AD-discovered Windows hosts) keep their locked `monitorType` because the
+// backend's bulk-monitor route ignores incoming `monitorType` for those rows.
 async function bulkSetMonitoring(monitored) {
   var ids = Array.from(_assetsSelected);
   if (!ids.length) return;

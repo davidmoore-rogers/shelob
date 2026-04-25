@@ -2691,6 +2691,10 @@ async function syncActiveDirectoryDevices(
     const hostLookupKey = (dev.dnsHostName || dev.cn || "").toLowerCase();
     const assetType = inferAssetTypeFromOs(dev.operatingSystem);
     const status: "active" | "disabled" = dev.disabled ? "disabled" : "active";
+    // Windows hosts get monitor-locked to this AD integration so the bind
+    // credentials double as the WinRM credentials, mirroring how FMG owns
+    // its discovered firewalls.
+    const isWindows = (dev.operatingSystem || "").toLowerCase().includes("windows");
 
     const tags: string[] = ["activedirectory", "auto-discovered", `${AD_GUID_TAG_PREFIX}${guidKey}`];
     if (dev.objectSid) tags.push(sidTag(dev.objectSid));
@@ -2743,6 +2747,20 @@ async function syncActiveDirectoryDevices(
         (t) => !isAdManagedTag(t) && !t.startsWith(SID_TAG_PREFIX),
       );
       updateData.tags = [...preserved, ...tags.filter((t) => !preserved.includes(t))];
+
+      // Lock monitoring source to this AD integration for Windows hosts. Skip
+      // if the asset is already locked to a different integration (e.g. an
+      // FMG-discovered firewall — defensive, shouldn't happen in practice).
+      const alreadyLockedToOtherIntegration =
+        existing.discoveredByIntegrationId &&
+        existing.discoveredByIntegrationId !== integrationId &&
+        (existing.monitorType === "fortimanager" || existing.monitorType === "fortigate");
+      if (isWindows && !alreadyLockedToOtherIntegration) {
+        updateData.discoveredByIntegrationId = integrationId;
+        updateData.monitorType = "activedirectory";
+        // WinRM uses the integration's bindDn/bindPassword, not a stored Credential row.
+        updateData.monitorCredentialId = null;
+      }
 
       try {
         clampAcquiredToLastSeen(updateData, existing);
@@ -2823,6 +2841,9 @@ async function syncActiveDirectoryDevices(
         lastSeen: lastLogon,
         acquiredAt: whenCreated,
         tags,
+        // Windows hosts: lock monitoring source to this AD integration so the
+        // bind credentials are reused for WinRM probes.
+        ...(isWindows ? { discoveredByIntegrationId: integrationId, monitorType: "activedirectory" } : {}),
       };
       clampAcquiredToLastSeen(createData);
       const newAsset = await prisma.asset.create({ data: createData as any });
