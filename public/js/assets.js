@@ -1057,14 +1057,14 @@ async function openViewModal(id) {
       });
     }
     if (a.monitored) _loadMonitorHistoryFor(a.id, "24h");
-    if (a.monitored) _loadSystemTabFor(a.id, "24h");
+    if (a.monitored) _loadSystemTabFor(a.id, "24h", a);
     var sysProbeBtn = document.getElementById("btn-asset-system-probe");
     if (sysProbeBtn) {
       sysProbeBtn.addEventListener("click", async function () {
         sysProbeBtn.disabled = true;
         try {
           await api.assets.probeNow(a.id);
-          await _loadSystemTabFor(a.id, _currentSystemTabRange());
+          await _loadSystemTabFor(a.id, _currentSystemTabRange(), a);
           showToast("System info refreshed");
         } catch (err) {
           showToast(err.message || "Probe failed", "error");
@@ -1078,7 +1078,7 @@ async function openViewModal(id) {
         var range = b.getAttribute("data-range");
         document.querySelectorAll(".asset-system-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
         b.classList.remove("btn-secondary"); b.classList.add("btn-primary");
-        _loadSystemTabFor(a.id, range);
+        _loadSystemTabFor(a.id, range, a);
       });
     });
     var probeBtn = document.getElementById("btn-asset-probe-now");
@@ -1184,6 +1184,9 @@ function assetSystemViewHTML(a) {
     '<div id="asset-system-chart" style="background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:0.5rem;min-height:200px;display:flex;align-items:center;justify-content:center;color:var(--color-text-secondary);font-size:0.85rem">' +
       'Loading samples…' +
     '</div>' +
+    '<h4 style="margin:1.25rem 0 0.5rem">Temperatures</h4>' +
+    '<div id="asset-system-temps"><span class="empty-state">Loading…</span></div>' +
+    '<div id="asset-system-temp-chart" style="display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:0.5rem;margin-top:0.5rem;min-height:160px"></div>' +
     '<h4 style="margin:1.25rem 0 0.5rem">Interfaces</h4>' +
     '<div id="asset-system-interfaces"><span class="empty-state">Loading…</span></div>' +
     '<h4 style="margin:1.25rem 0 0.5rem">Storage</h4>' +
@@ -1196,35 +1199,42 @@ function _currentSystemTabRange() {
   return (chart && chart.dataset.range) || "24h";
 }
 
-async function _loadSystemTabFor(assetId, range) {
+async function _loadSystemTabFor(assetId, range, asset) {
   var chart   = document.getElementById("asset-system-chart");
   var summary = document.getElementById("asset-system-summary");
   var ifaces  = document.getElementById("asset-system-interfaces");
   var storage = document.getElementById("asset-system-storage");
+  var temps   = document.getElementById("asset-system-temps");
+  var tempChart = document.getElementById("asset-system-temp-chart");
   if (!chart) return;
   chart.dataset.range = range || "24h";
   chart.textContent = "Loading samples…";
   if (summary) summary.innerHTML = "<span>Loading…</span>";
   if (ifaces)  ifaces.innerHTML  = '<span class="empty-state">Loading…</span>';
   if (storage) storage.innerHTML = '<span class="empty-state">Loading…</span>';
+  if (temps)   temps.innerHTML   = '<span class="empty-state">Loading…</span>';
 
   try {
     var results = await Promise.all([
       api.assets.telemetryHistory(assetId, range || "24h"),
       api.assets.systemInfo(assetId),
+      api.assets.temperatureHistory(assetId, range || "24h").catch(function () { return { samples: [] }; }),
     ]);
-    var tel = results[0];
-    var si  = results[1];
+    var tel    = results[0];
+    var si     = results[1];
+    var tempH  = results[2];
 
     _renderSystemChart(chart, tel);
     _renderSystemSummary(summary, tel, si);
-    _renderInterfacesTable(ifaces, si);
+    _renderInterfacesTable(ifaces, si, asset);
     _renderStorageTable(storage, si);
+    _renderTemperatures(temps, tempChart, si, tempH);
   } catch (err) {
     chart.textContent = "Error: " + (err.message || "failed to load");
     if (summary) summary.innerHTML = "";
     if (ifaces)  ifaces.innerHTML  = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
     if (storage) storage.innerHTML = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
+    if (temps)   temps.innerHTML   = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
   }
 }
 
@@ -1249,19 +1259,31 @@ function _renderSystemSummary(container, tel, si) {
   container.innerHTML = parts.join("") || '<span>No telemetry samples yet.</span>';
 }
 
-function _renderInterfacesTable(container, si) {
+function _renderInterfacesTable(container, si, asset) {
   if (!container) return;
   var rows = (si && si.interfaces) || [];
   if (rows.length === 0) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
   }
+  var monitored = new Set(((si && si.monitoredInterfaces) || (asset && asset.monitoredInterfaces) || []));
+  var canEdit = canManageAssets();
   var body = rows.map(function (i) {
     var oper = i.operStatus  ? '<span class="status-pill status-pill-' + (i.operStatus  === "up" ? "active" : "decommissioned") + '">' + escapeHtml(i.operStatus) + '</span>' : '—';
     var admin= i.adminStatus ? escapeHtml(i.adminStatus) : '—';
     var speed = i.speedBps != null ? _fmtSpeed(i.speedBps) : '—';
+    var checked = monitored.has(i.ifName) ? ' checked' : '';
+    var disabled = canEdit ? '' : ' disabled';
+    var checkbox =
+      '<input type="checkbox" class="asset-iface-toggle" data-ifname="' + escapeHtml(i.ifName) + '"' + checked + disabled +
+      ' title="Poll this interface every minute (response-time cadence)">';
+    var nameCell = '<a href="#" class="asset-iface-link" data-ifname="' + escapeHtml(i.ifName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(i.ifName) + '</a>';
+    var errs = ((i.inErrors != null && i.inErrors > 0) || (i.outErrors != null && i.outErrors > 0))
+      ? ((i.inErrors || 0) + ' / ' + (i.outErrors || 0))
+      : '0 / 0';
     return '<tr>' +
-      '<td class="mono">' + escapeHtml(i.ifName) + '</td>' +
+      '<td style="text-align:center;width:1%">' + checkbox + '</td>' +
+      '<td class="mono">' + nameCell + '</td>' +
       '<td>' + admin + '</td>' +
       '<td>' + oper + '</td>' +
       '<td>' + speed + '</td>' +
@@ -1269,12 +1291,46 @@ function _renderInterfacesTable(container, si) {
       '<td class="mono">' + escapeHtml(i.macAddress || "—") + '</td>' +
       '<td>' + (i.inOctets  != null ? _fmtBytes(i.inOctets)  : '—') + '</td>' +
       '<td>' + (i.outOctets != null ? _fmtBytes(i.outOctets) : '—') + '</td>' +
+      '<td title="In errors / Out errors (cumulative)">' + errs + '</td>' +
     '</tr>';
   }).join("");
   container.innerHTML =
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
-      '<th>Interface</th><th>Admin</th><th>Oper</th><th>Speed</th><th>IP</th><th>MAC</th><th>In</th><th>Out</th>' +
+      '<th title="Pin this interface for fast-cadence polling">Poll 1m</th>' +
+      '<th>Interface</th><th>Admin</th><th>Oper</th><th>Speed</th><th>IP</th><th>MAC</th><th>In</th><th>Out</th><th>Errors (in/out)</th>' +
     '</tr></thead><tbody>' + body + '</tbody></table></div>';
+
+  // Toggle handler — POSTs the new monitoredInterfaces array.
+  if (canEdit && asset) {
+    container.querySelectorAll(".asset-iface-toggle").forEach(function (cb) {
+      cb.addEventListener("change", async function () {
+        var name = cb.getAttribute("data-ifname");
+        var current = new Set(monitored);
+        if (cb.checked) current.add(name); else current.delete(name);
+        cb.disabled = true;
+        try {
+          await api.assets.update(asset.id, { monitoredInterfaces: Array.from(current) });
+          monitored = current;
+          if (si) si.monitoredInterfaces = Array.from(current);
+          if (asset) asset.monitoredInterfaces = Array.from(current);
+          showToast(cb.checked ? ("Polling " + name + " every minute") : ("Stopped fast-polling " + name));
+        } catch (err) {
+          cb.checked = !cb.checked;
+          showToast(err.message || "Failed to update", "error");
+        } finally {
+          cb.disabled = false;
+        }
+      });
+    });
+  }
+  // Click handler — open nested interface detail panel.
+  container.querySelectorAll(".asset-iface-link").forEach(function (link) {
+    link.addEventListener("click", function (e) {
+      e.preventDefault();
+      var name = link.getAttribute("data-ifname");
+      openInterfaceDetailPanel(asset, name);
+    });
+  });
 }
 
 function _renderStorageTable(container, si) {
@@ -1300,6 +1356,141 @@ function _renderStorageTable(container, si) {
     '</tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 
+// Renders the latest-snapshot temperature table and a shared time-series
+// chart underneath. Hides both sections cleanly when the device exposes no
+// temperature sensors. The chart groups samples by `sensorName`; each sensor
+// gets its own color.
+function _renderTemperatures(container, chartContainer, si, history) {
+  var latest = (si && si.temperatures) || [];
+  if (latest.length === 0) {
+    if (container) container.innerHTML = '<p class="empty-state">No temperature sensors reported by this device.</p>';
+    if (chartContainer) chartContainer.style.display = "none";
+    return;
+  }
+  if (container) {
+    var rows = latest.map(function (t) {
+      var c = (typeof t.celsius === "number") ? t.celsius.toFixed(1) + ' °C' : '—';
+      var f = (typeof t.celsius === "number") ? (t.celsius * 9 / 5 + 32).toFixed(1) + ' °F' : '—';
+      return '<tr>' +
+        '<td>' + escapeHtml(t.sensorName) + '</td>' +
+        '<td class="mono">' + c + '</td>' +
+        '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
+      '</tr>';
+    }).join("");
+    container.innerHTML =
+      '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
+        '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+  if (chartContainer && history && Array.isArray(history.samples) && history.samples.length > 0) {
+    chartContainer.style.display = "block";
+    _renderTemperatureChart(chartContainer, history);
+  } else if (chartContainer) {
+    chartContainer.style.display = "none";
+  }
+}
+
+var TEMP_PALETTE = [
+  "var(--color-accent)", "#f4a261", "#2a9d8f", "#e76f51",
+  "#9b5de5", "#80b918", "#f15bb5", "#3a86ff",
+];
+
+function _renderTemperatureChart(container, history) {
+  var samples = history.samples || [];
+  if (samples.length === 0) {
+    container.innerHTML = '<div style="color:var(--color-text-secondary);padding:0.75rem">No temperature samples in this range yet.</div>';
+    return;
+  }
+  // Group by sensor; preserve first-seen order for stable colors.
+  var groups = new Map();
+  samples.forEach(function (s) {
+    if (!groups.has(s.sensorName)) groups.set(s.sensorName, []);
+    if (typeof s.celsius === "number") groups.get(s.sensorName).push(s);
+  });
+  var sensors = Array.from(groups.keys());
+  if (sensors.length === 0) {
+    container.innerHTML = '<div style="color:var(--color-text-secondary);padding:0.75rem">No readable temperature samples.</div>';
+    return;
+  }
+
+  var W = container.clientWidth || 600;
+  var H = 200;
+  var padL = 44, padR = 10, padT = 10, padB = 36;
+  var innerW = W - padL - padR;
+  var innerH = H - padT - padB;
+
+  var t0 = new Date(samples[0].timestamp).getTime();
+  var t1 = new Date(samples[samples.length - 1].timestamp).getTime();
+  if (t1 === t0) t1 = t0 + 1;
+  var spanMs = t1 - t0;
+  var oneDayMs = 24 * 60 * 60 * 1000;
+  function pad2(n) { return n < 10 ? "0" + n : String(n); }
+  function fmtTick(ts) {
+    var d = new Date(ts);
+    if (spanMs <= oneDayMs) return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    return (d.getMonth() + 1) + "/" + d.getDate();
+  }
+
+  var allCs = [];
+  groups.forEach(function (rs) { rs.forEach(function (r) { allCs.push(r.celsius); }); });
+  var minC = Math.min.apply(null, allCs);
+  var maxC = Math.max.apply(null, allCs);
+  if (minC === maxC) { minC -= 1; maxC += 1; }
+  // 5° padding so a rock-steady sensor still gets a visible band
+  minC = Math.floor((minC - 2) / 5) * 5;
+  maxC = Math.ceil((maxC + 2) / 5) * 5;
+
+  function xFor(ts) { return padL + ((new Date(ts).getTime() - t0) / (t1 - t0)) * innerW; }
+  function yFor(c)  { return padT + innerH - ((c - minC) / (maxC - minC)) * innerH; }
+
+  var lines = sensors.map(function (name, i) {
+    var color = TEMP_PALETTE[i % TEMP_PALETTE.length];
+    var pts = groups.get(name).map(function (r) { return xFor(r.timestamp) + "," + yFor(r.celsius); }).join(" ");
+    return pts ? '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>' : '';
+  }).join("");
+  var hits = samples.filter(function (s) { return typeof s.celsius === "number"; }).map(function (s) {
+    return '<circle class="chart-hit" cx="' + xFor(s.timestamp) + '" cy="' + yFor(s.celsius) + '" r="6" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(s.timestamp)) + '"' +
+      ' data-name="' + escapeHtml(s.sensorName) + '"' +
+      ' data-c="' + s.celsius + '"/>';
+  }).join("");
+
+  var ticks = "";
+  for (var i = 0; i <= 4; i++) {
+    var v = minC + (maxC - minC) * (i / 4);
+    var y = padT + innerH - (i / 4) * innerH;
+    ticks +=
+      '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="rgba(127,127,127,0.15)"/>' +
+      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + v.toFixed(0) + '°C</text>';
+  }
+  var xTicks = "";
+  for (var j = 0; j <= 5; j++) {
+    var tsTick = t0 + (t1 - t0) * (j / 5);
+    var xPos = padL + (j / 5) * innerW;
+    xTicks +=
+      '<line x1="' + xPos + '" y1="' + (padT + innerH) + '" x2="' + xPos + '" y2="' + (padT + innerH + 3) + '" stroke="rgba(127,127,127,0.4)"/>' +
+      '<text x="' + xPos + '" y="' + (padT + innerH + 14) + '" text-anchor="middle" font-size="10" fill="currentColor">' + fmtTick(tsTick) + '</text>';
+  }
+  var legend = sensors.slice(0, 6).map(function (name, idx) {
+    var color = TEMP_PALETTE[idx % TEMP_PALETTE.length];
+    return '<g font-size="10" fill="currentColor"><rect x="' + (padL + idx * 110) + '" y="2" width="10" height="10" fill="' + color + '"/>' +
+      '<text x="' + (padL + idx * 110 + 14) + '" y="11">' + escapeHtml(name).slice(0, 14) + '</text></g>';
+  }).join("");
+
+  container.innerHTML =
+    '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
+      ticks + xTicks + lines + legend + hits +
+    '</svg>' + CHART_TOOLTIP_HTML;
+  container.style.position = "relative";
+
+  _wireChartTooltip(container, function (target) {
+    return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(target.getAttribute("data-ts"))) + '</div>' +
+      '<div>' + escapeHtml(target.getAttribute("data-name")) + '</div>' +
+      '<div>' + Number(target.getAttribute("data-c")).toFixed(1) + ' °C / ' +
+      (Number(target.getAttribute("data-c")) * 9 / 5 + 32).toFixed(1) + ' °F</div>';
+  });
+}
+
 function _fmtBytes(n) {
   if (n == null || isNaN(n)) return "—";
   var units = ["B","KB","MB","GB","TB","PB"];
@@ -1315,6 +1506,53 @@ function _fmtSpeed(bps) {
   if (bps >= 1_000)         return (bps / 1_000)         + " Kbps";
   return bps + " bps";
 }
+function _fmtBitsPerSec(bps) {
+  if (bps == null || isNaN(bps)) return "—";
+  if (bps >= 1_000_000_000) return (bps / 1_000_000_000).toFixed(2) + " Gbps";
+  if (bps >= 1_000_000)     return (bps / 1_000_000).toFixed(2)     + " Mbps";
+  if (bps >= 1_000)         return (bps / 1_000).toFixed(2)         + " Kbps";
+  return Math.round(bps) + " bps";
+}
+function _fmtTooltipTs(ts) {
+  function p(n) { return n < 10 ? "0" + n : String(n); }
+  var d = new Date(ts);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+    " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+
+/**
+ * Wire generic chart-tooltip behavior. Each <circle class="chart-hit"> on the
+ * SVG has its data-* attributes formatted by `formatHTML(target)` and rendered
+ * inside `tipEl` while the cursor is over that hit. Mirrors the response-time
+ * chart's tooltip pattern but works for any line/bar chart.
+ */
+function _wireChartTooltip(container, formatHTML) {
+  var tip = container.querySelector(".chart-tooltip");
+  var svgEl = container.querySelector("svg");
+  if (!tip || !svgEl) return;
+  function showTip(target, evt) {
+    tip.innerHTML = formatHTML(target);
+    tip.style.display = "block";
+    var rect = container.getBoundingClientRect();
+    var x = evt.clientX - rect.left + 12;
+    var y = evt.clientY - rect.top + 12;
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    if (x + tw > container.clientWidth - 4) x = evt.clientX - rect.left - tw - 12;
+    if (y + th > container.clientHeight - 4) y = evt.clientY - rect.top - th - 12;
+    if (x < 4) x = 4;
+    if (y < 4) y = 4;
+    tip.style.left = x + "px";
+    tip.style.top  = y + "px";
+  }
+  svgEl.addEventListener("mousemove", function (evt) {
+    var t = evt.target;
+    if (t && t.classList && t.classList.contains("chart-hit")) showTip(t, evt);
+    else tip.style.display = "none";
+  });
+  svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+}
+var CHART_TOOLTIP_HTML =
+  '<div class="chart-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
 
 // Two-line CPU+Memory chart over the telemetry time window.
 function _renderSystemChart(container, data) {
@@ -1357,6 +1595,22 @@ function _renderSystemChart(container, data) {
                       .filter(function (e) { return e.p != null; })
                       .map(function (e) { return xFor(e.ts) + "," + yFor(e.p); }).join(" ");
 
+  // Transparent hit targets at every sample carry the raw values via data-*
+  // attributes. They prefer the CPU dot's y when present (mem y otherwise), so
+  // hover anywhere near a sample reveals both lines.
+  var hitTargets = samples.map(function (s) {
+    var x = xFor(s.timestamp);
+    var hasCpu = typeof s.cpuPct === "number";
+    var memP = pctFromSample(s);
+    var y = hasCpu ? yFor(s.cpuPct) : (memP != null ? yFor(memP) : (padT + innerH / 2));
+    return '<circle class="chart-hit" cx="' + x + '" cy="' + y + '" r="7" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(s.timestamp)) + '"' +
+      ' data-cpu="' + (hasCpu ? s.cpuPct : "") + '"' +
+      ' data-mem="' + (memP != null ? memP : "") + '"' +
+      ' data-mb="' + (typeof s.memUsedBytes === "number" ? s.memUsedBytes : "") + '"' +
+      ' data-mt="' + (typeof s.memTotalBytes === "number" ? s.memTotalBytes : "") + '"/>';
+  }).join("");
+
   var ticks = "";
   for (var i = 0; i <= 4; i++) {
     var v = 25 * i;
@@ -1389,9 +1643,29 @@ function _renderSystemChart(container, data) {
       (cpuPts ? '<polyline points="' + cpuPts + '" fill="none" stroke="var(--color-accent)" stroke-width="1.5"/>' : '') +
       (memPts ? '<polyline points="' + memPts + '" fill="none" stroke="#f4a261" stroke-width="1.5"/>' : '') +
       legend +
-    '</svg>';
+      hitTargets +
+    '</svg>' + CHART_TOOLTIP_HTML;
   container.style.alignItems = "stretch";
   container.style.justifyContent = "flex-start";
+  container.style.position = "relative";
+
+  _wireChartTooltip(container, function (target) {
+    var ts  = target.getAttribute("data-ts");
+    var cpu = target.getAttribute("data-cpu");
+    var mem = target.getAttribute("data-mem");
+    var mb  = target.getAttribute("data-mb");
+    var mt  = target.getAttribute("data-mt");
+    var rows = '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(ts)) + '</div>';
+    rows += '<div>CPU: ' + (cpu !== "" ? Number(cpu).toFixed(1) + "%" : "—") + '</div>';
+    if (mem !== "" || mb !== "") {
+      var memLine = mem !== "" ? Number(mem).toFixed(1) + "%" : "—";
+      if (mb !== "" && mt !== "") memLine += " (" + _fmtBytes(Number(mb)) + " / " + _fmtBytes(Number(mt)) + ")";
+      rows += '<div>Memory: ' + memLine + '</div>';
+    } else {
+      rows += '<div>Memory: —</div>';
+    }
+    return rows;
+  });
 }
 
 function assetMonitoringViewHTML(a) {
@@ -1645,6 +1919,332 @@ function _renderMonitorChart(container, data) {
     }
   });
   svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+}
+
+// ─── Nested interface details slide-over ───────────────────────────────────
+//
+// Sits on top of #asset-panel-overlay. Closing only this overlay returns the
+// user to the asset details panel underneath — that's why we do NOT touch
+// closeAssetPanel from here. Three charts: input throughput, output
+// throughput, and errors. Each chart reuses _wireChartTooltip so hover
+// behaviour matches the response-time chart.
+
+function _ensureIfacePanelDOM() {
+  if (document.getElementById("iface-panel-overlay")) return;
+  var overlay = document.createElement("div");
+  overlay.id = "iface-panel-overlay";
+  overlay.className = "slideover-overlay slideover-nested";
+  // Sit above the asset panel (z-index 999/1000) so the inner panel is on top.
+  overlay.style.zIndex = "1099";
+  overlay.innerHTML =
+    '<div class="slideover" id="iface-panel" style="z-index:1100">' +
+      '<div class="slideover-resize-handle"></div>' +
+      '<div class="slideover-header">' +
+        '<div class="slideover-header-top">' +
+          '<h3 id="iface-panel-title">Interface</h3>' +
+          '<button class="btn-icon" id="iface-panel-close" title="Close">&times;</button>' +
+        '</div>' +
+        '<div class="slideover-meta" id="iface-panel-meta"></div>' +
+      '</div>' +
+      '<div class="slideover-body" id="iface-panel-body"><p class="empty-state" style="padding:1rem 1.25rem">Loading…</p></div>' +
+      '<div class="slideover-footer" id="iface-panel-footer"></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", function (e) {
+    if (e.target === overlay) closeIfacePanel();
+  });
+  document.getElementById("iface-panel-close").addEventListener("click", closeIfacePanel);
+  initSlideoverResize(document.getElementById("iface-panel"), "shelob.panel.width.iface");
+}
+
+function closeIfacePanel() {
+  var ov = document.getElementById("iface-panel-overlay");
+  if (ov) ov.classList.remove("open");
+}
+
+async function openInterfaceDetailPanel(asset, ifName) {
+  if (!asset || !ifName) return;
+  _ensureIfacePanelDOM();
+  var titleEl  = document.getElementById("iface-panel-title");
+  var metaEl   = document.getElementById("iface-panel-meta");
+  var bodyEl   = document.getElementById("iface-panel-body");
+  var footerEl = document.getElementById("iface-panel-footer");
+  titleEl.textContent = "Interface — " + ifName;
+  metaEl.textContent = asset.hostname || asset.ipAddress || asset.id;
+  bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading…</p>';
+  footerEl.innerHTML =
+    '<button class="btn btn-sm btn-secondary" id="btn-iface-panel-close-btn">Close</button>';
+  requestAnimationFrame(function () {
+    document.getElementById("iface-panel-overlay").classList.add("open");
+  });
+  document.getElementById("btn-iface-panel-close-btn").addEventListener("click", closeIfacePanel);
+
+  var rangeBtns =
+    '<button class="btn btn-sm btn-primary iface-range-btn" data-range="1h">1h</button>' +
+    '<button class="btn btn-sm btn-secondary iface-range-btn" data-range="24h">24h</button>' +
+    '<button class="btn btn-sm btn-secondary iface-range-btn" data-range="7d">7d</button>' +
+    '<button class="btn btn-sm btn-secondary iface-range-btn" data-range="30d">30d</button>';
+
+  bodyEl.innerHTML =
+    '<div style="padding:1rem 1.25rem">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
+        '<h4 style="margin:0">Throughput &amp; errors</h4>' +
+        '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
+      '</div>' +
+      '<div id="iface-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
+      '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Input (bps)</h5>' +
+      '<div id="iface-in-chart" class="iface-chart-box"></div>' +
+      '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Output (bps)</h5>' +
+      '<div id="iface-out-chart" class="iface-chart-box"></div>' +
+      '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Errors per interval (in / out)</h5>' +
+      '<div id="iface-err-chart" class="iface-chart-box"></div>' +
+    '</div>';
+  document.querySelectorAll(".iface-chart-box").forEach(function (el) {
+    el.style.background = "var(--color-bg-elevated)";
+    el.style.border = "1px solid var(--color-border)";
+    el.style.borderRadius = "6px";
+    el.style.padding = "0.5rem";
+    el.style.minHeight = "180px";
+    el.style.display = "flex";
+    el.style.alignItems = "center";
+    el.style.justifyContent = "center";
+    el.style.color = "var(--color-text-secondary)";
+    el.style.fontSize = "0.85rem";
+  });
+
+  await _loadInterfaceHistoryFor(asset.id, ifName, "1h");
+  document.querySelectorAll(".iface-range-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var range = b.getAttribute("data-range");
+      document.querySelectorAll(".iface-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
+      b.classList.remove("btn-secondary"); b.classList.add("btn-primary");
+      _loadInterfaceHistoryFor(asset.id, ifName, range);
+    });
+  });
+}
+
+async function _loadInterfaceHistoryFor(assetId, ifName, range) {
+  var inEl = document.getElementById("iface-in-chart");
+  var outEl = document.getElementById("iface-out-chart");
+  var errEl = document.getElementById("iface-err-chart");
+  var stats = document.getElementById("iface-stats");
+  if (!inEl) return;
+  inEl.textContent = outEl.textContent = errEl.textContent = "Loading samples…";
+  if (stats) stats.textContent = "Loading…";
+  try {
+    var data = await api.assets.interfaceHistory(assetId, ifName, range || "1h");
+    var derived = _derivePerIntervalSeries(data.samples || []);
+    if (stats) stats.textContent = _ifaceStatsLabel(data.samples || [], derived);
+    _renderIfaceCounterChart(inEl,  derived, "in");
+    _renderIfaceCounterChart(outEl, derived, "out");
+    _renderIfaceErrorChart(errEl, derived);
+  } catch (err) {
+    inEl.textContent = outEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
+    if (stats) stats.textContent = "";
+  }
+}
+
+// Convert cumulative octet/error counters to per-interval bps and per-interval
+// error counts. Negative deltas (counter wraps or device reboots) are dropped.
+function _derivePerIntervalSeries(samples) {
+  var out = [];
+  for (var i = 1; i < samples.length; i++) {
+    var prev = samples[i - 1];
+    var cur  = samples[i];
+    var dtMs = new Date(cur.timestamp) - new Date(prev.timestamp);
+    if (dtMs <= 0) continue;
+    var dtSec = dtMs / 1000;
+    function delta(a, b) {
+      if (typeof a !== "number" || typeof b !== "number") return null;
+      var d = b - a;
+      return d < 0 ? null : d;
+    }
+    var inOct  = delta(prev.inOctets,  cur.inOctets);
+    var outOct = delta(prev.outOctets, cur.outOctets);
+    var inErr  = delta(prev.inErrors,  cur.inErrors);
+    var outErr = delta(prev.outErrors, cur.outErrors);
+    out.push({
+      timestamp: cur.timestamp,
+      inBps:  inOct  != null ? (inOct  * 8) / dtSec : null,
+      outBps: outOct != null ? (outOct * 8) / dtSec : null,
+      inErr:  inErr,
+      outErr: outErr,
+    });
+  }
+  return out;
+}
+
+function _ifaceStatsLabel(rawSamples, derived) {
+  if (rawSamples.length === 0) return "No samples in this range yet.";
+  var inMax = 0, outMax = 0, inSum = 0, outSum = 0, inN = 0, outN = 0, errIn = 0, errOut = 0;
+  derived.forEach(function (d) {
+    if (typeof d.inBps  === "number") { inSum  += d.inBps;  inN++;  if (d.inBps  > inMax)  inMax  = d.inBps; }
+    if (typeof d.outBps === "number") { outSum += d.outBps; outN++; if (d.outBps > outMax) outMax = d.outBps; }
+    if (typeof d.inErr  === "number") errIn  += d.inErr;
+    if (typeof d.outErr === "number") errOut += d.outErr;
+  });
+  return rawSamples.length + " samples · in avg " + _fmtBitsPerSec(inN ? inSum / inN : 0) +
+    " · in peak " + _fmtBitsPerSec(inMax) +
+    " · out avg " + _fmtBitsPerSec(outN ? outSum / outN : 0) +
+    " · out peak " + _fmtBitsPerSec(outMax) +
+    " · errors " + errIn + " in / " + errOut + " out";
+}
+
+function _renderIfaceCounterChart(container, derived, side) {
+  var values = derived.map(function (d) { return { ts: d.timestamp, v: side === "in" ? d.inBps : d.outBps }; })
+                     .filter(function (e) { return typeof e.v === "number"; });
+  if (values.length === 0) {
+    container.textContent = "No throughput samples yet — fast-cadence polling is required for sub-minute resolution.";
+    return;
+  }
+  var W = container.clientWidth || 600, H = 180;
+  var padL = 56, padR = 10, padT = 10, padB = 32;
+  var innerW = W - padL - padR, innerH = H - padT - padB;
+  var t0 = new Date(values[0].ts).getTime();
+  var t1 = new Date(values[values.length - 1].ts).getTime();
+  if (t1 === t0) t1 = t0 + 1;
+  var spanMs = t1 - t0, oneDayMs = 86400000;
+  function pad2(n) { return n < 10 ? "0" + n : String(n); }
+  function fmtTick(ts) {
+    var d = new Date(ts);
+    if (spanMs <= oneDayMs) return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    return (d.getMonth() + 1) + "/" + d.getDate();
+  }
+  var maxV = Math.max.apply(null, values.map(function (e) { return e.v; }));
+  if (maxV < 1000) maxV = 1000;
+  // Tidy ceiling at the next 0.25 / 0.5 / 1 / 5 / 10 / 25 / 100 / 250 ... Mbps step
+  function tidyCeil(n) {
+    var exp = Math.pow(10, Math.floor(Math.log10(n)));
+    var mant = n / exp;
+    var step = mant <= 1 ? 1 : mant <= 2 ? 2 : mant <= 5 ? 5 : 10;
+    return step * exp;
+  }
+  var ceil = tidyCeil(maxV);
+
+  function xFor(ts) { return padL + ((new Date(ts).getTime() - t0) / (t1 - t0)) * innerW; }
+  function yFor(v) { return padT + innerH - (v / ceil) * innerH; }
+  var pts = values.map(function (e) { return xFor(e.ts) + "," + yFor(e.v); }).join(" ");
+  var hits = values.map(function (e) {
+    return '<circle class="chart-hit" cx="' + xFor(e.ts) + '" cy="' + yFor(e.v) + '" r="6" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(e.ts)) + '" data-v="' + e.v + '"/>';
+  }).join("");
+  var ticks = "";
+  for (var i = 0; i <= 4; i++) {
+    var v = ceil * i / 4;
+    var y = padT + innerH - (i / 4) * innerH;
+    ticks +=
+      '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="rgba(127,127,127,0.15)"/>' +
+      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + _fmtBitsPerSec(v) + '</text>';
+  }
+  var xTicks = "";
+  for (var j = 0; j <= 5; j++) {
+    var tsTick = t0 + (t1 - t0) * (j / 5);
+    var xPos = padL + (j / 5) * innerW;
+    xTicks +=
+      '<line x1="' + xPos + '" y1="' + (padT + innerH) + '" x2="' + xPos + '" y2="' + (padT + innerH + 3) + '" stroke="rgba(127,127,127,0.4)"/>' +
+      '<text x="' + xPos + '" y="' + (padT + innerH + 14) + '" text-anchor="middle" font-size="10" fill="currentColor">' + fmtTick(tsTick) + '</text>';
+  }
+  var color = side === "in" ? "var(--color-accent)" : "#f4a261";
+  container.innerHTML =
+    '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
+      ticks + xTicks +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>' +
+      hits +
+    '</svg>' + CHART_TOOLTIP_HTML;
+  container.style.position = "relative";
+  container.style.alignItems = "stretch";
+  container.style.justifyContent = "flex-start";
+  _wireChartTooltip(container, function (target) {
+    return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(target.getAttribute("data-ts"))) + '</div>' +
+      '<div>' + (side === "in" ? "Input" : "Output") + ': ' + _fmtBitsPerSec(Number(target.getAttribute("data-v"))) + '</div>';
+  });
+}
+
+function _renderIfaceErrorChart(container, derived) {
+  var inSeries  = derived.filter(function (d) { return typeof d.inErr  === "number"; });
+  var outSeries = derived.filter(function (d) { return typeof d.outErr === "number"; });
+  if (inSeries.length === 0 && outSeries.length === 0) {
+    container.textContent = "No error samples reported by this interface.";
+    return;
+  }
+  var W = container.clientWidth || 600, H = 180;
+  var padL = 44, padR = 10, padT = 10, padB = 32;
+  var innerW = W - padL - padR, innerH = H - padT - padB;
+  var all = derived;
+  var t0 = new Date(all[0].timestamp).getTime();
+  var t1 = new Date(all[all.length - 1].timestamp).getTime();
+  if (t1 === t0) t1 = t0 + 1;
+  var spanMs = t1 - t0, oneDayMs = 86400000;
+  function pad2(n) { return n < 10 ? "0" + n : String(n); }
+  function fmtTick(ts) {
+    var d = new Date(ts);
+    if (spanMs <= oneDayMs) return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+    return (d.getMonth() + 1) + "/" + d.getDate();
+  }
+  var maxE = 0;
+  derived.forEach(function (d) {
+    if (typeof d.inErr  === "number" && d.inErr  > maxE) maxE = d.inErr;
+    if (typeof d.outErr === "number" && d.outErr > maxE) maxE = d.outErr;
+  });
+  if (maxE < 5) maxE = 5;
+  var ceil = Math.ceil(maxE * 1.2);
+  function xFor(ts) { return padL + ((new Date(ts).getTime() - t0) / (t1 - t0)) * innerW; }
+  function yFor(v) { return padT + innerH - (v / ceil) * innerH; }
+  function lineFor(arr, key) {
+    return arr.map(function (d) { return xFor(d.timestamp) + "," + yFor(d[key]); }).join(" ");
+  }
+  var inPts  = lineFor(inSeries,  "inErr");
+  var outPts = lineFor(outSeries, "outErr");
+  var hits = derived.map(function (d) {
+    var y = padT + innerH;
+    if (typeof d.inErr === "number") y = Math.min(y, yFor(d.inErr));
+    if (typeof d.outErr === "number") y = Math.min(y, yFor(d.outErr));
+    return '<circle class="chart-hit" cx="' + xFor(d.timestamp) + '" cy="' + y + '" r="6" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(d.timestamp)) + '"' +
+      ' data-in="'  + (typeof d.inErr  === "number" ? d.inErr  : "") + '"' +
+      ' data-out="' + (typeof d.outErr === "number" ? d.outErr : "") + '"/>';
+  }).join("");
+
+  var ticks = "";
+  for (var i = 0; i <= 4; i++) {
+    var v = (ceil * i / 4);
+    var y = padT + innerH - (i / 4) * innerH;
+    ticks +=
+      '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="rgba(127,127,127,0.15)"/>' +
+      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + Math.round(v) + '</text>';
+  }
+  var xTicks = "";
+  for (var j = 0; j <= 5; j++) {
+    var tsTick = t0 + (t1 - t0) * (j / 5);
+    var xPos = padL + (j / 5) * innerW;
+    xTicks +=
+      '<line x1="' + xPos + '" y1="' + (padT + innerH) + '" x2="' + xPos + '" y2="' + (padT + innerH + 3) + '" stroke="rgba(127,127,127,0.4)"/>' +
+      '<text x="' + xPos + '" y="' + (padT + innerH + 14) + '" text-anchor="middle" font-size="10" fill="currentColor">' + fmtTick(tsTick) + '</text>';
+  }
+  var legend =
+    '<g font-size="10" fill="currentColor">' +
+      '<rect x="' + (padL + 10) + '" y="2" width="10" height="10" fill="#d32f2f"/>' +
+      '<text x="' + (padL + 24) + '" y="11">In errors</text>' +
+      '<rect x="' + (padL + 110) + '" y="2" width="10" height="10" fill="#9b5de5"/>' +
+      '<text x="' + (padL + 124) + '" y="11">Out errors</text>' +
+    '</g>';
+  container.innerHTML =
+    '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
+      ticks + xTicks +
+      (inPts  ? '<polyline points="' + inPts  + '" fill="none" stroke="#d32f2f" stroke-width="1.5"/>' : '') +
+      (outPts ? '<polyline points="' + outPts + '" fill="none" stroke="#9b5de5" stroke-width="1.5"/>' : '') +
+      legend + hits +
+    '</svg>' + CHART_TOOLTIP_HTML;
+  container.style.position = "relative";
+  container.style.alignItems = "stretch";
+  container.style.justifyContent = "flex-start";
+  _wireChartTooltip(container, function (target) {
+    var inE  = target.getAttribute("data-in");
+    var outE = target.getAttribute("data-out");
+    return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(target.getAttribute("data-ts"))) + '</div>' +
+      '<div>In errors: ' + (inE  !== "" ? inE  : "—") + '</div>' +
+      '<div>Out errors: ' + (outE !== "" ? outE : "—") + '</div>';
+  });
 }
 
 async function openIpHistoryModal(assetId, label) {
