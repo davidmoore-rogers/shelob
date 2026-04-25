@@ -59,8 +59,35 @@
       attribution: "© <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors",
     }).addTo(map);
 
-    markerCluster = L.markerClusterGroup({ showCoverageOnHover: false });
+    markerCluster = L.markerClusterGroup({
+      showCoverageOnHover: false,
+      // Default markercluster coloring buckets by child count (small/medium/large
+      // → green/yellow/orange). That's misleading here: a cluster of 100 healthy
+      // FortiGates would show orange. Roll up the worst monitor health among
+      // children instead so the cluster matches the dot colors it represents.
+      iconCreateFunction: clusterIcon,
+    });
     map.addLayer(markerCluster);
+  }
+
+  function clusterIcon(cluster) {
+    var children = cluster.getAllChildMarkers();
+    var sawMonitored = false;
+    var worst = "up"; // up < degraded < down
+    for (var i = 0; i < children.length; i++) {
+      var s = children[i]._site;
+      if (!s || !s.monitored) continue;
+      sawMonitored = true;
+      if (s.monitorHealth === "down") { worst = "down"; break; }
+      if (s.monitorHealth === "degraded" && worst !== "down") worst = "degraded";
+    }
+    var cls = sawMonitored ? "monitor-" + worst : "monitor-unmonitored";
+    var count = cluster.getChildCount();
+    return L.divIcon({
+      html: '<div class="fg-cluster ' + cls + '"><span>' + count + "</span></div>",
+      className: "",
+      iconSize: [40, 40],
+    });
   }
 
   // ─── Sites load ───────────────────────────────────────────────────────────
@@ -126,6 +153,8 @@
       icon: icon,
       title: site.hostname || "",
     });
+    // Stashed for clusterIcon() to roll up health across children.
+    marker._site = site;
     marker.bindTooltip(
       '<strong>' + escapeHtml(site.hostname || "(unnamed)") + '</strong>' +
       (site.model ? '<br><span style="opacity:.8">' + escapeHtml(site.model) + '</span>' : "") +
