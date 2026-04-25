@@ -33,6 +33,8 @@ export interface FortiGateConfig {
   vdom?: string;            // Virtual Domain (default: "root")
   verifySsl?: boolean;      // Skip TLS verification (default: false)
   mgmtInterface?: string;
+  interfaceInclude?: string[];  // Interfaces to include for non-DHCP interface IP discovery
+  interfaceExclude?: string[];  // Interfaces to exclude. Ignored if interfaceInclude is non-empty.
   dhcpInclude?: string[];
   dhcpExclude?: string[];
   inventoryExcludeInterfaces?: string[];
@@ -378,45 +380,51 @@ export async function discoverDhcpSubnets(
   }
 
   // Step 3b: Interface IPs + VLAN IDs
-  if (dhcpInterfaceNames.length > 0) {
-    try {
-      const ifaceData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system/interface", { query: queryBase, signal });
-      const ifaceVlanMap = new Map<string, number>();
-      let ifaceIpCount = 0;
-      if (Array.isArray(ifaceData)) {
-        const parseVid = (v: unknown): number => {
-          const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
-          return !isNaN(n) && n > 0 ? n : 0;
-        };
-        for (const iface of ifaceData) {
-          const ifaceName = iface.name || "";
-          const vid = parseVid(iface.vlanid) || parseVid(iface["switch-controller-mgmt-vlan"]);
-          if (vid > 0) ifaceVlanMap.set(ifaceName, vid);
+  // Walk every interface (not just DHCP-bound ones) so WAN / non-RFC1918
+  // addresses also flow into Asset.associatedIps via Phase 4b. The mgmt
+  // interface is already pushed above as role:"management"; everything
+  // else passes the same interfaceInclude/interfaceExclude filter the FMG
+  // proxy path applies, and lands as role:"interface".
+  try {
+    const ifaceData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system/interface", { query: queryBase, signal });
+    const ifaceVlanMap = new Map<string, number>();
+    let ifaceIpCount = 0;
+    if (Array.isArray(ifaceData)) {
+      const parseVid = (v: unknown): number => {
+        const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
+        return !isNaN(n) && n > 0 ? n : 0;
+      };
+      for (const iface of ifaceData) {
+        const ifaceName = iface.name || "";
+        const vid = parseVid(iface.vlanid) || parseVid(iface["switch-controller-mgmt-vlan"]);
+        if (vid > 0) ifaceVlanMap.set(ifaceName, vid);
 
-          if (!dhcpInterfaceNames.includes(ifaceName)) continue;
-          const rawIp = Array.isArray(iface.ip)
-            ? iface.ip[0]
-            : (typeof iface.ip === "string" ? iface.ip.split(" ")[0] : "");
-          if (rawIp && rawIp !== "0.0.0.0" && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(rawIp)) {
-            interfaceIps.push({
-              device: deviceName,
-              interfaceName: ifaceName,
-              ipAddress: rawIp,
-              role: "dhcp-server",
-            });
-            ifaceIpCount++;
-          }
+        if (!ifaceName) continue;
+        if (ifaceName === mgmtIfaceName) continue;
+        if (!matchesInterfaceFilter(ifaceName, config)) continue;
+
+        const rawIp = Array.isArray(iface.ip)
+          ? iface.ip[0]
+          : (typeof iface.ip === "string" ? iface.ip.split(" ")[0] : "");
+        if (rawIp && rawIp !== "0.0.0.0" && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(rawIp)) {
+          interfaceIps.push({
+            device: deviceName,
+            interfaceName: ifaceName,
+            ipAddress: rawIp,
+            role: "interface",
+          });
+          ifaceIpCount++;
         }
       }
-
-      for (const sub of discovered) {
-        const vid = ifaceVlanMap.get(sub.name);
-        if (vid) sub.vlan = vid;
-      }
-      log("discover.interfaces", "info", `${deviceHostname}: Resolved ${ifaceIpCount} DHCP interface IP(s)`, deviceHostname);
-    } catch (err: any) {
-      log("discover.interfaces", "error", `${deviceHostname}: Failed to query interfaces — ${err.message || "Unknown error"}`, deviceHostname);
     }
+
+    for (const sub of discovered) {
+      const vid = ifaceVlanMap.get(sub.name);
+      if (vid) sub.vlan = vid;
+    }
+    log("discover.interfaces", "info", `${deviceHostname}: Resolved ${ifaceIpCount} interface IP(s)`, deviceHostname);
+  } catch (err: any) {
+    log("discover.interfaces", "error", `${deviceHostname}: Failed to query interfaces — ${err.message || "Unknown error"}`, deviceHostname);
   }
 
   // Step 3c: Device inventory (detected clients)
@@ -623,9 +631,15 @@ export async function discoverDhcpSubnets(
   // Filter
   const filteredSubnets = filterDhcpResults(discovered, config.dhcpInclude, config.dhcpExclude);
   const includedIfaceNames = new Set(filteredSubnets.map((s) => s.name));
-  const filteredIps = interfaceIps.filter(
-    (ip) => ip.role === "management" || includedIfaceNames.has(ip.interfaceName)
-  );
+  // Drop interface IPs whose DHCP scope was filtered out by dhcpInclude/exclude,
+  // but always keep mgmt and any interface that isn't DHCP-bound (those aren't
+  // subject to the DHCP filter — they were collected for associatedIps purposes).
+  const dhcpInterfaceNameSet = new Set(dhcpInterfaceNames);
+  const filteredIps = interfaceIps.filter((ip) => {
+    if (ip.role === "management") return true;
+    if (dhcpInterfaceNameSet.has(ip.interfaceName)) return includedIfaceNames.has(ip.interfaceName);
+    return true;
+  });
 
   // Enrich inventory entries whose interfaceName is blank by matching them to DHCP
   const macToDhcpIface = new Map<string, string>();
@@ -684,6 +698,14 @@ function matchesWildcard(pattern: string, value: string): boolean {
   if (p.startsWith("*")) return v.endsWith(p.slice(1));
   if (p.endsWith("*")) return v.startsWith(p.slice(0, -1));
   return v === p;
+}
+
+function matchesInterfaceFilter(interfaceName: string, config: FortiGateConfig): boolean {
+  const includeList = config.interfaceInclude ?? [];
+  const excludeList = config.interfaceExclude ?? [];
+  if (includeList.length > 0) return includeList.some((p) => matchesWildcard(p, interfaceName));
+  if (excludeList.length > 0) return !excludeList.some((p) => matchesWildcard(p, interfaceName));
+  return true;
 }
 
 function matchesInventoryFilter(interfaceName: string, config: FortiGateConfig): boolean {

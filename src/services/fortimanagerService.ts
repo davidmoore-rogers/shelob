@@ -684,6 +684,8 @@ export async function discoverDhcpSubnets(
         vdom: "root",
         verifySsl: config.fortigateVerifySsl === true,
         mgmtInterface: config.mgmtInterface,
+        interfaceInclude: config.interfaceInclude,
+        interfaceExclude: config.interfaceExclude,
         dhcpInclude: config.dhcpInclude,
         dhcpExclude: config.dhcpExclude,
         inventoryIncludeInterfaces: config.inventoryIncludeInterfaces,
