@@ -9,6 +9,7 @@ import { AppError } from "../utils/errors.js";
 import {
   discoverDhcpSubnets as discoverViaFortigate,
   testConnection as fgTestConnection,
+  proxyQuery as fgProxyQuery,
   type FortiGateConfig,
 } from "./fortigateService.js";
 
@@ -336,6 +337,45 @@ export async function proxyQuery(
 ): Promise<unknown> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
   return rpc(baseUrl, { id: 1, method, params }, config.apiUser, config.apiToken, config.verifySsl);
+}
+
+/**
+ * Proxy an arbitrary REST call directly to a managed FortiGate, bypassing FMG.
+ * Used by the manual API query tool when the user picks "Direct to FortiGate".
+ * FMG is still consulted to resolve the gate's real management-interface IP.
+ */
+export async function proxyQueryViaFortigate(
+  config: FortiManagerConfig,
+  deviceName: string,
+  method: "GET" | "POST",
+  path: string,
+  query?: Record<string, string>,
+): Promise<unknown> {
+  if (!config.fortigateApiToken) {
+    throw new AppError(400, 'Direct mode requires "FortiGate API Token" to be set on this integration');
+  }
+  const mgmtIfaceName = config.mgmtInterface?.trim();
+  if (!mgmtIfaceName) {
+    throw new AppError(400, 'Direct mode requires "Management Interface" to be set on this integration');
+  }
+
+  const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
+  const mgmtIp = await resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName);
+  if (!mgmtIp) {
+    throw new AppError(502, `Could not resolve a management IP for "${deviceName}" on interface "${mgmtIfaceName}"`);
+  }
+
+  const fgConfig: FortiGateConfig = {
+    host: mgmtIp,
+    port: 443,
+    apiUser: config.fortigateApiUser || "",
+    apiToken: config.fortigateApiToken,
+    vdom: "root",
+    verifySsl: config.fortigateVerifySsl === true,
+    mgmtInterface: mgmtIfaceName,
+  };
+
+  return fgProxyQuery(fgConfig, method, path, query);
 }
 
 // ─── DHCP Discovery ─────────────────────────────────────────────────────────

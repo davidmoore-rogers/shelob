@@ -187,7 +187,7 @@ async function loadIntegrations() {
             '</div>' +
           '</div>' +
           '<div class="integration-card-actions">' +
-            (intg.type === "fortimanager" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\')">Query API</button>' : '') +
+            (intg.type === "fortimanager" ? '<button class="btn btn-sm btn-secondary" onclick="openApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.adom || 'root') + '\', ' + (config.useProxy !== false ? 'true' : 'false') + ')">Query API</button>' : '') +
             (intg.type === "fortigate" ? '<button class="btn btn-sm btn-secondary" onclick="openFgtApiQueryModal(\'' + intg.id + '\', \'' + escapeHtml(config.vdom || 'root') + '\')">Query API</button>' : '') +
             (intg.type === "entraid" ? '<button class="btn btn-sm btn-secondary" onclick="openEntraApiQueryModal(\'' + intg.id + '\')">Query API</button>' : '') +
             (intg.type === "activedirectory" ? '<button class="btn btn-sm btn-secondary" onclick="openAdApiQueryModal(\'' + intg.id + '\')">Query API</button>' : '') +
@@ -1214,8 +1214,9 @@ function _fmgRenderSavedSelect(queries, selectValue) {
     }).join("");
 }
 
-function openApiQueryModal(id, adom) {
+function openApiQueryModal(id, adom, useProxy) {
   adom = adom || "root";
+  if (useProxy === undefined) useProxy = true;
   var defaultParams = JSON.stringify([{
     url: "/sys/proxy/json",
     data: {
@@ -1227,6 +1228,19 @@ function openApiQueryModal(id, adom) {
 
   var body =
     '<div style="margin-bottom:0.75rem">' +
+      '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Query Mode</p>' +
+      '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+        '<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:normal">' +
+          '<input type="radio" name="fmg-mode" value="fmg" id="fmg-mode-fmg" checked style="width:auto"> FortiManager (JSON-RPC / proxy)' +
+        '</label>' +
+        '<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:normal">' +
+          '<input type="radio" name="fmg-mode" value="fortigate" id="fmg-mode-fgt" style="width:auto"> Directly to FortiGate (REST)' +
+        '</label>' +
+      '</div>' +
+      '<p class="hint" id="fmg-mode-hint" style="margin-top:0.4rem">FMG-side proxy is enabled — Direct-to-FortiGate is disabled. Switch off proxy to query a managed FortiGate directly.</p>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:0 0 0.75rem">' +
+    '<div style="margin-bottom:0.75rem">' +
       '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Saved Queries</p>' +
       '<div style="display:flex;gap:6px;align-items:center">' +
         '<select id="fmg-saved-select" style="flex:1"></select>' +
@@ -1235,16 +1249,44 @@ function openApiQueryModal(id, adom) {
       '</div>' +
     '</div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:0 0 0.75rem">' +
-    '<div class="form-group">' +
-      '<label>Method</label>' +
-      '<select id="fmg-method" style="width:auto">' +
-        '<option value="exec">exec</option>' +
-        '<option value="get">get</option>' +
-      '</select>' +
+    // ─── FMG (JSON-RPC) form ─────────────────────────────────────────────
+    '<div id="fmg-form-fmg">' +
+      '<div class="form-group">' +
+        '<label>Method</label>' +
+        '<select id="fmg-method" style="width:auto">' +
+          '<option value="exec">exec</option>' +
+          '<option value="get">get</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Params <span style="font-size:0.8rem;color:var(--color-text-tertiary)">(JSON array)</span></label>' +
+        '<textarea id="fmg-params" rows="9" style="font-family:monospace;font-size:0.82rem">' + escapeHtml(defaultParams) + '</textarea>' +
+      '</div>' +
     '</div>' +
-    '<div class="form-group">' +
-      '<label>Params <span style="font-size:0.8rem;color:var(--color-text-tertiary)">(JSON array)</span></label>' +
-      '<textarea id="fmg-params" rows="9" style="font-family:monospace;font-size:0.82rem">' + escapeHtml(defaultParams) + '</textarea>' +
+    // ─── Direct-to-FortiGate (REST) form ─────────────────────────────────
+    '<div id="fmg-form-fgt" style="display:none">' +
+      '<div style="display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:end">' +
+        '<div class="form-group" style="margin:0">' +
+          '<label>Method</label>' +
+          '<select id="fmg-fgt-method" style="width:auto">' +
+            '<option value="GET">GET</option>' +
+            '<option value="POST">POST</option>' +
+          '</select>' +
+        '</div>' +
+        '<div class="form-group" style="margin:0">' +
+          '<label>Path</label>' +
+          '<input type="text" id="fmg-fgt-path" value="/api/v2/monitor/system/status" placeholder="/api/v2/monitor/system/status" style="font-family:monospace;font-size:0.85rem">' +
+        '</div>' +
+      '</div>' +
+      '<div class="form-group" style="margin-top:0.75rem">' +
+        '<label>Target FortiGate</label>' +
+        '<input type="text" id="fmg-fgt-device" placeholder="FMG device name — e.g. FG-HQ-01">' +
+        '<p class="hint">Name as it appears in FortiManager. Shelob resolves the management IP via FMG, then sends the REST call directly using the integration\'s FortiGate API token.</p>' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label>Query Parameters <span style="font-size:0.8rem;color:var(--color-text-tertiary)">(one per line — <code>key=value</code>)</span></label>' +
+        '<textarea id="fmg-fgt-query" rows="4" style="font-family:monospace;font-size:0.82rem" placeholder="vdom=root&#10;format=mac|ip|hostname">vdom=root</textarea>' +
+      '</div>' +
     '</div>' +
     '<div style="display:flex;justify-content:flex-end;margin-bottom:0.75rem"><button class="btn btn-primary" id="fmg-send">Send</button></div>' +
     '<div style="display:flex;gap:6px;align-items:center;margin-bottom:0.25rem">' +
@@ -1267,12 +1309,47 @@ function openApiQueryModal(id, adom) {
   var savedQueries = _fmgLoadQueries();
   _fmgRenderSavedSelect(savedQueries);
 
+  // Mode toggle: when FMG proxy mode is enabled, the "Directly to FortiGate"
+  // option is disabled. Lock state is driven by the integration's `useProxy`
+  // flag (passed in from the caller; default true). The user can still browse
+  // the radio if proxy is off.
+  var fgtRadio = document.getElementById("fmg-mode-fgt");
+  var fmgRadio = document.getElementById("fmg-mode-fmg");
+  var modeHint = document.getElementById("fmg-mode-hint");
+  if (useProxy) {
+    fgtRadio.disabled = true;
+    fgtRadio.parentElement.style.opacity = "0.5";
+    fgtRadio.parentElement.title = "Disabled while FortiManager proxy mode is enabled on this integration";
+  } else {
+    if (modeHint) modeHint.textContent = "FMG-side proxy is disabled — choose either transport.";
+  }
+  function _fmgApplyMode(mode) {
+    document.getElementById("fmg-form-fmg").style.display = mode === "fmg" ? "" : "none";
+    document.getElementById("fmg-form-fgt").style.display = mode === "fortigate" ? "" : "none";
+  }
+  fmgRadio.addEventListener("change", function () { if (this.checked) _fmgApplyMode("fmg"); });
+  fgtRadio.addEventListener("change", function () { if (this.checked) _fmgApplyMode("fortigate"); });
+
   document.getElementById("fmg-load-btn").addEventListener("click", function () {
     var idx = parseInt(document.getElementById("fmg-saved-select").value, 10);
     if (isNaN(idx) || !savedQueries[idx]) return;
     var q = savedQueries[idx];
-    document.getElementById("fmg-method").value = q.method;
-    document.getElementById("fmg-params").value = _substituteFmgAdom(q.params, adom);
+    if (q.mode === "fortigate") {
+      if (!fgtRadio.disabled) {
+        fgtRadio.checked = true; _fmgApplyMode("fortigate");
+        document.getElementById("fmg-fgt-method").value = q.method || "GET";
+        document.getElementById("fmg-fgt-path").value = q.path || "";
+        document.getElementById("fmg-fgt-device").value = q.deviceName || "";
+        document.getElementById("fmg-fgt-query").value = q.query || "";
+      } else {
+        showToast("This saved query targets a FortiGate directly — disable FMG proxy on the integration to load it", "error");
+        return;
+      }
+    } else {
+      fmgRadio.checked = true; _fmgApplyMode("fmg");
+      document.getElementById("fmg-method").value = q.method;
+      document.getElementById("fmg-params").value = _substituteFmgAdom(q.params, adom);
+    }
     document.getElementById("fmg-save-name").value = q.name;
   });
 
@@ -1286,17 +1363,38 @@ function openApiQueryModal(id, adom) {
     _fmgRenderSavedSelect(savedQueries);
   });
 
+  function _fmgCurrentMode() {
+    return fgtRadio.checked ? "fortigate" : "fmg";
+  }
+
   document.getElementById("fmg-save-btn").addEventListener("click", function () {
     var name = document.getElementById("fmg-save-name").value.trim();
     if (!name) { showToast("Enter a name for this query", "error"); return; }
-    var method = document.getElementById("fmg-method").value;
-    var params = document.getElementById("fmg-params").value.trim();
+    var mode = _fmgCurrentMode();
+    var entry;
+    if (mode === "fortigate") {
+      entry = {
+        name: name,
+        mode: "fortigate",
+        method: document.getElementById("fmg-fgt-method").value,
+        path: document.getElementById("fmg-fgt-path").value.trim(),
+        deviceName: document.getElementById("fmg-fgt-device").value.trim(),
+        query: document.getElementById("fmg-fgt-query").value,
+      };
+    } else {
+      entry = {
+        name: name,
+        mode: "fmg",
+        method: document.getElementById("fmg-method").value,
+        params: document.getElementById("fmg-params").value.trim(),
+      };
+    }
     var existIdx = -1;
     savedQueries.forEach(function (q, i) { if (q.name === name) existIdx = i; });
     if (existIdx >= 0) {
-      savedQueries[existIdx] = { name: name, method: method, params: params };
+      savedQueries[existIdx] = entry;
     } else {
-      savedQueries.push({ name: name, method: method, params: params });
+      savedQueries.push(entry);
       existIdx = savedQueries.length - 1;
     }
     _fmgPersistQueries(savedQueries);
@@ -1306,22 +1404,49 @@ function openApiQueryModal(id, adom) {
 
   document.getElementById("fmg-send").addEventListener("click", async function () {
     var btn = this;
-    var method = document.getElementById("fmg-method").value;
-    var paramsRaw = document.getElementById("fmg-params").value.trim();
-    var params;
-    try {
-      params = JSON.parse(paramsRaw);
-      if (!Array.isArray(params)) throw new Error("Params must be a JSON array");
-    } catch (e) {
-      showToast("Invalid JSON: " + e.message, "error");
-      return;
+    var mode = _fmgCurrentMode();
+    var payload;
+    if (mode === "fortigate") {
+      var deviceName = document.getElementById("fmg-fgt-device").value.trim();
+      var path = document.getElementById("fmg-fgt-path").value.trim();
+      if (!deviceName) { showToast("Enter the FMG device name of the FortiGate", "error"); return; }
+      if (!path) { showToast("Enter a path (e.g. /api/v2/monitor/system/status)", "error"); return; }
+      var query = {};
+      document.getElementById("fmg-fgt-query").value.split("\n").forEach(function (line) {
+        var trimmed = line.trim();
+        if (!trimmed) return;
+        var eq = trimmed.indexOf("=");
+        if (eq < 0) { query[trimmed] = ""; return; }
+        var key = trimmed.slice(0, eq).trim();
+        var value = trimmed.slice(eq + 1).trim();
+        if (key) query[key] = value;
+      });
+      payload = {
+        mode: "fortigate",
+        deviceName: deviceName,
+        method: document.getElementById("fmg-fgt-method").value,
+        path: path,
+        query: query,
+      };
+    } else {
+      var method = document.getElementById("fmg-method").value;
+      var paramsRaw = document.getElementById("fmg-params").value.trim();
+      var params;
+      try {
+        params = JSON.parse(paramsRaw);
+        if (!Array.isArray(params)) throw new Error("Params must be a JSON array");
+      } catch (e) {
+        showToast("Invalid JSON: " + e.message, "error");
+        return;
+      }
+      payload = { mode: "fmg", method: method, params: params };
     }
     btn.disabled = true;
     btn.textContent = "Sending…";
     var responseWrap = document.getElementById("fmg-response-wrap");
     var responsePre = document.getElementById("fmg-response");
     try {
-      var result = await api.integrations.query(id, { method: method, params: params });
+      var result = await api.integrations.query(id, payload);
       responseWrap.style.display = "";
       responsePre.textContent = JSON.stringify(result, null, 2);
     } catch (err) {

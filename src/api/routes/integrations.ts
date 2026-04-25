@@ -561,7 +561,34 @@ router.post("/:id/query", async (req, res, next) => {
     if (!integration) throw new AppError(404, "Integration not found");
 
     if (integration.type === "fortimanager") {
+      // Two transports under one endpoint:
+      //  - mode "fmg" (default): JSON-RPC to FortiManager
+      //  - mode "fortigate": REST direct to a managed FortiGate, using the
+      //    integration's stored direct-mode credentials. FMG is still consulted
+      //    to resolve the gate's real management-interface IP.
+      const mode = (req.body && typeof req.body === "object" && (req.body as any).mode) || "fmg";
+
+      if (mode === "fortigate") {
+        const { deviceName, method, path, query } = z.object({
+          mode: z.literal("fortigate"),
+          deviceName: z.string().min(1),
+          method: z.enum(["GET", "POST"]).optional().default("GET"),
+          path: z.string().min(1),
+          query: z.record(z.string()).optional(),
+        }).parse(req.body);
+        const result = await fortimanager.proxyQueryViaFortigate(
+          integration.config as any,
+          deviceName,
+          method,
+          path,
+          query,
+        );
+        sendProxyJson(res, result);
+        return;
+      }
+
       const { method, params } = z.object({
+        mode: z.literal("fmg").optional(),
         method: z.string().min(1),
         params: z.array(z.unknown()),
       }).parse(req.body);
