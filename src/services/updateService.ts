@@ -243,6 +243,8 @@ export async function applyUpdate(): Promise<void> {
     currentCommit: _status.currentCommit,
     latestVersion: _status.latestVersion,
     latestCommit: _status.latestCommit,
+    commitsBehind: _status.commitsBehind,
+    changes: _status.changes,
     startedAt: new Date().toISOString(),
     steps,
   };

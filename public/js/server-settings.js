@@ -1666,6 +1666,24 @@ function renderUpdateComplete(status) {
   var area = document.getElementById("update-status-area");
   if (!area) return;
 
+  var changesHtml = "";
+  if (status.changes && status.changes.length > 0) {
+    var n = status.changes.length;
+    changesHtml = '<div style="margin-top:0.75rem"><label style="font-size:0.78rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--color-text-tertiary)">Applied Changes (' + n + ' commit' + (n === 1 ? '' : 's') + ')</label>' +
+      '<div style="max-height:200px;overflow-y:auto;margin-top:0.4rem;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-bg-secondary)">';
+    status.changes.forEach(function (c) {
+      var parts = c.match(/^(\w+)\s+(.*)$/);
+      if (parts) {
+        changesHtml += '<div style="padding:0.3rem 0.6rem;font-size:0.82rem;border-bottom:1px solid var(--color-border)">' +
+          '<span class="mono" style="color:var(--color-text-tertiary);margin-right:8px">' + escapeHtml(parts[1]) + '</span>' +
+          '<span>' + escapeHtml(parts[2]) + '</span></div>';
+      } else {
+        changesHtml += '<div style="padding:0.3rem 0.6rem;font-size:0.82rem;border-bottom:1px solid var(--color-border)">' + escapeHtml(c) + '</div>';
+      }
+    });
+    changesHtml += '</div></div>';
+  }
+
   area.innerHTML =
     '<div style="background:color-mix(in srgb, var(--color-success) 10%, transparent);border:1px solid var(--color-success);border-radius:6px;padding:1rem;margin-bottom:1rem">' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
@@ -1675,6 +1693,7 @@ function renderUpdateComplete(status) {
         (status.currentVersion ? '<div class="db-info-label">Previous</div><div class="db-info-value">v' + escapeHtml(status.currentVersion) + '</div>' : '') +
         (status.latestVersion ? '<div class="db-info-label">Current</div><div class="db-info-value">v' + escapeHtml(status.latestVersion) + '</div>' : '') +
       '</div>' +
+      changesHtml +
     '</div>' +
     '<div style="display:flex;gap:8px;align-items:center">' +
       '<button class="btn btn-secondary" id="btn-dismiss-update">Dismiss</button>' +
