@@ -76,7 +76,7 @@ function canEditReservation(reservation) {
 
 const NAV_ITEMS = [
   { href: "/",                label: "Dashboard",    icon: "grid" },
-  { href: "/map.html",        label: "Fortinet Map", icon: "mapPin" },
+  { href: "/map.html",        label: "Device Map",   icon: "mapPin" },
   { href: "/blocks.html",     label: "IP Blocks",    icon: "box" },
   { href: "/subnets.html",    label: "Networks",     icon: "layers" },
   { href: "/assets.html",         label: "Assets",       icon: "monitor" },

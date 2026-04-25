@@ -1,5 +1,5 @@
 /**
- * src/api/routes/map.ts — Fortinet Map endpoints
+ * src/api/routes/map.ts — Device Map endpoints
  *
  * Three read-only endpoints, all behind requireAuth (registered in router.ts):
  *   GET /map/sites              — every firewall asset with lat/lng coords

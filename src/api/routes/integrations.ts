@@ -1480,7 +1480,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         }
       }
 
-      // New FortiGate — set the Fortinet Map tag (fgt:<serial>) so the map endpoint
+      // New FortiGate — set the Device Map tag (fgt:<serial>) so the map endpoint
       // can find this device by a stable key even if hostname/model changes later.
       const fgTag = device.serial ? `fgt:${device.serial}` : null;
       const newAsset = await prisma.asset.create({

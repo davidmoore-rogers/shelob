@@ -1,5 +1,5 @@
 /**
- * public/js/map.js — Fortinet Map page
+ * public/js/map.js — Device Map page
  *
  * Reads firewall assets populated by FortiManager / FortiGate discovery (with
  * lat/lng pulled from `config system global`) and plots them on a Leaflet map.

@@ -354,7 +354,7 @@ export interface DiscoveredDevice {
   serial: string;
   model: string;
   mgmtIp: string;        // management IP from device list
-  latitude?: number;     // decimal degrees, from config system global (Fortinet Map)
+  latitude?: number;     // decimal degrees, from config system global (Device Map)
   longitude?: number;    // decimal degrees
 }
 

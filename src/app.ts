@@ -77,7 +77,7 @@ app.use(
         scriptSrcAttr: ["'unsafe-inline'"],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
-        // OpenStreetMap tile servers are whitelisted here so the Fortinet Map
+        // OpenStreetMap tile servers are whitelisted here so the Device Map
         // page can render a real geographic basemap. Tiles load as <img>, not
         // fetch, so connectSrc stays 'self'-only.
         imgSrc: [
