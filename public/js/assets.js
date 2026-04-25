@@ -990,6 +990,9 @@ async function openViewModal(id) {
       disabledInHTML(a.tags) +
       viewRow("Location", a.location) +
       viewRow("Learned Location", a.learnedLocation) +
+      ((a.latitude != null && a.longitude != null)
+        ? viewRow("Coordinates", a.latitude.toFixed(4) + ", " + a.longitude.toFixed(4), true)
+        : "") +
       viewRow("Department", a.department) +
       viewRow("Assigned To", a.assignedTo) +
       viewRow("OS / Firmware", a.osVersion || a.os) +
