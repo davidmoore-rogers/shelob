@@ -64,8 +64,10 @@ document.addEventListener("DOMContentLoaded", async function () {
   document.addEventListener("click", _handleMacDeleteClick);
   document.getElementById("assets-bulk-delete-btn").addEventListener("click", bulkDeleteAssets);
   document.getElementById("assets-bulk-edit-btn").addEventListener("click", openBulkEditModal);
-  var bm = document.getElementById("assets-bulk-monitor-btn");
-  if (bm) bm.addEventListener("click", openBulkMonitorModal);
+  var bmOn  = document.getElementById("assets-bulk-monitor-on-btn");
+  var bmOff = document.getElementById("assets-bulk-monitor-off-btn");
+  if (bmOn)  bmOn.addEventListener("click",  function () { bulkSetMonitoring(true); });
+  if (bmOff) bmOff.addEventListener("click", function () { bulkSetMonitoring(false); });
   var settingsBtn = document.getElementById("btn-asset-settings");
   if (settingsBtn) settingsBtn.addEventListener("click", openAssetSettingsModal);
   await userReady;
@@ -2092,91 +2094,32 @@ function _credentialOptionsFor(type, selectedId) {
   return opts;
 }
 
-async function openBulkMonitorModal() {
+// One-click bulk monitoring toggle. Defaults to ICMP for assets that aren't
+// integration-locked; FMG/FortiGate-discovered firewalls keep their locked
+// `monitorType` because the backend's bulk-monitor route ignores incoming
+// `monitorType` for those rows.
+async function bulkSetMonitoring(monitored) {
   var ids = Array.from(_assetsSelected);
   if (!ids.length) return;
-  await _ensureCredentials();
-
-  var typeOptions =
-    '<option value="icmp">ICMP (no credentials)</option>' +
-    '<option value="snmp">SNMP</option>' +
-    '<option value="winrm">WinRM</option>' +
-    '<option value="ssh">SSH</option>';
-
-  var body =
-    '<p style="color:var(--color-text-secondary);margin-bottom:1rem">' +
-      'Updating monitoring on <strong>' + ids.length + '</strong> asset' + (ids.length !== 1 ? 's' : '') + '. ' +
-      'FortiManager-discovered firewalls keep their integration-locked monitoring source — the chosen type is ignored for those rows.' +
-    '</p>' +
-    '<div class="form-group"><label>Action</label>' +
-      '<select id="bulk-mon-action">' +
-        '<option value="enable">Enable monitoring</option>' +
-        '<option value="disable">Disable monitoring</option>' +
-      '</select>' +
-    '</div>' +
-    '<div id="bulk-mon-enable-fields">' +
-      '<div class="form-group"><label>Monitor Type</label>' +
-        '<select id="bulk-mon-type">' + typeOptions + '</select>' +
-      '</div>' +
-      '<div class="form-group" id="bulk-mon-cred-wrap" style="display:none">' +
-        '<label>Credential</label>' +
-        '<select id="bulk-mon-cred"></select>' +
-        '<p class="hint">Need a credential? Add one in <a href="/server-settings.html?tab=credentials">Server Settings → Credentials</a>.</p>' +
-      '</div>' +
-      '<div class="form-group">' +
-        '<label>Override poll interval (seconds, optional)</label>' +
-        '<input type="number" id="bulk-mon-interval" min="5" max="86400" placeholder="leave blank for global default" style="max-width:240px">' +
-      '</div>' +
-    '</div>';
-  var footer =
-    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
-    '<button class="btn btn-primary" id="bulk-mon-apply">Apply</button>';
-  openModal("Bulk Monitoring", body, footer);
-
-  function refreshTypeFields() {
-    var action = document.getElementById("bulk-mon-action").value;
-    var enableFields = document.getElementById("bulk-mon-enable-fields");
-    enableFields.style.display = action === "enable" ? "block" : "none";
-    var t = document.getElementById("bulk-mon-type").value;
-    var credWrap = document.getElementById("bulk-mon-cred-wrap");
-    var needsCred = (t === "snmp" || t === "winrm" || t === "ssh");
-    credWrap.style.display = needsCred ? "block" : "none";
-    if (needsCred) {
-      document.getElementById("bulk-mon-cred").innerHTML = _credentialOptionsFor(t);
+  var btn = document.getElementById(monitored ? "assets-bulk-monitor-on-btn" : "assets-bulk-monitor-off-btn");
+  if (btn) btn.disabled = true;
+  var payload = monitored
+    ? { ids: ids, monitored: true,  monitorType: "icmp", monitorCredentialId: null }
+    : { ids: ids, monitored: false };
+  try {
+    var result = await api.assets.bulkMonitor(payload);
+    var verb = monitored ? "Enabled" : "Disabled";
+    var msg = verb + " monitoring on " + result.updated + " asset" + (result.updated !== 1 ? "s" : "");
+    if (result.errors && result.errors.length) {
+      showToast(msg + " — " + result.errors.length + " skipped", "error");
+    } else {
+      showToast(msg);
     }
+    _assetsSelected.clear();
+    loadAssets();
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    if (btn) btn.disabled = false;
   }
-  document.getElementById("bulk-mon-action").addEventListener("change", refreshTypeFields);
-  document.getElementById("bulk-mon-type").addEventListener("change", refreshTypeFields);
-  refreshTypeFields();
-
-  document.getElementById("bulk-mon-apply").addEventListener("click", async function () {
-    var btn = this;
-    btn.disabled = true;
-    var action = document.getElementById("bulk-mon-action").value;
-    var payload = { ids: ids, monitored: action === "enable" };
-    if (action === "enable") {
-      payload.monitorType = document.getElementById("bulk-mon-type").value;
-      var credSel = document.getElementById("bulk-mon-cred");
-      if (credSel && credSel.value) payload.monitorCredentialId = credSel.value;
-      var iv = parseInt(document.getElementById("bulk-mon-interval").value, 10);
-      if (Number.isFinite(iv) && iv >= 5) payload.monitorIntervalSec = iv;
-      else payload.monitorIntervalSec = null;
-    }
-    try {
-      var result = await api.assets.bulkMonitor(payload);
-      closeModal();
-      var msg = (action === "enable" ? "Enabled" : "Disabled") + " monitoring on " + result.updated + " asset" + (result.updated !== 1 ? "s" : "");
-      if (result.errors && result.errors.length) {
-        msg += " — " + result.errors.length + " skipped";
-        showToast(msg, "error");
-      } else {
-        showToast(msg);
-      }
-      _assetsSelected.clear();
-      loadAssets();
-    } catch (err) {
-      showToast(err.message, "error");
-      btn.disabled = false;
-    }
-  });
 }
