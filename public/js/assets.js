@@ -1028,7 +1028,10 @@ function assetMonitoringViewHTML(a) {
     '<button class="btn btn-sm btn-secondary asset-monitor-range-btn" data-range="30d">30d</button>';
   return (
     '<div class="asset-view-grid">' +
-      viewRow("Status", pill) +
+      // Status uses a raw-HTML row because viewRow() escapes its value and
+      // would render the badge markup as text.
+      '<div class="detail-row"><span class="detail-label">Status</span>' +
+        '<span class="detail-value">' + pill + '</span></div>' +
       viewRow("Source", sourceLabel) +
       viewRow("Last Response Time", lastRtt) +
       viewRow("Last Poll", lastPoll) +
