@@ -1489,6 +1489,7 @@ function _renderTemperatureChart(container, history) {
       '<div>' + Number(target.getAttribute("data-c")).toFixed(1) + ' °C / ' +
       (Number(target.getAttribute("data-c")) * 9 / 5 + 32).toFixed(1) + ' °F</div>';
   });
+  _addChartScreenshotButton(container, "Temperature");
 }
 
 function _fmtBytes(n) {
@@ -1554,16 +1555,178 @@ function _wireChartTooltip(container, formatHTML) {
 var CHART_TOOLTIP_HTML =
   '<div class="chart-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
 
-// Two-line CPU+Memory chart over the telemetry time window.
+// Rasterize the SVG inside `container` to a PNG blob via Image+Canvas. The
+// rasterizer can't resolve currentColor or var(--color-*), so we substitute
+// the resolved values into the serialized SVG before drawing. The hit-target
+// circles and tooltip element are stripped — they're interactive scaffolding,
+// not part of the visual.
+function _captureChartAsPng(container, callback) {
+  // Skip any svg that lives inside the screenshot button itself (its camera icon).
+  var svgEl = null;
+  if (container && container.querySelectorAll) {
+    var all = container.querySelectorAll("svg");
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i].closest(".chart-screenshot-btn")) { svgEl = all[i]; break; }
+    }
+  }
+  if (!svgEl) { callback(null); return; }
+  var rect = svgEl.getBoundingClientRect();
+  var width = Math.ceil(rect.width);
+  var height = Math.ceil(rect.height);
+  if (!width || !height) { callback(null); return; }
+
+  var rootCs = getComputedStyle(document.documentElement);
+  var pickVar = function (name, fallback) {
+    var v = rootCs.getPropertyValue(name).trim();
+    return v || fallback;
+  };
+  var bgElevated = pickVar("--color-bg-elevated", "#ffffff");
+  var accent     = pickVar("--color-accent", "#4fc3f7");
+  var resolvedText = getComputedStyle(svgEl).color || pickVar("--color-text", "#111111");
+
+  var clone = svgEl.cloneNode(true);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  clone.setAttribute("width", width);
+  clone.setAttribute("height", height);
+  clone.removeAttribute("style");
+  if (!clone.getAttribute("viewBox")) {
+    clone.setAttribute("viewBox", "0 0 " + width + " " + height);
+  }
+  // Drop transparent hit targets — they don't affect the picture but inflate it.
+  Array.prototype.forEach.call(clone.querySelectorAll(".chart-hit, .monitor-hit"), function (n) {
+    n.parentNode.removeChild(n);
+  });
+
+  var serialized = new XMLSerializer().serializeToString(clone);
+  serialized = serialized.replace(/currentColor/g, resolvedText);
+  serialized = serialized.replace(/var\(--color-accent\)/g, accent);
+
+  var blob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
+  var url = URL.createObjectURL(blob);
+  var img = new Image();
+  img.onload = function () {
+    var scale = 2;
+    var canvas = document.createElement("canvas");
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = bgElevated;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0, width, height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(function (b) { callback(b); }, "image/png");
+  };
+  img.onerror = function () { URL.revokeObjectURL(url); callback(null); };
+  img.src = url;
+}
+
+// Inject a small camera button at the top-right of a chart container. The
+// button copies the rendered chart to the clipboard as a PNG, mirroring the
+// asset-details screenshot UX.
+function _addChartScreenshotButton(container, label) {
+  if (!container) return;
+  var existing = container.querySelector(".chart-screenshot-btn");
+  if (existing) existing.parentNode.removeChild(existing);
+
+  var btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "chart-screenshot-btn";
+  btn.title = "Copy chart as image";
+  btn.setAttribute("aria-label", "Copy " + label + " chart as image");
+  btn.innerHTML =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>' +
+      '<circle cx="12" cy="13" r="4"/>' +
+    '</svg>';
+  btn.style.cssText =
+    "position:absolute;top:6px;right:6px;background:var(--color-bg-primary);" +
+    "border:1px solid var(--color-border);border-radius:4px;padding:4px 6px;" +
+    "cursor:pointer;color:var(--color-text-secondary);z-index:6;line-height:0;" +
+    "display:inline-flex;align-items:center;justify-content:center";
+  btn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    _captureChartAsPng(container, function (blob) {
+      if (!blob) { showToast("Screenshot failed", "error"); return; }
+      if (!navigator.clipboard || typeof ClipboardItem === "undefined" || !navigator.clipboard.write) {
+        showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+        return;
+      }
+      navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(function () {
+        showToast(label + " chart copied to clipboard");
+      }).catch(function () {
+        showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+      });
+    });
+  });
+  container.style.position = "relative";
+  container.appendChild(btn);
+}
+
+// Two stacked charts (CPU + Memory) over the telemetry time window. CPU stays
+// pinned to 0–100% so spikes are meaningful; Memory autoscales to its observed
+// range so a host that idles around 60% still shows variation instead of a
+// flat line. Each chart has its own hit targets / hover tooltip.
 function _renderSystemChart(container, data) {
   var samples = (data && data.samples) || [];
   if (samples.length === 0) {
     container.textContent = "No telemetry samples in this range yet.";
     return;
   }
+
+  function memPctFromSample(s) {
+    if (typeof s.memPct === "number") return s.memPct;
+    if (typeof s.memUsedBytes === "number" && typeof s.memTotalBytes === "number" && s.memTotalBytes > 0) {
+      return (s.memUsedBytes / s.memTotalBytes) * 100;
+    }
+    return null;
+  }
+
+  container.innerHTML =
+    '<div class="asset-system-subchart" style="position:relative;margin-bottom:0.5rem"></div>' +
+    '<div class="asset-system-subchart" style="position:relative"></div>';
+  container.style.alignItems = "stretch";
+  container.style.justifyContent = "flex-start";
+  container.style.position = "relative";
+  container.style.flexDirection = "column";
+
+  var subs = container.querySelectorAll(".asset-system-subchart");
+  _renderTelemetrySubChart(subs[0], samples, {
+    label: "CPU",
+    color: "var(--color-accent)",
+    yFmt: function (v) { return v.toFixed(0) + "%"; },
+    pickValue: function (s) { return typeof s.cpuPct === "number" ? s.cpuPct : null; },
+    yMin: 0,
+    yMax: 100,
+    tooltip: function (s, v) {
+      return '<div>CPU: ' + (v != null ? v.toFixed(1) + "%" : "—") + '</div>';
+    },
+  });
+  _renderTelemetrySubChart(subs[1], samples, {
+    label: "Memory",
+    color: "#f4a261",
+    yFmt: function (v) { return v.toFixed(0) + "%"; },
+    pickValue: memPctFromSample,
+    autoscale: true,
+    tooltip: function (s, v) {
+      var line = '<div>Memory: ' + (v != null ? v.toFixed(1) + "%" : "—");
+      if (typeof s.memUsedBytes === "number" && typeof s.memTotalBytes === "number") {
+        line += " (" + _fmtBytes(s.memUsedBytes) + " / " + _fmtBytes(s.memTotalBytes) + ")";
+      }
+      return line + "</div>";
+    },
+  });
+}
+
+// Renders a single-line telemetry chart with a Y-axis scale. CPU passes a fixed
+// {yMin, yMax}; Memory passes {autoscale: true} which fits the axis to the
+// observed range with a small pad so flat-ish series still show variation.
+function _renderTelemetrySubChart(container, samples, opts) {
   var W = container.clientWidth || 600;
-  var H = 200;
-  var padL = 44, padR = 10, padT = 10, padB = 36;
+  var H = 160;
+  var padL = 50, padR = 10, padT = 14, padB = 28;
   var innerW = W - padL - padR;
   var innerH = H - padT - padB;
 
@@ -1579,93 +1742,83 @@ function _renderSystemChart(container, data) {
     return (d.getMonth() + 1) + "/" + d.getDate();
   }
 
-  function pctFromSample(s) {
-    if (typeof s.memPct === "number") return s.memPct;
-    if (typeof s.memUsedBytes === "number" && typeof s.memTotalBytes === "number" && s.memTotalBytes > 0) {
-      return (s.memUsedBytes / s.memTotalBytes) * 100;
+  var withVal = samples.map(function (s) { return { s: s, v: opts.pickValue(s) }; })
+                       .filter(function (e) { return typeof e.v === "number"; });
+
+  var yMin, yMax;
+  if (opts.autoscale) {
+    if (withVal.length === 0) { yMin = 0; yMax = 100; }
+    else {
+      var vMin = Infinity, vMax = -Infinity;
+      withVal.forEach(function (e) {
+        if (e.v < vMin) vMin = e.v;
+        if (e.v > vMax) vMax = e.v;
+      });
+      yMin = Math.max(0,   Math.floor(vMin - 2));
+      yMax = Math.min(100, Math.ceil (vMax + 2));
+      if (yMax - yMin < 4) { yMin = Math.max(0, yMin - 2); yMax = Math.min(100, yMax + 2); }
+      if (yMax === yMin) yMax = yMin + 1;
     }
-    return null;
+  } else {
+    yMin = opts.yMin != null ? opts.yMin : 0;
+    yMax = opts.yMax != null ? opts.yMax : 100;
   }
+
   function xFor(ts) { return padL + ((new Date(ts).getTime() - t0) / (t1 - t0)) * innerW; }
-  function yFor(p)  { return padT + innerH - (p / 100) * innerH; }
+  function yFor(v)  { return padT + innerH - ((v - yMin) / (yMax - yMin)) * innerH; }
 
-  var cpuPts = samples.filter(function (s) { return typeof s.cpuPct === "number"; })
-                      .map(function (s) { return xFor(s.timestamp) + "," + yFor(s.cpuPct); }).join(" ");
-  var memPts = samples.map(function (s) { return { ts: s.timestamp, p: pctFromSample(s) }; })
-                      .filter(function (e) { return e.p != null; })
-                      .map(function (e) { return xFor(e.ts) + "," + yFor(e.p); }).join(" ");
-
-  // Transparent hit targets at every sample carry the raw values via data-*
-  // attributes. They prefer the CPU dot's y when present (mem y otherwise), so
-  // hover anywhere near a sample reveals both lines.
-  var hitTargets = samples.map(function (s) {
-    var x = xFor(s.timestamp);
-    var hasCpu = typeof s.cpuPct === "number";
-    var memP = pctFromSample(s);
-    var y = hasCpu ? yFor(s.cpuPct) : (memP != null ? yFor(memP) : (padT + innerH / 2));
-    return '<circle class="chart-hit" cx="' + x + '" cy="' + y + '" r="7" fill="transparent" style="cursor:crosshair"' +
-      ' data-ts="' + escapeHtml(String(s.timestamp)) + '"' +
-      ' data-cpu="' + (hasCpu ? s.cpuPct : "") + '"' +
-      ' data-mem="' + (memP != null ? memP : "") + '"' +
-      ' data-mb="' + (typeof s.memUsedBytes === "number" ? s.memUsedBytes : "") + '"' +
-      ' data-mt="' + (typeof s.memTotalBytes === "number" ? s.memTotalBytes : "") + '"/>';
+  var pts = withVal.map(function (e) { return xFor(e.s.timestamp) + "," + yFor(e.v); }).join(" ");
+  var hits = withVal.map(function (e) {
+    return '<circle class="chart-hit" cx="' + xFor(e.s.timestamp) + '" cy="' + yFor(e.v) + '" r="7" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(e.s.timestamp)) + '"' +
+      ' data-v="' + e.v + '"' +
+      ' data-mb="' + (typeof e.s.memUsedBytes === "number" ? e.s.memUsedBytes : "") + '"' +
+      ' data-mt="' + (typeof e.s.memTotalBytes === "number" ? e.s.memTotalBytes : "") + '"/>';
   }).join("");
 
   var ticks = "";
   for (var i = 0; i <= 4; i++) {
-    var v = 25 * i;
-    var y = padT + innerH - (v / 100) * innerH;
+    var v = yMin + (yMax - yMin) * (i / 4);
+    var y = padT + innerH - (i / 4) * innerH;
     ticks +=
       '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="rgba(127,127,127,0.15)"/>' +
-      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + v + '%</text>';
+      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + opts.yFmt(v) + '</text>';
   }
   var xTicks = "";
-  var xTickCount = 5;
-  for (var j = 0; j <= xTickCount; j++) {
-    var tsTick = t0 + (t1 - t0) * (j / xTickCount);
-    var xPos = padL + (j / xTickCount) * innerW;
+  for (var j = 0; j <= 5; j++) {
+    var tsTick = t0 + (t1 - t0) * (j / 5);
+    var xPos = padL + (j / 5) * innerW;
     xTicks +=
       '<line x1="' + xPos + '" y1="' + (padT + innerH) + '" x2="' + xPos + '" y2="' + (padT + innerH + 3) + '" stroke="rgba(127,127,127,0.4)"/>' +
       '<text x="' + xPos + '" y="' + (padT + innerH + 14) + '" text-anchor="middle" font-size="10" fill="currentColor">' + fmtTick(tsTick) + '</text>';
   }
-
   var legend =
     '<g font-size="10" fill="currentColor">' +
-      '<rect x="' + (W - padR - 110) + '" y="' + padT + '" width="10" height="10" fill="var(--color-accent)"/>' +
-      '<text x="' + (W - padR - 96) + '" y="' + (padT + 9) + '">CPU</text>' +
-      '<rect x="' + (W - padR - 60) + '" y="' + padT + '" width="10" height="10" fill="#f4a261"/>' +
-      '<text x="' + (W - padR - 46) + '" y="' + (padT + 9) + '">Memory</text>' +
+      '<rect x="' + (padL + 4) + '" y="2" width="10" height="10" fill="' + opts.color + '"/>' +
+      '<text x="' + (padL + 18) + '" y="11">' + escapeHtml(opts.label) + '</text>' +
     '</g>';
 
   container.innerHTML =
     '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
       ticks + xTicks +
-      (cpuPts ? '<polyline points="' + cpuPts + '" fill="none" stroke="var(--color-accent)" stroke-width="1.5"/>' : '') +
-      (memPts ? '<polyline points="' + memPts + '" fill="none" stroke="#f4a261" stroke-width="1.5"/>' : '') +
-      legend +
-      hitTargets +
+      (pts ? '<polyline points="' + pts + '" fill="none" stroke="' + opts.color + '" stroke-width="1.5"/>' : '') +
+      legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
-  container.style.alignItems = "stretch";
-  container.style.justifyContent = "flex-start";
-  container.style.position = "relative";
 
   _wireChartTooltip(container, function (target) {
-    var ts  = target.getAttribute("data-ts");
-    var cpu = target.getAttribute("data-cpu");
-    var mem = target.getAttribute("data-mem");
-    var mb  = target.getAttribute("data-mb");
-    var mt  = target.getAttribute("data-mt");
-    var rows = '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(ts)) + '</div>';
-    rows += '<div>CPU: ' + (cpu !== "" ? Number(cpu).toFixed(1) + "%" : "—") + '</div>';
-    if (mem !== "" || mb !== "") {
-      var memLine = mem !== "" ? Number(mem).toFixed(1) + "%" : "—";
-      if (mb !== "" && mt !== "") memLine += " (" + _fmtBytes(Number(mb)) + " / " + _fmtBytes(Number(mt)) + ")";
-      rows += '<div>Memory: ' + memLine + '</div>';
-    } else {
-      rows += '<div>Memory: —</div>';
-    }
-    return rows;
+    var ts = target.getAttribute("data-ts");
+    var raw = target.getAttribute("data-v");
+    var v = raw !== "" ? Number(raw) : null;
+    var mb = target.getAttribute("data-mb");
+    var mt = target.getAttribute("data-mt");
+    var sample = {
+      memUsedBytes: mb !== "" ? Number(mb) : undefined,
+      memTotalBytes: mt !== "" ? Number(mt) : undefined,
+    };
+    return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(ts)) + '</div>' +
+      opts.tooltip(sample, v);
   });
+  _addChartScreenshotButton(container, opts.label);
 }
 
 function assetMonitoringViewHTML(a) {
@@ -1919,6 +2072,7 @@ function _renderMonitorChart(container, data) {
     }
   });
   svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+  _addChartScreenshotButton(container, "Response time");
 }
 
 // ─── Nested interface details slide-over ───────────────────────────────────
@@ -2158,6 +2312,7 @@ function _renderIfaceCounterChart(container, derived, side) {
     return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(target.getAttribute("data-ts"))) + '</div>' +
       '<div>' + (side === "in" ? "Input" : "Output") + ': ' + _fmtBitsPerSec(Number(target.getAttribute("data-v"))) + '</div>';
   });
+  _addChartScreenshotButton(container, side === "in" ? "Input throughput" : "Output throughput");
 }
 
 function _renderIfaceErrorChart(container, derived) {
@@ -2245,6 +2400,7 @@ function _renderIfaceErrorChart(container, derived) {
       '<div>In errors: ' + (inE  !== "" ? inE  : "—") + '</div>' +
       '<div>Out errors: ' + (outE !== "" ? outE : "—") + '</div>';
   });
+  _addChartScreenshotButton(container, "Interface errors");
 }
 
 async function openIpHistoryModal(assetId, label) {

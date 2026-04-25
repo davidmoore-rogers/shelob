@@ -326,7 +326,9 @@
   function wireModal() {
     var overlay = document.getElementById("topology-overlay");
     var closeBtn = document.getElementById("topology-close");
+    var screenshotBtn = document.getElementById("topology-screenshot");
     closeBtn.addEventListener("click", closeTopology);
+    if (screenshotBtn) screenshotBtn.addEventListener("click", screenshotTopology);
     overlay.addEventListener("click", function (e) {
       if (e.target === overlay) {
         closeBtn.classList.add("flash");
@@ -335,6 +337,33 @@
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && overlay.classList.contains("open")) closeTopology();
+    });
+  }
+
+  // Cytoscape ships a built-in cy.png() that respects the current layout/colors
+  // and renders independently of the live <canvas>. We pull it as a Blob and
+  // copy to the clipboard, mirroring the chart-screenshot UX in assets.js.
+  function screenshotTopology() {
+    if (!cyInstance) {
+      if (typeof showToast === "function") showToast("Topology not loaded", "error");
+      return;
+    }
+    var rootCs = getComputedStyle(document.documentElement);
+    var bg = rootCs.getPropertyValue("--color-bg-primary").trim() ||
+             rootCs.getPropertyValue("--color-surface").trim() || "#ffffff";
+    var blob = cyInstance.png({ output: "blob", scale: 2, full: true, bg: bg });
+    if (!blob) {
+      if (typeof showToast === "function") showToast("Screenshot failed", "error");
+      return;
+    }
+    if (!navigator.clipboard || typeof ClipboardItem === "undefined" || !navigator.clipboard.write) {
+      if (typeof showToast === "function") showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+      return;
+    }
+    navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(function () {
+      if (typeof showToast === "function") showToast("Topology copied to clipboard");
+    }).catch(function () {
+      if (typeof showToast === "function") showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
     });
   }
 
