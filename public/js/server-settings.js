@@ -14,7 +14,7 @@ document.addEventListener("DOMContentLoaded", function () {
       // Lazy-load tabs on first click
       if (target === "ntp" && !_ntpLoaded) loadNtpSettings();
       if (target === "certificates" && !_certsLoaded) loadCertificates();
-      if (target === "database" && !_dbLoaded) loadDatabaseInfo();
+      if (target === "maintenance" && !_dbLoaded) loadDatabaseInfo();
       if (target === "identification" && !_tagsLoaded) loadIdentificationTab();
       if (target === "customization" && !_brandingLoaded) loadCustomizationTab();
       if (target === "credentials" && !_credsLoaded) loadCredentialsTab();
@@ -24,6 +24,8 @@ document.addEventListener("DOMContentLoaded", function () {
   // Check for ?tab= query parameter to open a specific tab
   var urlParams = new URLSearchParams(window.location.search);
   var requestedTab = urlParams.get("tab");
+  // Back-compat: ?tab=database now maps to the renamed Maintenance tab.
+  if (requestedTab === "database") requestedTab = "maintenance";
   if (requestedTab) {
     var tabBtn = document.querySelector('#settings-tabs .page-tab[data-tab="' + requestedTab + '"]');
     if (tabBtn) {
@@ -930,19 +932,161 @@ async function deleteServerCert(id, name) {
   }
 }
 
-// ─── Database Tab ──────────────────────────────────────────────────────────
+// ─── Maintenance Tab ───────────────────────────────────────────────────────
 
 var _dbLoaded = false;
 
+function _capacityFormatBytes(b) {
+  if (b == null) return "—";
+  if (b >= 1024 * 1024 * 1024) return (b / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+  if (b >= 1024 * 1024) return Math.round(b / (1024 * 1024)) + " MB";
+  if (b >= 1024) return Math.round(b / 1024) + " kB";
+  return b + " B";
+}
+
+function _capacityFormatPct(num, denom) {
+  if (denom == null || denom <= 0) return "—";
+  return Math.round((num / denom) * 100) + "%";
+}
+
+function _capacitySeverityLabel(s) {
+  if (s === "red") return "Critical";
+  if (s === "amber") return "Action recommended";
+  return "Healthy";
+}
+
+function renderCapacityCard(capacity) {
+  if (!capacity) return "";
+
+  var severity = capacity.severity || "ok";
+  var pillClass = "capacity-pill capacity-pill-" + severity;
+
+  // Reasons section — list each issue with severity + suggestion
+  var reasonsHtml = "";
+  if (capacity.reasons && capacity.reasons.length > 0) {
+    reasonsHtml =
+      '<div class="capacity-reasons">' +
+        capacity.reasons.map(function (r) {
+          return '<div class="capacity-reason capacity-reason-' + r.severity + '">' +
+            '<div class="capacity-reason-head">' +
+              '<span class="capacity-pill capacity-pill-' + r.severity + ' capacity-pill-sm">' +
+                (r.severity === "red" ? "Critical" : "Warning") +
+              '</span>' +
+              '<span class="capacity-reason-msg">' + escapeHtml(r.message) + '</span>' +
+            '</div>' +
+            '<div class="capacity-reason-suggestion">' + escapeHtml(r.suggestion) + '</div>' +
+          '</div>';
+        }).join("") +
+      '</div>';
+  }
+
+  var host = capacity.appHost || {};
+  var db = capacity.database || {};
+  var work = capacity.workload || {};
+
+  var diskPct = host.diskFreeBytes != null && host.diskTotalBytes
+    ? Math.round((host.diskFreeBytes / host.diskTotalBytes) * 100)
+    : null;
+
+  var hostHtml =
+    '<div class="capacity-stat-card">' +
+      '<h5>Application host</h5>' +
+      '<div class="db-info-grid">' +
+        dbInfoRow("CPU cores", host.cpuCount != null ? host.cpuCount : "—") +
+        dbInfoRow("RAM (total)", _capacityFormatBytes(host.totalMemoryBytes)) +
+        dbInfoRow("RAM (free)", _capacityFormatBytes(host.freeMemoryBytes)) +
+        (host.loadAvg ? dbInfoRow("Load avg (1/5/15m)", host.loadAvg.map(function (n) { return n.toFixed(2); }).join(" / ")) : "") +
+        dbInfoRow("Disk free", _capacityFormatBytes(host.diskFreeBytes) + (diskPct != null ? " (" + diskPct + "%)" : "")) +
+        dbInfoRow("Disk total", _capacityFormatBytes(host.diskTotalBytes)) +
+        dbInfoRow("DB co-located", host.dbColocated ? "Yes" : "No (remote)") +
+      '</div>' +
+      (host.dbColocated
+        ? ''
+        : '<p class="hint" style="margin-top:0.5rem">Disk free is measured on the Polaris install volume. PostgreSQL is on a separate host — its data volume is not visible here.</p>') +
+    '</div>';
+
+  var sampleTablesHtml = (db.sampleTables || []).map(function (t) {
+    var deadPct = t.deadTupRatio != null ? (t.deadTupRatio * 100).toFixed(0) + "%" : "—";
+    var deadCls = t.deadTupRatio > 0.20 ? ' style="color:var(--color-warning)"' : '';
+    return '<tr>' +
+      '<td class="mono" style="font-size:0.78rem">' + escapeHtml(t.name) + '</td>' +
+      '<td style="text-align:right">' + formatNumber(t.rows) + '</td>' +
+      '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + _capacityFormatBytes(t.bytes) + '</td>' +
+      '<td style="text-align:right;font-size:0.82rem"' + deadCls + '>' + deadPct + '</td>' +
+      '</tr>';
+  }).join("");
+
+  var dbHtml =
+    '<div class="capacity-stat-card">' +
+      '<h5>Database</h5>' +
+      '<div class="db-info-grid">' +
+        dbInfoRow("Current size", _capacityFormatBytes(db.sizeBytes)) +
+        dbInfoRow("Steady-state at current settings", _capacityFormatBytes(work.steadyStateSizeBytes)) +
+      '</div>' +
+      (sampleTablesHtml
+        ? '<div style="margin-top:0.75rem">' +
+            '<table class="ip-table"><thead><tr>' +
+              '<th>Sample table</th>' +
+              '<th style="text-align:right">Rows</th>' +
+              '<th style="text-align:right">Size</th>' +
+              '<th style="text-align:right" title="Dead-tuple ratio — how far autovacuum is behind">Dead</th>' +
+            '</tr></thead><tbody>' + sampleTablesHtml + '</tbody></table>' +
+          '</div>'
+        : '') +
+    '</div>';
+
+  var workHtml =
+    '<div class="capacity-stat-card">' +
+      '<h5>Monitoring workload</h5>' +
+      '<div class="db-info-grid">' +
+        dbInfoRow("Monitored assets", formatNumber(work.monitoredAssetCount || 0)) +
+        (work.cadences
+          ? dbInfoRow("Cadences",
+              work.cadences.responseTimeSec + "s response · " +
+              work.cadences.telemetrySec + "s telemetry · " +
+              work.cadences.systemInfoSec + "s system info")
+          : "") +
+        (work.retention
+          ? dbInfoRow("Retention",
+              work.retention.monitorDays + "d monitor · " +
+              work.retention.telemetryDays + "d telemetry · " +
+              work.retention.systemInfoDays + "d system info")
+          : "") +
+      '</div>' +
+      '<p class="hint" style="margin-top:0.5rem">Steady-state size is what the database grows to if monitoring settings stay as they are. Reduce retention or cadence to lower it.</p>' +
+    '</div>';
+
+  return '<div class="settings-card capacity-card capacity-card-' + severity + '" id="capacity-card">' +
+    '<div class="capacity-header">' +
+      '<h4 style="margin:0">Capacity</h4>' +
+      '<span class="' + pillClass + '">' + _capacitySeverityLabel(severity) + '</span>' +
+    '</div>' +
+    reasonsHtml +
+    '<div class="capacity-grid">' + hostHtml + dbHtml + workHtml + '</div>' +
+    '<p class="hint" style="margin-top:0.75rem;font-size:0.78rem">Last computed ' + escapeHtml(capacity.computedAt || "") + '</p>' +
+  '</div>';
+}
+
 async function loadDatabaseInfo() {
-  var container = document.getElementById("tab-database");
-  container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading database information...</p></div>';
+  var container = document.getElementById("tab-maintenance");
+  container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading maintenance information...</p></div>';
 
   try {
-    var db = await api.serverSettings.getDatabase();
+    // Fetch capacity in parallel with the database snapshot — if capacity
+    // fails (e.g. statfs not available) we still render the rest of the tab.
+    var results = await Promise.allSettled([
+      api.serverSettings.getDatabase(),
+      api.serverSettings.getPgTuning(),
+    ]);
+    if (results[0].status === "rejected") throw results[0].reason;
+    var db = results[0].value;
+    var capacity = results[1].status === "fulfilled" && results[1].value && results[1].value.capacity
+      ? results[1].value.capacity
+      : null;
     _dbLoaded = true;
 
     container.innerHTML =
+      renderCapacityCard(capacity) +
       // ── Application Updates card ──
       '<div class="settings-card" id="update-card">' +
         '<h4>Application Updates</h4>' +

@@ -46,6 +46,7 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { hasActiveDiscoveries } from "./integrations.js";
 import { logger } from "../../utils/logger.js";
+import { getCapacitySnapshot } from "../../services/capacityService.js";
 
 const TAG_COLORS = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
 function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]; }
@@ -874,9 +875,16 @@ router.get("/pg-tuning", async (_req, res, next) => {
     }).filter(Boolean);
 
     const allOk = settings.every((s: any) => s.ok);
+    const pgTuningNeeded = !allOk;
+
+    // Layer the capacity snapshot on top so callers get a single source of
+    // truth for severity, reasons, host stats, sample-table breakdown, and
+    // steady-state size projection. The legacy fields above are preserved
+    // for backwards compatibility.
+    const capacity = await getCapacitySnapshot({ ramInsufficient, pgTuningNeeded });
 
     res.json({
-      needed: !allOk,
+      needed: pgTuningNeeded,
       triggered,
       counts,
       thresholds: PG_TUNING_THRESHOLDS,
@@ -885,6 +893,7 @@ router.get("/pg-tuning", async (_req, res, next) => {
       ramInsufficient,
       currentRamGb,
       recommendedRamGb,
+      capacity,
     });
   } catch (err) {
     next(err);

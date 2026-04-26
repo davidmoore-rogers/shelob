@@ -125,6 +125,7 @@ function renderNav() {
     </ul>
     <div style="margin-top:auto">
       <div id="query-status" class="query-status" style="display:none"></div>
+      <div id="capacity-critical-alert" class="capacity-critical-alert" style="display:none"></div>
       <div id="pg-tuning-alert" class="pg-tuning-alert" style="display:none"></div>
       <div id="ram-warning-alert" class="ram-warning-alert" style="display:none"></div>
       ${isAdmin() ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
@@ -1248,11 +1249,58 @@ function _resetAutoLogoutTimer() {
   }, _autoLogoutMs);
 }
 
+// ─── Capacity Alerts (sidebar) ────────────────────────────────────────────────
+
+// Renders the non-dismissible critical alert when capacity.severity === "red".
+// The amber pg-tuning + ram-warning alerts below remain snoozable/dismissible;
+// red is a capacity emergency (disk near full, autovacuum stalled, projected
+// DB size > 8x host RAM) and must not be silenceable from the UI.
+function renderCapacityCriticalAlert(capacity) {
+  var el = document.getElementById("capacity-critical-alert");
+  if (!el) return;
+
+  if (!capacity || capacity.severity !== "red") {
+    el.style.display = "none";
+    return;
+  }
+
+  var redReasons = (capacity.reasons || []).filter(function (r) { return r.severity === "red"; });
+  if (redReasons.length === 0) {
+    el.style.display = "none";
+    return;
+  }
+
+  // Show the topmost reason; the Maintenance tab lists them all.
+  var top = redReasons[0];
+  var moreCount = redReasons.length - 1;
+
+  el.innerHTML =
+    '<div class="pg-tuning-header">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pg-tuning-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+      '<span>Capacity — Immediate Attention</span>' +
+    '</div>' +
+    '<div class="pg-tuning-body">' +
+      '<p class="pg-tuning-text">' + escapeHtml(top.message) + '</p>' +
+      (moreCount > 0
+        ? '<p class="pg-tuning-text" style="opacity:0.75;font-style:italic">+ ' + moreCount + ' more critical issue' + (moreCount > 1 ? 's' : '') + '</p>'
+        : '') +
+    '</div>' +
+    '<div class="pg-tuning-actions">' +
+      '<a href="/server-settings.html?tab=maintenance" class="btn btn-sm btn-secondary">View capacity &rarr;</a>' +
+    '</div>';
+  el.style.display = "block";
+}
+
 // ─── PostgreSQL Tuning Alert ──────────────────────────────────────────────────
 
 function checkPgTuning() {
   if (!isAdmin()) return;
   api.serverSettings.getPgTuning().then(function (data) {
+    // ── Capacity critical (red) alert — non-dismissible ───────────────────
+    // This runs first and unconditionally so a critical condition surfaces
+    // even when pg-tuning isn't "needed" or has been snoozed.
+    renderCapacityCriticalAlert(data && data.capacity);
+
     var container = document.getElementById("pg-tuning-alert");
     if (!container) return;
 
