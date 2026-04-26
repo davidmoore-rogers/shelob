@@ -1490,6 +1490,7 @@ function _renderTemperatureChart(container, history) {
       (Number(target.getAttribute("data-c")) * 9 / 5 + 32).toFixed(1) + ' °F</div>';
   });
   _addChartScreenshotButton(container, "Temperature");
+  _observeChartResize(container, function (c) { _renderTemperatureChart(c, history); });
 }
 
 function _fmtBytes(n) {
@@ -1554,6 +1555,32 @@ function _wireChartTooltip(container, formatHTML) {
 }
 var CHART_TOOLTIP_HTML =
   '<div class="chart-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
+
+// Re-runs `rerender(container)` whenever the container's width changes by more
+// than a pixel — needed because the chart SVGs use a fixed viewBox computed
+// from clientWidth at render time and `preserveAspectRatio="none"`, so any
+// later width change would otherwise stretch the labels and ticks. One
+// observer per container; rAF-debounced so a drag yields one redraw per frame.
+function _observeChartResize(container, rerender) {
+  if (!container || !window.ResizeObserver) return;
+  if (container._chartResizeObs) container._chartResizeObs.disconnect();
+  var lastW = container.clientWidth;
+  var pending = false;
+  var obs = new ResizeObserver(function () {
+    var w = container.clientWidth;
+    if (Math.abs(w - lastW) < 2) return;
+    lastW = w;
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(function () {
+      pending = false;
+      if (!container.isConnected) { obs.disconnect(); container._chartResizeObs = null; return; }
+      try { rerender(container); } catch (_) {}
+    });
+  });
+  obs.observe(container);
+  container._chartResizeObs = obs;
+}
 
 // Rasterize the SVG inside `container` to a PNG blob via Image+Canvas. The
 // rasterizer can't resolve currentColor or var(--color-*), so we substitute
@@ -1819,6 +1846,7 @@ function _renderTelemetrySubChart(container, samples, opts) {
       opts.tooltip(sample, v);
   });
   _addChartScreenshotButton(container, opts.label);
+  _observeChartResize(container, function (c) { _renderTelemetrySubChart(c, samples, opts); });
 }
 
 function assetMonitoringViewHTML(a) {
@@ -2073,6 +2101,7 @@ function _renderMonitorChart(container, data) {
   });
   svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
   _addChartScreenshotButton(container, "Response time");
+  _observeChartResize(container, function (c) { _renderMonitorChart(c, data); });
 }
 
 // ─── Nested interface details slide-over ───────────────────────────────────
@@ -2313,6 +2342,7 @@ function _renderIfaceCounterChart(container, derived, side) {
       '<div>' + (side === "in" ? "Input" : "Output") + ': ' + _fmtBitsPerSec(Number(target.getAttribute("data-v"))) + '</div>';
   });
   _addChartScreenshotButton(container, side === "in" ? "Input throughput" : "Output throughput");
+  _observeChartResize(container, function (c) { _renderIfaceCounterChart(c, derived, side); });
 }
 
 function _renderIfaceErrorChart(container, derived) {
@@ -2401,6 +2431,7 @@ function _renderIfaceErrorChart(container, derived) {
       '<div>Out errors: ' + (outE !== "" ? outE : "—") + '</div>';
   });
   _addChartScreenshotButton(container, "Interface errors");
+  _observeChartResize(container, function (c) { _renderIfaceErrorChart(c, derived); });
 }
 
 async function openIpHistoryModal(assetId, label) {
