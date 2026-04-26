@@ -153,27 +153,46 @@ interface IpContext {
 async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
   const distinct = Array.from(new Set(ips.filter(Boolean)));
   if (distinct.length === 0) return new Map();
-  const subnets = await prisma.subnet.findMany({
-    where: { status: { not: "deprecated" } },
-    select: { id: true, cidr: true },
-  });
-  const containing = new Map<string, { id: string; cidr: string }>();
-  for (const ip of distinct) {
-    const s = subnets.find((sn) => { try { return ipInCidr(ip, sn.cidr); } catch { return false; } });
-    if (s) containing.set(ip, s);
-  }
-  if (containing.size === 0) return new Map();
-  const reservations = await prisma.reservation.findMany({
-    where: { status: "active", ipAddress: { in: Array.from(containing.keys()) } },
-    select: { id: true, ipAddress: true, subnetId: true, createdBy: true, sourceType: true },
-  });
+  // Single round-trip: containment + reservation join in Postgres. `DISTINCT ON`
+  // with `masklen DESC` picks the most-specific containing subnet per IP — the
+  // routing-style answer when subnets nest. `pg_input_is_valid` filters any
+  // unparseable cidr/ip strings so one bad row can't fail the whole request.
+  const rows = await prisma.$queryRaw<Array<{
+    ip: string;
+    subnet_id: string;
+    subnet_cidr: string;
+    reservation_id: string | null;
+    reservation_created_by: string | null;
+    reservation_source_type: string | null;
+  }>>`
+    WITH input_ips(ip) AS (SELECT unnest(${distinct}::text[]))
+    SELECT DISTINCT ON (i.ip)
+      i.ip                  AS ip,
+      s.id                  AS subnet_id,
+      s.cidr                AS subnet_cidr,
+      r.id                  AS reservation_id,
+      r."createdBy"         AS reservation_created_by,
+      r."sourceType"::text  AS reservation_source_type
+    FROM input_ips i
+    JOIN subnets s
+      ON s.status <> 'deprecated'
+     AND pg_input_is_valid(i.ip,   'inet')
+     AND pg_input_is_valid(s.cidr, 'cidr')
+     AND s.cidr::cidr >>= i.ip::inet
+    LEFT JOIN reservations r
+      ON r."subnetId"  = s.id
+     AND r."ipAddress" = i.ip
+     AND r.status      = 'active'
+    ORDER BY i.ip, masklen(s.cidr::cidr) DESC
+  `;
   const out = new Map<string, IpContext>();
-  for (const [ip, s] of containing.entries()) {
-    const r = reservations.find((res) => res.ipAddress === ip && res.subnetId === s.id);
-    out.set(ip, {
-      subnetId: s.id,
-      subnetCidr: s.cidr,
-      reservation: r ? { id: r.id, createdBy: r.createdBy, sourceType: r.sourceType } : null,
+  for (const row of rows) {
+    out.set(row.ip, {
+      subnetId: row.subnet_id,
+      subnetCidr: row.subnet_cidr,
+      reservation: row.reservation_id
+        ? { id: row.reservation_id, createdBy: row.reservation_created_by, sourceType: row.reservation_source_type as string }
+        : null,
     });
   }
   return out;
