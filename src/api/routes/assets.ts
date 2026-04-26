@@ -147,7 +147,7 @@ function validateMonitorConfig(data: Record<string, unknown>, existing: { discov
 interface IpContext {
   subnetId: string;
   subnetCidr: string;
-  reservation: { id: string; createdBy: string | null } | null;
+  reservation: { id: string; createdBy: string | null; sourceType: string } | null;
 }
 
 async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
@@ -165,7 +165,7 @@ async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
   if (containing.size === 0) return new Map();
   const reservations = await prisma.reservation.findMany({
     where: { status: "active", ipAddress: { in: Array.from(containing.keys()) } },
-    select: { id: true, ipAddress: true, subnetId: true, createdBy: true },
+    select: { id: true, ipAddress: true, subnetId: true, createdBy: true, sourceType: true },
   });
   const out = new Map<string, IpContext>();
   for (const [ip, s] of containing.entries()) {
@@ -173,7 +173,7 @@ async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
     out.set(ip, {
       subnetId: s.id,
       subnetCidr: s.cidr,
-      reservation: r ? { id: r.id, createdBy: r.createdBy } : null,
+      reservation: r ? { id: r.id, createdBy: r.createdBy, sourceType: r.sourceType } : null,
     });
   }
   return out;
@@ -494,6 +494,22 @@ router.post("/:id/reserve", requireUserOrAbove, async (req, res, next) => {
     });
     const containing = subnets.find((s) => { try { return ipInCidr(asset.ipAddress!, s.cidr); } catch { return false; } });
     if (!containing) throw new AppError(409, `No network found that contains ${asset.ipAddress}`);
+
+    // Leases are transient — they roll over with DHCP. If the only thing
+    // holding this IP is a discovery-created lease, release it so the manual
+    // reservation can take its place (unique([subnetId, ipAddress, status=active])).
+    const blockingLease = await prisma.reservation.findFirst({
+      where: {
+        status: "active",
+        sourceType: "dhcp_lease",
+        ipAddress: asset.ipAddress,
+        subnetId: containing.id,
+      },
+      select: { id: true },
+    });
+    if (blockingLease) {
+      await reservationService.releaseReservation(blockingLease.id);
+    }
 
     const hostname = asset.hostname || asset.assetTag || asset.ipAddress;
     const reservation = await reservationService.createReservation({

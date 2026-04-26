@@ -359,19 +359,25 @@ function _assetsUpdateBulkBar() {
 //   - if there's already an active reservation, render Unreserve; networkadmin+
 //     can release any reservation, everyone else only their own (the backend
 //     re-checks this — the disabled state is just a UX hint)
+//   - dhcp_lease reservations are treated as "no real reservation" — leases
+//     roll over, so the user should be able to promote one into a manual
+//     reservation. The reserve endpoint releases the lease in-place.
 function _reserveActionHTML(a) {
   if (!canReserveIps()) return '';
   if (!a.ipAddress) return '';
   var ctx = a.ipContext;
   if (!ctx || !ctx.subnetId) return '';
-  if (ctx.reservation) {
+  if (ctx.reservation && ctx.reservation.sourceType !== 'dhcp_lease') {
     var canUnreserve = canManageNetworks() || ctx.reservation.createdBy === currentUsername;
     var title = canUnreserve
       ? 'Release this reservation'
       : 'Reserved by ' + (ctx.reservation.createdBy || 'system') + ' — only they (or a network admin) can release it';
     return '<button class="btn btn-sm btn-secondary" onclick="unreserveAssetIp(\'' + a.id + '\')" title="' + escapeHtml(title) + '"' + (canUnreserve ? '' : ' disabled') + '>Unreserve</button>';
   }
-  return '<button class="btn btn-sm btn-secondary" onclick="reserveAssetIp(\'' + a.id + '\')" title="Reserve this IP in ' + escapeHtml(ctx.subnetCidr || '') + '">Reserve</button>';
+  var reserveTitle = ctx.reservation && ctx.reservation.sourceType === 'dhcp_lease'
+    ? 'Promote DHCP lease to a manual reservation in ' + (ctx.subnetCidr || '')
+    : 'Reserve this IP in ' + (ctx.subnetCidr || '');
+  return '<button class="btn btn-sm btn-secondary" onclick="reserveAssetIp(\'' + a.id + '\')" title="' + escapeHtml(reserveTitle) + '">Reserve</button>';
 }
 
 async function reserveAssetIp(id) {
