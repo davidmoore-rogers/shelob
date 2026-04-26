@@ -218,6 +218,7 @@ function _getRoleBadgeClass(role) {
     case "admin":        return "badge-admin";
     case "networkadmin": return "badge-network-admin";
     case "assetsadmin":  return "badge-assets-admin";
+    case "user":         return "badge-available";
     default:             return "badge-readonly";
   }
 }
