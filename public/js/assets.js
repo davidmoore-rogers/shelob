@@ -1721,7 +1721,7 @@ function _wireChartTooltip(container, formatHTML) {
   svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
 }
 var CHART_TOOLTIP_HTML =
-  '<div class="chart-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
+  '<div class="chart-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-primary);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
 
 // Re-runs `rerender(container)` whenever the container's width changes by more
 // than a pixel — needed because the chart SVGs use a fixed viewBox computed
@@ -2339,7 +2339,7 @@ function _renderMonitorChart(container, data) {
       }).join("") +
       hitTargets +
     '</svg>' +
-    '<div class="monitor-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
+    '<div class="monitor-tooltip" style="position:absolute;pointer-events:none;display:none;background:var(--color-bg-primary);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;font-size:0.75rem;line-height:1.35;color:var(--color-text);box-shadow:0 4px 12px rgba(0,0,0,0.25);white-space:nowrap;z-index:5"></div>';
   container.innerHTML = svg;
   container.style.alignItems = "stretch";
   container.style.justifyContent = "flex-start";
