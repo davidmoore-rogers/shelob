@@ -725,7 +725,7 @@ function _assetViewRow(label, value, mono) {
 }
 
 function _assetMacAddressesHTML(macs) {
-  if (!macs || macs.length <= 1) return '';
+  if (!Array.isArray(macs) || macs.length <= 1) return '';
   var rows = macs.map(function (m) {
     return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
       '<code style="font-size:0.82rem">' + escapeHtml(m.mac) + '</code>' +
@@ -738,7 +738,7 @@ function _assetMacAddressesHTML(macs) {
 }
 
 function _assetAssocIpsHTML(ips) {
-  if (!ips || ips.length === 0) return '';
+  if (!Array.isArray(ips) || ips.length === 0) return '';
   var rows = ips.map(function (entry) {
     var meta = [];
     if (entry.ptrName) meta.push(escapeHtml(entry.ptrName));
@@ -757,7 +757,7 @@ function _assetAssocIpsHTML(ips) {
 }
 
 function _assetAssocUsersHTML(users) {
-  if (!users || users.length === 0) return '';
+  if (!Array.isArray(users) || users.length === 0) return '';
   var rows = users.map(function (u) {
     var display = u.domain ? escapeHtml(u.domain) + '\\' + escapeHtml(u.user) : escapeHtml(u.user);
     return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
