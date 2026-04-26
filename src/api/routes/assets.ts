@@ -151,12 +151,15 @@ interface IpContext {
 }
 
 async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
-  const distinct = Array.from(new Set(ips.filter(Boolean)));
+  // Pre-filter in JS: drop empties and anything that isn't a parseable IP.
+  // Postgres `inet` cast throws on bad input and we have no PG15-safe TRY_CAST,
+  // so we keep bad strings out of the query entirely. Subnet cidrs are written
+  // through cidr.ts validation, so we trust those.
+  const distinct = Array.from(new Set(ips.filter((ip) => !!ip && isValidIpAddress(ip))));
   if (distinct.length === 0) return new Map();
   // Single round-trip: containment + reservation join in Postgres. `DISTINCT ON`
   // with `masklen DESC` picks the most-specific containing subnet per IP — the
-  // routing-style answer when subnets nest. `pg_input_is_valid` filters any
-  // unparseable cidr/ip strings so one bad row can't fail the whole request.
+  // routing-style answer when subnets nest.
   const rows = await prisma.$queryRaw<Array<{
     ip: string;
     subnet_id: string;
@@ -176,8 +179,6 @@ async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
     FROM input_ips i
     JOIN subnets s
       ON s.status <> 'deprecated'
-     AND pg_input_is_valid(i.ip,   'inet')
-     AND pg_input_is_valid(s.cidr, 'cidr')
      AND s.cidr::cidr >>= i.ip::inet
     LEFT JOIN reservations r
       ON r."subnetId"  = s.id
