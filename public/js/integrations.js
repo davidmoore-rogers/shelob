@@ -827,7 +827,7 @@ async function openCreateModal(type) {
     var monSettings = {};
     var creds = [];
     try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
-    try { var credResp = await api.credentials.list(); creds = (credResp && credResp.credentials) || []; } catch (e) { /* picker just shows defaults */ }
+    try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
     body = _intRenderTabbedBody("intg-edit", [
       { key: "general",    label: "General",    html: _formHTMLForType(type, {}) },
       { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: null }) },
@@ -1058,7 +1058,7 @@ async function openEditModal(id) {
       var monSettings = {};
       var creds = [];
       try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
-      try { var credResp = await api.credentials.list(); creds = (credResp && credResp.credentials) || []; } catch (e) { /* picker just shows defaults */ }
+      try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
       body = _intRenderTabbedBody("intg-edit", [
         { key: "general",    label: "General",    html: body },
         { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: config.monitorCredentialId || null }) },
