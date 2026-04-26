@@ -8,12 +8,14 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAssetsAdmin, requireNetworkAdmin } from "../middleware/auth.js";
+import { requireAssetsAdmin, requireNetworkAdmin, requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
 import { logEvent, buildChanges } from "./events.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { getIpHistory, getHistorySettings, updateHistorySettings, pruneOldHistory } from "../../services/assetIpHistoryService.js";
+import { ipInCidr, isValidIpAddress } from "../../utils/cidr.js";
+import * as reservationService from "../../services/reservationService.js";
 import {
   getMonitorSettings, updateMonitorSettings,
   probeAsset, recordProbeResult,
@@ -133,6 +135,50 @@ function validateMonitorConfig(data: Record<string, unknown>, existing: { discov
   }
 }
 
+// ─── ipContext helpers ──────────────────────────────────────────────────────
+//
+// The Assets table renders a Reserve/Unreserve button per row. To do that the
+// frontend needs to know, for each asset's IP: (a) is there a non-deprecated
+// subnet that contains it, and (b) is there an active reservation on that IP
+// in that subnet (+ who created it, so we can enforce the "users can only
+// release what they reserved" rule). One subnet load + one IN-list reservation
+// query covers an entire page of assets.
+
+interface IpContext {
+  subnetId: string;
+  subnetCidr: string;
+  reservation: { id: string; createdBy: string | null } | null;
+}
+
+async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
+  const distinct = Array.from(new Set(ips.filter(Boolean)));
+  if (distinct.length === 0) return new Map();
+  const subnets = await prisma.subnet.findMany({
+    where: { status: { not: "deprecated" } },
+    select: { id: true, cidr: true },
+  });
+  const containing = new Map<string, { id: string; cidr: string }>();
+  for (const ip of distinct) {
+    const s = subnets.find((sn) => { try { return ipInCidr(ip, sn.cidr); } catch { return false; } });
+    if (s) containing.set(ip, s);
+  }
+  if (containing.size === 0) return new Map();
+  const reservations = await prisma.reservation.findMany({
+    where: { status: "active", ipAddress: { in: Array.from(containing.keys()) } },
+    select: { id: true, ipAddress: true, subnetId: true, createdBy: true },
+  });
+  const out = new Map<string, IpContext>();
+  for (const [ip, s] of containing.entries()) {
+    const r = reservations.find((res) => res.ipAddress === ip && res.subnetId === s.id);
+    out.set(ip, {
+      subnetId: s.id,
+      subnetCidr: s.cidr,
+      reservation: r ? { id: r.id, createdBy: r.createdBy } : null,
+    });
+  }
+  return out;
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // GET /api/v1/assets — list all assets (all authenticated users, paginated)
@@ -198,7 +244,12 @@ router.get("/", async (req, res, next) => {
       }),
       prisma.asset.count({ where }),
     ]);
-    res.json({ assets, total, limit, offset });
+    const ipCtx = await buildIpContexts(assets.map((a) => a.ipAddress).filter(Boolean) as string[]);
+    const enriched = assets.map((a) => ({
+      ...a,
+      ipContext: a.ipAddress ? (ipCtx.get(a.ipAddress) || null) : null,
+    }));
+    res.json({ assets: enriched, total, limit, offset });
   } catch (err) {
     next(err);
   }
@@ -326,7 +377,10 @@ router.get("/:id", async (req, res, next) => {
       },
     });
     if (!asset) throw new AppError(404, "Asset not found");
-    res.json(asset);
+    const ipCtx = asset.ipAddress
+      ? (await buildIpContexts([asset.ipAddress])).get(asset.ipAddress) || null
+      : null;
+    res.json({ ...asset, ipContext: ipCtx });
   } catch (err) {
     next(err);
   }
@@ -418,6 +472,80 @@ router.post("/:id/probe-now", requireAssetsAdmin, async (req, res, next) => {
       await recordSystemInfoResult(id, sr);
     } catch { /* ignore */ }
     res.json(result);
+  } catch (err) { next(err); }
+});
+
+// POST /api/v1/assets/:id/reserve — reserve the asset's IP in its containing
+// subnet. Any user-or-above can reserve; readonly is rejected by middleware.
+router.post("/:id/reserve", requireUserOrAbove, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { id: true, hostname: true, assetTag: true, ipAddress: true },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+    if (!asset.ipAddress) throw new AppError(400, "Asset has no IP address to reserve");
+    if (!isValidIpAddress(asset.ipAddress)) throw new AppError(400, `Invalid IP address ${asset.ipAddress}`);
+
+    const subnets = await prisma.subnet.findMany({
+      where: { status: { not: "deprecated" } },
+      select: { id: true, cidr: true },
+    });
+    const containing = subnets.find((s) => { try { return ipInCidr(asset.ipAddress!, s.cidr); } catch { return false; } });
+    if (!containing) throw new AppError(409, `No network found that contains ${asset.ipAddress}`);
+
+    const hostname = asset.hostname || asset.assetTag || asset.ipAddress;
+    const reservation = await reservationService.createReservation({
+      subnetId: containing.id,
+      ipAddress: asset.ipAddress,
+      hostname,
+      createdBy: req.session?.username,
+    });
+    logEvent({
+      action: "reservation.created",
+      resourceType: "reservation",
+      resourceId: reservation.id,
+      resourceName: hostname,
+      actor: req.session?.username,
+      message: `Reservation created for asset ${hostname} (${asset.ipAddress}) in ${containing.cidr}`,
+    });
+    res.status(201).json(reservation);
+  } catch (err) { next(err); }
+});
+
+// POST /api/v1/assets/:id/unreserve — release the active reservation matching
+// the asset's IP. Network admins can release any; everyone else can only
+// release reservations they themselves created (createdBy match).
+router.post("/:id/unreserve", requireUserOrAbove, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { id: true, hostname: true, ipAddress: true },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+    if (!asset.ipAddress) throw new AppError(400, "Asset has no IP address");
+
+    const reservation = await prisma.reservation.findFirst({
+      where: { status: "active", ipAddress: asset.ipAddress },
+      select: { id: true, createdBy: true, hostname: true },
+    });
+    if (!reservation) throw new AppError(404, `No active reservation found for ${asset.ipAddress}`);
+
+    if (!isNetworkAdminOrAbove(req) && reservation.createdBy !== req.session?.username) {
+      throw new AppError(403, "Forbidden — you can only release reservations you created");
+    }
+
+    await reservationService.releaseReservation(reservation.id);
+    logEvent({
+      action: "reservation.released",
+      resourceType: "reservation",
+      resourceId: reservation.id,
+      actor: req.session?.username,
+      message: `Reservation released for asset ${asset.hostname || asset.ipAddress}`,
+    });
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

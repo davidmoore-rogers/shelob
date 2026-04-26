@@ -166,7 +166,6 @@ async function loadAssets() {
     var result = await api.assets.list(filters);
     _assetsData = (result.assets || result).map(function (a) {
       a._server = a.location || a.learnedLocation || "";
-      a._acquired = a.acquiredAt || a.createdAt || null;
       return a;
     });
     if (statusVal === "hide-decommissioned") {
@@ -174,7 +173,7 @@ async function loadAssets() {
     }
     renderAssetsPage();
   } catch (err) {
-    tbody.innerHTML = '<tr><td colspan="13" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
 }
 
@@ -284,14 +283,14 @@ function renderAssetsPage() {
   tbody.removeEventListener("click", _handleCopyClick);
   tbody.addEventListener("click", _handleCopyClick);
   if (_assetsData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No assets found. Add one to get started.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No assets found. Add one to get started.</td></tr>';
     clearPageControls("pagination");
     _assetsUpdateSelectAll();
     return;
   }
   var sfData = _assetsSF ? _assetsSF.apply(_assetsData) : _assetsData;
   if (sfData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No results match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No results match the current filters.</td></tr>';
     clearPageControls("pagination");
     _assetsUpdateSelectAll();
     return;
@@ -314,8 +313,8 @@ function renderAssetsPage() {
       '<td>' + assetMonitorBadge(a) + '</td>' +
       '<td>' + escapeHtml(a.location || a.learnedLocation || "-") + '</td>' +
       '<td>' + (a.lastSeen ? formatDate(a.lastSeen) : "-") + '</td>' +
-      '<td>' + (a._acquired ? formatDate(a._acquired) : "-") + '</td>' +
       '<td class="actions">' +
+        _reserveActionHTML(a) +
         (canManageAssets() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + a.id + '\')">Edit</button>' +
         (a.ipAddress && !a.dnsName ? '<button class="btn btn-sm btn-secondary" onclick="singleDnsLookup(\'' + a.id + '\', \'' + escapeHtml(a.hostname || a.ipAddress) + '\')" title="Reverse DNS lookup (IP → hostname)">DNS</button>' : '') +
         (!a.ipAddress && (a.dnsName || a.hostname) ? '<button class="btn btn-sm btn-secondary" onclick="singleForwardLookup(\'' + a.id + '\', \'' + escapeHtml(a.dnsName || a.hostname) + '\')" title="Forward DNS lookup (hostname → IP)">PTR</button>' : '') +
@@ -350,6 +349,51 @@ function _assetsUpdateBulkBar() {
   bar.style.display = count > 0 ? "flex" : "none";
   var el = bar.querySelector(".bulk-bar-count");
   if (el) el.textContent = count + " selected";
+}
+
+// Reserve / Unreserve cell. Returns "" when there's nothing to render so the
+// caller can splat it inside the Actions cell unconditionally. The visibility
+// rules:
+//   - readonly users see no button
+//   - asset must have an IP and a non-deprecated containing subnet
+//   - if there's already an active reservation, render Unreserve; networkadmin+
+//     can release any reservation, everyone else only their own (the backend
+//     re-checks this — the disabled state is just a UX hint)
+function _reserveActionHTML(a) {
+  if (!canReserveIps()) return '';
+  if (!a.ipAddress) return '';
+  var ctx = a.ipContext;
+  if (!ctx || !ctx.subnetId) return '';
+  if (ctx.reservation) {
+    var canUnreserve = canManageNetworks() || ctx.reservation.createdBy === currentUsername;
+    var title = canUnreserve
+      ? 'Release this reservation'
+      : 'Reserved by ' + (ctx.reservation.createdBy || 'system') + ' — only they (or a network admin) can release it';
+    return '<button class="btn btn-sm btn-secondary" onclick="unreserveAssetIp(\'' + a.id + '\')" title="' + escapeHtml(title) + '"' + (canUnreserve ? '' : ' disabled') + '>Unreserve</button>';
+  }
+  return '<button class="btn btn-sm btn-secondary" onclick="reserveAssetIp(\'' + a.id + '\')" title="Reserve this IP in ' + escapeHtml(ctx.subnetCidr || '') + '">Reserve</button>';
+}
+
+async function reserveAssetIp(id) {
+  try {
+    await api.assets.reserve(id);
+    showToast('Reservation created');
+    loadAssets();
+  } catch (err) {
+    showToast(err.message || 'Reservation failed', 'error');
+  }
+}
+
+async function unreserveAssetIp(id) {
+  var ok = await showConfirm('Release this reservation?');
+  if (!ok) return;
+  try {
+    await api.assets.unreserve(id);
+    showToast('Reservation released');
+    loadAssets();
+  } catch (err) {
+    showToast(err.message || 'Release failed', 'error');
+  }
 }
 
 async function openAssetSettingsModal() {

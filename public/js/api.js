@@ -172,6 +172,8 @@ const api = {
       return request("GET", `/assets/${id}/monitor-history` + (qs.length ? "?" + qs.join("&") : ""));
     },
     probeNow:             (id)  => request("POST", `/assets/${id}/probe-now`),
+    reserve:              (id)  => request("POST", `/assets/${id}/reserve`),
+    unreserve:            (id)  => request("POST", `/assets/${id}/unreserve`),
     // System tab — telemetry, system-info snapshot, per-interface counters, per-mountpoint storage.
     systemInfo:           (id)  => request("GET", `/assets/${id}/system-info`),
     telemetryHistory:     (id, opts) => {
