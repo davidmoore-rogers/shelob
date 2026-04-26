@@ -119,6 +119,10 @@ const FortiManagerConfigSchema = z.object({
   fortigateApiUser:  z.string().optional().default(""),
   fortigateApiToken: z.string().optional().default(""),
   fortigateVerifySsl: z.boolean().optional().default(false),
+  // Optional: when set, the response-time probe for firewall assets locked
+  // to this integration uses the named SNMP credential instead of the
+  // FortiOS REST API. SNMP sysUpTime is dramatically faster than the API.
+  monitorCredentialId: z.string().uuid().nullable().optional(),
 });
 
 const FortiGateConfigSchema = z.object({
@@ -133,6 +137,7 @@ const FortiGateConfigSchema = z.object({
   dhcpExclude:   z.array(z.string()).optional().default([]),
   inventoryExcludeInterfaces: z.array(z.string()).optional().default([]),
   inventoryIncludeInterfaces: z.array(z.string()).optional().default([]),
+  monitorCredentialId: z.string().uuid().nullable().optional(),
 });
 
 const WindowsServerConfigSchema = z.object({
@@ -288,6 +293,14 @@ router.get("/:id", async (req, res, next) => {
 router.post("/", async (req, res, next) => {
   try {
     const input = CreateIntegrationSchema.parse(req.body);
+    if (input.type === "fortimanager" || input.type === "fortigate") {
+      const credId = (input.config as any).monitorCredentialId;
+      if (credId) {
+        const cred = await prisma.credential.findUnique({ where: { id: credId } });
+        if (!cred) throw new AppError(400, "Selected monitor credential not found");
+        if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
+      }
+    }
     const integration = await prisma.integration.create({
       data: {
         type: input.type,
@@ -391,6 +404,19 @@ router.put("/:id", async (req, res, next) => {
       }
       if (!input.config.bindPassword) {
         newConfig.bindPassword = currentConfig.bindPassword;
+      }
+      // Validate the optional FMG/FortiGate response-time SNMP override.
+      // Empty string and null both mean "clear" — normalize to null so the
+      // probe path sees a consistent "not set" signal.
+      if (existing.type === "fortimanager" || existing.type === "fortigate") {
+        const credId = newConfig.monitorCredentialId;
+        if (credId === "" || credId == null) {
+          newConfig.monitorCredentialId = null;
+        } else if (typeof credId === "string") {
+          const cred = await prisma.credential.findUnique({ where: { id: credId } });
+          if (!cred) throw new AppError(400, "Selected monitor credential not found");
+          if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
+        }
       }
       data.config = newConfig;
     }

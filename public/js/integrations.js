@@ -243,20 +243,46 @@ function _intWireModalTabs(prefix) {
   });
 }
 
-// Renders the Monitoring tab. Edits the *global* monitor settings, not any
-// per-integration field — these settings affect every monitored asset across
-// all integrations. Same fields would be reachable from Server Settings if
-// that page ever grows a monitoring section.
-function monitorSettingsFormHTML(s) {
+// Per-integration SNMP override block rendered at the top of the Monitoring
+// tab. selectedId may be null/undefined (no override). credentials is the
+// list returned by GET /credentials, possibly empty if the credential store
+// hasn't been populated.
+function integrationMonitorOverrideHTML(credentials, selectedId) {
+  var snmp = (credentials || []).filter(function (c) { return c.type === "snmp"; });
+  var options = '<option value="">FortiOS REST API (default)</option>' +
+    snmp.map(function (c) {
+      var sel = (selectedId && c.id === selectedId) ? " selected" : "";
+      return '<option value="' + escapeHtml(c.id) + '"' + sel + '>' + escapeHtml(c.name) + '</option>';
+    }).join("");
+  var emptyHint = snmp.length === 0
+    ? '<p class="hint">No SNMP credentials defined yet — add one under Server Settings &gt; Credentials.</p>'
+    : '<p class="hint">When set, the response-time probe for firewall assets discovered by this integration uses SNMP <code>sysUpTime</code> instead of the FortiOS REST API. SNMP is typically much faster. Telemetry (CPU/memory) and interface scrapes still flow over the API.</p>';
+  return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Per-integration response-time probe</p>' +
+    '<div class="form-group">' +
+      '<label>Probe transport</label>' +
+      '<select id="f-mon-credential">' + options + '</select>' +
+      emptyHint +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">';
+}
+
+// Renders the Monitoring tab. Edits the *global* monitor settings, plus an
+// optional per-integration SNMP credential override (FMG/FortiGate only).
+// The override speeds up the response-time probe for firewall assets locked
+// to this integration — SNMP sysUpTime returns in <50 ms vs hundreds of ms
+// over the FortiOS REST API. Telemetry/system-info still flow over REST.
+function monitorSettingsFormHTML(s, opts) {
   s = s || {};
+  opts = opts || {};
   function num(id, label, value, defaultValue, min, max, hint) {
     return '<div class="form-group"><label>' + escapeHtml(label) + '</label>' +
       '<input type="number" id="f-mon-' + id + '" value="' + (value != null ? value : defaultValue) + '" min="' + min + '" max="' + max + '" style="width:120px">' +
       (hint ? '<p class="hint">' + hint + '</p>' : '') +
     '</div>';
   }
-  return '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
-      'These settings are <strong style="color:var(--color-text-primary)">global</strong> — they apply to every monitored asset across all integrations, not just this one. Changes are saved when you Save the integration.' +
+  return integrationMonitorOverrideHTML(opts.snmpCredentials, opts.monitorCredentialId) +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
+      'The settings below are <strong style="color:var(--color-text-primary)">global</strong> — they apply to every monitored asset across all integrations, not just this one. Changes are saved when you Save the integration.' +
     '</div>' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Response-time polling</p>' +
     num("intervalSeconds", "Polling interval (seconds)", s.intervalSeconds, 60, 5, 86400, "How often each monitored asset is probed for an up/down ping. Default 60 s.") +
@@ -767,6 +793,15 @@ function _formConfigForType(type) {
   return getFormConfig();
 }
 
+// Reads the SNMP override picker (FMG/FortiGate Monitoring tab). Returns the
+// chosen credential id, an empty string to explicitly clear it, or undefined
+// when the picker isn't on screen — caller decides whether to merge.
+function _readMonitorCredentialId() {
+  var el = document.getElementById("f-mon-credential");
+  if (!el) return undefined;
+  return el.value || "";
+}
+
 function _titleForType(type, action) {
   var product =
     type === "windowsserver" ? "Windows Server" :
@@ -790,10 +825,12 @@ async function openCreateModal(type) {
   var body;
   if (isFmg || isFgt) {
     var monSettings = {};
+    var creds = [];
     try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
+    try { var credResp = await api.credentials.list(); creds = (credResp && credResp.credentials) || []; } catch (e) { /* picker just shows defaults */ }
     body = _intRenderTabbedBody("intg-edit", [
       { key: "general",    label: "General",    html: _formHTMLForType(type, {}) },
-      { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings) },
+      { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: null }) },
     ]);
   } else {
     body = _formHTMLForType(type, {});
@@ -839,10 +876,15 @@ async function openCreateModal(type) {
     btn.textContent = "Creating...";
     try {
       var autoDiscoverEl = document.getElementById("f-autoDiscover");
+      var createConfig = _formConfigForType(type);
+      if (isFmg || isFgt) {
+        var credId = _readMonitorCredentialId();
+        if (credId) createConfig.monitorCredentialId = credId;
+      }
       var input = {
         type: type,
         name: val("f-name"),
-        config: _formConfigForType(type),
+        config: createConfig,
         enabled: document.getElementById("f-enabled").checked,
         autoDiscover: autoDiscoverEl ? autoDiscoverEl.checked : true,
         pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
@@ -1014,10 +1056,12 @@ async function openEditModal(id) {
     var isFmgOrFgt = (intg.type === "fortimanager" || intg.type === "fortigate");
     if (isFmgOrFgt) {
       var monSettings = {};
+      var creds = [];
       try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
+      try { var credResp = await api.credentials.list(); creds = (credResp && credResp.credentials) || []; } catch (e) { /* picker just shows defaults */ }
       body = _intRenderTabbedBody("intg-edit", [
         { key: "general",    label: "General",    html: body },
-        { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings) },
+        { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: config.monitorCredentialId || null }) },
       ]);
     }
 
@@ -1076,9 +1120,15 @@ async function openEditModal(id) {
       btn.textContent = "Saving...";
       try {
         var autoDiscoverEl = document.getElementById("f-autoDiscover");
+        var editConfig = formGetter();
+        if (isFmgOrFgt) {
+          // Always send the picker value so an explicit clear (back to "FortiOS REST API")
+          // round-trips. Empty string is normalized to null on the server.
+          editConfig.monitorCredentialId = _readMonitorCredentialId() || null;
+        }
         var input = {
           name: val("f-name"),
-          config: formGetter(),
+          config: editConfig,
           enabled: document.getElementById("f-enabled").checked,
           autoDiscover: autoDiscoverEl ? autoDiscoverEl.checked : true,
           pollInterval: parseInt(document.getElementById("f-pollInterval").value, 10) || 4,
