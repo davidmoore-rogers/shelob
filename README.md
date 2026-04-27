@@ -2,8 +2,6 @@
 
 An IP address management (IPAM) tool for tracking and reserving IPv4/IPv6 space, managing network assets, and auto-discovering devices from FortiManager, standalone FortiGate, Windows Server DHCP, Microsoft Entra ID / Intune, and on-premise Active Directory.
 
-> Several internal identifiers (`shelob` Postgres user/db, `/opt/shelob` install path, `shelob.service` systemd unit, `shelob_csrf` cookie, `shelob-*` localStorage keys, `SHELOB1` backup magic bytes, `davidmoore-rogers/shelob.git` repo URL) are intentionally kept under the project's previous name to avoid host-level migrations, log-out events, or backup-restore breakage. Treat them as fixed identifiers.
-
 ## Features
 
 - **IP Blocks, Subnets & Reservations** — Central registry with manual entry, next-available allocation, conflict detection, and VLAN tracking.
