@@ -62,6 +62,7 @@ function isNetworkAdmin() { return currentUserRole === "networkadmin"; }
 function isAssetsAdmin() { return currentUserRole === "assetsadmin"; }
 function canManageNetworks() { return currentUserRole === "admin" || currentUserRole === "networkadmin"; }
 function canManageAssets() { return currentUserRole === "admin" || currentUserRole === "assetsadmin"; }
+function isUserOrAbove() { return currentUserRole && currentUserRole !== "readonly"; }
 function canReviewConflicts() { return canManageNetworks() || canManageAssets(); }
 function canReserveIps() { return currentUserRole === "admin" || currentUserRole === "networkadmin" || currentUserRole === "user" || currentUserRole === "assetsadmin"; }
 function canCreateNetworks() { return currentUserRole && currentUserRole !== "readonly"; }

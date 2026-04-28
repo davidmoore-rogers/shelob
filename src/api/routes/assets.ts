@@ -484,11 +484,11 @@ router.get("/:id/monitor-history", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/v1/assets/:id/probe-now — run a one-off probe immediately (assets admin).
+// POST /api/v1/assets/:id/probe-now — run a one-off probe immediately (user or above).
 // Triggers all three cadences (response-time, telemetry, system info) so the
 // asset details panel refreshes everything at once instead of waiting for the
 // scheduler to come around.
-router.post("/:id/probe-now", requireAssetsAdmin, async (req, res, next) => {
+router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const result = await probeAsset(id);

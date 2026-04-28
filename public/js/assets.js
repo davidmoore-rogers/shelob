@@ -1232,21 +1232,6 @@ async function openViewModal(id) {
     }
     if (a.monitored) _loadMonitorHistoryFor(a.id, "24h");
     if (a.monitored) _loadSystemTabFor(a.id, "24h", a);
-    var sysProbeBtn = document.getElementById("btn-asset-system-probe");
-    if (sysProbeBtn) {
-      sysProbeBtn.addEventListener("click", async function () {
-        sysProbeBtn.disabled = true;
-        try {
-          await api.assets.probeNow(a.id);
-          await _loadSystemTabFor(a.id, _currentSystemTabRange(), a);
-          showToast("System info refreshed");
-        } catch (err) {
-          showToast(err.message || "Probe failed", "error");
-        } finally {
-          sysProbeBtn.disabled = false;
-        }
-      });
-    }
     document.querySelectorAll(".asset-system-range-btn").forEach(function (b) {
       b.addEventListener("click", function () {
         var range = b.getAttribute("data-range");
@@ -1259,14 +1244,20 @@ async function openViewModal(id) {
     if (probeBtn) {
       probeBtn.addEventListener("click", async function () {
         probeBtn.disabled = true;
+        probeBtn.textContent = "Probing…";
         try {
           var r = await api.assets.probeNow(a.id);
-          showToast(r.success ? ("Probe ok — " + r.responseTimeMs + " ms") : ("Probe failed: " + (r.error || "unknown")), r.success ? "success" : "error");
-          _loadMonitorHistoryFor(a.id, _currentMonitorSelection());
+          var msg = r.success ? ("Probe ok — " + r.responseTimeMs + " ms") : ("Probe failed: " + (r.error || "unknown"));
+          showToast(msg, r.success ? "success" : "error");
+          await Promise.all([
+            _loadMonitorHistoryFor(a.id, _currentMonitorSelection(), { silent: true }),
+            _loadSystemTabFor(a.id, _currentSystemTabRange(), a, { silent: true }),
+          ]);
         } catch (err) {
-          showToast(err.message, "error");
+          showToast(err.message || "Probe failed", "error");
         } finally {
           probeBtn.disabled = false;
+          probeBtn.textContent = "Probe Now";
         }
       });
     }
@@ -1348,13 +1339,10 @@ function assetSystemViewHTML(a) {
     '<button class="btn btn-sm btn-secondary asset-system-range-btn" data-range="24h">24h</button>' +
     '<button class="btn btn-sm btn-secondary asset-system-range-btn" data-range="7d">7d</button>' +
     '<button class="btn btn-sm btn-secondary asset-system-range-btn" data-range="30d">30d</button>';
-  var probeBtn = canManageAssets()
-    ? '<button class="btn btn-sm btn-secondary" id="btn-asset-system-probe">Probe now</button>'
-    : '';
   return (
     '<div style="display:flex;align-items:center;justify-content:space-between;margin:0.25rem 0 0.5rem">' +
       '<h4 style="margin:0">CPU &amp; Memory</h4>' +
-      '<div style="display:flex;gap:6px">' + rangeBtns + ' ' + probeBtn + '</div>' +
+      '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
     '</div>' +
     '<div id="asset-system-summary" style="display:flex;gap:1.25rem;flex-wrap:wrap;font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">' +
       '<span>Loading…</span>' +
@@ -2620,8 +2608,8 @@ function assetMonitoringViewHTML(a) {
   var lastRtt = (typeof a.lastResponseTimeMs === "number") ? (a.lastResponseTimeMs + " ms") : "—";
   var lastPoll = a.lastMonitorAt ? formatDate(a.lastMonitorAt) : "—";
   var consec = a.consecutiveFailures || 0;
-  var probeBtn = canManageAssets()
-    ? '<button class="btn btn-sm btn-secondary" id="btn-asset-probe-now">Probe now</button>'
+  var probeBtn = isUserOrAbove()
+    ? '<button class="btn btn-sm btn-primary" id="btn-asset-probe-now" style="margin-right:6px">Probe Now</button>'
     : '';
   var rangeBtns =
     '<button class="btn btn-sm btn-primary asset-monitor-range-btn" data-range="24h">24h</button>' +
@@ -2639,7 +2627,7 @@ function assetMonitoringViewHTML(a) {
       // Status uses a raw-HTML row because viewRow() escapes its value and
       // would render the badge markup as text.
       '<div class="detail-row"><span class="detail-label">Status</span>' +
-        '<span class="detail-value">' + pill + '</span></div>' +
+        '<span class="detail-value">' + probeBtn + pill + '</span></div>' +
       viewRow("Source", sourceLabel) +
       viewRow("Last Response Time", lastRtt) +
       viewRow("Last Poll", lastPoll) +
@@ -2652,7 +2640,7 @@ function assetMonitoringViewHTML(a) {
           escapeHtml(_probeMethodLabel(a)) +
         '</span>' +
       '</div>' +
-      '<div style="display:flex;gap:6px">' + rangeBtns + ' ' + probeBtn + '</div>' +
+      '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
     '</div>' +
     customPanel +
     '<div id="asset-monitor-stats" style="display:flex;gap:1.25rem;flex-wrap:wrap;font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem"></div>' +
