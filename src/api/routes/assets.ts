@@ -10,6 +10,7 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireAssetsAdmin, requireNetworkAdmin, requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
 import { logEvent, buildChanges } from "./events.js";
+import { assetMatchesIntegrationFilter } from "../../utils/integrationFilter.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
@@ -493,6 +494,48 @@ router.get("/:id/monitor-history", async (req, res, next) => {
 router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
   try {
     const id = req.params.id as string;
+
+    // Honor the originating integration's deviceInclude/deviceExclude (or
+    // ouInclude/ouExclude for AD). A refresh shouldn't pull data from a
+    // device the next discovery sweep would skip — operators tighten these
+    // filters precisely to keep the inventory off certain hosts. If the asset
+    // is now out of scope we short-circuit before any probe traffic goes out.
+    const filterAsset = await prisma.asset.findUnique({
+      where: { id },
+      select: {
+        hostname: true,
+        ipAddress: true,
+        learnedLocation: true,
+        discoveredByIntegration: { select: { id: true, type: true, config: true, name: true } },
+      },
+    });
+    if (!filterAsset) throw new AppError(404, "Asset not found");
+    if (filterAsset.discoveredByIntegration) {
+      const filt = assetMatchesIntegrationFilter(filterAsset, filterAsset.discoveredByIntegration);
+      if (!filt.included) {
+        const reason = filt.reason || "Excluded by integration filter";
+        const label = filterAsset.hostname || filterAsset.ipAddress || id;
+        logEvent({
+          action: "asset.refresh",
+          resourceType: "asset",
+          resourceId: id,
+          resourceName: filterAsset.hostname || filterAsset.ipAddress || undefined,
+          actor: req.session?.username,
+          level: "warning",
+          message: `Refresh blocked: ${label} — ${reason}`,
+          details: { integrationId: filterAsset.discoveredByIntegration.id, integrationType: filterAsset.discoveredByIntegration.type, reason },
+        });
+        res.status(409).json({
+          success: false,
+          responseTimeMs: 0,
+          error: reason,
+          telemetry:  { supported: true, collected: false, error: reason },
+          systemInfo: { supported: true, collected: false, error: reason },
+        });
+        return;
+      }
+    }
+
     // Keep flat response-time fields at the root for back-compat with anything
     // that still reads `success` / `responseTimeMs` directly.
     const probe = await probeAsset(id);
