@@ -1056,7 +1056,7 @@ function _scheduleAssetMonitorRefresh(assetId, ms) {
   _assetMonitorRefreshTimer = setTimeout(function tick() {
     if (!_isOverlayOpen("asset-panel-overlay") || !_isCurrentAsset(assetId)) { _assetMonitorRefreshTimer = null; return; }
     if (document.hidden) { _assetMonitorRefreshTimer = setTimeout(tick, 30000); return; }
-    _loadMonitorHistoryFor(assetId, _currentMonitorSelection());
+    _loadMonitorHistoryFor(assetId, _currentMonitorSelection(), { silent: true });
   }, ms);
 }
 
@@ -1065,7 +1065,7 @@ function _scheduleAssetSystemRefresh(assetId, asset, ms) {
   _assetSystemRefreshTimer = setTimeout(function tick() {
     if (!_isOverlayOpen("asset-panel-overlay") || !_isCurrentAsset(assetId)) { _assetSystemRefreshTimer = null; return; }
     if (document.hidden) { _assetSystemRefreshTimer = setTimeout(tick, 30000); return; }
-    _loadSystemTabFor(assetId, _currentSystemTabRange(), asset);
+    _loadSystemTabFor(assetId, _currentSystemTabRange(), asset, { silent: true });
   }, ms);
 }
 
@@ -1075,9 +1075,15 @@ function _scheduleIfaceRefresh(assetId, ifName, ms) {
     // The iface slide-over is anchored to the current asset; if either is gone we drop the chain.
     if (!_isOverlayOpen("iface-panel-overlay") || !_isCurrentAsset(assetId)) { _ifaceRefreshTimer = null; return; }
     if (document.hidden) { _ifaceRefreshTimer = setTimeout(tick, 30000); return; }
-    _loadInterfaceHistoryFor(assetId, ifName, _currentIfaceRange());
+    _loadInterfaceHistoryFor(assetId, ifName, _currentIfaceRange(), { silent: true });
   }, ms);
 }
+
+// Auto-refresh ticks must not yank the user back to the top of the panel.
+// Showing "Loading…" placeholders collapses the slideover body's scrollHeight,
+// which clamps scrollTop. Silent callers skip the placeholders and capture +
+// restore scrollTop around the swap (see the silent branches in
+// _loadSystemTabFor / _loadMonitorHistoryFor / _loadInterfaceHistoryFor).
 
 function _currentIfaceRange() {
   var btn = document.querySelector(".iface-range-btn.btn-primary");
@@ -1369,10 +1375,11 @@ function _currentSystemTabRange() {
   return (chart && chart.dataset.range) || "24h";
 }
 
-async function _loadSystemTabFor(assetId, range, asset) {
+async function _loadSystemTabFor(assetId, range, asset, opts) {
   // Cancel any pending auto-refresh — a manual range change, probe-now, or
   // re-render shouldn't race a scheduled tick.
   if (_assetSystemRefreshTimer) { clearTimeout(_assetSystemRefreshTimer); _assetSystemRefreshTimer = null; }
+  var silent = !!(opts && opts.silent);
   var chart   = document.getElementById("asset-system-chart");
   var summary = document.getElementById("asset-system-summary");
   var ifaces  = document.getElementById("asset-system-interfaces");
@@ -1381,12 +1388,17 @@ async function _loadSystemTabFor(assetId, range, asset) {
   var ipsec   = document.getElementById("asset-system-ipsec");
   if (!chart) return;
   chart.dataset.range = range || "24h";
-  chart.textContent = "Loading samples…";
-  if (summary) summary.innerHTML = "<span>Loading…</span>";
-  if (ifaces)  ifaces.innerHTML  = '<span class="empty-state">Loading…</span>';
-  if (storage) storage.innerHTML = '<span class="empty-state">Loading…</span>';
-  if (temps)   temps.innerHTML   = '<span class="empty-state">Loading…</span>';
-  if (ipsec)   ipsec.innerHTML   = '<span class="empty-state">Loading…</span>';
+  if (!silent) {
+    chart.textContent = "Loading samples…";
+    if (summary) summary.innerHTML = "<span>Loading…</span>";
+    if (ifaces)  ifaces.innerHTML  = '<span class="empty-state">Loading…</span>';
+    if (storage) storage.innerHTML = '<span class="empty-state">Loading…</span>';
+    if (temps)   temps.innerHTML   = '<span class="empty-state">Loading…</span>';
+    if (ipsec)   ipsec.innerHTML   = '<span class="empty-state">Loading…</span>';
+  }
+
+  var panelBody = silent ? document.getElementById("asset-panel-body") : null;
+  var savedScroll = panelBody ? panelBody.scrollTop : 0;
 
   try {
     var results = await Promise.all([
@@ -1403,12 +1415,22 @@ async function _loadSystemTabFor(assetId, range, asset) {
     _renderTemperatures(temps, si, asset);
     _renderIpsecTunnels(ipsec, si, asset);
   } catch (err) {
-    chart.textContent = "Error: " + (err.message || "failed to load");
-    if (summary) summary.innerHTML = "";
-    if (ifaces)  ifaces.innerHTML  = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
-    if (storage) storage.innerHTML = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
-    if (temps)   temps.innerHTML   = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
-    if (ipsec)   ipsec.innerHTML   = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
+    if (!silent) {
+      chart.textContent = "Error: " + (err.message || "failed to load");
+      if (summary) summary.innerHTML = "";
+      if (ifaces)  ifaces.innerHTML  = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
+      if (storage) storage.innerHTML = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
+      if (temps)   temps.innerHTML   = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
+      if (ipsec)   ipsec.innerHTML   = '<p class="empty-state">' + escapeHtml(err.message || "failed to load") + '</p>';
+    }
+    // On silent-refresh failure leave the stale content alone so the user
+    // doesn't see a transient blip blow away the panel they were reading.
+  }
+  if (panelBody) {
+    panelBody.scrollTop = savedScroll;
+    requestAnimationFrame(function () {
+      if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
+    });
   }
   // Schedule next auto-refresh on the telemetry cadence (the fastest of the
   // three System-tab streams). Keep going on error so a transient blip doesn't
@@ -2516,15 +2538,18 @@ function assetMonitoringViewHTML(a) {
   );
 }
 
-async function _loadMonitorHistoryFor(assetId, selection) {
+async function _loadMonitorHistoryFor(assetId, selection, callOpts) {
   // Cancel any pending auto-refresh — a manual range change or probe-now click
   // shouldn't race against an in-flight scheduled tick.
   if (_assetMonitorRefreshTimer) { clearTimeout(_assetMonitorRefreshTimer); _assetMonitorRefreshTimer = null; }
+  var silent = !!(callOpts && callOpts.silent);
   var chart = document.getElementById("asset-monitor-chart");
   var stats = document.getElementById("asset-monitor-stats");
   if (!chart) return;
-  chart.textContent = "Loading samples…";
-  if (stats) { stats.textContent = ""; delete stats.dataset.summary; }
+  if (!silent) {
+    chart.textContent = "Loading samples…";
+    if (stats) { stats.textContent = ""; delete stats.dataset.summary; }
+  }
   var opts = (typeof selection === "string" || !selection) ? { range: selection || "24h" } : selection;
   // Persist selection so probe-now can refresh the same view.
   if (opts.from && opts.to) {
@@ -2536,6 +2561,8 @@ async function _loadMonitorHistoryFor(assetId, selection) {
     delete chart.dataset.from;
     delete chart.dataset.to;
   }
+  var panelBody = silent ? document.getElementById("asset-panel-body") : null;
+  var savedScroll = panelBody ? panelBody.scrollTop : 0;
   try {
     var data = await api.assets.monitorHistory(assetId, opts);
     _renderMonitorChart(chart, data);
@@ -2554,7 +2581,14 @@ async function _loadMonitorHistoryFor(assetId, selection) {
       stats.dataset.summary = s.total + " samples · avg " + avg + " · min " + min + " · max " + max + " · packet loss " + loss;
     }
   } catch (err) {
-    chart.textContent = "Error: " + (err.message || "failed to load history");
+    if (!silent) chart.textContent = "Error: " + (err.message || "failed to load history");
+    // Silent ticks leave stale content in place on transient errors.
+  }
+  if (panelBody) {
+    panelBody.scrollTop = savedScroll;
+    requestAnimationFrame(function () {
+      if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
+    });
   }
   // Custom date ranges are fixed historical windows — do not auto-refresh.
   if (opts.from && opts.to) return;
@@ -2855,16 +2889,21 @@ async function openInterfaceDetailPanel(asset, ifName) {
   });
 }
 
-async function _loadInterfaceHistoryFor(assetId, ifName, range) {
+async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   // Cancel any pending auto-refresh — manual range change shouldn't race a tick.
   if (_ifaceRefreshTimer) { clearTimeout(_ifaceRefreshTimer); _ifaceRefreshTimer = null; }
+  var silent = !!(callOpts && callOpts.silent);
   var inEl = document.getElementById("iface-in-chart");
   var outEl = document.getElementById("iface-out-chart");
   var errEl = document.getElementById("iface-err-chart");
   var stats = document.getElementById("iface-stats");
   if (!inEl) return;
-  inEl.textContent = outEl.textContent = errEl.textContent = "Loading samples…";
-  if (stats) stats.textContent = "Loading…";
+  if (!silent) {
+    inEl.textContent = outEl.textContent = errEl.textContent = "Loading samples…";
+    if (stats) stats.textContent = "Loading…";
+  }
+  var panelBody = silent ? document.getElementById("iface-panel-body") : null;
+  var savedScroll = panelBody ? panelBody.scrollTop : 0;
   try {
     var data = await api.assets.interfaceHistory(assetId, ifName, range || "1h");
     var derived = _derivePerIntervalSeries(data.samples || []);
@@ -2874,8 +2913,17 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range) {
     _renderIfaceCounterChart(outEl, derived, "out", ifaceOpts);
     _renderIfaceErrorChart(errEl, derived, ifaceOpts);
   } catch (err) {
-    inEl.textContent = outEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
-    if (stats) stats.textContent = "";
+    if (!silent) {
+      inEl.textContent = outEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
+      if (stats) stats.textContent = "";
+    }
+    // Silent ticks leave stale content in place on transient errors.
+  }
+  if (panelBody) {
+    panelBody.scrollTop = savedScroll;
+    requestAnimationFrame(function () {
+      if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
+    });
   }
   // Schedule next auto-refresh on the response-time cadence — pinned interfaces
   // ride that cadence on the backend (collectInterfacesFiltered).
