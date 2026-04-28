@@ -209,7 +209,10 @@ function renderSubnetsPage() {
   }
   var sfData = _subnetsSF ? _subnetsSF.apply(_subnetsData) : _subnetsData;
   if (sfData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No results match the current filters.</td></tr>';
+    var _statusHint = document.getElementById("filter-status").value === "hide-deprecated"
+      ? '<br><small style="font-weight:normal;opacity:0.75">Deprecated networks are hidden by default — try changing Status to "All".</small>'
+      : '';
+    tbody.innerHTML = '<tr><td colspan="13" class="empty-state">No results match the current filters.' + _statusHint + '</td></tr>';
     clearPageControls("pagination");
     _subnetsUpdateSelectAll();
     return;
