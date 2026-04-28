@@ -1091,7 +1091,7 @@ async function loadDatabaseInfo() {
       '<div class="settings-card" id="update-card">' +
         '<h4>Application Updates</h4>' +
         '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-          'Check for new versions and apply updates directly from the browser. Updates include a pre-update database backup and automatic rollback on failure.' +
+          'Check for new versions and apply updates directly from the browser. Automatic rollback on failure.' +
         '</p>' +
         '<div id="update-status-area">' +
           '<div class="db-info-grid" style="margin-bottom:1rem">' +
@@ -1102,6 +1102,13 @@ async function loadDatabaseInfo() {
             '<button class="btn btn-secondary" id="btn-check-updates">Check for Updates</button>' +
             '<span id="update-check-status" style="font-size:0.82rem"></span>' +
           '</div>' +
+        '</div>' +
+        '<div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--color-border)">' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
+            '<input type="checkbox" id="update-backup-checkbox" style="width:15px;height:15px;flex-shrink:0">' +
+            '<span style="font-size:0.85rem">Back up database before applying updates</span>' +
+          '</label>' +
+          '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.3rem 0 0 23px">Disable to skip the backup step and apply updates faster. Not recommended for production systems.</p>' +
         '</div>' +
         '<details id="update-history" style="margin-top:1rem">' +
           '<summary style="cursor:pointer;font-size:0.82rem;color:var(--color-text-secondary);user-select:none">Recent updates</summary>' +
@@ -1478,7 +1485,7 @@ async function loadBackupHistory() {
         return '<tr>' +
           '<td style="font-size:0.82rem;white-space:nowrap">' + escapeHtml(formatDate(b.createdAt)) + '</td>' +
           '<td class="mono" style="font-size:0.82rem">' + escapeHtml(b.filename) + preUpdateBadge + '</td>' +
-          '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(b.size || formatFileSize(b.sizeBytes || 0)) + '</td>' +
+          '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + formatFileSize(b.size || b.sizeBytes || 0) + '</td>' +
           '<td>' + (b.encrypted
             ? '<span class="badge badge-warning" style="font-size:0.7rem">Encrypted</span>'
             : '<span class="badge badge-info" style="font-size:0.7rem">Plain</span>') +
@@ -1564,6 +1571,22 @@ var _updatePollTimer = null;
 
 function initUpdateControls() {
   document.getElementById("btn-check-updates").addEventListener("click", checkForUpdatesUI);
+
+  // Load and wire the backup checkbox
+  var backupCheckbox = document.getElementById("update-backup-checkbox");
+  if (backupCheckbox) {
+    api.serverSettings.getUpdateSettings().then(function (s) {
+      backupCheckbox.checked = !s.skipBackup;
+    }).catch(function () {
+      backupCheckbox.checked = true; // default: enabled
+    });
+    backupCheckbox.addEventListener("change", function () {
+      api.serverSettings.setUpdateSettings({ skipBackup: !backupCheckbox.checked }).catch(function (err) {
+        showToast("Failed to save setting: " + err.message, "error");
+        backupCheckbox.checked = !backupCheckbox.checked; // revert
+      });
+    });
+  }
 
   var historyEl = document.getElementById("update-history");
   if (historyEl) {

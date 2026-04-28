@@ -1073,6 +1073,29 @@ router.post("/updates/dismiss", (_req, res) => {
   res.json({ ok: true });
 });
 
+router.get("/updates/settings", async (_req, res, next) => {
+  try {
+    const setting = await prisma.setting.findUnique({ where: { key: "update.skip_backup" } });
+    res.json({ skipBackup: setting?.value === true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/updates/settings", async (req, res, next) => {
+  try {
+    const skipBackup = !!req.body?.skipBackup;
+    await prisma.setting.upsert({
+      where: { key: "update.skip_backup" },
+      update: { value: skipBackup },
+      create: { key: "update.skip_backup", value: skipBackup },
+    });
+    res.json({ skipBackup });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/updates/history", async (req, res, next) => {
   try {
     const limit = parseInt(String(req.query.limit || ""), 10) || 20;

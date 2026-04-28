@@ -303,62 +303,67 @@ export async function applyUpdate(): Promise<void> {
     // in-memory buffer. Saved to data/backups/ so it appears in the
     // Backup History list and can be downloaded from the Maintenance tab.
     setStep(0, "running");
-    try {
-      mkdirSync(BACKUP_DIR, { recursive: true });
-      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const version = readCurrentVersion();
-      const backupId = `bk-pre-update-${Date.now()}`;
-      const filename = `polaris-pre-update-${version}-${ts}.sql.gz`;
-      const backupFile = join(BACKUP_DIR, backupId);
-
-      const { createGzip } = await import("node:zlib");
-      const { createWriteStream } = await import("node:fs");
-      const { pipeline } = await import("node:stream/promises");
-
-      const dump = spawn(
-        "pg_dump",
-        [connUrl, "--no-owner", "--no-acl", "--clean", "--if-exists"],
-        { cwd: APP_DIR }
-      );
-      let dumpStderr = "";
-      dump.stderr.on("data", (chunk) => { dumpStderr += chunk.toString(); });
-      const dumpExit = new Promise<void>((resolve, reject) => {
-        dump.on("error", reject);
-        dump.on("close", (code) => {
-          if (code === 0) resolve();
-          else reject(new Error(`pg_dump exited with code ${code}: ${dumpStderr.trim() || "no stderr"}`));
-        });
-      });
-
-      await Promise.all([
-        pipeline(dump.stdout, createGzip(), createWriteStream(backupFile)),
-        dumpExit,
-      ]);
-
-      const sizeBytes = existsSync(backupFile) ? readFileSync(backupFile).length : 0;
-      const sizeKb = Math.round(sizeBytes / 1024);
-
-      // Register in backup_history so the Maintenance tab shows it with a Download button
+    const skipBackupSetting = await prisma.setting.findUnique({ where: { key: "update.skip_backup" } });
+    if (skipBackupSetting?.value === true) {
+      setStep(0, "done", "Backup skipped (disabled in settings)");
+    } else {
       try {
-        const existing = await prisma.setting.findUnique({ where: { key: "backup_history" } });
-        const history: any[] = existing?.value && Array.isArray(existing.value) ? existing.value as any[] : [];
-        history.push({ id: backupId, filename, size: sizeBytes, encrypted: false, preUpdate: true, createdAt: new Date().toISOString() });
-        if (history.length > 50) history.splice(0, history.length - 50);
-        await prisma.setting.upsert({
-          where: { key: "backup_history" },
-          update: { value: history },
-          create: { key: "backup_history", value: history },
-        });
-      } catch (dbErr) {
-        logger.warn({ err: dbErr }, "Pre-update backup created but failed to register in backup_history");
-      }
+        mkdirSync(BACKUP_DIR, { recursive: true });
+        const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const version = readCurrentVersion();
+        const backupId = `bk-pre-update-${Date.now()}`;
+        const filename = `polaris-pre-update-${version}-${ts}.sql.gz`;
+        const backupFile = join(BACKUP_DIR, backupId);
 
-      _status.backupFile = filename;
-      setStep(0, "done", `Backup created (${sizeKb} KB)`);
-    } catch (err: any) {
-      // Non-fatal — warn but continue
-      setStep(0, "done", "Backup skipped: " + (err.message || "pg_dump not available"));
-      logger.warn({ err }, "Pre-update backup failed — continuing without backup");
+        const { createGzip } = await import("node:zlib");
+        const { createWriteStream } = await import("node:fs");
+        const { pipeline } = await import("node:stream/promises");
+
+        const dump = spawn(
+          "pg_dump",
+          [connUrl, "--no-owner", "--no-acl", "--clean", "--if-exists"],
+          { cwd: APP_DIR }
+        );
+        let dumpStderr = "";
+        dump.stderr.on("data", (chunk) => { dumpStderr += chunk.toString(); });
+        const dumpExit = new Promise<void>((resolve, reject) => {
+          dump.on("error", reject);
+          dump.on("close", (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`pg_dump exited with code ${code}: ${dumpStderr.trim() || "no stderr"}`));
+          });
+        });
+
+        await Promise.all([
+          pipeline(dump.stdout, createGzip(), createWriteStream(backupFile)),
+          dumpExit,
+        ]);
+
+        const sizeBytes = existsSync(backupFile) ? readFileSync(backupFile).length : 0;
+        const sizeKb = Math.round(sizeBytes / 1024);
+
+        // Register in backup_history so the Maintenance tab shows it with a Download button
+        try {
+          const existing = await prisma.setting.findUnique({ where: { key: "backup_history" } });
+          const history: any[] = existing?.value && Array.isArray(existing.value) ? existing.value as any[] : [];
+          history.push({ id: backupId, filename, size: sizeBytes, encrypted: false, preUpdate: true, createdAt: new Date().toISOString() });
+          if (history.length > 50) history.splice(0, history.length - 50);
+          await prisma.setting.upsert({
+            where: { key: "backup_history" },
+            update: { value: history },
+            create: { key: "backup_history", value: history },
+          });
+        } catch (dbErr) {
+          logger.warn({ err: dbErr }, "Pre-update backup created but failed to register in backup_history");
+        }
+
+        _status.backupFile = filename;
+        setStep(0, "done", `Backup created (${sizeKb} KB)`);
+      } catch (err: any) {
+        // Non-fatal — warn but continue
+        setStep(0, "done", "Backup skipped: " + (err.message || "pg_dump not available"));
+        logger.warn({ err }, "Pre-update backup failed — continuing without backup");
+      }
     }
 
     // ── Step 2: Pull latest code ──

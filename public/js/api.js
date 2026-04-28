@@ -386,6 +386,8 @@ const api = {
     applyUpdate:     () => request("POST", "/server-settings/updates/apply"),
     dismissUpdate:   () => request("POST", "/server-settings/updates/dismiss"),
     getUpdateHistory: (limit) => request("GET", "/server-settings/updates/history" + (limit ? "?limit=" + limit : "")),
+    getUpdateSettings: () => request("GET", "/server-settings/updates/settings"),
+    setUpdateSettings: (body) => request("PUT", "/server-settings/updates/settings", body),
   },
   search: {
     query: (q) => request("GET", `/search?q=${encodeURIComponent(q)}`),
