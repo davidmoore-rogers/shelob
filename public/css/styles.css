@@ -1852,6 +1852,30 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
     grid-template-columns: 1fr 1fr;
   }
 }
+.mac-id-section-heading {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-secondary);
+  margin: 0 0 0.5rem;
+}
+.mac-id-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.25rem 0;
+}
+.mac-id-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .mac-id-two-col {
+    grid-template-columns: 1fr;
+  }
+}
 .settings-card h4 {
   font-size: 0.9rem;
   font-weight: 600;

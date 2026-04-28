@@ -2126,14 +2126,21 @@ function renderIdentificationTab() {
   // ── 1. DNS Configuration ──
   html += dnsCardsHTML();
 
-  // ── 2. OUI Overrides ──
-  html +=
-    '<div class="settings-card">' +
-      '<h4>OUI Overrides</h4>' +
-      '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-        'Define static MAC prefix-to-manufacturer mappings that take priority over the IEEE OUI database. ' +
-        'Use this for custom hardware, internal devices, or to correct misidentified vendors.' +
-      '</p>';
+  // ── 2. MAC & Vendor Identification (consolidated: Overrides + Aliases + OUI Database) ──
+  html += '<div class="settings-card">' +
+    '<h4>MAC &amp; Vendor Identification</h4>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1.25rem">' +
+      'Three-layer resolution pipeline: <strong>Prefix Overrides</strong> take top priority, ' +
+      'then <strong>Manufacturer Aliases</strong> normalize the vendor name, ' +
+      'and the <strong>IEEE OUI Database</strong> provides the base lookup.' +
+    '</p>';
+
+  // ── Prefix Overrides ──
+  html += '<h5 class="mac-id-section-heading">Prefix Overrides</h5>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.75rem">' +
+      'Static MAC prefix → manufacturer mappings that take priority over everything else. ' +
+      'Use for custom hardware, internal devices, or to correct misidentified vendors.' +
+    '</p>';
 
   if (_ouiOverrides.length > 0) {
     html += '<table class="ip-table" style="margin-bottom:1rem"><thead><tr>' +
@@ -2153,44 +2160,101 @@ function renderIdentificationTab() {
   }
 
   html +=
-      '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
-        '<div style="flex:0 0 140px">' +
-          '<label style="font-size:0.78rem;font-weight:500">MAC Prefix</label>' +
-          '<input type="text" id="f-oui-prefix" placeholder="AA:BB:CC" style="font-family:var(--font-mono);font-size:0.85rem">' +
-        '</div>' +
-        '<div style="flex:1;min-width:160px">' +
-          '<label style="font-size:0.78rem;font-weight:500">Manufacturer</label>' +
-          '<input type="text" id="f-oui-manufacturer" placeholder="e.g. Custom Switch Co.">' +
-        '</div>' +
-        '<div style="flex:1;min-width:160px">' +
-          '<label style="font-size:0.78rem;font-weight:500">Device <span style="color:var(--color-text-tertiary);font-weight:400">(optional)</span></label>' +
-          '<input type="text" id="f-oui-device" placeholder="e.g. PowerEdge R740">' +
-        '</div>' +
-        '<button class="btn btn-primary" id="btn-add-oui-override">Add Override</button>' +
+    '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
+      '<div style="flex:0 0 140px">' +
+        '<label style="font-size:0.78rem;font-weight:500">MAC Prefix</label>' +
+        '<input type="text" id="f-oui-prefix" placeholder="AA:BB:CC" style="font-family:var(--font-mono);font-size:0.85rem">' +
       '</div>' +
+      '<div style="flex:1;min-width:160px">' +
+        '<label style="font-size:0.78rem;font-weight:500">Manufacturer</label>' +
+        '<input type="text" id="f-oui-manufacturer" placeholder="e.g. Custom Switch Co.">' +
+      '</div>' +
+      '<div style="flex:1;min-width:160px">' +
+        '<label style="font-size:0.78rem;font-weight:500">Device <span style="color:var(--color-text-tertiary);font-weight:400">(optional)</span></label>' +
+        '<input type="text" id="f-oui-device" placeholder="e.g. PowerEdge R740">' +
+      '</div>' +
+      '<button class="btn btn-primary" id="btn-add-oui-override">Add Override</button>' +
     '</div>';
 
-  // ── 2b. Manufacturer Aliases ──
-  html += manufacturerAliasesCardHTML();
+  // ── Divider ──
+  html += '<hr class="mac-id-divider">';
 
-  // ── 3. OUI Database ──
+  // ── Two-column: Manufacturer Aliases (left) + IEEE OUI Database (right) ──
+  html += '<div class="mac-id-two-col">';
+
+  // Left: Manufacturer Aliases
+  html += '<div>' +
+    '<h5 class="mac-id-section-heading">Manufacturer Aliases</h5>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.75rem">' +
+      'Map vendor name variants to a single canonical form so the same vendor doesn\'t split into multiple entries. ' +
+      'Each alias (e.g. <code>Fortinet, Inc.</code>) is rewritten to its canonical name (e.g. <code>Fortinet</code>) on every asset and MIB write. ' +
+      'Aliases are matched case-insensitively.' +
+    '</p>';
+
+  if (_manufacturerAliases.length > 0) {
+    var groups = {};
+    _manufacturerAliases.forEach(function (a) {
+      if (!groups[a.canonical]) groups[a.canonical] = [];
+      groups[a.canonical].push(a);
+    });
+    var canonicalNames = Object.keys(groups).sort(function (a, b) { return a.localeCompare(b); });
+
+    html += '<div style="overflow-x:auto"><table class="ip-table" style="margin-bottom:1rem"><thead><tr>' +
+      '<th>Alias</th>' +
+      '<th>Canonical</th>' +
+      '<th style="width:120px"></th>' +
+    '</tr></thead><tbody>';
+    canonicalNames.forEach(function (canonical) {
+      groups[canonical].forEach(function (a) {
+        html += '<tr data-alias-id="' + escapeHtml(a.id) + '">' +
+          '<td><span class="alias-text mono" style="font-size:0.85rem">' + escapeHtml(a.alias) + '</span></td>' +
+          '<td><span class="canonical-text">' + escapeHtml(a.canonical) + '</span></td>' +
+          '<td class="actions">' +
+            '<button class="btn btn-sm alias-edit" data-id="' + escapeHtml(a.id) + '">Edit</button> ' +
+            '<button class="btn btn-sm btn-danger alias-del" data-id="' + escapeHtml(a.id) + '">Del</button>' +
+          '</td>' +
+        '</tr>';
+      });
+    });
+    html += '</tbody></table></div>';
+  } else {
+    html += '<p class="empty-state" style="margin-bottom:1rem">No aliases defined.</p>';
+  }
+
   html +=
-    '<div class="settings-card">' +
-      '<h4>MAC OUI Database</h4>' +
-      '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-        'The IEEE OUI (Organizationally Unique Identifier) database maps MAC address prefixes to hardware manufacturers. ' +
-        'It is refreshed automatically every week. You can also trigger a manual refresh below.' +
-      '</p>' +
-      '<div id="oui-status" class="db-info-grid" style="margin-bottom:1rem">' +
-        '<div class="db-info-label">Status</div><div class="db-info-value" id="oui-status-loaded">Loading...</div>' +
-        '<div class="db-info-label">Entries</div><div class="db-info-value" id="oui-status-entries">-</div>' +
-        '<div class="db-info-label">Last Refreshed</div><div class="db-info-value" id="oui-status-refreshed">-</div>' +
+    '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
+      '<div style="flex:2;min-width:160px">' +
+        '<label style="font-size:0.78rem;font-weight:500">Alias <span style="color:var(--color-text-tertiary);font-weight:400">(input)</span></label>' +
+        '<input type="text" id="f-alias-input" placeholder="e.g. Fortinet, Inc.">' +
       '</div>' +
-      '<div style="display:flex;gap:8px;align-items:center">' +
-        '<button class="btn btn-secondary" id="btn-oui-refresh">Refresh OUI Database</button>' +
-        '<span id="oui-refresh-status" style="font-size:0.82rem;margin-left:8px"></span>' +
+      '<div style="flex:1;min-width:120px">' +
+        '<label style="font-size:0.78rem;font-weight:500">Canonical</label>' +
+        '<input type="text" id="f-alias-canonical" placeholder="e.g. Fortinet">' +
       '</div>' +
-    '</div>';
+      '<button class="btn btn-primary" id="btn-add-alias">Add</button>' +
+    '</div>' +
+  '</div>';
+
+  // Right: IEEE OUI Database
+  html += '<div>' +
+    '<h5 class="mac-id-section-heading">IEEE OUI Database</h5>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.75rem">' +
+      'Maps MAC address prefixes to hardware manufacturers. ' +
+      'Refreshed automatically every week; aliases and overrides layer on top.' +
+    '</p>' +
+    '<div id="oui-status" class="db-info-grid" style="margin-bottom:1rem">' +
+      '<div class="db-info-label">Status</div><div class="db-info-value" id="oui-status-loaded">Loading...</div>' +
+      '<div class="db-info-label">Entries</div><div class="db-info-value" id="oui-status-entries">-</div>' +
+      '<div class="db-info-label">Last Refreshed</div><div class="db-info-value" id="oui-status-refreshed">-</div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center">' +
+      '<button class="btn btn-secondary" id="btn-oui-refresh">Refresh Now</button>' +
+      '<span id="oui-refresh-status" style="font-size:0.82rem;margin-left:8px"></span>' +
+    '</div>' +
+  '</div>';
+
+  html += '</div>'; // end mac-id-two-col
+  html += '</div>'; // end settings-card
 
   // ── 4. MIB Database ──
   html += mibCardHTML();
@@ -2394,67 +2458,9 @@ function _mibModelOptions(manufacturer, selected) {
   return opts;
 }
 
-// ─── Manufacturer Aliases card ─────────────────────────────────────────────
-
-function manufacturerAliasesCardHTML() {
-  var html = '<div class="settings-card">' +
-    '<h4>Manufacturer Aliases</h4>' +
-    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-      'Map vendor name variants to a single canonical form so the same vendor doesn\'t split into multiple entries. ' +
-      'Each <b>alias</b> (e.g. <code>Fortinet, Inc.</code>) is rewritten to its <b>canonical</b> name (e.g. <code>Fortinet</code>) on every asset and MIB write. ' +
-      'Aliases are matched case-insensitively. Saving an alias also rewrites any existing asset and MIB rows that match.' +
-    '</p>';
-
-  if (_manufacturerAliases.length > 0) {
-    // Group by canonical so admins can see "all the things that map to Fortinet" together.
-    var groups = {};
-    _manufacturerAliases.forEach(function (a) {
-      var key = a.canonical;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(a);
-    });
-    var canonicalNames = Object.keys(groups).sort(function (a, b) {
-      return a.localeCompare(b);
-    });
-
-    html += '<table class="ip-table" style="margin-bottom:1rem"><thead><tr>' +
-      '<th style="width:40%">Alias (input string)</th>' +
-      '<th>Canonical (stored value)</th>' +
-      '<th style="width:140px"></th>' +
-    '</tr></thead><tbody>';
-    canonicalNames.forEach(function (canonical) {
-      groups[canonical].forEach(function (a) {
-        html += '<tr data-alias-id="' + escapeHtml(a.id) + '">' +
-          '<td><span class="alias-text mono" style="font-size:0.85rem">' + escapeHtml(a.alias) + '</span></td>' +
-          '<td><span class="canonical-text">' + escapeHtml(a.canonical) + '</span></td>' +
-          '<td class="actions">' +
-            '<button class="btn btn-sm alias-edit" data-id="' + escapeHtml(a.id) + '">Edit</button> ' +
-            '<button class="btn btn-sm btn-danger alias-del" data-id="' + escapeHtml(a.id) + '">Del</button>' +
-          '</td>' +
-        '</tr>';
-      });
-    });
-    html += '</tbody></table>';
-  } else {
-    html += '<p class="empty-state" style="margin-bottom:1rem">No aliases defined.</p>';
-  }
-
-  html +=
-    '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
-      '<div style="flex:2;min-width:200px">' +
-        '<label style="font-size:0.78rem;font-weight:500">Alias <span style="color:var(--color-text-tertiary);font-weight:400">(input string to rewrite)</span></label>' +
-        '<input type="text" id="f-alias-input" placeholder="e.g. Fortinet, Inc.">' +
-      '</div>' +
-      '<div style="flex:1;min-width:160px">' +
-        '<label style="font-size:0.78rem;font-weight:500">Canonical <span style="color:var(--color-text-tertiary);font-weight:400">(stored value)</span></label>' +
-        '<input type="text" id="f-alias-canonical" placeholder="e.g. Fortinet">' +
-      '</div>' +
-      '<button class="btn btn-primary" id="btn-add-alias">Add Alias</button>' +
-    '</div>' +
-  '</div>';
-
-  return html;
-}
+// ─── Manufacturer Aliases helpers ──────────────────────────────────────────
+// (card HTML is inlined into renderIdentificationTab as part of the consolidated
+// MAC & Vendor Identification card)
 
 function wireManufacturerAliasControls() {
   var addBtn = document.getElementById("btn-add-alias");
