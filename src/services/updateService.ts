@@ -18,6 +18,7 @@ import {
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync, spawn } from "node:child_process";
+import { randomBytes, scryptSync, createCipheriv } from "node:crypto";
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
 
@@ -253,8 +254,13 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
 /**
  * Apply the available update. Runs asynchronously in the background.
+ *
+ * @param password Optional AES-256-GCM password for encrypting the pre-update
+ *                 database backup. When set, the backup is wrapped in the same
+ *                 SHELOB1\0 envelope used by manual backups so the existing
+ *                 restore flow accepts it.
  */
-export async function applyUpdate(): Promise<void> {
+export async function applyUpdate(password?: string | null): Promise<void> {
   if (_applying) return;
   _applying = true;
 
@@ -312,11 +318,12 @@ export async function applyUpdate(): Promise<void> {
         const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const version = readCurrentVersion();
         const backupId = `bk-pre-update-${Date.now()}`;
-        const filename = `polaris-pre-update-${version}-${ts}.sql.gz`;
+        const isEncrypted = !!(password && password.length > 0);
+        const filename = `polaris-pre-update-${version}-${ts}${isEncrypted ? ".enc" : ".sql"}.gz`;
         const backupFile = join(BACKUP_DIR, backupId);
 
         const { createGzip } = await import("node:zlib");
-        const { createWriteStream } = await import("node:fs");
+        const { createWriteStream, createReadStream } = await import("node:fs");
         const { pipeline } = await import("node:stream/promises");
 
         const dump = spawn(
@@ -334,10 +341,36 @@ export async function applyUpdate(): Promise<void> {
           });
         });
 
-        await Promise.all([
-          pipeline(dump.stdout, createGzip(), createWriteStream(backupFile)),
-          dumpExit,
-        ]);
+        if (isEncrypted) {
+          // Stream pg_dump → gzip → AES-256-GCM cipher → temp ciphertext file,
+          // then assemble the final file as: [SHELOB1\0][salt][iv][authTag][ciphertext].
+          // We can't write the auth tag until the cipher finishes, so we stage
+          // the ciphertext separately rather than reserving and patching bytes.
+          const salt = randomBytes(32);
+          const iv = randomBytes(16);
+          const key = scryptSync(password!, salt, 32);
+          const cipher = createCipheriv("aes-256-gcm", key, iv);
+          const ciphertextFile = backupFile + ".tmp-ct";
+
+          await Promise.all([
+            pipeline(dump.stdout, createGzip(), cipher, createWriteStream(ciphertextFile)),
+            dumpExit,
+          ]);
+
+          const authTag = cipher.getAuthTag();
+          const header = Buffer.concat([Buffer.from("SHELOB1\0"), salt, iv, authTag]);
+          const out = createWriteStream(backupFile);
+          await new Promise<void>((resolve, reject) => {
+            out.write(header, (err) => (err ? reject(err) : resolve()));
+          });
+          await pipeline(createReadStream(ciphertextFile), out);
+          try { unlinkSync(ciphertextFile); } catch {}
+        } else {
+          await Promise.all([
+            pipeline(dump.stdout, createGzip(), createWriteStream(backupFile)),
+            dumpExit,
+          ]);
+        }
 
         const sizeBytes = existsSync(backupFile) ? readFileSync(backupFile).length : 0;
         const sizeKb = Math.round(sizeBytes / 1024);
@@ -346,7 +379,7 @@ export async function applyUpdate(): Promise<void> {
         try {
           const existing = await prisma.setting.findUnique({ where: { key: "backup_history" } });
           const history: any[] = existing?.value && Array.isArray(existing.value) ? existing.value as any[] : [];
-          history.push({ id: backupId, filename, size: sizeBytes, encrypted: false, preUpdate: true, createdAt: new Date().toISOString() });
+          history.push({ id: backupId, filename, size: sizeBytes, encrypted: isEncrypted, preUpdate: true, createdAt: new Date().toISOString() });
           if (history.length > 50) history.splice(0, history.length - 50);
           await prisma.setting.upsert({
             where: { key: "backup_history" },
@@ -358,7 +391,7 @@ export async function applyUpdate(): Promise<void> {
         }
 
         _status.backupFile = filename;
-        setStep(0, "done", `Backup created (${sizeKb} KB)`);
+        setStep(0, "done", `Backup created (${sizeKb} KB${isEncrypted ? ", encrypted" : ""})`);
       } catch (err: any) {
         // Non-fatal — warn but continue
         setStep(0, "done", "Backup skipped: " + (err.message || "pg_dump not available"));

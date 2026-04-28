@@ -1141,6 +1141,8 @@ async function loadDatabaseInfo() {
           ? '<div class="settings-cards-row">' + engineCard + poolCard + '</div>'
           : engineCard;
       })() +
+      // ── Storage (left, half) + Backup/Restore/History (right column) ──
+      '<div class="settings-cards-row" style="align-items:start">' +
       '<div class="settings-card">' +
         '<h4>Storage</h4>' +
         '<div class="db-info-grid">' +
@@ -1162,6 +1164,7 @@ async function loadDatabaseInfo() {
             '</tbody></table></div>'
           : '') +
       '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:1rem">' +
 
       // ── Backup Card ──
       '<div class="settings-card">' +
@@ -1227,6 +1230,9 @@ async function loadDatabaseInfo() {
         '<h4>Backup History</h4>' +
         '<div id="backup-history-body"><p class="empty-state">Loading...</p></div>' +
       '</div>' +
+
+      '</div>' + // close right column
+      '</div>' + // close .settings-cards-row
 
       '<div style="display:flex;gap:8px;align-items:center">' +
         '<button class="btn btn-secondary" id="btn-db-refresh">Refresh</button>' +
@@ -1482,15 +1488,18 @@ async function loadBackupHistory() {
         var preUpdateBadge = b.preUpdate
           ? ' <span class="badge" style="font-size:0.7rem;background:color-mix(in srgb, var(--color-warning) 15%, transparent);color:var(--color-warning);border:1px solid color-mix(in srgb, var(--color-warning) 40%, transparent)">Pre-update</span>'
           : '';
+        var pathRow = b.path
+          ? '<div class="mono" style="font-size:0.72rem;color:var(--color-text-tertiary);margin-top:2px;word-break:break-all" title="' + escapeHtml(b.path) + '">' + escapeHtml(b.path) + '</div>'
+          : '';
         return '<tr>' +
-          '<td style="font-size:0.82rem;white-space:nowrap">' + escapeHtml(formatDate(b.createdAt)) + '</td>' +
-          '<td class="mono" style="font-size:0.82rem">' + escapeHtml(b.filename) + preUpdateBadge + '</td>' +
-          '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + formatFileSize(b.size || b.sizeBytes || 0) + '</td>' +
-          '<td>' + (b.encrypted
+          '<td style="font-size:0.82rem;white-space:nowrap;vertical-align:top">' + escapeHtml(formatDate(b.createdAt)) + '</td>' +
+          '<td class="mono" style="font-size:0.82rem">' + escapeHtml(b.filename) + preUpdateBadge + pathRow + '</td>' +
+          '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary);vertical-align:top">' + formatFileSize(b.size || b.sizeBytes || 0) + '</td>' +
+          '<td style="vertical-align:top">' + (b.encrypted
             ? '<span class="badge badge-warning" style="font-size:0.7rem">Encrypted</span>'
             : '<span class="badge badge-info" style="font-size:0.7rem">Plain</span>') +
           '</td>' +
-          '<td style="display:flex;gap:4px">' + dlBtn +
+          '<td style="display:flex;gap:4px;vertical-align:top">' + dlBtn +
             '<button class="btn btn-danger btn-sm backup-del-btn" data-id="' + escapeHtml(b.id) + '" style="font-size:0.75rem;padding:2px 8px" title="Delete">' +
               '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" style="vertical-align:-1px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>' +
             '</button>' +
@@ -1715,18 +1724,28 @@ function renderUpdateAvailable(result) {
 async function applyUpdateUI() {
   if (!await warnIfDiscoveryRunning("update")) return;
 
-  var confirmed = await showConfirm(
-    "Apply this update? The server will restart automatically when complete. " +
-    "A database backup will be created before updating."
-  );
-  if (!confirmed) return;
+  var backupCheckbox = document.getElementById("update-backup-checkbox");
+  var backupEnabled = backupCheckbox ? backupCheckbox.checked : true;
+
+  var password = null;
+  if (backupEnabled) {
+    var pwResult = await promptUpdateBackupPassword();
+    if (pwResult === null) return; // user cancelled
+    password = pwResult || null;   // empty string → unencrypted
+  } else {
+    var confirmed = await showConfirm(
+      "Apply this update? Backup is disabled — no recovery point will be created. " +
+      "The server will restart automatically when complete."
+    );
+    if (!confirmed) return;
+  }
 
   var btn = document.getElementById("btn-apply-update");
   btn.disabled = true;
   btn.textContent = "Starting update...";
 
   try {
-    await api.serverSettings.applyUpdate();
+    await api.serverSettings.applyUpdate(password);
     renderUpdateProgress();
     startUpdatePolling();
   } catch (err) {
@@ -1734,6 +1753,51 @@ async function applyUpdateUI() {
     btn.disabled = false;
     btn.textContent = "Apply Update";
   }
+}
+
+// Returns the entered password (string), "" for proceed-without-encryption, or null for cancel.
+function promptUpdateBackupPassword() {
+  return new Promise(function (resolve) {
+    var body =
+      '<p style="font-size:0.9rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+        'A database backup will be created before the update and the server will restart automatically when complete. ' +
+        'Optionally encrypt the backup with a password — recommended if the backup will be archived off-host.' +
+      '</p>' +
+      '<div class="form-row" style="gap:12px;flex-wrap:wrap">' +
+        '<div style="flex:1;min-width:180px">' +
+          '<label for="update-backup-pw">Encryption password <span style="color:var(--color-text-tertiary)">(optional)</span></label>' +
+          '<input type="password" id="update-backup-pw" placeholder="Leave blank for unencrypted backup" autocomplete="new-password">' +
+        '</div>' +
+        '<div style="flex:1;min-width:180px">' +
+          '<label for="update-backup-pw-confirm">Confirm password</label>' +
+          '<input type="password" id="update-backup-pw-confirm" placeholder="Re-enter password" autocomplete="new-password">' +
+        '</div>' +
+      '</div>' +
+      '<div id="update-backup-pw-error" style="color:var(--color-danger);font-size:0.82rem;margin-top:0.5rem;min-height:1em"></div>';
+    var footer =
+      '<button class="btn btn-secondary" id="upd-pw-cancel">Cancel</button>' +
+      '<button class="btn btn-primary" id="upd-pw-ok">Apply Update</button>';
+    openModal("Apply Update", body, footer);
+
+    document.getElementById("upd-pw-cancel").onclick = function () {
+      closeModal();
+      resolve(null);
+    };
+    document.getElementById("upd-pw-ok").onclick = function () {
+      var pw = document.getElementById("update-backup-pw").value;
+      var pwConfirm = document.getElementById("update-backup-pw-confirm").value;
+      var errEl = document.getElementById("update-backup-pw-error");
+      if (pw && pw !== pwConfirm) {
+        errEl.textContent = "Passwords do not match";
+        return;
+      }
+      errEl.textContent = "";
+      closeModal();
+      resolve(pw || "");
+    };
+    var pwInput = document.getElementById("update-backup-pw");
+    if (pwInput) pwInput.focus();
+  });
 }
 
 function renderUpdateProgress() {

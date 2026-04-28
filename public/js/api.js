@@ -383,7 +383,7 @@ const api = {
     snoozePgTuning: (days) => request("POST", "/server-settings/pg-tuning/snooze", { days: days || 7 }),
     checkForUpdates: () => request("GET", "/server-settings/updates/check"),
     getUpdateStatus: () => request("GET", "/server-settings/updates/status"),
-    applyUpdate:     () => request("POST", "/server-settings/updates/apply"),
+    applyUpdate:     (password) => request("POST", "/server-settings/updates/apply", password ? { password: password } : undefined),
     dismissUpdate:   () => request("POST", "/server-settings/updates/dismiss"),
     getUpdateHistory: (limit) => request("GET", "/server-settings/updates/history" + (limit ? "?limit=" + limit : "")),
     getUpdateSettings: () => request("GET", "/server-settings/updates/settings"),

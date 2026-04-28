@@ -344,7 +344,8 @@ router.get("/database/backups", async (_req, res, next) => {
   try {
     const existing = await prisma.setting.findUnique({ where: { key: "backup_history" } });
     const history: any[] = existing?.value && Array.isArray(existing.value) ? existing.value as any[] : [];
-    res.json(history.reverse());
+    const enriched = history.map((r: any) => ({ ...r, path: join(BACKUP_DIR, r.id) }));
+    res.json(enriched.reverse());
   } catch (err) {
     next(err);
   }
@@ -1051,14 +1052,17 @@ router.get("/updates/status", (_req, res) => {
   res.json(getUpdateStatus());
 });
 
-router.post("/updates/apply", async (_req, res, next) => {
+router.post("/updates/apply", async (req, res, next) => {
   try {
     const status = getUpdateStatus();
     if (status.state === "applying" || status.state === "restarting") {
       return res.status(409).json({ error: "An update is already in progress" });
     }
+    const password: string | null = (req.body && typeof req.body.password === "string" && req.body.password.length > 0)
+      ? req.body.password
+      : null;
     // Start the update in the background
-    applyUpdate().catch((err) => {
+    applyUpdate(password).catch((err) => {
       logger.error({ err }, "Update failed");
     });
     // Return immediately — client should poll /updates/status
