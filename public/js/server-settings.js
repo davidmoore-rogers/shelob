@@ -2199,10 +2199,11 @@ function renderIdentificationTab() {
     });
     var canonicalNames = Object.keys(groups).sort(function (a, b) { return a.localeCompare(b); });
 
-    html += '<div style="overflow-x:auto"><table class="ip-table" style="margin-bottom:1rem"><thead><tr>' +
-      '<th>Alias</th>' +
-      '<th>Canonical</th>' +
-      '<th style="width:120px"></th>' +
+    html += '<div style="max-height:22rem;overflow-y:auto;overflow-x:auto;margin-bottom:1rem">' +
+      '<table class="ip-table"><thead><tr>' +
+      '<th style="position:sticky;top:0;z-index:1;background:var(--color-bg-primary)">Alias</th>' +
+      '<th style="position:sticky;top:0;z-index:1;background:var(--color-bg-primary)">Canonical</th>' +
+      '<th style="position:sticky;top:0;z-index:1;background:var(--color-bg-primary);width:120px"></th>' +
     '</tr></thead><tbody>';
     canonicalNames.forEach(function (canonical) {
       groups[canonical].forEach(function (a) {
@@ -2216,7 +2217,7 @@ function renderIdentificationTab() {
         '</tr>';
       });
     });
-    html += '</tbody></table></div>';
+    html += '</tbody></table></div>'; // end scroll container
   } else {
     html += '<p class="empty-state" style="margin-bottom:1rem">No aliases defined.</p>';
   }
