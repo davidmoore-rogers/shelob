@@ -30,6 +30,14 @@ import "./jobs/discoverySlowCheck.js";
 import "./jobs/clampAssetAcquiredAt.js";
 import "./jobs/decommissionStaleAssets.js";
 import "./jobs/monitorAssets.js";
+import { ensureRegistryLoaded } from "./services/oidRegistry.js";
+
+// Warm the symbolic-OID registry once at startup so the first monitor tick
+// can resolve vendor MIB symbols without paying a load on the hot path. Errors
+// are non-fatal — the registry will lazily reload on the next resolve() call.
+ensureRegistryLoaded().catch((err) => {
+  logger.warn({ err: err?.message }, "OID registry warm-up failed");
+});
 
 const app = express();
 

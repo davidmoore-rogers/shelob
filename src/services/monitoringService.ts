@@ -35,6 +35,11 @@ import { prisma } from "../db.js";
 import { fgRequest, type FortiGateConfig } from "./fortigateService.js";
 import { logEvent } from "../api/routes/events.js";
 import { logger } from "../utils/logger.js";
+import { resolveOidSync, ensureRegistryLoaded } from "./oidRegistry.js";
+import {
+  pickVendorProfile,
+  type VendorTelemetryProfile,
+} from "./vendorTelemetryProfiles.js";
 
 export type MonitorType =
   | "fortimanager"
@@ -595,7 +600,12 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
     }
     if (type === "snmp") {
       if (!asset.monitorCredential) return { supported: true, error: "No SNMP credential selected" };
-      const data = await collectTelemetrySnmp(targetIp, asset.monitorCredential.config as Record<string, unknown>);
+      const data = await collectTelemetrySnmp(
+        targetIp,
+        asset.monitorCredential.config as Record<string, unknown>,
+        asset.manufacturer,
+        asset.os,
+      );
       return { supported: true, data };
     }
     if (type === "winrm" || type === "activedirectory") {
@@ -1138,43 +1148,54 @@ async function withSnmpSession<T>(host: string, config: Record<string, unknown>,
   }
 }
 
-async function collectTelemetrySnmp(host: string, config: Record<string, unknown>): Promise<TelemetrySample> {
-  return await withSnmpSession(host, config, async (session) => {
-    // CPU: average all hrProcessorLoad rows.
-    let cpuPct: number | null = null;
-    try {
-      const cpuRows = await snmpWalk(session, OID.hrProcessorLoad);
-      const vals: number[] = [];
-      for (const v of cpuRows.values()) {
-        const n = snmpVbToNumber(v);
-        if (n != null) vals.push(n);
-      }
-      if (vals.length > 0) cpuPct = clampPct(vals.reduce((a, b) => a + b, 0) / vals.length);
-    } catch { /* fall through; CPU stays null */ }
+async function collectTelemetrySnmp(
+  host: string,
+  config: Record<string, unknown>,
+  manufacturer?: string | null,
+  os?: string | null,
+): Promise<TelemetrySample> {
+  // Make sure the symbol table is populated before we try to resolve any
+  // vendor symbols. ensureRegistryLoaded short-circuits after the first call.
+  await ensureRegistryLoaded();
+  const profile = pickVendorProfile(manufacturer, os);
 
-    // Memory: walk hrStorage and locate the row whose hrStorageType is hrStorageRam.
+  return await withSnmpSession(host, config, async (session) => {
+    let cpuPct: number | null = null;
     let memUsedBytes: number | null = null;
     let memTotalBytes: number | null = null;
     let memPct: number | null = null;
-    try {
-      const types = await snmpWalk(session, OID.hrStorageType);
-      const ramIdx = [...types.entries()].find(([, v]) => snmpVbToString(v) === OID.hrStorageRam)?.[0];
-      if (ramIdx) {
-        const [units, size, used] = await Promise.all([
-          snmpWalk(session, OID.hrStorageAllocationUnits + "." + ramIdx).catch(() => new Map()),
-          snmpWalk(session, OID.hrStorageSize             + "." + ramIdx).catch(() => new Map()),
-          snmpWalk(session, OID.hrStorageUsed             + "." + ramIdx).catch(() => new Map()),
-        ]);
-        const u = snmpVbToNumber(units.get("")) ?? 1;
-        const s = snmpVbToNumber(size.get(""));
-        const ud = snmpVbToNumber(used.get(""));
-        if (s != null) memTotalBytes = s * u;
-        if (ud != null) memUsedBytes = ud * u;
-        if (memTotalBytes && memTotalBytes > 0 && memUsedBytes != null) {
-          memPct = clampPct((memUsedBytes / memTotalBytes) * 100);
-        }
+
+    // ── CPU ──
+    // Try the vendor profile first if one matches and its symbol resolves.
+    // If the vendor query yields nothing (MIB not uploaded, or device doesn't
+    // expose the OID), fall back to HOST-RESOURCES-MIB so a stock SNMP host
+    // still gets coverage.
+    if (profile?.cpu) {
+      cpuPct = await collectCpuVendor(session, profile, profile.cpu).catch(() => null);
+    }
+    if (cpuPct == null) {
+      cpuPct = await collectCpuHostResources(session).catch(() => null);
+    }
+
+    // ── Memory ──
+    if (profile?.memory) {
+      const m = await collectMemoryVendor(session, profile, profile.memory).catch(() => null);
+      if (m) {
+        memUsedBytes  = m.memUsedBytes  ?? memUsedBytes;
+        memTotalBytes = m.memTotalBytes ?? memTotalBytes;
+        memPct        = m.memPct        ?? memPct;
       }
-    } catch { /* fall through */ }
+    }
+    if (memUsedBytes == null && memPct == null) {
+      const hrm = await collectMemoryHostResources(session).catch(() => null);
+      if (hrm) {
+        memUsedBytes  = hrm.memUsedBytes;
+        memTotalBytes = hrm.memTotalBytes;
+        memPct        = hrm.memPct;
+      }
+    } else if (memUsedBytes != null && memTotalBytes != null && memTotalBytes > 0 && memPct == null) {
+      memPct = clampPct((memUsedBytes / memTotalBytes) * 100);
+    }
 
     // Temperatures: walk ENTITY-SENSOR-MIB and pick rows with type=8 (celsius)
     // and operStatus=1 (ok). entPhysicalDescr (ENTITY-MIB) keyed by the same
@@ -1183,6 +1204,150 @@ async function collectTelemetrySnmp(host: string, config: Record<string, unknown
     const temperatures = await collectTemperaturesSnmp(session).catch(() => [] as TemperatureSample[]);
 
     return { cpuPct, memPct, memUsedBytes, memTotalBytes, temperatures };
+  });
+}
+
+// ─── Vendor + HOST-RESOURCES-MIB helpers ──────────────────────────────────
+
+async function collectCpuHostResources(session: any): Promise<number | null> {
+  const cpuRows = await snmpWalk(session, OID.hrProcessorLoad);
+  const vals: number[] = [];
+  for (const v of cpuRows.values()) {
+    const n = snmpVbToNumber(v);
+    if (n != null) vals.push(n);
+  }
+  if (vals.length === 0) return null;
+  return clampPct(vals.reduce((a, b) => a + b, 0) / vals.length);
+}
+
+async function collectMemoryHostResources(
+  session: any,
+): Promise<{ memUsedBytes: number | null; memTotalBytes: number | null; memPct: number | null } | null> {
+  const types = await snmpWalk(session, OID.hrStorageType);
+  const ramIdx = [...types.entries()].find(([, v]) => snmpVbToString(v) === OID.hrStorageRam)?.[0];
+  if (!ramIdx) return null;
+  const [units, size, used] = await Promise.all([
+    snmpWalk(session, OID.hrStorageAllocationUnits + "." + ramIdx).catch(() => new Map()),
+    snmpWalk(session, OID.hrStorageSize             + "." + ramIdx).catch(() => new Map()),
+    snmpWalk(session, OID.hrStorageUsed             + "." + ramIdx).catch(() => new Map()),
+  ]);
+  const u = snmpVbToNumber(units.get("")) ?? 1;
+  const s = snmpVbToNumber(size.get(""));
+  const ud = snmpVbToNumber(used.get(""));
+  let memUsedBytes: number | null = null;
+  let memTotalBytes: number | null = null;
+  let memPct: number | null = null;
+  if (s != null) memTotalBytes = s * u;
+  if (ud != null) memUsedBytes = ud * u;
+  if (memTotalBytes && memTotalBytes > 0 && memUsedBytes != null) {
+    memPct = clampPct((memUsedBytes / memTotalBytes) * 100);
+  }
+  return { memUsedBytes, memTotalBytes, memPct };
+}
+
+// Resolve a vendor symbolic OID and emit a single GET on the `.0` instance,
+// or a subtree walk + average / sum depending on the profile mode.
+async function collectCpuVendor(
+  session: any,
+  profile: VendorTelemetryProfile,
+  cpu: NonNullable<VendorTelemetryProfile["cpu"]>,
+): Promise<number | null> {
+  const oid = resolveOidSync(cpu.symbol);
+  if (!oid) {
+    logger.debug({ vendor: profile.vendor, symbol: cpu.symbol }, "vendor CPU symbol unresolved — upload its MIB to enable");
+    return null;
+  }
+  if (cpu.mode === "scalar") {
+    const v = await snmpGetScalar(session, oid);
+    const n = snmpVbToNumber(v);
+    return n != null ? clampPct(n) : null;
+  }
+  // walk-avg
+  const rows = await snmpWalk(session, oid);
+  const vals: number[] = [];
+  for (const v of rows.values()) {
+    const n = snmpVbToNumber(v);
+    if (n != null) vals.push(n);
+  }
+  if (vals.length === 0) return null;
+  return clampPct(vals.reduce((a, b) => a + b, 0) / vals.length);
+}
+
+async function collectMemoryVendor(
+  session: any,
+  profile: VendorTelemetryProfile,
+  mem: NonNullable<VendorTelemetryProfile["memory"]>,
+): Promise<{ memUsedBytes: number | null; memTotalBytes: number | null; memPct: number | null } | null> {
+  // Prefer byte-form pairs (used + free or used + total). When both are
+  // missing fall back to a single percent symbol.
+  const usedOid  = mem.usedBytesSymbol  ? resolveOidSync(mem.usedBytesSymbol)  : null;
+  const freeOid  = mem.freeBytesSymbol  ? resolveOidSync(mem.freeBytesSymbol)  : null;
+  const totalOid = mem.totalBytesSymbol ? resolveOidSync(mem.totalBytesSymbol) : null;
+  const pctOid   = mem.pctSymbol        ? resolveOidSync(mem.pctSymbol)        : null;
+
+  const sumWalk = async (oid: string): Promise<number | null> => {
+    if (mem.walkSubtree) {
+      const rows = await snmpWalk(session, oid);
+      let total = 0;
+      let any = false;
+      for (const v of rows.values()) {
+        const n = snmpVbToNumber(v);
+        if (n != null) { total += n; any = true; }
+      }
+      return any ? total : null;
+    }
+    const v = await snmpGetScalar(session, oid);
+    return snmpVbToNumber(v);
+  };
+
+  let memUsedBytes: number | null = null;
+  let memTotalBytes: number | null = null;
+  let memPct: number | null = null;
+
+  if (usedOid) memUsedBytes = await sumWalk(usedOid).catch(() => null);
+  if (totalOid) {
+    memTotalBytes = await sumWalk(totalOid).catch(() => null);
+  } else if (freeOid && memUsedBytes != null) {
+    const free = await sumWalk(freeOid).catch(() => null);
+    if (free != null) memTotalBytes = memUsedBytes + free;
+  }
+
+  if (memUsedBytes != null && memTotalBytes && memTotalBytes > 0) {
+    memPct = clampPct((memUsedBytes / memTotalBytes) * 100);
+  } else if (pctOid) {
+    const p = await sumWalk(pctOid).catch(() => null);
+    if (p != null) {
+      // Walked-then-summed percentages (e.g. Juniper jnxOperatingBuffer
+      // averaged across operating entities) are technically a sum, but the
+      // operator-meaningful value is the average. Re-divide by row count.
+      if (mem.walkSubtree && pctOid) {
+        const rows = await snmpWalk(session, pctOid).catch(() => new Map());
+        const count = [...rows.values()].filter((v) => snmpVbToNumber(v) != null).length;
+        memPct = count > 0 ? clampPct(p / count) : null;
+      } else {
+        memPct = clampPct(p);
+      }
+    }
+  }
+
+  if (memUsedBytes == null && memTotalBytes == null && memPct == null) return null;
+  return { memUsedBytes, memTotalBytes, memPct };
+}
+
+// Single-OID GET (instance .0). Returns the varbind value or null.
+function snmpGetScalar(session: any, oid: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const target = oid.endsWith(".0") ? oid : oid + ".0";
+    try {
+      session.get([target], (err: Error | null, varbinds: any[]) => {
+        if (err) return reject(err);
+        const vb = varbinds?.[0];
+        if (!vb || snmp.isVarbindError(vb)) return resolve(null);
+        resolve(vb.value);
+      });
+    } catch (err: any) {
+      reject(err);
+    }
   });
 }
 

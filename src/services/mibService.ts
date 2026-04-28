@@ -14,6 +14,7 @@
  */
 import { prisma } from "../db.js";
 import { AppError } from "../utils/errors.js";
+import { refreshRegistry } from "./oidRegistry.js";
 
 const MAX_BYTES = 1024 * 1024; // 1 MB — MIBs are normally <100 KB
 
@@ -265,6 +266,9 @@ export async function createMib(input: CreateMibInput): Promise<MibSummary> {
       uploadedAt: true,
     },
   });
+  // Reload the OID symbol table so the new MIB's symbols are immediately
+  // resolvable by the monitoring probe (next tick onward).
+  refreshRegistry().catch(() => {});
   return created;
 }
 
@@ -274,6 +278,7 @@ export async function deleteMib(id: string): Promise<void> {
   } catch {
     throw new AppError(404, "MIB not found");
   }
+  refreshRegistry().catch(() => {});
 }
 
 /**
