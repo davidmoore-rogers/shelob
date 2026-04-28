@@ -897,7 +897,13 @@ async function collectSystemInfoFortinet(
   const interfaces: InterfaceSample[] = [];
   try {
     // The interface monitor returns a results object keyed by interface name.
-    const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface", { query: { scope: "vdom" } });
+    // include_vlan/include_aggregate are required to get sub-interfaces in
+    // the response — by default FortiOS returns physical interfaces only,
+    // which is why VLANs and aggregates were never showing up under their
+    // parents in the System tab tree.
+    const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface", {
+      query: { scope: "vdom", include_vlan: "true", include_aggregate: "true" },
+    });
     const obj = (res && typeof res === "object" && !Array.isArray(res)) ? res as Record<string, any> : {};
     for (const [name, info] of Object.entries(obj)) {
       if (!info || typeof info !== "object") continue;
