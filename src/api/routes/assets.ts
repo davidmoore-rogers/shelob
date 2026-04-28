@@ -851,6 +851,8 @@ router.get("/:id/system-info", async (req, res, next) => {
         ifType:      i.ifType   ?? null,
         ifParent:    i.ifParent ?? null,
         vlanId:      i.vlanId   ?? null,
+        alias:       i.alias       ?? null,
+        description: i.description ?? null,
       })),
       storage: storage.map((s) => ({
         timestamp:  s.timestamp,
@@ -890,9 +892,15 @@ router.get("/:id/interface-history", async (req, res, next) => {
       where: { assetId: id, ifName, timestamp: { gte: since, lte: until } },
       orderBy: { timestamp: "asc" },
     });
+    // The slide-over header shows the alias label and operator comment from the
+    // most recent sample so the panel reflects the current configured values
+    // even when the operator is looking at an older time window.
+    const latest = samples.length > 0 ? samples[samples.length - 1] : null;
     res.json({
       range: rangeLabel,
       ifName,
+      alias:       latest?.alias       ?? null,
+      description: latest?.description ?? null,
       since,
       until,
       samples: samples.map((s) => ({

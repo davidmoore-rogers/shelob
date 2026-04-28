@@ -1538,10 +1538,19 @@ function _renderInterfacesTable(container, si, asset) {
       padStyle = "padding-left:1.4rem;";
       prefix = '<span style="color:var(--color-text-secondary);opacity:0.5;margin-right:3px;font-size:0.8rem">└</span>';
     }
+    // Operator-set alias overrides ifName as the visible label when present.
+    // The real ifName is preserved as a tooltip + secondary subtitle so the
+    // operator can still correlate to switch port labels in the wild.
+    var label = iface.alias && iface.alias.trim() ? iface.alias.trim() : iface.ifName;
+    var aliasOverride = !!(iface.alias && iface.alias.trim() && iface.alias.trim() !== iface.ifName);
+    var subtitle = aliasOverride
+      ? '<span style="display:block;font-size:0.7rem;opacity:0.6;font-weight:normal">' + escapeHtml(iface.ifName) + '</span>'
+      : '';
     var nameCell =
-      '<td class="mono" style="' + padStyle + '">' + prefix +
-      '<a href="#" class="asset-iface-link" data-ifname="' + escapeHtml(iface.ifName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(iface.ifName) + '</a>' +
+      '<td class="mono" style="' + padStyle + '" title="' + escapeHtml(iface.ifName) + '">' + prefix +
+      '<a href="#" class="asset-iface-link" data-ifname="' + escapeHtml(iface.ifName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(label) + '</a>' +
       typeBadge(iface, opts.isChild) +
+      subtitle +
       '</td>';
 
     var speed = iface.speedBps != null ? _fmtSpeed(iface.speedBps) : "—";
@@ -2410,10 +2419,10 @@ function _addChartScreenshotButton(container, label, axisOpts) {
   container.appendChild(btn);
 }
 
-// Two stacked charts (CPU + Memory) over the telemetry time window. CPU stays
-// pinned to 0–100% so spikes are meaningful; Memory autoscales to its observed
-// range so a host that idles around 60% still shows variation instead of a
-// flat line. Each chart has its own hit targets / hover tooltip.
+// Combined CPU + Memory chart on a single 0–100% y-axis. CPU stays anchored
+// at 0–100 so spikes remain meaningful; memory plots over the same axis as
+// a percentage (computed from bytes when only bytes were sampled). One hit
+// target per timestamp drives a unified tooltip naming both values.
 function _renderSystemChart(container, data) {
   var samples = (data && data.samples) || [];
   if (samples.length === 0) {
@@ -2429,62 +2438,17 @@ function _renderSystemChart(container, data) {
     return null;
   }
 
-  container.innerHTML =
-    '<div class="asset-system-subchart" style="position:relative;margin-bottom:0.5rem"></div>' +
-    '<div class="asset-system-subchart" style="position:relative"></div>';
-  container.style.alignItems = "stretch";
-  container.style.justifyContent = "flex-start";
-  container.style.position = "relative";
-  container.style.flexDirection = "column";
-
-  var subs = container.querySelectorAll(".asset-system-subchart");
   var since = data && data.since;
   var until = data && data.until;
-  _renderTelemetrySubChart(subs[0], samples, {
-    label: "CPU",
-    color: "var(--color-accent)",
-    yFmt: function (v) { return v.toFixed(0) + "%"; },
-    pickValue: function (s) { return typeof s.cpuPct === "number" ? s.cpuPct : null; },
-    yMin: 0,
-    yMax: 100,
-    since: since,
-    until: until,
-    tooltip: function (s, v) {
-      return '<div>CPU: ' + (v != null ? v.toFixed(1) + "%" : "—") + '</div>';
-    },
-  });
-  _renderTelemetrySubChart(subs[1], samples, {
-    label: "Memory",
-    color: "#f4a261",
-    yFmt: function (v) { return v.toFixed(0) + "%"; },
-    pickValue: memPctFromSample,
-    autoscale: true,
-    since: since,
-    until: until,
-    tooltip: function (s, v) {
-      var line = '<div>Memory: ' + (v != null ? v.toFixed(1) + "%" : "—");
-      if (typeof s.memUsedBytes === "number" && typeof s.memTotalBytes === "number") {
-        line += " (" + _fmtBytes(s.memUsedBytes) + " / " + _fmtBytes(s.memTotalBytes) + ")";
-      }
-      return line + "</div>";
-    },
-  });
-}
-
-// Renders a single-line telemetry chart with a Y-axis scale. CPU passes a fixed
-// {yMin, yMax}; Memory passes {autoscale: true} which fits the axis to the
-// observed range with a small pad so flat-ish series still show variation.
-function _renderTelemetrySubChart(container, samples, opts) {
   var W = container.clientWidth || 600;
-  var H = 160;
+  var H = 200;
   var padL = 50, padR = 10, padT = 14, padB = 28;
   var innerW = W - padL - padR;
   var innerH = H - padT - padB;
 
-  var bounds = _chartTimeBounds(samples, opts.since, opts.until);
+  var bounds = _chartTimeBounds(samples, since, until);
   var t0 = bounds.t0, t1 = bounds.t1;
-  var spanMs = t1 - t0;
-  var oneDayMs = 24 * 60 * 60 * 1000;
+  var spanMs = t1 - t0, oneDayMs = 86400000;
   function pad2(n) { return n < 10 ? "0" + n : String(n); }
   function fmtTick(ts) {
     var d = new Date(ts);
@@ -2492,38 +2456,42 @@ function _renderTelemetrySubChart(container, samples, opts) {
     return (d.getMonth() + 1) + "/" + d.getDate();
   }
 
-  var withVal = samples.map(function (s) { return { s: s, v: opts.pickValue(s) }; })
-                       .filter(function (e) { return typeof e.v === "number"; });
+  var cpuValues = samples.map(function (s) { return { s: s, v: typeof s.cpuPct === "number" ? s.cpuPct : null }; })
+                         .filter(function (e) { return typeof e.v === "number"; });
+  var memValues = samples.map(function (s) { return { s: s, v: memPctFromSample(s) }; })
+                         .filter(function (e) { return typeof e.v === "number"; });
 
-  var yMin, yMax;
-  if (opts.autoscale) {
-    if (withVal.length === 0) { yMin = 0; yMax = 100; }
-    else {
-      var vMin = Infinity, vMax = -Infinity;
-      withVal.forEach(function (e) {
-        if (e.v < vMin) vMin = e.v;
-        if (e.v > vMax) vMax = e.v;
-      });
-      yMin = Math.max(0,   Math.floor(vMin - 2));
-      yMax = Math.min(100, Math.ceil (vMax + 2));
-      if (yMax - yMin < 4) { yMin = Math.max(0, yMin - 2); yMax = Math.min(100, yMax + 2); }
-      if (yMax === yMin) yMax = yMin + 1;
-    }
-  } else {
-    yMin = opts.yMin != null ? opts.yMin : 0;
-    yMax = opts.yMax != null ? opts.yMax : 100;
-  }
-
+  var yMin = 0, yMax = 100;
   function xFor(ts) { return padL + ((new Date(ts).getTime() - t0) / (t1 - t0)) * innerW; }
   function yFor(v)  { return padT + innerH - ((v - yMin) / (yMax - yMin)) * innerH; }
 
-  var pts = withVal.map(function (e) { return xFor(e.s.timestamp) + "," + yFor(e.v); }).join(" ");
-  var hits = withVal.map(function (e) {
-    return '<circle class="chart-hit" cx="' + xFor(e.s.timestamp) + '" cy="' + yFor(e.v) + '" r="7" fill="transparent" style="cursor:crosshair"' +
-      ' data-ts="' + escapeHtml(String(e.s.timestamp)) + '"' +
-      ' data-v="' + e.v + '"' +
-      ' data-mb="' + (typeof e.s.memUsedBytes === "number" ? e.s.memUsedBytes : "") + '"' +
-      ' data-mt="' + (typeof e.s.memTotalBytes === "number" ? e.s.memTotalBytes : "") + '"/>';
+  var cpuPts = cpuValues.map(function (e) { return xFor(e.s.timestamp) + "," + yFor(e.v); }).join(" ");
+  var memPts = memValues.map(function (e) { return xFor(e.s.timestamp) + "," + yFor(e.v); }).join(" ");
+
+  // Build one hit per sample timestamp so the tooltip names both lines together.
+  // We anchor the marker at whichever curve sits higher in the chart.
+  var byTs = {};
+  cpuValues.forEach(function (e) {
+    var k = String(e.s.timestamp);
+    if (!byTs[k]) byTs[k] = { ts: e.s.timestamp, sample: e.s };
+    byTs[k].cpu = e.v;
+  });
+  memValues.forEach(function (e) {
+    var k = String(e.s.timestamp);
+    if (!byTs[k]) byTs[k] = { ts: e.s.timestamp, sample: e.s };
+    byTs[k].mem = e.v;
+  });
+  var hits = Object.keys(byTs).map(function (k) {
+    var h = byTs[k];
+    var anchor = (h.cpu != null && h.mem != null) ? Math.max(h.cpu, h.mem)
+               : (h.cpu != null ? h.cpu : h.mem);
+    var s = h.sample;
+    return '<circle class="chart-hit" cx="' + xFor(h.ts) + '" cy="' + yFor(anchor) + '" r="7" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(h.ts)) + '"' +
+      ' data-cpu="' + (h.cpu != null ? h.cpu : "") + '"' +
+      ' data-mem="' + (h.mem != null ? h.mem : "") + '"' +
+      ' data-mb="' + (typeof s.memUsedBytes === "number" ? s.memUsedBytes : "") + '"' +
+      ' data-mt="' + (typeof s.memTotalBytes === "number" ? s.memTotalBytes : "") + '"/>';
   }).join("");
 
   var ticks = "";
@@ -2532,7 +2500,7 @@ function _renderTelemetrySubChart(container, samples, opts) {
     var y = padT + innerH - (i / 4) * innerH;
     ticks +=
       '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="rgba(127,127,127,0.15)"/>' +
-      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + opts.yFmt(v) + '</text>';
+      '<text x="' + (padL - 4) + '" y="' + (y + 3) + '" text-anchor="end" font-size="10" fill="currentColor">' + v.toFixed(0) + '%</text>';
   }
   var xTicks = "";
   for (var j = 0; j <= 5; j++) {
@@ -2542,35 +2510,46 @@ function _renderTelemetrySubChart(container, samples, opts) {
       '<line x1="' + xPos + '" y1="' + (padT + innerH) + '" x2="' + xPos + '" y2="' + (padT + innerH + 3) + '" stroke="rgba(127,127,127,0.4)"/>' +
       '<text x="' + xPos + '" y="' + (padT + innerH + 14) + '" text-anchor="middle" font-size="10" fill="currentColor">' + fmtTick(tsTick) + '</text>';
   }
+  var cpuColor = "var(--color-accent)";
+  var memColor = "#f4a261";
   var legend =
     '<g font-size="10" fill="currentColor">' +
-      '<rect x="' + (padL + 4) + '" y="2" width="10" height="10" fill="' + opts.color + '"/>' +
-      '<text x="' + (padL + 18) + '" y="11">' + escapeHtml(opts.label) + '</text>' +
+      '<rect x="' + (padL + 4)  + '" y="2" width="10" height="10" fill="' + cpuColor + '"/>' +
+      '<text x="' + (padL + 18) + '" y="11">CPU</text>' +
+      '<rect x="' + (padL + 60) + '" y="2" width="10" height="10" fill="' + memColor + '"/>' +
+      '<text x="' + (padL + 74) + '" y="11">Memory</text>' +
     '</g>';
 
   container.innerHTML =
     '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
       ticks + xTicks +
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
-      (pts ? '<polyline points="' + pts + '" fill="none" stroke="' + opts.color + '" stroke-width="1.5"/>' : '') +
+      (cpuPts ? '<polyline points="' + cpuPts + '" fill="none" stroke="' + cpuColor + '" stroke-width="1.5"/>' : '') +
+      (memPts ? '<polyline points="' + memPts + '" fill="none" stroke="' + memColor + '" stroke-width="1.5"/>' : '') +
       legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
+  container.style.position = "relative";
+  container.style.alignItems = "stretch";
+  container.style.justifyContent = "flex-start";
+  container.style.flexDirection = "column";
 
   _wireChartTooltip(container, function (target) {
     var ts = target.getAttribute("data-ts");
-    var raw = target.getAttribute("data-v");
-    var v = raw !== "" ? Number(raw) : null;
+    var cpuRaw = target.getAttribute("data-cpu");
+    var memRaw = target.getAttribute("data-mem");
     var mb = target.getAttribute("data-mb");
     var mt = target.getAttribute("data-mt");
-    var sample = {
-      memUsedBytes: mb !== "" ? Number(mb) : undefined,
-      memTotalBytes: mt !== "" ? Number(mt) : undefined,
-    };
+    var memLine = '<div>Memory: ' + (memRaw !== "" ? Number(memRaw).toFixed(1) + "%" : "—");
+    if (mb !== "" && mt !== "") {
+      memLine += " (" + _fmtBytes(Number(mb)) + " / " + _fmtBytes(Number(mt)) + ")";
+    }
+    memLine += "</div>";
     return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(ts)) + '</div>' +
-      opts.tooltip(sample, v);
+      '<div>CPU: ' + (cpuRaw !== "" ? Number(cpuRaw).toFixed(1) + "%" : "—") + '</div>' +
+      memLine;
   });
-  _addChartScreenshotButton(container, opts.label, { yAxis: opts.label + " (%)" });
-  _observeChartResize(container, function (c) { _renderTelemetrySubChart(c, samples, opts); });
+  _addChartScreenshotButton(container, "CPU & Memory", { yAxis: "Utilization (%)" });
+  _observeChartResize(container, function (c) { _renderSystemChart(c, data); });
 }
 
 // Human-readable label for the probe method behind the response-time chart.
@@ -2970,6 +2949,9 @@ async function openInterfaceDetailPanel(asset, ifName) {
   var metaEl   = document.getElementById("iface-panel-meta");
   var bodyEl   = document.getElementById("iface-panel-body");
   var footerEl = document.getElementById("iface-panel-footer");
+  // Title shows whatever label we already know from the system-info row, if any.
+  // The interface-history response will refine it once the request lands —
+  // operator-set alias overrides ifName, with the real ifName kept as subtitle.
   titleEl.textContent = "Interface — " + ifName;
   metaEl.textContent = asset.hostname || asset.ipAddress || asset.id;
   bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading…</p>';
@@ -2988,15 +2970,14 @@ async function openInterfaceDetailPanel(asset, ifName) {
 
   bodyEl.innerHTML =
     '<div style="padding:1rem 1.25rem">' +
+      '<div id="iface-comment" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;font-size:0.85rem;color:var(--color-text-secondary);white-space:pre-wrap"></div>' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
         '<h4 style="margin:0">Throughput &amp; errors</h4>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
       '<div id="iface-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
-      '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Input (bps)</h5>' +
-      '<div id="iface-in-chart" class="iface-chart-box"></div>' +
-      '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Output (bps)</h5>' +
-      '<div id="iface-out-chart" class="iface-chart-box"></div>' +
+      '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Throughput (bps)</h5>' +
+      '<div id="iface-tput-chart" class="iface-chart-box"></div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Errors per interval (in / out)</h5>' +
       '<div id="iface-err-chart" class="iface-chart-box"></div>' +
     '</div>';
@@ -3028,13 +3009,12 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   // Cancel any pending auto-refresh — manual range change shouldn't race a tick.
   if (_ifaceRefreshTimer) { clearTimeout(_ifaceRefreshTimer); _ifaceRefreshTimer = null; }
   var silent = !!(callOpts && callOpts.silent);
-  var inEl = document.getElementById("iface-in-chart");
-  var outEl = document.getElementById("iface-out-chart");
+  var tputEl = document.getElementById("iface-tput-chart");
   var errEl = document.getElementById("iface-err-chart");
   var stats = document.getElementById("iface-stats");
-  if (!inEl) return;
+  if (!tputEl) return;
   if (!silent) {
-    inEl.textContent = outEl.textContent = errEl.textContent = "Loading samples…";
+    tputEl.textContent = errEl.textContent = "Loading samples…";
     if (stats) stats.textContent = "Loading…";
   }
   var panelBody = silent ? document.getElementById("iface-panel-body") : null;
@@ -3043,13 +3023,28 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
     var data = await api.assets.interfaceHistory(assetId, ifName, range || "1h");
     var derived = _derivePerIntervalSeries(data.samples || []);
     if (stats) stats.textContent = _ifaceStatsLabel(data.samples || [], derived);
+    // Refine the title now that we know the alias; show the operator comment
+    // when present.
+    var titleEl = document.getElementById("iface-panel-title");
+    if (titleEl) {
+      titleEl.textContent = "Interface — " + (data.alias && data.alias.trim() ? data.alias.trim() + " (" + ifName + ")" : ifName);
+    }
+    var commentEl = document.getElementById("iface-comment");
+    if (commentEl) {
+      if (data.description && data.description.trim()) {
+        commentEl.textContent = data.description.trim();
+        commentEl.style.display = "";
+      } else {
+        commentEl.textContent = "";
+        commentEl.style.display = "none";
+      }
+    }
     var ifaceOpts = { since: data.since, until: data.until, subject: ifName };
-    _renderIfaceCounterChart(inEl,  derived, "in",  ifaceOpts);
-    _renderIfaceCounterChart(outEl, derived, "out", ifaceOpts);
+    _renderIfaceThroughputChart(tputEl, derived, ifaceOpts);
     _renderIfaceErrorChart(errEl, derived, ifaceOpts);
   } catch (err) {
     if (!silent) {
-      inEl.textContent = outEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
+      tputEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
       if (stats) stats.textContent = "";
     }
     // Silent ticks leave stale content in place on transient errors.
@@ -3114,19 +3109,21 @@ function _ifaceStatsLabel(rawSamples, derived) {
     " · errors " + errIn + " in / " + errOut + " out";
 }
 
-function _renderIfaceCounterChart(container, derived, side, opts) {
+// Combined input + output throughput on a single chart. Two color-coded lines
+// share one bps y-axis (autoscaled to the higher of the two peaks) and one
+// hover tooltip that names both values at the same timestamp.
+function _renderIfaceThroughputChart(container, derived, opts) {
   opts = opts || {};
-  var values = derived.map(function (d) { return { ts: d.timestamp, v: side === "in" ? d.inBps : d.outBps }; })
-                     .filter(function (e) { return typeof e.v === "number"; });
-  if (values.length === 0) {
+  var inSeries  = derived.filter(function (d) { return typeof d.inBps  === "number"; });
+  var outSeries = derived.filter(function (d) { return typeof d.outBps === "number"; });
+  if (inSeries.length === 0 && outSeries.length === 0) {
     container.textContent = "No throughput samples yet — fast-cadence polling is required for sub-minute resolution.";
     return;
   }
   var W = container.clientWidth || 600, H = 180;
-  var padL = 56, padR = 10, padT = 10, padB = 32;
+  var padL = 56, padR = 10, padT = 14, padB = 32;
   var innerW = W - padL - padR, innerH = H - padT - padB;
-  var samplesForBounds = values.map(function (e) { return { timestamp: e.ts }; });
-  var bounds = _chartTimeBounds(samplesForBounds, opts.since, opts.until);
+  var bounds = _chartTimeBounds(derived, opts.since, opts.until);
   var t0 = bounds.t0, t1 = bounds.t1;
   var spanMs = t1 - t0, oneDayMs = 86400000;
   function pad2(n) { return n < 10 ? "0" + n : String(n); }
@@ -3135,9 +3132,10 @@ function _renderIfaceCounterChart(container, derived, side, opts) {
     if (spanMs <= oneDayMs) return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
     return (d.getMonth() + 1) + "/" + d.getDate();
   }
-  var maxV = Math.max.apply(null, values.map(function (e) { return e.v; }));
+  var maxV = 0;
+  inSeries.forEach (function (d) { if (d.inBps  > maxV) maxV = d.inBps;  });
+  outSeries.forEach(function (d) { if (d.outBps > maxV) maxV = d.outBps; });
   if (maxV < 1000) maxV = 1000;
-  // Tidy ceiling at the next 0.25 / 0.5 / 1 / 5 / 10 / 25 / 100 / 250 ... Mbps step
   function tidyCeil(n) {
     var exp = Math.pow(10, Math.floor(Math.log10(n)));
     var mant = n / exp;
@@ -3148,11 +3146,23 @@ function _renderIfaceCounterChart(container, derived, side, opts) {
 
   function xFor(ts) { return padL + ((new Date(ts).getTime() - t0) / (t1 - t0)) * innerW; }
   function yFor(v) { return padT + innerH - (v / ceil) * innerH; }
-  var pts = values.map(function (e) { return xFor(e.ts) + "," + yFor(e.v); }).join(" ");
-  var hits = values.map(function (e) {
-    return '<circle class="chart-hit" cx="' + xFor(e.ts) + '" cy="' + yFor(e.v) + '" r="6" fill="transparent" style="cursor:crosshair"' +
-      ' data-ts="' + escapeHtml(String(e.ts)) + '" data-v="' + e.v + '"/>';
+
+  var inPts  = inSeries .map(function (d) { return xFor(d.timestamp) + "," + yFor(d.inBps);  }).join(" ");
+  var outPts = outSeries.map(function (d) { return xFor(d.timestamp) + "," + yFor(d.outBps); }).join(" ");
+
+  // Single hit point per timestamp so the tooltip names both values together.
+  var hits = derived.map(function (d) {
+    var hasIn  = typeof d.inBps  === "number";
+    var hasOut = typeof d.outBps === "number";
+    if (!hasIn && !hasOut) return "";
+    // Anchor the hit at whichever line is higher so the cursor lands close to a visible curve.
+    var hi = hasIn && hasOut ? Math.max(d.inBps, d.outBps) : (hasIn ? d.inBps : d.outBps);
+    return '<circle class="chart-hit" cx="' + xFor(d.timestamp) + '" cy="' + yFor(hi) + '" r="6" fill="transparent" style="cursor:crosshair"' +
+      ' data-ts="' + escapeHtml(String(d.timestamp)) + '"' +
+      ' data-in="'  + (hasIn  ? d.inBps  : "") + '"' +
+      ' data-out="' + (hasOut ? d.outBps : "") + '"/>';
   }).join("");
+
   var ticks = "";
   for (var i = 0; i <= 4; i++) {
     var v = ceil * i / 4;
@@ -3169,23 +3179,35 @@ function _renderIfaceCounterChart(container, derived, side, opts) {
       '<line x1="' + xPos + '" y1="' + (padT + innerH) + '" x2="' + xPos + '" y2="' + (padT + innerH + 3) + '" stroke="rgba(127,127,127,0.4)"/>' +
       '<text x="' + xPos + '" y="' + (padT + innerH + 14) + '" text-anchor="middle" font-size="10" fill="currentColor">' + fmtTick(tsTick) + '</text>';
   }
-  var color = side === "in" ? "var(--color-accent)" : "#f4a261";
+  var inColor  = "var(--color-accent)";
+  var outColor = "#f4a261";
+  var legend =
+    '<g font-size="10" fill="currentColor">' +
+      '<rect x="' + (padL + 4)   + '" y="2" width="10" height="10" fill="' + inColor  + '"/>' +
+      '<text x="' + (padL + 18)  + '" y="11">Input</text>' +
+      '<rect x="' + (padL + 70)  + '" y="2" width="10" height="10" fill="' + outColor + '"/>' +
+      '<text x="' + (padL + 84)  + '" y="11">Output</text>' +
+    '</g>';
   container.innerHTML =
     '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
       ticks + xTicks +
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
-      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>' +
-      hits +
+      (inPts  ? '<polyline points="' + inPts  + '" fill="none" stroke="' + inColor  + '" stroke-width="1.5"/>' : '') +
+      (outPts ? '<polyline points="' + outPts + '" fill="none" stroke="' + outColor + '" stroke-width="1.5"/>' : '') +
+      legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
   container.style.alignItems = "stretch";
   container.style.justifyContent = "flex-start";
   _wireChartTooltip(container, function (target) {
+    var inV  = target.getAttribute("data-in");
+    var outV = target.getAttribute("data-out");
     return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(target.getAttribute("data-ts"))) + '</div>' +
-      '<div>' + (side === "in" ? "Input" : "Output") + ': ' + _fmtBitsPerSec(Number(target.getAttribute("data-v"))) + '</div>';
+      '<div>Input: '  + (inV  !== "" ? _fmtBitsPerSec(Number(inV))  : "—") + '</div>' +
+      '<div>Output: ' + (outV !== "" ? _fmtBitsPerSec(Number(outV)) : "—") + '</div>';
   });
-  _addChartScreenshotButton(container, side === "in" ? "Input throughput" : "Output throughput", { yAxis: "Throughput (bps)", subject: opts.subject });
-  _observeChartResize(container, function (c) { _renderIfaceCounterChart(c, derived, side, opts); });
+  _addChartScreenshotButton(container, "Throughput", { yAxis: "Throughput (bps)", subject: opts.subject });
+  _observeChartResize(container, function (c) { _renderIfaceThroughputChart(c, derived, opts); });
 }
 
 function _renderIfaceErrorChart(container, derived, opts) {

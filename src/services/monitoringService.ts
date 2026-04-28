@@ -538,6 +538,10 @@ export interface InterfaceSample {
   ifParent?:    string | null;
   /** 802.1Q VLAN ID. FortiOS REST only. */
   vlanId?:      number | null;
+  /** Operator-set label that overrides ifName in the UI. FortiOS CMDB `alias`; SNMP ifAlias (1.3.6.1.2.1.31.1.1.1.18). */
+  alias?:       string | null;
+  /** Operator-set free-text comment. FortiOS CMDB `description`; SNMP has no equivalent. */
+  description?: string | null;
 }
 
 export interface StorageSample {
@@ -708,6 +712,8 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
         outOctets:   i.outOctets != null ? BigInt(Math.round(i.outOctets)) : null,
         inErrors:    i.inErrors  != null ? BigInt(Math.round(i.inErrors))  : null,
         outErrors:   i.outErrors != null ? BigInt(Math.round(i.outErrors)) : null,
+        alias:       i.alias       ?? null,
+        description: i.description ?? null,
       })),
     });
   }
@@ -900,7 +906,7 @@ async function collectSystemInfoFortinet(
   // canonical source for type metadata, so we fetch it alongside the monitor
   // payload and merge. CMDB failure is non-fatal (e.g. token without cmdb
   // permission): we still get flat interface stats, just no nesting.
-  const cmdbByName = new Map<string, { type: string | null; parent: string | null; vlanId: number | null; members: string[] }>();
+  const cmdbByName = new Map<string, { type: string | null; parent: string | null; vlanId: number | null; members: string[]; alias: string | null; description: string | null }>();
   try {
     const cmdb = await fgRequest<any>(fg, "GET", "/api/v2/cmdb/system/interface", { query: { vdom: "root" } });
     const arr = Array.isArray(cmdb) ? cmdb : (Array.isArray(cmdb?.results) ? cmdb.results : []);
@@ -912,11 +918,15 @@ async function collectSystemInfoFortinet(
       const members: string[] = Array.isArray(c.member)
         ? c.member.map((m: any) => (typeof m === "string" ? m : (typeof m?.interface_name === "string" ? m.interface_name : null))).filter(Boolean)
         : [];
+      const alias       = typeof c.alias       === "string" && c.alias.trim()       ? c.alias.trim()       : null;
+      const description = typeof c.description === "string" && c.description.trim() ? c.description.trim() : null;
       cmdbByName.set(c.name, {
         type:    t,
         parent:  t === "vlan" && typeof c.interface === "string" ? c.interface : null,
         vlanId:  t === "vlan" && typeof c.vlanid === "number" ? c.vlanid : null,
         members,
+        alias,
+        description,
       });
     }
   } catch { /* tokens without cmdb scope — fall back to monitor-only types */ }
@@ -964,6 +974,8 @@ async function collectSystemInfoFortinet(
         ifType:      normalizeFortiIfType(rawType),
         ifParent:    rawParent,
         vlanId:      rawVlanId,
+        alias:       cmdbEntry?.alias       ?? null,
+        description: cmdbEntry?.description ?? null,
       });
     }
     // Back-fill ifParent on member ports of aggregate / hard-switch /
@@ -1152,6 +1164,7 @@ const OID = {
   ifHCInOctets:   "1.3.6.1.2.1.31.1.1.1.6",
   ifHCOutOctets:  "1.3.6.1.2.1.31.1.1.1.10",
   ifHighSpeed:    "1.3.6.1.2.1.31.1.1.1.15",
+  ifAlias:        "1.3.6.1.2.1.31.1.1.1.18",
   ipAdEntIfIndex: "1.3.6.1.2.1.4.20.1.2",
   // ENTITY-MIB / ENTITY-SENSOR-MIB (RFC 4133 / 3433). For temperature
   // sensors, entPhySensorType=8 (celsius). entPhySensorScale + Precision tell
@@ -1553,7 +1566,7 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
     try {
       const [
         names, descrs, admin, oper, speeds, hiSpeeds, mac,
-        in32, out32, inHC, outHC, ipMap, inErr, outErr, ifTypes,
+        in32, out32, inHC, outHC, ipMap, inErr, outErr, ifTypes, aliases,
       ] = await Promise.all([
         snmpWalk(session, OID.ifName).catch(() => new Map()),
         snmpWalk(session, OID.ifDescr).catch(() => new Map()),
@@ -1570,6 +1583,7 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
         snmpWalk(session, OID.ifInErrors).catch(() => new Map()),
         snmpWalk(session, OID.ifOutErrors).catch(() => new Map()),
         snmpWalk(session, OID.ifType).catch(() => new Map()),
+        snmpWalk(session, OID.ifAlias).catch(() => new Map()),
       ]);
 
       // Build ifIndex → first IP map by inverting ipAdEntIfIndex (suffix is the IP itself).
@@ -1592,6 +1606,8 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
           : (speed32 != null ? speed32 : null);
         const inHi = snmpVbToNumber(inHC.get(idx));
         const outHi = snmpVbToNumber(outHC.get(idx));
+        const aliasRaw = snmpVbToString(aliases.get(idx));
+        const alias = aliasRaw && aliasRaw.trim() ? aliasRaw.trim() : null;
         interfaces.push({
           ifName:      name,
           adminStatus: ifStatusLabel(snmpVbToNumber(admin.get(idx))),
@@ -1604,6 +1620,7 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
           inErrors:    snmpVbToNumber(inErr.get(idx)),
           outErrors:   snmpVbToNumber(outErr.get(idx)),
           ifType:      snmpIfTypeLabel(snmpVbToNumber(ifTypes.get(idx))),
+          alias,
         });
       }
     } catch { /* fall through */ }
@@ -1695,6 +1712,8 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           ifType:      i.ifType   ?? null,
           ifParent:    i.ifParent ?? null,
           vlanId:      i.vlanId   ?? null,
+          alias:       i.alias       ?? null,
+          description: i.description ?? null,
         })),
       });
     }
