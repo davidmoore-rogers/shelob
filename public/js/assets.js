@@ -2090,14 +2090,18 @@ function _captureChartAsPng(container, meta, callback) {
 
     // Build header. Line 1 is "<Title> — <Subject>" (subject = interface or
     // tunnel name when the chart is in a sub-panel). Line 2 is the asset.
+    // Line 3 is an optional stats summary (same one shown above the chart).
     var titleParts = [];
     if (meta.title)   titleParts.push(meta.title);
     if (meta.subject) titleParts.push(meta.subject);
     var headerLine1 = titleParts.join(" — ");
     var headerLine2 = meta.asset || "";
+    var headerLine3 = meta.stats || "";
     var headerH = 0;
-    if (headerLine1 && headerLine2) headerH = 40;
-    else if (headerLine1 || headerLine2) headerH = 24;
+    var lineCount = (headerLine1 ? 1 : 0) + (headerLine2 ? 1 : 0) + (headerLine3 ? 1 : 0);
+    if (lineCount === 1) headerH = 24;
+    else if (lineCount === 2) headerH = 40;
+    else if (lineCount === 3) headerH = 56;
 
     var footerH  = meta.xAxis ? 22 : 0;
     var leftPadW = meta.yAxis ? 22 : 0;
@@ -2118,15 +2122,23 @@ function _captureChartAsPng(container, meta, callback) {
       ctx.textBaseline = "top";
       ctx.textAlign = "left";
       var headerX = leftPadW + 8;
+      var nextY = 8;
       if (headerLine1) {
         ctx.fillStyle = resolvedText;
         ctx.font = "600 13px " + fontFamily;
-        ctx.fillText(headerLine1, headerX, 8);
+        ctx.fillText(headerLine1, headerX, nextY);
+        nextY += 16;
       }
       if (headerLine2) {
         ctx.fillStyle = textSec;
         ctx.font = "11px " + fontFamily;
-        ctx.fillText(headerLine2, headerX, headerLine1 ? 24 : 8);
+        ctx.fillText(headerLine2, headerX, nextY);
+        nextY += 16;
+      }
+      if (headerLine3) {
+        ctx.fillStyle = textSec;
+        ctx.font = "11px " + fontFamily;
+        ctx.fillText(headerLine3, headerX, nextY);
       }
     }
 
@@ -2191,12 +2203,17 @@ function _addChartScreenshotButton(container, label, axisOpts) {
     e.stopPropagation();
     var a = _currentAssetForRefresh;
     var assetName = a ? (a.hostname || a.dnsName || a.ipAddress || a.id || "") : "";
+    var statsLine = "";
+    if (typeof axisOpts.getStats === "function") {
+      try { statsLine = axisOpts.getStats() || ""; } catch (_) { statsLine = ""; }
+    }
     var meta = {
       title: label,
       asset: assetName,
       subject: axisOpts.subject || "",
       xAxis: axisOpts.xAxis || "Time",
       yAxis: axisOpts.yAxis || label,
+      stats: statsLine,
     };
     _captureChartAsPng(container, meta, function (blob) {
       if (!blob) { showToast("Screenshot failed", "error"); return; }
@@ -2471,10 +2488,10 @@ function assetMonitoringViewHTML(a) {
       '<div style="display:flex;gap:6px">' + rangeBtns + ' ' + probeBtn + '</div>' +
     '</div>' +
     customPanel +
+    '<div id="asset-monitor-stats" style="display:flex;gap:1.25rem;flex-wrap:wrap;font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem"></div>' +
     '<div id="asset-monitor-chart" style="background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:0.5rem;min-height:200px;display:flex;align-items:center;justify-content:center;color:var(--color-text-secondary);font-size:0.85rem">' +
       'Loading samples…' +
-    '</div>' +
-    '<div id="asset-monitor-stats" style="margin-top:0.5rem;font-size:0.85rem;color:var(--color-text-secondary)"></div>'
+    '</div>'
   );
 }
 
@@ -2486,7 +2503,7 @@ async function _loadMonitorHistoryFor(assetId, selection) {
   var stats = document.getElementById("asset-monitor-stats");
   if (!chart) return;
   chart.textContent = "Loading samples…";
-  if (stats) stats.textContent = "";
+  if (stats) { stats.textContent = ""; delete stats.dataset.summary; }
   var opts = (typeof selection === "string" || !selection) ? { range: selection || "24h" } : selection;
   // Persist selection so probe-now can refresh the same view.
   if (opts.from && opts.to) {
@@ -2507,7 +2524,13 @@ async function _loadMonitorHistoryFor(assetId, selection) {
       var avg  = s.avgMs != null ? s.avgMs + " ms" : "—";
       var min  = s.minMs != null ? s.minMs + " ms" : "—";
       var max  = s.maxMs != null ? s.maxMs + " ms" : "—";
-      stats.textContent = s.total + " samples · avg " + avg + " · min " + min + " · max " + max + " · packet loss " + loss;
+      stats.innerHTML =
+        '<span><strong>' + s.total + '</strong> samples</span>' +
+        '<span><strong>Avg:</strong> ' + avg + '</span>' +
+        '<span><strong>Min:</strong> ' + min + '</span>' +
+        '<span><strong>Max:</strong> ' + max + '</span>' +
+        '<span><strong>Packet loss:</strong> ' + loss + '</span>';
+      stats.dataset.summary = s.total + " samples · avg " + avg + " · min " + min + " · max " + max + " · packet loss " + loss;
     }
   } catch (err) {
     chart.textContent = "Error: " + (err.message || "failed to load history");
@@ -2698,7 +2721,13 @@ function _renderMonitorChart(container, data) {
     }
   });
   svgEl.addEventListener("mouseleave", function () { tip.style.display = "none"; });
-  _addChartScreenshotButton(container, "Response time", { yAxis: "Response time (ms)" });
+  _addChartScreenshotButton(container, "Response time", {
+    yAxis: "Response time (ms)",
+    getStats: function () {
+      var el = document.getElementById("asset-monitor-stats");
+      return (el && el.dataset.summary) || "";
+    },
+  });
   _observeChartResize(container, function (c) { _renderMonitorChart(c, data); });
 }
 
