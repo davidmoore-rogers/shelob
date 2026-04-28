@@ -766,6 +766,9 @@ router.get("/:id/system-info", async (req, res, next) => {
         outOctets:   bigIntToNumber(i.outOctets),
         inErrors:    bigIntToNumber(i.inErrors),
         outErrors:   bigIntToNumber(i.outErrors),
+        ifType:      i.ifType   ?? null,
+        ifParent:    i.ifParent ?? null,
+        vlanId:      i.vlanId   ?? null,
       })),
       storage: storage.map((s) => ({
         timestamp:  s.timestamp,

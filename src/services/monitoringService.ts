@@ -532,6 +532,12 @@ export interface InterfaceSample {
   inErrors?:    number | null;
   /** Cumulative IF-MIB ifOutErrors / FortiOS errors_out. */
   outErrors?:   number | null;
+  /** "physical" | "aggregate" | "vlan" | "loopback" | "tunnel" — FortiOS REST + SNMP ifType OID. */
+  ifType?:      string | null;
+  /** Aggregate name (for member ports) or parent interface name (for VLANs). FortiOS REST only. */
+  ifParent?:    string | null;
+  /** 802.1Q VLAN ID. FortiOS REST only. */
+  vlanId?:      number | null;
 }
 
 export interface StorageSample {
@@ -916,7 +922,23 @@ async function collectSystemInfoFortinet(
         outOctets:   pickFiniteNumber(i.tx_bytes),
         inErrors:    pickFiniteNumber(i.rx_errors  ?? i.errors_in),
         outErrors:   pickFiniteNumber(i.tx_errors  ?? i.errors_out),
+        ifType:      normalizeFortiIfType(i.type),
+        ifParent:    i.type === "vlan" ? (typeof i.interface === "string" ? i.interface : null) : null,
+        vlanId:      i.type === "vlan" ? (typeof i.vlanid === "number" ? i.vlanid : null) : null,
       });
+    }
+    // Back-fill ifParent on member ports of aggregate interfaces. The aggregate
+    // row carries a `member` array of port names; those ports have no parent set yet.
+    const ifMap = new Map(interfaces.map((s) => [s.ifName, s]));
+    for (const [name, info] of Object.entries(obj)) {
+      if (!info || typeof info !== "object") continue;
+      const i = info as any;
+      if (normalizeFortiIfType(i.type) === "aggregate" && Array.isArray(i.member)) {
+        for (const memberName of i.member) {
+          const member = ifMap.get(String(memberName));
+          if (member && !member.ifParent) member.ifParent = name;
+        }
+      }
     }
   } catch (err: any) {
     // Re-throw — partial collection of interfaces is fine, but no interfaces
@@ -999,6 +1021,18 @@ function pickFiniteNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function normalizeFortiIfType(raw: unknown): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const t = raw.toLowerCase();
+  if (t === "physical" || t === "wl-mesh")                                          return "physical";
+  if (t === "aggregate" || t === "redundant" || t === "hard-switch" || t === "vap-switch") return "aggregate";
+  if (t === "vlan")                                                                  return "vlan";
+  if (t === "loopback")                                                              return "loopback";
+  if (t === "tunnel" || t === "ssl" || t === "vxlan" || t === "gre" ||
+      t === "ipsec"  || t === "vdom-link")                                           return "tunnel";
+  return null;
+}
+
 // ─── SNMP collectors ────────────────────────────────────────────────────────
 //
 // HOST-RESOURCES-MIB delivers CPU (hrProcessorLoad), memory (hrStorage rows
@@ -1018,6 +1052,7 @@ const OID = {
   hrStorageRemovableDisk:    "1.3.6.1.2.1.25.2.1.5",
   // IF-MIB
   ifDescr:        "1.3.6.1.2.1.2.2.1.2",
+  ifType:         "1.3.6.1.2.1.2.2.1.3",
   ifSpeed:        "1.3.6.1.2.1.2.2.1.5",
   ifPhysAddress:  "1.3.6.1.2.1.2.2.1.6",
   ifAdminStatus:  "1.3.6.1.2.1.2.2.1.7",
@@ -1431,7 +1466,7 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
     try {
       const [
         names, descrs, admin, oper, speeds, hiSpeeds, mac,
-        in32, out32, inHC, outHC, ipMap, inErr, outErr,
+        in32, out32, inHC, outHC, ipMap, inErr, outErr, ifTypes,
       ] = await Promise.all([
         snmpWalk(session, OID.ifName).catch(() => new Map()),
         snmpWalk(session, OID.ifDescr).catch(() => new Map()),
@@ -1447,6 +1482,7 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
         snmpWalk(session, OID.ipAdEntIfIndex).catch(() => new Map()),
         snmpWalk(session, OID.ifInErrors).catch(() => new Map()),
         snmpWalk(session, OID.ifOutErrors).catch(() => new Map()),
+        snmpWalk(session, OID.ifType).catch(() => new Map()),
       ]);
 
       // Build ifIndex → first IP map by inverting ipAdEntIfIndex (suffix is the IP itself).
@@ -1480,6 +1516,7 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
           outOctets:   outHi != null ? outHi : snmpVbToNumber(out32.get(idx)),
           inErrors:    snmpVbToNumber(inErr.get(idx)),
           outErrors:   snmpVbToNumber(outErr.get(idx)),
+          ifType:      snmpIfTypeLabel(snmpVbToNumber(ifTypes.get(idx))),
         });
       }
     } catch { /* fall through */ }
@@ -1498,6 +1535,20 @@ function ifStatusLabel(n: number | null): string | null {
     case 6: return "notPresent";
     case 7: return "lowerLayerDown";
     default: return null;
+  }
+}
+
+// Maps IF-MIB ifType integer (1.3.6.1.2.1.2.2.1.3) to our canonical type string.
+// Only covers the values commonly seen on network gear; everything else is null.
+function snmpIfTypeLabel(n: number | null | undefined): string | null {
+  switch (n) {
+    case 6:   return "physical";   // ethernetCsmacd
+    case 24:  return "loopback";   // softwareLoopback
+    case 131: return "tunnel";     // tunnel
+    case 135: return "vlan";       // l2vlan
+    case 161: return "aggregate";  // ieee8023adLag
+    case 166: return "tunnel";     // mpls
+    default:  return null;
   }
 }
 
@@ -1554,6 +1605,9 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           outOctets:   i.outOctets != null ? BigInt(Math.round(i.outOctets)) : null,
           inErrors:    i.inErrors  != null ? BigInt(Math.round(i.inErrors))  : null,
           outErrors:   i.outErrors != null ? BigInt(Math.round(i.outErrors)) : null,
+          ifType:      i.ifType   ?? null,
+          ifParent:    i.ifParent ?? null,
+          vlanId:      i.vlanId   ?? null,
         })),
       });
     }

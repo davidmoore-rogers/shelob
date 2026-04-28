@@ -1469,12 +1469,13 @@ function _renderInterfacesTable(container, si, asset) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
   }
-  rows = rows.slice().sort(function (a, b) {
-    return String(a.ifName || "").localeCompare(String(b.ifName || ""), undefined, { numeric: true, sensitivity: "base" });
-  });
   var monitored = new Set(((si && si.monitoredInterfaces) || (asset && asset.monitoredInterfaces) || []));
   var canEdit = canManageAssets();
-  var body = rows.map(function (i) {
+  var COLS = 9;
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  function statusCell(i) {
     var statusLabel, statusKind;
     if (i.adminStatus && String(i.adminStatus).toLowerCase() === "down") {
       statusLabel = "admin shut"; statusKind = "decommissioned";
@@ -1485,38 +1486,158 @@ function _renderInterfacesTable(container, si, asset) {
       statusLabel = String(i.adminStatus).toLowerCase();
       statusKind = statusLabel === "up" ? "active" : "decommissioned";
     }
-    var status = statusLabel
+    return statusLabel
       ? '<span class="status-pill status-pill-' + statusKind + '">' + escapeHtml(statusLabel) + '</span>'
       : '—';
-    var speed = i.speedBps != null ? _fmtSpeed(i.speedBps) : '—';
-    var checked = monitored.has(i.ifName) ? ' checked' : '';
-    var disabled = canEdit ? '' : ' disabled';
-    var checkbox =
-      '<input type="checkbox" class="asset-iface-toggle" data-ifname="' + escapeHtml(i.ifName) + '"' + checked + disabled +
-      ' title="Poll this interface every minute (response-time cadence)">';
-    var nameCell = '<a href="#" class="asset-iface-link" data-ifname="' + escapeHtml(i.ifName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(i.ifName) + '</a>';
-    var errs = ((i.inErrors != null && i.inErrors > 0) || (i.outErrors != null && i.outErrors > 0))
-      ? ((i.inErrors || 0) + ' / ' + (i.outErrors || 0))
-      : '0 / 0';
-    return '<tr>' +
-      '<td style="text-align:center;width:1%">' + checkbox + '</td>' +
-      '<td class="mono">' + nameCell + '</td>' +
-      '<td>' + status + '</td>' +
-      '<td>' + speed + '</td>' +
-      '<td class="mono">' + escapeHtml(i.ipAddress || "—") + '</td>' +
-      '<td class="mono">' + escapeHtml(i.macAddress || "—") + '</td>' +
-      '<td>' + (i.inOctets  != null ? _fmtBytes(i.inOctets)  : '—') + '</td>' +
-      '<td>' + (i.outOctets != null ? _fmtBytes(i.outOctets) : '—') + '</td>' +
-      '<td title="In errors / Out errors (cumulative)">' + errs + '</td>' +
-    '</tr>';
-  }).join("");
+  }
+
+  function typeBadge(iface, isChild) {
+    var t = iface.ifType;
+    // Member port of an aggregate: show "Member" regardless of its stored type.
+    if (isChild && t !== "vlan") {
+      return '<span style="font-size:0.7rem;padding:1px 5px;border-radius:3px;background:#6b728018;color:#9ca3af;border:1px solid #6b728030;margin-left:5px">Member</span>';
+    }
+    var cfgs = {
+      physical:  ["Physical",  "#6b7280"],
+      aggregate: ["Aggregate", "#3b82f6"],
+      vlan:      [iface.vlanId ? "VLAN " + iface.vlanId : "VLAN", "#0d9488"],
+      loopback:  ["Loopback",  "#6b7280"],
+      tunnel:    ["Tunnel",    "#6b7280"],
+    };
+    var cfg = cfgs[t];
+    if (!cfg) return "";
+    var c = cfg[1];
+    return '<span style="font-size:0.7rem;padding:1px 5px;border-radius:3px;background:' + c + '18;color:' + c + ';border:1px solid ' + c + '30;margin-left:5px;white-space:nowrap">' + escapeHtml(cfg[0]) + '</span>';
+  }
+
+  function buildRow(iface, opts) {
+    opts = opts || {};
+    var checked  = monitored.has(iface.ifName) ? " checked" : "";
+    var disabled = canEdit ? "" : " disabled";
+    var checkbox = '<input type="checkbox" class="asset-iface-toggle" data-ifname="' + escapeHtml(iface.ifName) + '"' + checked + disabled + ' title="Poll this interface every minute for fast-cadence monitoring">';
+
+    var prefix = "", padStyle = "";
+    if (opts.isParent) {
+      prefix = '<button class="iface-expand-toggle" data-parent="' + escapeHtml(iface.ifName) + '" style="background:none;border:none;cursor:pointer;color:var(--color-text-secondary);padding:0 3px 0 0;font-size:0.75rem;vertical-align:middle;line-height:1" title="Collapse children">▼</button>';
+    }
+    if (opts.isChild) {
+      padStyle = "padding-left:1.4rem;";
+      prefix = '<span style="color:var(--color-text-secondary);opacity:0.5;margin-right:3px;font-size:0.8rem">└</span>';
+    }
+    var nameCell =
+      '<td class="mono" style="' + padStyle + '">' + prefix +
+      '<a href="#" class="asset-iface-link" data-ifname="' + escapeHtml(iface.ifName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(iface.ifName) + '</a>' +
+      typeBadge(iface, opts.isChild) +
+      '</td>';
+
+    var speed = iface.speedBps != null ? _fmtSpeed(iface.speedBps) : "—";
+    var errs  = ((iface.inErrors != null && iface.inErrors > 0) || (iface.outErrors != null && iface.outErrors > 0))
+      ? ((iface.inErrors || 0) + " / " + (iface.outErrors || 0))
+      : "0 / 0";
+    var childAttr = opts.isChild ? ' class="iface-child" data-parent="' + escapeHtml(opts.parentName) + '"' : "";
+
+    return "<tr" + childAttr + ">" +
+      '<td style="text-align:center;width:1%">' + checkbox + "</td>" +
+      nameCell +
+      "<td>" + statusCell(iface) + "</td>" +
+      "<td>" + speed + "</td>" +
+      '<td class="mono">' + escapeHtml(iface.ipAddress  || "—") + "</td>" +
+      '<td class="mono">' + escapeHtml(iface.macAddress || "—") + "</td>" +
+      "<td>" + (iface.inOctets  != null ? _fmtBytes(iface.inOctets)  : "—") + "</td>" +
+      "<td>" + (iface.outOctets != null ? _fmtBytes(iface.outOctets) : "—") + "</td>" +
+      '<td title="In errors / Out errors (cumulative)">' + errs + "</td>" +
+    "</tr>";
+  }
+
+  function sectionRow(label, count) {
+    return '<tr style="background:transparent"><td colspan="' + COLS + '" style="padding:0.35rem 0.6rem 0.2rem;font-size:0.71rem;font-weight:600;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:0.06em;border-bottom:1px solid var(--color-border)">' +
+      escapeHtml(label) + ' <span style="font-weight:400;opacity:0.7">(' + count + ')</span>' +
+    "</td></tr>";
+  }
+
+  // ── build tree ─────────────────────────────────────────────────────────────
+  // childMap: parentIfName -> sorted [child interfaces]  (members first, VLANs after)
+  var childMap = {};
+  rows.forEach(function (r) {
+    if (r.ifParent) {
+      if (!childMap[r.ifParent]) childMap[r.ifParent] = [];
+      childMap[r.ifParent].push(r);
+    }
+  });
+  Object.keys(childMap).forEach(function (k) {
+    childMap[k].sort(function (a, b) {
+      var av = a.ifType === "vlan" ? 1 : 0, bv = b.ifType === "vlan" ? 1 : 0;
+      if (av !== bv) return av - bv;
+      return String(a.ifName).localeCompare(String(b.ifName), undefined, { numeric: true, sensitivity: "base" });
+    });
+  });
+
+  // Top-level: no ifParent set
+  var topLevel = rows.filter(function (r) { return !r.ifParent; });
+  topLevel.sort(function (a, b) {
+    return String(a.ifName).localeCompare(String(b.ifName), undefined, { numeric: true, sensitivity: "base" });
+  });
+
+  // Groups
+  var aggGroup  = topLevel.filter(function (r) { return r.ifType === "aggregate"; });
+  var physGroup = topLevel.filter(function (r) { return r.ifType === "physical" || r.ifType == null; });
+  var otherGroup = topLevel.filter(function (r) {
+    return r.ifType && r.ifType !== "physical" && r.ifType !== "aggregate";
+  });
+
+  // ── render ─────────────────────────────────────────────────────────────────
+  var html = "";
+
+  if (aggGroup.length > 0) {
+    html += sectionRow("Aggregate Interfaces", aggGroup.length);
+    aggGroup.forEach(function (agg) {
+      var kids = childMap[agg.ifName] || [];
+      html += buildRow(agg, { isParent: kids.length > 0 });
+      kids.forEach(function (child) {
+        html += buildRow(child, { isChild: true, parentName: agg.ifName });
+      });
+    });
+  }
+
+  if (physGroup.length > 0) {
+    html += sectionRow("Physical Interfaces", physGroup.length);
+    physGroup.forEach(function (phys) {
+      var kids = childMap[phys.ifName] || [];
+      html += buildRow(phys, { isParent: kids.length > 0 });
+      kids.forEach(function (child) {
+        html += buildRow(child, { isChild: true, parentName: phys.ifName });
+      });
+    });
+  }
+
+  if (otherGroup.length > 0) {
+    html += sectionRow("Other Interfaces", otherGroup.length);
+    otherGroup.forEach(function (iface) {
+      html += buildRow(iface, {});
+    });
+  }
+
   container.innerHTML =
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th title="Pin this interface for fast-cadence polling">Poll 1m</th>' +
       '<th>Interface</th><th>Status</th><th>Speed</th><th>IP</th><th>MAC</th><th>In</th><th>Out</th><th>Errors (in/out)</th>' +
-    '</tr></thead><tbody>' + body + '</tbody></table></div>';
+    '</tr></thead><tbody>' + html + "</tbody></table></div>";
 
-  // Toggle handler — POSTs the new monitoredInterfaces array.
+  // Expand / collapse aggregate and physical-with-children rows
+  container.querySelectorAll(".iface-expand-toggle").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var parentName = btn.getAttribute("data-parent");
+      var expanded = btn.textContent.trim() === "▼";
+      btn.textContent = expanded ? "▶" : "▼";
+      btn.title = expanded ? "Expand children" : "Collapse children";
+      container.querySelectorAll(".iface-child").forEach(function (row) {
+        if (row.getAttribute("data-parent") === parentName) row.style.display = expanded ? "none" : "";
+      });
+    });
+  });
+
+  // Poll 1m checkbox — writes monitoredInterfaces; works for top-level and child rows alike
   if (canEdit && asset) {
     container.querySelectorAll(".asset-iface-toggle").forEach(function (cb) {
       cb.addEventListener("change", async function () {
@@ -1539,12 +1660,12 @@ function _renderInterfacesTable(container, si, asset) {
       });
     });
   }
-  // Click handler — open nested interface detail panel.
+
+  // Interface name click — opens per-interface history panel
   container.querySelectorAll(".asset-iface-link").forEach(function (link) {
     link.addEventListener("click", function (e) {
       e.preventDefault();
-      var name = link.getAttribute("data-ifname");
-      openInterfaceDetailPanel(asset, name);
+      openInterfaceDetailPanel(asset, link.getAttribute("data-ifname"));
     });
   });
 }

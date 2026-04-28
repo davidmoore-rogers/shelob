@@ -364,6 +364,9 @@ AssetInterfaceSample            -- System tab per-interface scrape (~600s cadenc
   outOctets     BigInt?
   inErrors      BigInt?         -- Cumulative IF-MIB ifInErrors / FortiOS errors_in
   outErrors     BigInt?         -- Cumulative IF-MIB ifOutErrors / FortiOS errors_out
+  ifType        String?         -- "physical" | "aggregate" | "vlan" | "loopback" | "tunnel". FortiOS REST via `type` field; SNMP via ifType OID (1.3.6.1.2.1.2.2.1.3).
+  ifParent      String?         -- Aggregate name for member ports; parent interface name for VLAN sub-interfaces. FortiOS REST only (back-filled from aggregate `member` array and VLAN `interface` field).
+  vlanId        Int?            -- 802.1Q VLAN ID for vlan-type interfaces. FortiOS REST only (from `vlanid` field).
   @@index([assetId, timestamp])
   @@index([assetId, ifName, timestamp])
 
