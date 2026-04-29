@@ -349,10 +349,14 @@ export async function discoverDevices(
   // 3. Merge — Intune wins on fields present in both
   const merged: DiscoveredEntraDevice[] = [];
   const seenDeviceIds = new Set<string>();
+  let nullIdSkipped = 0;
 
   for (const e of entraDevices) {
     const deviceId = String(e.deviceId || "").toLowerCase();
-    if (!deviceId) continue;
+    if (!isMeaningfulDeviceId(deviceId)) {
+      nullIdSkipped++;
+      continue;
+    }
     seenDeviceIds.add(deviceId);
 
     const intune = intuneByDeviceId.get(deviceId);
@@ -382,6 +386,10 @@ export async function discoverDevices(
   // Intune-only devices (not yet registered in Entra — rare but possible)
   for (const [deviceId, intune] of intuneByDeviceId) {
     if (seenDeviceIds.has(deviceId)) continue;
+    if (!isMeaningfulDeviceId(deviceId)) {
+      nullIdSkipped++;
+      continue;
+    }
     merged.push({
       deviceId,
       displayName: String(intune.deviceName || ""),
@@ -398,6 +406,10 @@ export async function discoverDevices(
       complianceState: intune.complianceState || undefined,
       lastSyncDateTime: intune.lastSyncDateTime || undefined,
     });
+  }
+
+  if (nullIdSkipped > 0) {
+    log("discover.filter.null_id", "info", `Skipping ${nullIdSkipped} device(s) with empty or null deviceId (e.g. 00000000-0000-0000-0000-000000000000)`);
   }
 
   // 4. Apply device include/exclude filter (match displayName)
@@ -420,6 +432,15 @@ export async function discoverDevices(
   }
 
   return { devices: filtered };
+}
+
+// Reject Entra device IDs that are empty or the canonical null GUID. Some
+// devices land in the Graph response with deviceId="00000000-0000-0000-0000-000000000000"
+// (typically broken/half-registered records) — accepting them produces an asset
+// with assetTag="entra:00000000-..." that all collide on the same key.
+function isMeaningfulDeviceId(id: string): boolean {
+  if (!id) return false;
+  return id.replace(/[-0]/g, "").length > 0;
 }
 
 function pickMac(intune: any): string {

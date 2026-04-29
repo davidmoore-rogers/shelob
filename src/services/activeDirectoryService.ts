@@ -268,7 +268,11 @@ function parseEntry(entry: Entry): DiscoveredAdDevice | null {
   const sidRaw = entry.objectSid;
   const guid = Buffer.isBuffer(guidRaw) ? decodeObjectGuid(guidRaw) : "";
   const sid = Buffer.isBuffer(sidRaw) ? decodeObjectSid(sidRaw) : "";
-  if (!guid) return null;
+  // Reject empty or all-zero GUIDs (32 hex zeros). The latter shows up on
+  // half-provisioned computer objects and would otherwise produce an asset
+  // tagged "ad:00000000000000000000000000000000" that collides with every
+  // other broken entry.
+  if (!guid || /^0+$/.test(guid)) return null;
 
   const cn = readString(entry.cn);
   const dnsHostName = readString(entry.dNSHostName);

@@ -2643,6 +2643,18 @@ function sidTag(sid: string): string {
   return `${SID_TAG_PREFIX}${sid.toUpperCase()}`;
 }
 
+// Reject SIDs that aren't useful as a cross-integration identity key:
+// empty, the null SID ("S-1-0-0"), or anything that doesn't look like a SID.
+// The hybrid-join cross-link only works when the SID actually pins one
+// device — placeholder SIDs would just collide every dead account.
+function isMeaningfulSid(sid: string | undefined | null): boolean {
+  if (!sid) return false;
+  const s = sid.trim().toUpperCase();
+  if (!s.startsWith("S-")) return false;
+  if (s === "S-1-0-0") return false;
+  return true;
+}
+
 // Tags the Entra discovery auto-assigns each run (so we strip them on update
 // before re-adding the fresh set). Cross-integration identity tags (sid:*,
 // ad-guid:*) are NOT in this list — they must be preserved.
@@ -2720,7 +2732,7 @@ async function syncEntraDevices(
     if (dev.complianceState) tags.push(`intune-${dev.complianceState.toLowerCase()}`);
     else if (dev.isCompliant === true) tags.push("compliant");
     else if (dev.isCompliant === false) tags.push("noncompliant");
-    if (dev.onPremisesSecurityIdentifier) tags.push(sidTag(dev.onPremisesSecurityIdentifier));
+    if (isMeaningfulSid(dev.onPremisesSecurityIdentifier)) tags.push(sidTag(dev.onPremisesSecurityIdentifier!));
 
     // Prefer Intune's lastSync (freshest hands-on-device signal) over Entra's sign-in time
     const lastSeenIso = dev.lastSyncDateTime || dev.approximateLastSignInDateTime;
@@ -2938,7 +2950,7 @@ async function syncActiveDirectoryDevices(
     const adMonitorable = getAdMonitorProtocol(dev.operatingSystem) !== null;
 
     const tags: string[] = ["activedirectory", "auto-discovered", `${AD_GUID_TAG_PREFIX}${guidKey}`];
-    if (dev.objectSid) tags.push(sidTag(dev.objectSid));
+    if (isMeaningfulSid(dev.objectSid)) tags.push(sidTag(dev.objectSid));
     if (dev.disabled) tags.push("ad-disabled");
 
     const lastLogon = dev.lastLogonTimestamp ? new Date(dev.lastLogonTimestamp) : null;
