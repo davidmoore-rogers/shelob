@@ -5332,6 +5332,7 @@ function assetSnmpWalkViewHTML(a) {
       '</div>' +
       '<div style="display:flex;gap:0.5rem;align-items:center">' +
         '<button type="button" class="btn btn-primary btn-sm" id="btn-snmp-walk">Walk</button>' +
+        '<button type="button" class="btn btn-danger btn-sm" id="btn-snmp-walk-abort" style="display:none">Abort</button>' +
         '<button type="button" class="btn btn-secondary btn-sm" id="btn-snmp-walk-copy" disabled>Copy results</button>' +
         '<span id="snmp-walk-status" style="font-size:0.8rem;color:var(--color-text-secondary)"></span>' +
       '</div>' +
@@ -5369,9 +5370,11 @@ function _renderSnmpWalkRows(result) {
 function _wireSnmpWalkTab(a) {
   var walkBtn = document.getElementById("btn-snmp-walk");
   if (!walkBtn) return; // tab not rendered (e.g. asset has no IP)
+  var abortBtn = document.getElementById("btn-snmp-walk-abort");
   var copyBtn = document.getElementById("btn-snmp-walk-copy");
   var statusEl = document.getElementById("snmp-walk-status");
   var lastResult = null;
+  var activeController = null;
 
   walkBtn.addEventListener("click", async function () {
     var oid = (document.getElementById("snmp-walk-oid").value || "").trim();
@@ -5386,28 +5389,50 @@ function _wireSnmpWalkTab(a) {
     walkBtn.disabled = true;
     walkBtn.textContent = "Walking…";
     if (copyBtn) copyBtn.disabled = true;
+    if (abortBtn) { abortBtn.style.display = ""; abortBtn.disabled = false; }
     statusEl.textContent = "Walking " + a.ipAddress + " " + oid + "…";
     document.getElementById("snmp-walk-results").innerHTML = "";
 
+    activeController = new AbortController();
+    var thisController = activeController;
+
     try {
-      var result = await api.assets.snmpWalk(a.id, { credentialId: credId, oid: oid, maxRows: maxRows });
+      var result = await api.assets.snmpWalk(a.id, { credentialId: credId, oid: oid, maxRows: maxRows }, thisController.signal);
       lastResult = result;
       statusEl.textContent = result.rows.length + " row(s) in " + result.durationMs + " ms" + (result.truncated ? " (truncated)" : "");
       _renderSnmpWalkRows(result);
       if (copyBtn) copyBtn.disabled = !result.rows.length;
     } catch (err) {
       lastResult = null;
-      statusEl.textContent = "";
-      showToast(err.message || "SNMP walk failed", "error");
-      document.getElementById("snmp-walk-results").innerHTML =
-        '<p class="empty-state" style="padding:0.75rem 0;color:var(--color-danger,#c0392b)">' +
-          escapeHtml(err.message || "SNMP walk failed") +
-        '</p>';
+      var aborted = err && (err.name === "AbortError" || thisController.signal.aborted);
+      if (aborted) {
+        statusEl.textContent = "Walk aborted.";
+        document.getElementById("snmp-walk-results").innerHTML =
+          '<p class="empty-state" style="padding:0.75rem 0">Walk aborted.</p>';
+      } else {
+        statusEl.textContent = "";
+        showToast(err.message || "SNMP walk failed", "error");
+        document.getElementById("snmp-walk-results").innerHTML =
+          '<p class="empty-state" style="padding:0.75rem 0;color:var(--color-danger,#c0392b)">' +
+            escapeHtml(err.message || "SNMP walk failed") +
+          '</p>';
+      }
     } finally {
+      if (activeController === thisController) activeController = null;
       walkBtn.disabled = false;
       walkBtn.textContent = "Walk";
+      if (abortBtn) { abortBtn.style.display = "none"; abortBtn.disabled = false; }
     }
   });
+
+  if (abortBtn) {
+    abortBtn.addEventListener("click", function () {
+      if (!activeController) return;
+      abortBtn.disabled = true;
+      statusEl.textContent = "Aborting…";
+      activeController.abort();
+    });
+  }
 
   if (copyBtn) {
     copyBtn.addEventListener("click", async function () {
