@@ -855,7 +855,7 @@ router.get("/:id/system-info", async (req, res, next) => {
     });
     if (!asset) throw new AppError(404, "Asset not found");
 
-    const [latestTelemetry, latestIfaceMeta, latestStorageMeta, latestTempMeta, latestIpsecMeta] = await Promise.all([
+    const [latestTelemetry, latestIfaceMeta, latestStorageMeta, latestTempMeta, latestIpsecMeta, lldpNeighbors] = await Promise.all([
       prisma.assetTelemetrySample.findFirst({
         where: { assetId: id },
         orderBy: { timestamp: "desc" },
@@ -879,6 +879,19 @@ router.get("/:id/system-info", async (req, res, next) => {
         where: { assetId: id },
         orderBy: { timestamp: "desc" },
         select: { timestamp: true },
+      }),
+      // LLDP neighbors are current-state (one row per neighbor) rather than
+      // a time-series, so we just return the entire set on every call. The
+      // matched-asset relation lets the UI link from a neighbor row directly
+      // to that asset's details modal.
+      prisma.assetLldpNeighbor.findMany({
+        where: { assetId: id },
+        orderBy: [{ localIfName: "asc" }, { systemName: "asc" }],
+        include: {
+          matchedAsset: {
+            select: { id: true, hostname: true, ipAddress: true, assetType: true },
+          },
+        },
       }),
     ]);
 
@@ -962,6 +975,29 @@ router.get("/:id/system-info", async (req, res, next) => {
         outgoingBytes:   bigIntToNumber(t.outgoingBytes),
         proxyIdCount:    t.proxyIdCount,
       })),
+      lldpNeighbors: lldpNeighbors.map((n) => ({
+        localIfName:        n.localIfName,
+        chassisIdSubtype:   n.chassisIdSubtype,
+        chassisId:          n.chassisId,
+        portIdSubtype:      n.portIdSubtype,
+        portId:             n.portId,
+        portDescription:    n.portDescription,
+        systemName:         n.systemName,
+        systemDescription:  n.systemDescription,
+        managementIp:       n.managementIp,
+        capabilities:       n.capabilities,
+        source:             n.source,
+        firstSeen:          n.firstSeen,
+        lastSeen:           n.lastSeen,
+        matchedAsset:       n.matchedAsset
+          ? {
+              id:        n.matchedAsset.id,
+              hostname:  n.matchedAsset.hostname,
+              ipAddress: n.matchedAsset.ipAddress,
+              assetType: n.matchedAsset.assetType,
+            }
+          : null,
+      })),
       monitoredInterfaces:   (asset.monitoredInterfaces   ?? []) as string[],
       monitoredStorage:      (asset.monitoredStorage      ?? []) as string[],
       monitoredIpsecTunnels: (asset.monitoredIpsecTunnels ?? []) as string[],
@@ -976,13 +1012,26 @@ router.get("/:id/interface-history", async (req, res, next) => {
     const ifName = req.query.ifName ? String(req.query.ifName) : null;
     if (!ifName) throw new AppError(400, "ifName query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const [samples, override] = await Promise.all([
+    const [samples, override, neighbors] = await Promise.all([
       prisma.assetInterfaceSample.findMany({
         where: { assetId: id, ifName, timestamp: { gte: since, lte: until } },
         orderBy: { timestamp: "asc" },
       }),
       prisma.assetInterfaceOverride.findUnique({
         where: { assetId_ifName: { assetId: id, ifName } },
+      }),
+      // LLDP neighbors on this exact local interface — usually 0 or 1 row,
+      // sometimes >1 on shared media or stacked switches reporting two
+      // chassis IDs. Returned with the matched-asset cross-link so the
+      // slide-over can surface a "Go to <hostname>" button.
+      prisma.assetLldpNeighbor.findMany({
+        where: { assetId: id, localIfName: ifName },
+        orderBy: { systemName: "asc" },
+        include: {
+          matchedAsset: {
+            select: { id: true, hostname: true, ipAddress: true, assetType: true },
+          },
+        },
       }),
     ]);
     // The slide-over header shows the alias label and operator comment from the
@@ -1014,6 +1063,28 @@ router.get("/:id/interface-history", async (req, res, next) => {
         outOctets:   bigIntToNumber(s.outOctets),
         inErrors:    bigIntToNumber(s.inErrors),
         outErrors:   bigIntToNumber(s.outErrors),
+      })),
+      lldpNeighbors: neighbors.map((n) => ({
+        chassisIdSubtype:  n.chassisIdSubtype,
+        chassisId:         n.chassisId,
+        portIdSubtype:     n.portIdSubtype,
+        portId:            n.portId,
+        portDescription:   n.portDescription,
+        systemName:        n.systemName,
+        systemDescription: n.systemDescription,
+        managementIp:      n.managementIp,
+        capabilities:      n.capabilities,
+        source:            n.source,
+        firstSeen:         n.firstSeen,
+        lastSeen:          n.lastSeen,
+        matchedAsset:      n.matchedAsset
+          ? {
+              id:        n.matchedAsset.id,
+              hostname:  n.matchedAsset.hostname,
+              ipAddress: n.matchedAsset.ipAddress,
+              assetType: n.matchedAsset.assetType,
+            }
+          : null,
       })),
     });
   } catch (err) { next(err); }

@@ -439,6 +439,22 @@
         data: { id: "e" + i, source: e.source, target: e.target, label: e.label || "" },
       });
     });
+    // LLDP-derived ghost nodes for non-Polaris neighbors. The dashed border
+    // and orange tint signal "observed via LLDP, not authoritatively managed";
+    // matched neighbors (a Polaris asset hit by chassis MAC / mgmt IP / sysName)
+    // are already in elements above and only get the dashed edge.
+    (data.lldpNodes || []).forEach(function (n) {
+      var label = n.hostname || n.managementIp || n.chassisId || "Unknown";
+      if (n.managementIp && n.hostname) label += "\n" + n.managementIp;
+      elements.push({
+        data: { id: n.id, label: label, role: "lldp" },
+      });
+    });
+    (data.lldpEdges || []).forEach(function (e, i) {
+      elements.push({
+        data: { id: "le" + i, source: e.source, target: e.target, label: e.label || "", isLldp: 1 },
+      });
+    });
 
     var theme = document.documentElement.getAttribute("data-theme") || "dark";
     var isDark = theme === "dark";
@@ -484,6 +500,20 @@
         // reachability — coloring them green/red would be misleading.
         { selector: 'node[role="fortiswitch"]', style: { "background-color": "#37474f" } },
         { selector: 'node[role="fortiap"]',     style: { "background-color": "#37474f", width: 36, height: 36 } },
+        // LLDP-discovered ghost neighbor (non-Polaris device, e.g. an upstream
+        // ISP router or a third-party access switch). Orange + dashed border
+        // signals "we know it's there because LLDP told us, but Polaris isn't
+        // managing it directly".
+        {
+          selector: 'node[role="lldp"]',
+          style: {
+            "background-color": "#7a4f1a",
+            "border-color": "#f59e0b",
+            "border-style": "dashed",
+            width: 36,
+            height: 36,
+          },
+        },
         {
           selector: "edge",
           style: {
@@ -499,6 +529,18 @@
             "text-background-opacity": 0.85,
             "text-background-padding": 2,
             "text-rotation": "autorotate",
+          },
+        },
+        // LLDP edges render dashed in the orange ghost-node tint so the
+        // operator can tell at a glance which links came from authoritative
+        // controller data (FortiLink, switch-controller MAC learning) vs
+        // observed LLDP advertisements.
+        {
+          selector: 'edge[isLldp = 1]',
+          style: {
+            "line-style": "dashed",
+            "line-color": "#f59e0b",
+            "target-arrow-color": "#f59e0b",
           },
         },
       ],
@@ -548,6 +590,27 @@
         parts.push(
           '<li><a href="/subnets.html#subnet=' + encodeURIComponent(n.id) + '">' + escapeHtml(n.cidr) + '</a>' +
           '<span class="meta">' + (n.vlan ? 'VLAN ' + n.vlan : (n.name ? escapeHtml(n.name) : '—')) + '</span></li>'
+        );
+      });
+      parts.push('</ul></div>');
+    }
+
+    // LLDP-discovered neighbors (matched + ghost). Listed alongside Switches /
+    // APs so the operator can see what the FortiGate / managed switches
+    // actually advertise on the wire — the dashed orange edges in the graph
+    // map back to entries here.
+    var lldpNodes = data.lldpNodes || [];
+    var lldpEdges = data.lldpEdges || [];
+    if (lldpNodes.length > 0 || lldpEdges.length > 0) {
+      parts.push('<div class="topology-section"><h5>LLDP Neighbors (' + lldpEdges.length + ')</h5><ul>');
+      lldpEdges.forEach(function (e) {
+        var label = e.targetLabel || "Unknown neighbor";
+        var titleHtml = e.targetIsAsset
+          ? '<a href="/assets.html#asset=' + encodeURIComponent(e.target) + '">' + escapeHtml(label) + '</a>'
+          : escapeHtml(label);
+        parts.push(
+          '<li><span>' + titleHtml + '</span>' +
+          '<span class="meta">' + escapeHtml(e.label || "") + '</span></li>'
         );
       });
       parts.push('</ul></div>');

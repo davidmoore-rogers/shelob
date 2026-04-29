@@ -747,10 +747,39 @@ export interface IpsecTunnelSample {
   proxyIdCount:    number | null;
 }
 
+/**
+ * One LLDP neighbor seen on a local interface. Replaces (per-asset) on each
+ * system-info pass that successfully queried LLDP. `localIfName` is the
+ * interface on *this* asset that saw the neighbor; the chassis/port fields
+ * describe the *remote* end. Capabilities is a list of tokens matching the
+ * LLDP-MIB / FortiOS naming ("bridge", "router", "wlan-access-point", …).
+ */
+export interface LldpNeighborSample {
+  localIfName:        string;
+  chassisIdSubtype?:  string | null;
+  chassisId?:         string | null;
+  portIdSubtype?:     string | null;
+  portId?:            string | null;
+  portDescription?:   string | null;
+  systemName?:        string | null;
+  systemDescription?: string | null;
+  managementIp?:      string | null;
+  capabilities?:      string[];
+}
+
 export interface SystemInfoSample {
   interfaces:    InterfaceSample[];
   storage:       StorageSample[];
   ipsecTunnels?: IpsecTunnelSample[];
+  /**
+   * LLDP neighbors observed during this scrape. `undefined` means the
+   * collector didn't try (unsupported transport / fast-cadence skip);
+   * `[]` means the device was queried but reported zero neighbors and the
+   * persistence layer should treat that as "wipe all stored neighbors".
+   */
+  lldpNeighbors?: LldpNeighborSample[];
+  /** Which transport produced lldpNeighbors. Stamped onto each persisted row for diagnostics. */
+  lldpSource?:    "fortios" | "snmp";
 }
 
 export interface CollectionResult<T> {
@@ -1250,7 +1279,82 @@ async function collectSystemInfoFortinet(
   const ipsecTunnels = opts.includeIpsec
     ? await collectIpsecTunnelsFortinet(fg).catch(() => [] as IpsecTunnelSample[])
     : undefined;
-  return { interfaces, storage: [], ipsecTunnels };
+  // LLDP is also best-effort. FortiOS 6.4+ exposes the per-interface neighbor
+  // list at /api/v2/monitor/system/interface/lldp-neighbors; older firmwares
+  // 404 it. A FortiGate without LLDP enabled on any interface returns an
+  // empty array — we still treat that as "queried successfully" so the
+  // persistence layer wipes any stale neighbors. A genuine failure (404,
+  // network error, no permissions) leaves `lldpNeighbors` undefined so the
+  // persistence layer leaves existing rows alone.
+  const lldpNeighbors = await collectLldpNeighborsFortinet(fg).catch(() => undefined);
+  return { interfaces, storage: [], ipsecTunnels, lldpNeighbors, lldpSource: "fortios" };
+}
+
+/**
+ * FortiOS exposes LLDP neighbors at /api/v2/monitor/system/interface/lldp-neighbors.
+ * The response shape is `{ results: [{ interface, chassis_id, port_id, ... }, …] }`.
+ * Field names vary across versions (some firmwares use `local_intf` / `local_intf_name`
+ * / `interface`; some use `port_desc` / `port_description`; capabilities show up
+ * either as a CSV string or an array). Be defensive about every field.
+ */
+async function collectLldpNeighborsFortinet(fg: FortiGateConfig): Promise<LldpNeighborSample[]> {
+  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface/lldp-neighbors", { query: { vdom: "root" } });
+  const arr = Array.isArray(res?.results) ? res.results : (Array.isArray(res) ? res : []);
+  const out: LldpNeighborSample[] = [];
+  for (const n of arr) {
+    if (!n || typeof n !== "object") continue;
+    const r = n as Record<string, unknown>;
+    const localIfName = pickFortiString(r["local_intf"], r["local_intf_name"], r["interface"], r["local_interface"]);
+    if (!localIfName) continue;
+    // Some FortiOS releases pack management addresses as an array, others as a
+    // comma-separated string. Pull the first IPv4 we can find.
+    let mgmt: string | null = null;
+    const mgmtRaw = r["management_addresses"] ?? r["management_address"] ?? r["mgmt_addr"];
+    if (Array.isArray(mgmtRaw)) {
+      for (const m of mgmtRaw) {
+        if (typeof m === "string" && m) { mgmt = m; break; }
+        if (m && typeof m === "object") {
+          const a = (m as any).address ?? (m as any).ip ?? (m as any).addr;
+          if (typeof a === "string" && a) { mgmt = a; break; }
+        }
+      }
+    } else if (typeof mgmtRaw === "string" && mgmtRaw) {
+      mgmt = mgmtRaw.split(",")[0]!.trim() || null;
+    }
+    out.push({
+      localIfName,
+      chassisIdSubtype:  pickFortiString(r["chassis_id_subtype"], r["chassis_subtype"]),
+      chassisId:         pickFortiString(r["chassis_id"]),
+      portIdSubtype:     pickFortiString(r["port_id_subtype"], r["port_subtype"]),
+      portId:            pickFortiString(r["port_id"]),
+      portDescription:   pickFortiString(r["port_description"], r["port_desc"]),
+      systemName:        pickFortiString(r["system_name"], r["sys_name"]),
+      systemDescription: pickFortiString(r["system_description"], r["sys_desc"]),
+      managementIp:      mgmt,
+      capabilities:      pickFortiCapabilities(r["enabled_capabilities"] ?? r["system_capabilities"]),
+    });
+  }
+  return out;
+}
+
+function pickFortiString(...vals: unknown[]): string | null {
+  for (const v of vals) {
+    if (typeof v === "string") {
+      const t = v.trim();
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+function pickFortiCapabilities(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x).trim().toLowerCase()).filter((s) => s.length > 0);
+  }
+  if (typeof raw === "string") {
+    return raw.split(/[,\s]+/).map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+  }
+  return [];
 }
 
 /**
@@ -1460,6 +1564,24 @@ const OID = {
   // DisplayString carrying a decimal value (e.g. "44.5").
   fgHwSensorEntName:  "1.3.6.1.4.1.12356.101.4.3.2.1.2",
   fgHwSensorEntValue: "1.3.6.1.4.1.12356.101.4.3.2.1.3",
+  // LLDP-MIB (RFC 4957). lldpLocPortTable maps localPortNum → ifName/alias so
+  // we can stitch lldpRemTable rows back to a real interface. lldpRemTable is
+  // indexed by (timeMark, localPortNum, remIndex); we only care about the
+  // last two halves, so callers strip the leading timeMark when keying. The
+  // management-addr table is indexed by (timeMark, localPortNum, remIndex,
+  // addrSubtype, addrLen, addr...) — same dance.
+  lldpLocPortIdSubtype:    "1.0.8802.1.1.2.1.3.7.1.2",
+  lldpLocPortId:           "1.0.8802.1.1.2.1.3.7.1.3",
+  lldpLocPortDesc:         "1.0.8802.1.1.2.1.3.7.1.4",
+  lldpRemChassisIdSubtype: "1.0.8802.1.1.2.1.4.1.1.4",
+  lldpRemChassisId:        "1.0.8802.1.1.2.1.4.1.1.5",
+  lldpRemPortIdSubtype:    "1.0.8802.1.1.2.1.4.1.1.6",
+  lldpRemPortId:           "1.0.8802.1.1.2.1.4.1.1.7",
+  lldpRemPortDesc:         "1.0.8802.1.1.2.1.4.1.1.8",
+  lldpRemSysName:          "1.0.8802.1.1.2.1.4.1.1.9",
+  lldpRemSysDesc:          "1.0.8802.1.1.2.1.4.1.1.10",
+  lldpRemSysCapEnabled:    "1.0.8802.1.1.2.1.4.1.1.12",
+  lldpRemManAddr:          "1.0.8802.1.1.2.1.4.2.1",
 };
 
 function buildSnmpSession(host: string, config: Record<string, unknown>): any {
@@ -2035,8 +2157,204 @@ async function collectSystemInfoSnmp(host: string, config: Record<string, unknow
       }
     } catch { /* fall through */ }
 
-    return { interfaces, storage };
+    // LLDP-MIB neighbors. Best-effort — devices without LLDP-MIB return empty
+    // walks (we treat that as "unsupported" so we don't wipe stored rows on
+    // every scrape). A device with LLDP enabled but zero current neighbors
+    // returns lldpLocPortTable rows but an empty lldpRemTable, and we
+    // correctly persist that as "queried, no neighbors" → wipe.
+    let lldpNeighbors: LldpNeighborSample[] | undefined;
+    try {
+      lldpNeighbors = await collectLldpNeighborsSnmp(session);
+    } catch { /* leave undefined; persist layer leaves stored rows alone */ }
+
+    return { interfaces, storage, lldpNeighbors, lldpSource: "snmp" };
   });
+}
+
+/**
+ * Walk LLDP-MIB and assemble one LldpNeighborSample per remote system seen.
+ * Returns `undefined` when the local-port table is empty (suggesting LLDP-MIB
+ * is unsupported); returns `[]` when the local table is populated but no
+ * remote neighbors are present (so the caller wipes stored rows). Mapping
+ * localPortNum → ifName comes from lldpLocPortTable: when the subtype is
+ * interfaceName/interfaceAlias we trust lldpLocPortId; otherwise we fall back
+ * to lldpLocPortDesc, which is always populated by spec-conformant agents.
+ */
+async function collectLldpNeighborsSnmp(session: any): Promise<LldpNeighborSample[] | undefined> {
+  const [
+    locSubtypes, locIds, locDescs,
+    chSubtypes, chIds, ptSubtypes, ptIds, ptDescs,
+    sysNames, sysDescs, capsEnabled, manAddrEnum,
+  ] = await Promise.all([
+    snmpWalk(session, OID.lldpLocPortIdSubtype).catch(() => new Map()),
+    snmpWalk(session, OID.lldpLocPortId).catch(() => new Map()),
+    snmpWalk(session, OID.lldpLocPortDesc).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemChassisIdSubtype).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemChassisId).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemPortIdSubtype).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemPortId).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemPortDesc).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemSysName).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemSysDesc).catch(() => new Map()),
+    snmpWalk(session, OID.lldpRemSysCapEnabled).catch(() => new Map()),
+    // Walking lldpRemManAddrIfSubtype just to enumerate the table indexes —
+    // the actual address is encoded in the index suffix, not the column value.
+    snmpWalk(session, OID.lldpRemManAddr + ".3").catch(() => new Map()),
+  ]);
+
+  // No local LLDP ports → device doesn't speak LLDP-MIB. Signal "leave rows
+  // alone" so we don't wipe stored neighbors on a transport that can't report.
+  if (locIds.size === 0 && locDescs.size === 0) return undefined;
+
+  // localPortNum → friendly label. When the subtype is interfaceName(5) or
+  // interfaceAlias(1), the id IS the ifName/alias and we want it. Otherwise
+  // use the description — which is what most operators see in CLI output.
+  const localPortLabel = new Map<string, string>();
+  const allLocalKeys = new Set<string>([...locIds.keys(), ...locDescs.keys()]);
+  for (const portNum of allLocalKeys) {
+    const subtype = snmpVbToNumber(locSubtypes.get(portNum));
+    const id      = parseLldpPortId(subtype, locIds.get(portNum));
+    const desc    = snmpVbToString(locDescs.get(portNum)).trim();
+    if ((subtype === 1 || subtype === 5) && id) {
+      localPortLabel.set(portNum, id);
+    } else if (desc) {
+      localPortLabel.set(portNum, desc);
+    } else if (id) {
+      localPortLabel.set(portNum, id);
+    } else {
+      localPortLabel.set(portNum, `port-${portNum}`);
+    }
+  }
+
+  // (localPortNum, remIndex) → management IP. Decode the index suffix:
+  // <timeMark>.<localPortNum>.<remIndex>.<addrSubtype>.<addrLen>.<addr-bytes…>
+  // addrSubtype 1 = IPv4 (4 bytes), 2 = IPv6 (16 bytes); ignore others.
+  const mgmtByKey = new Map<string, string>();
+  for (const suffix of manAddrEnum.keys()) {
+    const parts = String(suffix).split(".");
+    if (parts.length < 6) continue;
+    const localPortNum = parts[1]!;
+    const remIndex     = parts[2]!;
+    const addrSubtype  = parts[3]!;
+    const addrLen      = parseInt(parts[4]!, 10);
+    if (!Number.isFinite(addrLen)) continue;
+    const addrBytes = parts.slice(5, 5 + addrLen);
+    if (addrBytes.length !== addrLen) continue;
+    let addr: string | null = null;
+    if (addrSubtype === "1" && addrLen === 4) {
+      addr = addrBytes.join(".");
+    } else if (addrSubtype === "2" && addrLen === 16) {
+      const groups: string[] = [];
+      for (let i = 0; i < 16; i += 2) {
+        const hi = parseInt(addrBytes[i]!, 10);
+        const lo = parseInt(addrBytes[i + 1]!, 10);
+        groups.push(((hi << 8) | lo).toString(16));
+      }
+      addr = groups.join(":");
+    }
+    if (!addr) continue;
+    const key = `${localPortNum}|${remIndex}`;
+    if (!mgmtByKey.has(key)) mgmtByKey.set(key, addr);
+  }
+
+  // Enumerate remote neighbors via lldpRemChassisId — always present. The
+  // suffix here is `<timeMark>.<localPortNum>.<remIndex>`.
+  const out: LldpNeighborSample[] = [];
+  for (const [suffix, chRaw] of chIds.entries()) {
+    const parts = String(suffix).split(".");
+    if (parts.length < 3) continue;
+    const localPortNum = parts[1]!;
+    const remIndex     = parts[2]!;
+    const localIfName  = localPortLabel.get(localPortNum) || `port-${localPortNum}`;
+    const chSub  = snmpVbToNumber(chSubtypes.get(suffix));
+    const ptSub  = snmpVbToNumber(ptSubtypes.get(suffix));
+    out.push({
+      localIfName,
+      chassisIdSubtype:  lldpChassisSubtypeLabel(chSub),
+      chassisId:         parseLldpChassisId(chSub, chRaw),
+      portIdSubtype:     lldpPortSubtypeLabel(ptSub),
+      portId:            parseLldpPortId(ptSub, ptIds.get(suffix)),
+      portDescription:   snmpVbToString(ptDescs.get(suffix)).trim() || null,
+      systemName:        snmpVbToString(sysNames.get(suffix)).trim() || null,
+      systemDescription: snmpVbToString(sysDescs.get(suffix)).trim() || null,
+      managementIp:      mgmtByKey.get(`${localPortNum}|${remIndex}`) ?? null,
+      capabilities:      parseLldpCapabilities(capsEnabled.get(suffix)),
+    });
+  }
+  return out;
+}
+
+function parseLldpChassisId(subtype: number | null, raw: unknown): string | null {
+  if (raw == null) return null;
+  // macAddress(4) → format as colon-separated MAC when length matches.
+  if (subtype === 4) {
+    const mac = snmpMacFromBuffer(raw);
+    if (mac) return mac;
+  }
+  if (Buffer.isBuffer(raw)) {
+    const printable = raw.toString("utf8");
+    if (/^[\x20-\x7e]+$/.test(printable.trim())) return printable.trim();
+    return Array.from(raw).map((b) => b.toString(16).padStart(2, "0")).join(":");
+  }
+  const s = String(raw).trim();
+  return s || null;
+}
+
+function parseLldpPortId(subtype: number | null, raw: unknown): string | null {
+  if (raw == null) return null;
+  // macAddress(3) on lldpRemPortIdSubtype — same trick as chassis.
+  if (subtype === 3) {
+    const mac = snmpMacFromBuffer(raw);
+    if (mac) return mac;
+  }
+  if (Buffer.isBuffer(raw)) {
+    const printable = raw.toString("utf8");
+    if (/^[\x20-\x7e]+$/.test(printable.trim())) return printable.trim();
+    return Array.from(raw).map((b) => b.toString(16).padStart(2, "0")).join(":");
+  }
+  const s = String(raw).trim();
+  return s || null;
+}
+
+function lldpChassisSubtypeLabel(n: number | null): string | null {
+  switch (n) {
+    case 1: return "chassisComponent";
+    case 2: return "interfaceAlias";
+    case 3: return "portComponent";
+    case 4: return "macAddress";
+    case 5: return "networkAddress";
+    case 6: return "interfaceName";
+    case 7: return "local";
+    default: return null;
+  }
+}
+
+function lldpPortSubtypeLabel(n: number | null): string | null {
+  switch (n) {
+    case 1: return "interfaceAlias";
+    case 2: return "portComponent";
+    case 3: return "macAddress";
+    case 4: return "networkAddress";
+    case 5: return "interfaceName";
+    case 6: return "agentCircuitId";
+    case 7: return "local";
+    default: return null;
+  }
+}
+
+// LldpSystemCapabilitiesMap is a 16-bit OctetString; bit 0 (MSB of byte 0)
+// is `other`, bit 1 is `repeater`, etc. We only decode the eight defined
+// IEEE 802.1AB-2009 capabilities; the rest are reserved.
+function parseLldpCapabilities(raw: unknown): string[] {
+  const labels = ["other", "repeater", "bridge", "wlan-access-point", "router", "telephone", "docsis-cable-device", "station-only"];
+  const out: string[] = [];
+  if (Buffer.isBuffer(raw) && raw.length >= 1) {
+    const byte = raw[0]!;
+    for (let i = 0; i < 8; i++) {
+      if (byte & (1 << (7 - i))) out.push(labels[i]!);
+    }
+  }
+  return out;
 }
 
 function ifStatusLabel(n: number | null): string | null {
@@ -2162,8 +2480,144 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     if (associatedIps !== null) {
       await prisma.asset.update({ where: { id: assetId }, data: { associatedIps: associatedIps as any } });
     }
+    // LLDP neighbors. `undefined` = the collector didn't run / unsupported
+    // transport, so leave the existing rows alone. `[]` or a populated array
+    // = queried successfully → replace the asset's neighbor set.
+    if (Array.isArray(d.lldpNeighbors)) {
+      await persistLldpNeighbors(assetId, d.lldpNeighbors, now, d.lldpSource ?? "fortios");
+    }
   }
   await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
+}
+
+/**
+ * Replace the asset's LLDP neighbor rows with the latest scrape. Idempotent:
+ * existing rows that match (assetId, localIfName, chassisId, portId) are
+ * upserted in place so `firstSeen` survives across scrapes; rows in the table
+ * that aren't in this scrape are deleted.
+ *
+ * `matchedAssetId` is resolved here by joining each neighbor against the asset
+ * inventory by management IP, chassis MAC, and system name. The Device Map
+ * topology endpoint reads this back to draw real edges to non-Fortinet gear
+ * (LLDP catches what fortinetTopology can't see).
+ */
+async function persistLldpNeighbors(
+  assetId: string,
+  neighbors: LldpNeighborSample[],
+  now: Date,
+  defaultSource: "fortios" | "snmp" | string,
+): Promise<void> {
+  const matchIndex = await buildLldpAssetMatchIndex();
+  const matchedFor = (n: LldpNeighborSample): string | null => {
+    if (n.managementIp) {
+      const m = matchIndex.byIp.get(n.managementIp);
+      if (m && m !== assetId) return m;
+    }
+    if (n.chassisIdSubtype === "macAddress" && n.chassisId) {
+      const mac = n.chassisId.toUpperCase();
+      const m = matchIndex.byMac.get(mac);
+      if (m && m !== assetId) return m;
+    }
+    if (n.systemName) {
+      const m = matchIndex.byHostname.get(n.systemName.toLowerCase());
+      if (m && m !== assetId) return m;
+    }
+    return null;
+  };
+
+  // Existing rows for diffing. Keyed the same way the unique index is —
+  // (localIfName, chassisId ?? "", portId ?? "") to handle Postgres-distinct nulls.
+  const existing = await prisma.assetLldpNeighbor.findMany({ where: { assetId } });
+  const seen = new Set<string>();
+  const keyOf = (li: string, ci: string | null | undefined, pi: string | null | undefined) =>
+    `${li}${ci ?? ""}${pi ?? ""}`;
+  const existingByKey = new Map<string, typeof existing[number]>();
+  for (const e of existing) existingByKey.set(keyOf(e.localIfName, e.chassisId, e.portId), e);
+
+  for (const n of neighbors) {
+    const k = keyOf(n.localIfName, n.chassisId ?? null, n.portId ?? null);
+    seen.add(k);
+    const matched = matchedFor(n);
+    const data = {
+      localIfName:       n.localIfName,
+      chassisIdSubtype:  n.chassisIdSubtype ?? null,
+      chassisId:         n.chassisId ?? null,
+      portIdSubtype:     n.portIdSubtype ?? null,
+      portId:            n.portId ?? null,
+      portDescription:   n.portDescription ?? null,
+      systemName:        n.systemName ?? null,
+      systemDescription: n.systemDescription ?? null,
+      managementIp:      n.managementIp ?? null,
+      capabilities:      n.capabilities ?? [],
+      matchedAssetId:    matched,
+      source:            defaultSource,
+    };
+    const prior = existingByKey.get(k);
+    if (prior) {
+      await prisma.assetLldpNeighbor.update({
+        where: { id: prior.id },
+        data: { ...data, lastSeen: now },
+      });
+    } else {
+      await prisma.assetLldpNeighbor.create({
+        data: { ...data, assetId, firstSeen: now, lastSeen: now },
+      });
+    }
+  }
+
+  const toDelete = existing.filter((e) => !seen.has(keyOf(e.localIfName, e.chassisId, e.portId))).map((e) => e.id);
+  if (toDelete.length > 0) {
+    await prisma.assetLldpNeighbor.deleteMany({ where: { id: { in: toDelete } } });
+  }
+}
+
+/**
+ * Build a lookup table for asset-matching neighbors. One pass over the asset
+ * table at persist time is cheaper than per-neighbor queries; the table is
+ * kept in scope only for the duration of a single recordSystemInfoResult call.
+ *
+ * - byIp: ipAddress + every entry in associatedIps (manual + monitor-discovered)
+ * - byMac: macAddress (uppercased) + every entry in macAddresses
+ * - byHostname: hostname (lowercased) — first wins on duplicates
+ */
+async function buildLldpAssetMatchIndex(): Promise<{
+  byIp: Map<string, string>;
+  byMac: Map<string, string>;
+  byHostname: Map<string, string>;
+}> {
+  const rows = await prisma.asset.findMany({
+    select: { id: true, ipAddress: true, macAddress: true, macAddresses: true, associatedIps: true, hostname: true },
+  });
+  const byIp = new Map<string, string>();
+  const byMac = new Map<string, string>();
+  const byHostname = new Map<string, string>();
+  for (const a of rows) {
+    if (a.ipAddress && !byIp.has(a.ipAddress)) byIp.set(a.ipAddress, a.id);
+    if (Array.isArray(a.associatedIps)) {
+      for (const e of a.associatedIps as any[]) {
+        const ip = e?.ip;
+        if (typeof ip === "string" && ip && !byIp.has(ip)) byIp.set(ip, a.id);
+      }
+    }
+    if (a.macAddress) {
+      const mac = a.macAddress.toUpperCase();
+      if (!byMac.has(mac)) byMac.set(mac, a.id);
+    }
+    if (Array.isArray(a.macAddresses)) {
+      for (const e of a.macAddresses as any[]) {
+        const m = e?.mac;
+        if (typeof m === "string" && m) {
+          const mac = m.toUpperCase();
+          if (!byMac.has(mac)) byMac.set(mac, a.id);
+        }
+      }
+    }
+    if (a.hostname) {
+      const h = a.hostname.toLowerCase();
+      if (!byHostname.has(h)) byHostname.set(h, a.id);
+    }
+  }
+  return { byIp, byMac, byHostname };
 }
 
 /**
@@ -2518,8 +2972,13 @@ export async function pruneTelemetrySamples(): Promise<number> {
 }
 
 /**
- * Trim AssetInterfaceSample + AssetStorageSample + AssetIpsecTunnelSample rows
- * older than the system info retention window. Returns total rows removed.
+ * Trim AssetInterfaceSample + AssetStorageSample + AssetIpsecTunnelSample +
+ * AssetLldpNeighbor rows older than the system info retention window. Returns
+ * total rows removed. LLDP shares system-info retention because it's collected
+ * on the same cadence; the per-scrape full-replace already drops neighbors
+ * that have gone away, so this only catches rows for assets that have stopped
+ * scraping entirely (monitor disabled, asset unreachable, etc.). LLDP rows
+ * use `lastSeen` rather than `timestamp` so they're pruned by their own helper.
  */
 export async function pruneSystemInfoSamples(): Promise<number> {
   const settings = await getMonitorSettings();
@@ -2529,10 +2988,38 @@ export async function pruneSystemInfoSamples(): Promise<number> {
     fortiswitch: settings.fortiswitch.systemInfoRetentionDays,
     fortiap:     settings.fortiap.systemInfoRetentionDays,
   };
-  const [ifaces, storage, ipsec] = await Promise.all([
+  const [ifaces, storage, ipsec, lldp] = await Promise.all([
     pruneOneTable((where) => prisma.assetInterfaceSample.deleteMany({    where: where as any }), r, ids),
     pruneOneTable((where) => prisma.assetStorageSample.deleteMany({      where: where as any }), r, ids),
     pruneOneTable((where) => prisma.assetIpsecTunnelSample.deleteMany({  where: where as any }), r, ids),
+    pruneLldpNeighbors(r, ids),
   ]);
-  return ifaces + storage + ipsec;
+  return ifaces + storage + ipsec + lldp;
+}
+
+async function pruneLldpNeighbors(
+  retention: { default: number; fortiswitch: number; fortiap: number },
+  ids: { swIds: string[]; apIds: string[] },
+): Promise<number> {
+  const now = Date.now();
+  const cutoff = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000);
+  const [d, fs, fa] = await Promise.all([
+    prisma.assetLldpNeighbor.deleteMany({
+      where: {
+        lastSeen: { lt: cutoff(retention.default) },
+        assetId:  { notIn: [...ids.swIds, ...ids.apIds] },
+      },
+    }),
+    ids.swIds.length === 0
+      ? Promise.resolve({ count: 0 })
+      : prisma.assetLldpNeighbor.deleteMany({
+          where: { assetId: { in: ids.swIds }, lastSeen: { lt: cutoff(retention.fortiswitch) } },
+        }),
+    ids.apIds.length === 0
+      ? Promise.resolve({ count: 0 })
+      : prisma.assetLldpNeighbor.deleteMany({
+          where: { assetId: { in: ids.apIds }, lastSeen: { lt: cutoff(retention.fortiap) } },
+        }),
+  ]);
+  return d.count + fs.count + fa.count;
 }

@@ -307,6 +307,96 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       }
     }
 
+    // LLDP-derived neighbors. We pull neighbors for the FortiGate plus every
+    // switch in this site, then build:
+    //   - A "ghost" node for any neighbor that did NOT match a Polaris asset
+    //     (e.g. an upstream ISP router, a third-party access switch). These
+    //     are uniquely identified by chassisId; multiple ports onto the same
+    //     remote chassis collapse to a single node.
+    //   - One LLDP edge per neighbor row, source = local asset, target =
+    //     matched asset OR the ghost node. Edges are de-duped against the
+    //     fortinetTopology edges already added above so a FortiLink uplink
+    //     also confirmed by LLDP only renders once.
+    const siteAssetIds = [fg.id, ...switches.map((s) => s.id), ...aps.map((a) => a.id)];
+    const lldpRows = await prisma.assetLldpNeighbor.findMany({
+      where: { assetId: { in: siteAssetIds } },
+      include: {
+        matchedAsset: {
+          select: { id: true, hostname: true, ipAddress: true, assetType: true, model: true },
+        },
+      },
+    });
+
+    type LldpNode = {
+      id: string;
+      hostname: string | null;
+      managementIp: string | null;
+      chassisId: string | null;
+      systemDescription: string | null;
+      capabilities: string[];
+    };
+    const lldpNodes = new Map<string, LldpNode>();
+    const siblingIds = new Set(siteAssetIds);
+    const existingEdge = new Set(edges.map((e) => `${e.source}|${e.target}`));
+    type LldpEdge = {
+      source: string;
+      target: string;
+      label?: string;
+      via: "lldp";
+      /** Friendly label for the right-hand side panel — hostname / IP / chassis ID. */
+      targetLabel: string;
+      /** True when target is a Polaris asset (clickable); false for ghost neighbors. */
+      targetIsAsset: boolean;
+    };
+    const lldpEdges: LldpEdge[] = [];
+
+    for (const n of lldpRows) {
+      let targetId: string;
+      let targetLabel: string;
+      let targetIsAsset: boolean;
+      if (n.matchedAsset && n.matchedAsset.id) {
+        // Skip neighbors that resolve back to a sibling node — fortinetTopology
+        // has already drawn that edge from authoritative controller data, so a
+        // duplicate LLDP edge would just clutter the graph. We still emit the
+        // LLDP edge when the matched asset is OUTSIDE this site (e.g. a
+        // separate firewall) — that's the whole point.
+        if (siblingIds.has(n.matchedAsset.id)) continue;
+        targetId = n.matchedAsset.id;
+        targetLabel = n.matchedAsset.hostname || n.matchedAsset.ipAddress || n.matchedAsset.id;
+        targetIsAsset = true;
+      } else {
+        // Synthesize a stable ghost id from chassisId (preferred) or system
+        // name. This collapses multi-link aggregates to one node so the graph
+        // stays readable.
+        const key = n.chassisId || n.systemName || `${n.assetId}|${n.localIfName}|${n.portId ?? ""}`;
+        targetId = `lldp:${key}`;
+        if (!lldpNodes.has(targetId)) {
+          lldpNodes.set(targetId, {
+            id: targetId,
+            hostname: n.systemName,
+            managementIp: n.managementIp,
+            chassisId: n.chassisId,
+            systemDescription: n.systemDescription,
+            capabilities: n.capabilities,
+          });
+        }
+        targetLabel = n.systemName || n.managementIp || n.chassisId || "Unknown neighbor";
+        targetIsAsset = false;
+      }
+      const key = `${n.assetId}|${targetId}`;
+      const reverseKey = `${targetId}|${n.assetId}`;
+      if (existingEdge.has(key) || existingEdge.has(reverseKey)) continue;
+      existingEdge.add(key);
+      lldpEdges.push({
+        source: n.assetId,
+        target: targetId,
+        label:  n.localIfName + (n.portId ? ` ↔ ${n.portId}` : ""),
+        via:    "lldp",
+        targetLabel,
+        targetIsAsset,
+      });
+    }
+
     res.json({
       fortigate: {
         id: fg.id,
@@ -327,6 +417,11 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       aps,
       subnets,
       edges,
+      // LLDP additions: rendered separately by the topology modal so the
+      // styling can distinguish authoritative fortinetTopology edges from
+      // observed LLDP edges. `lldpNodes` is the array form of the Map above.
+      lldpNodes: Array.from(lldpNodes.values()),
+      lldpEdges,
     });
   } catch (err) {
     next(err);
