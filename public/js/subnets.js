@@ -441,7 +441,8 @@ function _saveAllocAnchor(prefix) {
   try { localStorage.setItem(key, String(prefix)); } catch (_) {}
 }
 
-async function openAllocateModal() {
+async function openAllocateModal(initialState) {
+  initialState = initialState || null;
   try {
     var loaded = await Promise.all([api.allocationTemplates.list(), _ensureTagCache()]);
     _allocTemplates = Array.isArray(loaded[0]) ? loaded[0] : [];
@@ -449,9 +450,12 @@ async function openAllocateModal() {
     _allocTemplates = [];
     showToast("Could not load templates: " + err.message, "error");
   }
-  _allocSelectedTemplateId = "";
+  _allocSelectedTemplateId = (initialState && initialState.selectedTemplateId) || "";
 
   var canEditTemplates = canManageNetworks();
+  var initialAnchor = (initialState && Number.isInteger(initialState.anchorPrefix)) ? initialState.anchorPrefix : _loadAllocAnchor();
+  var initialSite = (initialState && initialState.site) || "";
+  var initialTags = (initialState && Array.isArray(initialState.tags)) ? initialState.tags : [];
   var body =
     '<div class="form-group"><label>Block</label>' + blockSelectHTML("f-blockId", true) + '<p class="hint">Required to Allocate' + (canEditTemplates ? '; not required to save a template' : '') + '.</p></div>' +
     '<div class="form-group">' +
@@ -463,8 +467,8 @@ async function openAllocateModal() {
       '<p class="hint">' + (canEditTemplates ? 'Pick a saved template to pre-fill the rows below, or build one from scratch.' : 'Pick a saved template to pre-fill the rows below.') + '</p>' +
     '</div>' +
     '<div class="alloc-two-col">' +
-      '<div class="form-group"><label>Site Name</label><input type="text" id="f-site" placeholder="e.g. Jefferson"><p class="hint">Required to Allocate; prepended to each row name (e.g. <code>Jefferson_Hardware</code>). Not required to save a template.</p></div>' +
-      '<div class="form-group"><label>Anchor Prefix</label><input type="number" id="f-anchor" min="8" max="32" value="' + _loadAllocAnchor() + '"><p class="hint">Minimum alignment for the group. Defaults to /24 and is remembered for you. If the template needs more space, a larger anchor is used automatically.</p></div>' +
+      '<div class="form-group"><label>Site Name</label><input type="text" id="f-site" placeholder="e.g. Jefferson" value="' + escapeHtml(initialSite) + '"><p class="hint">Required to Allocate; prepended to each row name (e.g. <code>Jefferson_Hardware</code>). Not required to save a template.</p></div>' +
+      '<div class="form-group"><label>Anchor Prefix</label><input type="number" id="f-anchor" min="8" max="32" value="' + initialAnchor + '"><p class="hint">Minimum alignment for the group. Defaults to /24 and is remembered for you. If the template needs more space, a larger anchor is used automatically.</p></div>' +
     '</div>' +
     '<div class="form-group">' +
       '<label>Subnets</label>' +
@@ -477,7 +481,7 @@ async function openAllocateModal() {
       '<p class="hint">Skip rows reserve address space (aligned to their prefix) without creating a subnet, so you can leave gaps between allocations.</p>' +
       '<div id="f-footprint" class="alloc-footprint" style="display:none"></div>' +
     '</div>' +
-    tagFieldHTML([]);
+    tagFieldHTML(initialTags);
 
   var footer =
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
@@ -487,8 +491,19 @@ async function openAllocateModal() {
   openModal("Auto-Allocate Next Networks", body, footer, { wide: true });
   wireTagPicker();
 
+  if (initialState && initialState.blockId) {
+    var blockEl = document.getElementById("f-blockId");
+    if (blockEl) blockEl.value = initialState.blockId;
+  }
+
   _renderAllocTemplateOptions();
-  _addAllocEntryRow(); // start with one empty row
+
+  var initialEntries = (initialState && Array.isArray(initialState.entries)) ? initialState.entries : null;
+  if (initialEntries && initialEntries.length > 0) {
+    initialEntries.forEach(function (entry) { _addAllocEntryRow(entry); });
+  } else {
+    _addAllocEntryRow(); // start with one empty row
+  }
   _refreshAllocHeaderBadge();
   _scheduleAllocFootprintUpdate();
 
@@ -735,12 +750,21 @@ async function _onAllocSaveTemplate() {
   catch (err) { showToast(err.message, "error"); return; }
   if (entries.length === 0) { showToast("Add at least one subnet row before saving", "error"); return; }
 
-  // Capture anchor BEFORE any await — _promptSaveTemplateChoice / _promptText
-  // open their own modals which wipe the auto-allocate modal's DOM, so by the
-  // time we'd read f-anchor afterwards the input is gone and anchorPrefix
-  // silently becomes undefined (the "anchor not saved into template" bug).
+  // Capture full form state BEFORE any await — _promptSaveTemplateChoice and
+  // _promptText each open their own modals that replace the auto-allocate
+  // modal's DOM, so by the time we'd read these inputs afterwards they're
+  // gone. We use this state both to feed the API call (anchorPrefix) and to
+  // restore the auto-allocate modal once the save flow ends.
   var anchorRaw = parseInt(document.getElementById("f-anchor")?.value, 10);
   var anchorPrefix = (Number.isInteger(anchorRaw) && anchorRaw >= 8 && anchorRaw <= 32) ? anchorRaw : undefined;
+  var capturedState = {
+    blockId: document.getElementById("f-blockId")?.value || "",
+    site: document.getElementById("f-site")?.value || "",
+    anchorPrefix: anchorPrefix,
+    entries: entries,
+    tags: getTagFieldValue(),
+    selectedTemplateId: _allocSelectedTemplateId || "",
+  };
 
   var loaded = _allocSelectedTemplateId
     ? _allocTemplates.find(function (t) { return t.id === _allocSelectedTemplateId; })
@@ -749,7 +773,7 @@ async function _onAllocSaveTemplate() {
   var choice = "new";
   if (loaded) {
     choice = await _promptSaveTemplateChoice(loaded.name);
-    if (!choice) return;
+    if (!choice) { await openAllocateModal(capturedState); return; }
   }
 
   try {
@@ -757,6 +781,7 @@ async function _onAllocSaveTemplate() {
       var updated = await api.allocationTemplates.update(loaded.id, { name: loaded.name, entries: entries, anchorPrefix: anchorPrefix });
       var idx = _allocTemplates.findIndex(function (t) { return t.id === loaded.id; });
       if (idx >= 0) _allocTemplates[idx] = updated;
+      capturedState.selectedTemplateId = updated.id;
       showToast('Template "' + updated.name + '" updated');
     } else {
       var name = await _promptText(
@@ -764,15 +789,16 @@ async function _onAllocSaveTemplate() {
         "Give this template a name:",
         loaded ? loaded.name + " (copy)" : ""
       );
-      if (!name) return;
+      if (!name) { await openAllocateModal(capturedState); return; }
       var created = await api.allocationTemplates.create({ name: name, entries: entries, anchorPrefix: anchorPrefix });
       _allocTemplates.push(created);
-      _allocSelectedTemplateId = created.id;
+      capturedState.selectedTemplateId = created.id;
       showToast('Template "' + created.name + '" saved');
     }
-    _renderAllocTemplateOptions();
+    await openAllocateModal(capturedState);
   } catch (err) {
     showToast(err.message, "error");
+    await openAllocateModal(capturedState);
   }
 }
 
@@ -783,7 +809,7 @@ function _promptSaveTemplateChoice(existingName) {
     var footer =
       '<button class="btn btn-secondary" id="tpl-choice-cancel">Cancel</button>' +
       '<button class="btn btn-secondary" id="tpl-choice-new">Save As New</button>' +
-      '<button class="btn btn-primary" id="tpl-choice-update">Update Existing</button>';
+      '<button class="btn btn-primary" id="tpl-choice-update">Overwrite</button>';
     openModal("Save Template", body, footer);
     document.getElementById("tpl-choice-cancel").onclick = function () { closeModal(); resolve(null); };
     document.getElementById("tpl-choice-new").onclick = function () { closeModal(); resolve("new"); };
