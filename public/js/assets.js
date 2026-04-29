@@ -1555,6 +1555,7 @@ function _renderInterfacesTable(container, si, asset) {
   if (!container) return;
   var rows = (si && si.interfaces) || [];
   var tunnelsAll = (si && si.ipsecTunnels) || [];
+  var lldpAll = (si && si.lldpNeighbors) || [];
   if (rows.length === 0 && tunnelsAll.length === 0) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
@@ -1562,7 +1563,16 @@ function _renderInterfacesTable(container, si, asset) {
   var monitored        = new Set(((si && si.monitoredInterfaces)   || (asset && asset.monitoredInterfaces)   || []));
   var monitoredTunnels = new Set(((si && si.monitoredIpsecTunnels) || (asset && asset.monitoredIpsecTunnels) || []));
   var canEdit = canManageAssets();
-  var COLS = 9;
+  var COLS = 10;
+  // Group LLDP neighbors by local interface so the row builder can stamp the
+  // first neighbor's label inline. Most ports only ever see one neighbor; a
+  // "+N" badge appears when more are present and the slide-over enumerates them.
+  var lldpByIf = {};
+  lldpAll.forEach(function (n) {
+    if (!n || !n.localIfName) return;
+    if (!lldpByIf[n.localIfName]) lldpByIf[n.localIfName] = [];
+    lldpByIf[n.localIfName].push(n);
+  });
 
   // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -1635,6 +1645,7 @@ function _renderInterfacesTable(container, si, asset) {
       ? ((iface.inErrors || 0) + " / " + (iface.outErrors || 0))
       : "0 / 0";
     var childAttr = opts.isChild ? ' class="iface-child" data-parent="' + escapeHtml(opts.parentName) + '"' : "";
+    var neighborCell = '<td>' + _lldpNeighborInlineCell(lldpByIf[iface.ifName] || []) + '</td>';
 
     return "<tr" + childAttr + ">" +
       '<td style="text-align:center;width:1%">' + checkbox + "</td>" +
@@ -1646,6 +1657,7 @@ function _renderInterfacesTable(container, si, asset) {
       "<td>" + (iface.inOctets  != null ? _fmtBytes(iface.inOctets)  : "—") + "</td>" +
       "<td>" + (iface.outOctets != null ? _fmtBytes(iface.outOctets) : "—") + "</td>" +
       '<td title="In errors / Out errors (cumulative)">' + errs + "</td>" +
+      neighborCell +
     "</tr>";
   }
 
@@ -1701,6 +1713,7 @@ function _renderInterfacesTable(container, si, asset) {
       '<td class="mono">—</td>' +
       "<td>" + (tn.incomingBytes != null ? _fmtBytes(tn.incomingBytes) : "—") + "</td>" +
       "<td>" + (tn.outgoingBytes != null ? _fmtBytes(tn.outgoingBytes) : "—") + "</td>" +
+      "<td>—</td>" +
       "<td>—</td>" +
     "</tr>";
   }
@@ -1810,6 +1823,7 @@ function _renderInterfacesTable(container, si, asset) {
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th title="Pin this interface for fast-cadence polling">Poll 1m</th>' +
       '<th>Interface</th><th>Status</th><th>Speed</th><th>IP</th><th>MAC</th><th>In</th><th>Out</th><th>Errors (in/out)</th>' +
+      '<th title="LLDP neighbor seen on this interface">Neighbor</th>' +
     '</tr></thead><tbody>' + html + "</tbody></table></div>";
 
   // Expand / collapse aggregate and physical-with-children rows
@@ -1889,6 +1903,39 @@ function _renderInterfacesTable(container, si, asset) {
       openIpsecTunnelDetailPanel(asset, link.getAttribute("data-name"));
     });
   });
+
+  // Neighbor link click — open the matched asset's view modal so the operator
+  // can pivot from one device to its LLDP peer in one click.
+  container.querySelectorAll(".asset-lldp-link").forEach(function (link) {
+    link.addEventListener("click", function (e) {
+      e.preventDefault();
+      var id = link.getAttribute("data-asset-id");
+      if (id) openViewModal(id);
+    });
+  });
+}
+
+// Render the inline "Neighbor" cell for the System tab interface table. Shows
+// the first neighbor's system name (falling back to chassisId / managementIp
+// when LLDP didn't supply one), plus a "+N" badge when multiple neighbors
+// share the local port. Returns "—" when no neighbor is on this interface.
+function _lldpNeighborInlineCell(neighbors) {
+  if (!neighbors || neighbors.length === 0) return "—";
+  var first = neighbors[0];
+  var label = (first.systemName && String(first.systemName).trim())
+    || first.chassisId
+    || first.managementIp
+    || "neighbor";
+  var port = first.portId || first.portDescription || "";
+  var labelHtml = first.matchedAsset && first.matchedAsset.id
+    ? '<a href="#" class="asset-lldp-link" data-asset-id="' + escapeHtml(first.matchedAsset.id) +
+      '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(label) + '</a>'
+    : escapeHtml(label);
+  var portStr = port ? ' <span style="opacity:0.7" class="mono">/ ' + escapeHtml(port) + '</span>' : "";
+  var more = neighbors.length > 1
+    ? ' <span style="font-size:0.7rem;padding:1px 5px;border-radius:3px;background:#6b728018;color:#9ca3af;border:1px solid #6b728030">+' + (neighbors.length - 1) + '</span>'
+    : "";
+  return labelHtml + portStr + more;
 }
 
 function _renderStorageTable(container, si, asset) {
@@ -3350,6 +3397,7 @@ async function openInterfaceDetailPanel(asset, ifName) {
             '</div>'
           : '') +
       '</div>' +
+      '<div id="iface-lldp-block" style="margin-bottom:0.75rem"></div>' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
         '<h4 style="margin:0">Throughput &amp; errors</h4>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
@@ -3409,6 +3457,7 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
       titleEl.textContent = "Interface — " + (data.alias && data.alias.trim() ? data.alias.trim() + " (" + ifName + ")" : ifName);
     }
     _populateInterfaceCommentEditor(assetId, ifName, data, { silent: silent });
+    _renderIfaceLldpBlock(data.lldpNeighbors || []);
     var ifaceOpts = { since: data.since, until: data.until, subject: ifName };
     _renderIfaceThroughputChart(tputEl, derived, ifaceOpts);
     _renderIfaceErrorChart(errEl, derived, ifaceOpts);
@@ -3609,6 +3658,64 @@ function _ifaceStatsLabel(rawSamples, derived) {
     " · out avg " + _fmtBitsPerSec(outN ? outSum / outN : 0) +
     " · out peak " + _fmtBitsPerSec(outMax) +
     " · errors " + errIn + " in / " + errOut + " out";
+}
+
+// Render the LLDP neighbor card inside the interface slide-over. Empty when
+// the interface has no neighbors. When the neighbor's chassis/management info
+// resolves to an existing Polaris asset, the system-name link opens that
+// asset's view modal so the operator can pivot from one device to the next.
+function _renderIfaceLldpBlock(neighbors) {
+  var container = document.getElementById("iface-lldp-block");
+  if (!container) return;
+  if (!neighbors || neighbors.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+  var html =
+    '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.25rem">' +
+      '<label style="font-size:0.8rem;font-weight:600;color:var(--color-text-secondary)">LLDP Neighbor' + (neighbors.length > 1 ? "s" : "") + '</label>' +
+      '<span style="font-size:0.7rem;color:var(--color-text-secondary)">' +
+        (neighbors[0] && neighbors[0].source ? neighbors[0].source.toUpperCase() : "") +
+      '</span>' +
+    '</div>';
+  html += '<div style="display:flex;flex-direction:column;gap:0.4rem">';
+  neighbors.forEach(function (n) {
+    var label = n.systemName || n.chassisId || n.managementIp || "Unknown neighbor";
+    var titleHtml = n.matchedAsset && n.matchedAsset.id
+      ? '<a href="#" class="iface-lldp-asset-link" data-asset-id="' + escapeHtml(n.matchedAsset.id) + '" style="color:var(--color-accent);text-decoration:none;font-weight:600">' + escapeHtml(label) + '</a>'
+      : '<span style="font-weight:600">' + escapeHtml(label) + '</span>';
+    var rows = [];
+    if (n.portId)               rows.push(["Remote port",     escapeHtml(n.portId) + (n.portDescription ? ' <span style="opacity:0.7">— ' + escapeHtml(n.portDescription) + '</span>' : "")]);
+    else if (n.portDescription) rows.push(["Remote port",     escapeHtml(n.portDescription)]);
+    if (n.chassisId)            rows.push(["Chassis ID",      '<span class="mono">' + escapeHtml(n.chassisId) + '</span>' + (n.chassisIdSubtype ? ' <span style="opacity:0.7">(' + escapeHtml(n.chassisIdSubtype) + ')</span>' : "")]);
+    if (n.managementIp)         rows.push(["Management IP",   '<span class="mono">' + escapeHtml(n.managementIp) + '</span>']);
+    if (n.capabilities && n.capabilities.length > 0) {
+      rows.push(["Capabilities", n.capabilities.map(function (c) {
+        return '<span style="font-size:0.7rem;padding:1px 5px;border-radius:3px;background:#3b82f618;color:#3b82f6;border:1px solid #3b82f630;margin-right:3px">' + escapeHtml(c) + '</span>';
+      }).join("")]);
+    }
+    if (n.systemDescription)    rows.push(["System description", '<span style="font-size:0.8rem">' + escapeHtml(n.systemDescription) + '</span>']);
+    var rowHtml = rows.map(function (r) {
+      return '<div style="display:flex;gap:0.5rem;font-size:0.8rem"><div style="width:140px;color:var(--color-text-secondary);flex-shrink:0">' + r[0] + '</div><div style="flex:1;min-width:0;word-break:break-word">' + r[1] + '</div></div>';
+    }).join("");
+    var matchHint = n.matchedAsset
+      ? ''
+      : ' <span style="font-size:0.7rem;padding:1px 5px;border-radius:3px;background:#6b728018;color:#9ca3af;border:1px solid #6b728030;margin-left:6px" title="No Polaris asset matched this neighbor by management IP, chassis MAC, or hostname">unmatched</span>';
+    html +=
+      '<div style="background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:0.5rem 0.6rem">' +
+        '<div style="margin-bottom:0.4rem">' + titleHtml + matchHint + '</div>' +
+        rowHtml +
+      '</div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+  container.querySelectorAll(".iface-lldp-asset-link").forEach(function (link) {
+    link.addEventListener("click", function (e) {
+      e.preventDefault();
+      var id = link.getAttribute("data-asset-id");
+      if (id) openViewModal(id);
+    });
+  });
 }
 
 // Combined input + output throughput on a single chart. Two color-coded lines
