@@ -243,6 +243,63 @@ function _intWireModalTabs(prefix) {
   });
 }
 
+// Reservation Push tab body. Renders the master toggle plus mode-aware
+// guidance: when useProxy is on the reservation lands on the FortiGate via
+// FMG's REST proxy in real time; when it's off the reservation goes direct
+// to the FortiGate's REST API using fortigateApiUser/fortigateApiToken on
+// the Settings tab. Either way, every Polaris reservation create on a
+// subnet discovered by this integration must succeed and verify on the
+// device — failures abort the create.
+//
+// `pushReservations` is the current toggle value; `useProxy` is the current
+// transport setting on the General tab (we read it at render time only).
+function reservationPushFormHTML(pushReservations, useProxy) {
+  var checked = pushReservations === true ? "checked" : "";
+  var modeLabel = (useProxy === false)
+    ? "Direct to each FortiGate"
+    : "Proxy through FortiManager to each FortiGate";
+  var modeBody = (useProxy === false)
+    ? "Reservations are written to each FortiGate's REST API using the per-device API token configured on the Settings tab. FortiManager is bypassed entirely. Each reservation lands on the running config in real time."
+    : "Reservations are written through FortiManager's <code>/sys/proxy/json</code> endpoint, which forwards the call to the target FortiGate using FortiManager's stored device credentials. Each reservation lands on the running config in real time; FortiManager will see the change on its next config sync.";
+  return '<div class="form-section">' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+      '<input type="checkbox" id="f-pushReservations" ' + checked + ' style="width:auto">' +
+      '<label for="f-pushReservations" style="margin:0;font-weight:500">Push manual IP reservations from Polaris back to FortiGate</label>' +
+    '</div>' +
+    '<p class="hint" style="margin-bottom:1rem">When checked, every manual reservation created on a subnet discovered by this integration is written to the FortiGate at create time. The Polaris reservation only commits if the device write succeeds and the entry verifies on read-back; any failure aborts the create.</p>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Push transport (current setting)</p>' +
+    '<p style="margin:0 0 0.4rem 0;font-weight:500">' + escapeHtml(modeLabel) + '</p>' +
+    '<p class="hint" style="margin-bottom:1rem">' + modeBody + '</p>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Required FortiManager admin profile changes</p>' +
+    '<ul style="margin:0 0 0.5rem 1.2rem;padding:0;font-size:0.85rem">' +
+      '<li><strong>Device Manager</strong> &rarr; Read-Write</li>' +
+      '<li style="margin-left:1.2rem"><strong>Manage Device Configurations</strong> &rarr; Read-Write &nbsp;<span style="color:var(--color-text-tertiary)">&larr; the actual gate</span></li>' +
+      '<li>All other Device Manager sub-items &mdash; leave at Read-Only or None</li>' +
+      '<li><strong>Policy &amp; Objects</strong> &mdash; leave at Read-Only or None</li>' +
+      '<li style="margin-left:1.2rem"><strong>Install Policy Package or Device Configuration</strong> &rarr; None &nbsp;<span style="color:var(--color-text-tertiary)">&larr; Polaris never triggers installs</span></li>' +
+    '</ul>' +
+    '<div class="form-group" style="background:var(--color-warning-bg, rgba(255,193,7,0.08));border:1px solid var(--color-warning, #ffc107);border-radius:4px;padding:0.6rem 0.8rem;margin-top:0.6rem">' +
+      '<p style="margin:0 0 0.4rem 0;font-weight:500;color:var(--color-warning, #ffc107)">&#9888; Blast radius</p>' +
+      '<p class="hint" style="margin:0">FortiManager admin profiles do not have a per-object permission for DHCP reservations. <strong>Manage Device Configurations</strong> grants write access to every CMDB tree on every FortiGate in this ADOM. A compromised Polaris API token could in principle modify other device-level config &mdash; interfaces, routing, other DHCP scopes &mdash; not just the reservations Polaris pushes. Treat the API token as a privileged credential and rotate on the same cadence as your other admin secrets.</p>' +
+    '</div>' +
+    '<div class="form-group" style="background:var(--color-info-bg, rgba(33,150,243,0.06));border:1px solid var(--color-info, #2196f3);border-radius:4px;padding:0.6rem 0.8rem;margin-top:0.6rem">' +
+      '<p style="margin:0 0 0.4rem 0;font-weight:500;color:var(--color-info, #2196f3)">&#128161; Tighter scope alternative</p>' +
+      '<p class="hint" style="margin:0">For tighter scope, switch to direct mode (uncheck <em>Query each FortiGate directly (bypass FortiManager proxy)</em> on the Settings tab) and configure a per-FortiGate REST API admin with <strong>Network &rarr; Custom &rarr; Configuration</strong> set to Read/Write. This scopes write access to one FortiGate\'s network-configuration bucket instead of every CMDB tree on every device in the ADOM.</p>' +
+    '</div>' +
+  '</div>';
+}
+
+// Read the toggle's current value out of the Reservation Push tab. Returns
+// undefined when the tab didn't render (non-FMG integration types) so the
+// caller can leave the existing config alone.
+function _readPushReservationsToggle() {
+  var el = document.getElementById("f-pushReservations");
+  if (!el) return undefined;
+  return !!el.checked;
+}
+
 // Per-integration monitoring transport block rendered at the top of the
 // FortiGates subtab on the Monitoring tab. Renders an SNMP credential picker
 // plus four checkboxes that decide which streams (response-time, telemetry,
@@ -1022,10 +1079,16 @@ async function openCreateModal(type) {
     var creds = [];
     try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
     try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
-    body = _intRenderTabbedBody("intg-edit", [
+    var addTabs = [
       { key: "general",    label: "General",    html: _formHTMLForType(type, {}) },
       { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: null }) },
-    ]);
+    ];
+    // FMG only: third tab for the Reservation Push toggle. Defaults to off.
+    // useProxy on a fresh integration defaults to true (the FMG proxy path).
+    if (isFmg) {
+      addTabs.push({ key: "push", label: "Reservation Push", html: reservationPushFormHTML(false, true) });
+    }
+    body = _intRenderTabbedBody("intg-edit", addTabs);
   } else {
     body = _formHTMLForType(type, {});
   }
@@ -1091,6 +1154,10 @@ async function openCreateModal(type) {
         if (fgBlockNew) createConfig.fortigateMonitor   = fgBlockNew;
         if (swBlockNew) createConfig.fortiswitchMonitor = swBlockNew;
         if (apBlockNew) createConfig.fortiapMonitor     = apBlockNew;
+      }
+      if (isFmg) {
+        var pushToggleNew = _readPushReservationsToggle();
+        if (pushToggleNew !== undefined) createConfig.pushReservations = pushToggleNew;
       }
       var input = {
         type: type,
@@ -1270,7 +1337,7 @@ async function openEditModal(id) {
       var creds = [];
       try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
       try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
-      body = _intRenderTabbedBody("intg-edit", [
+      var editTabs = [
         { key: "general",    label: "General",    html: body },
         { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, {
           snmpCredentials: creds,
@@ -1285,7 +1352,17 @@ async function openEditModal(id) {
           fortiswitchMonitor: config.fortiswitchMonitor || null,
           fortiapMonitor:     config.fortiapMonitor     || null,
         }) },
-      ]);
+      ];
+      // FMG only: third tab for the Reservation Push toggle. The body uses
+      // the integration's current useProxy setting to label the active mode.
+      if (intg.type === "fortimanager") {
+        editTabs.push({
+          key: "push",
+          label: "Reservation Push",
+          html: reservationPushFormHTML(config.pushReservations === true, config.useProxy !== false),
+        });
+      }
+      body = _intRenderTabbedBody("intg-edit", editTabs);
     }
 
     var footer = '<button class="btn btn-secondary" id="btn-test-existing">Test Connection</button>' +
@@ -1368,6 +1445,12 @@ async function openEditModal(id) {
           if (fgBlock) editConfig.fortigateMonitor   = fgBlock;
           if (swBlock) editConfig.fortiswitchMonitor = swBlock;
           if (apBlock) editConfig.fortiapMonitor     = apBlock;
+          // FMG-only push toggle. Reader returns undefined when the tab
+          // didn't render (FortiGate-type integration); leave unchanged.
+          if (intg.type === "fortimanager") {
+            var pushToggle = _readPushReservationsToggle();
+            if (pushToggle !== undefined) editConfig.pushReservations = pushToggle;
+          }
         }
         var input = {
           name: val("f-name"),
