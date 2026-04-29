@@ -2433,6 +2433,223 @@ function _addChartScreenshotButton(container, label, axisOpts) {
   container.appendChild(btn);
 }
 
+// Rasterize the SVG inside `container` to a fully-loaded HTMLImageElement at
+// native size. Mirrors the SVG-prep logic in _captureChartAsPng (strips hit
+// targets, substitutes resolved CSS-variable colors) but stops short of
+// drawing to canvas — the caller composites multiple images together.
+// Calls back with `{ img, width, height, url }` (caller revokes `url`) or null.
+function _rasterizeChartSvgToImage(container, callback) {
+  var svgEl = null;
+  if (container && container.querySelectorAll) {
+    var all = container.querySelectorAll("svg");
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i].closest(".chart-screenshot-btn")) { svgEl = all[i]; break; }
+    }
+  }
+  if (!svgEl) { callback(null); return; }
+  var rect = svgEl.getBoundingClientRect();
+  var width = Math.ceil(rect.width);
+  var height = Math.ceil(rect.height);
+  if (!width || !height) { callback(null); return; }
+
+  var rootCs = getComputedStyle(document.documentElement);
+  var pickVar = function (name, fallback) {
+    var v = rootCs.getPropertyValue(name).trim();
+    return v || fallback;
+  };
+  var accent = pickVar("--color-accent", "#4fc3f7");
+  var resolvedText = getComputedStyle(svgEl).color || pickVar("--color-text-primary", "#111111");
+
+  var clone = svgEl.cloneNode(true);
+  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+  clone.setAttribute("width", width);
+  clone.setAttribute("height", height);
+  clone.removeAttribute("style");
+  if (!clone.getAttribute("viewBox")) {
+    clone.setAttribute("viewBox", "0 0 " + width + " " + height);
+  }
+  Array.prototype.forEach.call(clone.querySelectorAll(".chart-hit, .monitor-hit, .chart-axis-title"), function (n) {
+    n.parentNode.removeChild(n);
+  });
+
+  var serialized = new XMLSerializer().serializeToString(clone);
+  serialized = serialized.replace(/currentColor/g, resolvedText);
+  serialized = serialized.replace(/var\(--color-accent\)/g, accent);
+
+  var blob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
+  var url = URL.createObjectURL(blob);
+  var img = new Image();
+  img.onload = function () { callback({ img: img, width: width, height: height, url: url }); };
+  img.onerror = function () { URL.revokeObjectURL(url); callback(null); };
+  img.src = url;
+}
+
+// Captures the interface slide-over (title + asset + resolved comment + both
+// charts) as a single PNG and copies it to the clipboard. The per-chart
+// camera buttons still exist; this gives one composite for sharing the full
+// interface view.
+function _screenshotInterfacePanel(asset, ifName) {
+  var tputContainer = document.getElementById("iface-tput-chart");
+  var errContainer  = document.getElementById("iface-err-chart");
+  if (!tputContainer || !errContainer) {
+    showToast("Nothing to screenshot", "error");
+    return;
+  }
+
+  var titleEl = document.getElementById("iface-panel-title");
+  var titleText = titleEl ? titleEl.textContent : ("Interface — " + ifName);
+  var assetName = asset ? (asset.hostname || asset.dnsName || asset.ipAddress || asset.id || "") : "";
+  var statsEl = document.getElementById("iface-stats");
+  var statsText = statsEl ? (statsEl.textContent || "").trim() : "";
+  if (statsText === "Loading…") statsText = "";
+
+  // Resolved comment: textarea value if non-empty (covers in-progress edits and
+  // saved overrides), else the discovered FortiOS CMDB description.
+  var commentInput = document.getElementById("iface-comment-input");
+  var commentText = "";
+  if (commentInput && commentInput.value && commentInput.value.trim()) {
+    commentText = commentInput.value.trim();
+  } else if (_ifaceCommentState && _ifaceCommentState.discoveredDescription) {
+    commentText = _ifaceCommentState.discoveredDescription;
+  }
+
+  _rasterizeChartSvgToImage(tputContainer, function (tput) {
+    _rasterizeChartSvgToImage(errContainer, function (errs) {
+      if (!tput && !errs) { showToast("Screenshot failed", "error"); return; }
+      _composeInterfaceScreenshot({
+        title: titleText,
+        asset: assetName,
+        comment: commentText,
+        stats: statsText,
+        tput: tput,
+        errs: errs,
+      });
+    });
+  });
+}
+
+function _composeInterfaceScreenshot(parts) {
+  var cs = getComputedStyle(document.documentElement);
+  var bgPrimary = cs.getPropertyValue("--color-bg-primary").trim() || "#ffffff";
+  var clrText   = cs.getPropertyValue("--color-text-primary").trim() || "#111111";
+  var clrSec    = cs.getPropertyValue("--color-text-secondary").trim() || "#666666";
+
+  var scale = 2;
+  var pad = 20;
+  var fontFamily = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+
+  var chartW = Math.max(parts.tput ? parts.tput.width : 0, parts.errs ? parts.errs.width : 0);
+  if (!chartW) chartW = 600;
+  var canvasW = chartW + pad * 2;
+  var maxLineW = canvasW - pad * 2;
+
+  // Greedy whitespace wrap; long unbreakable tokens get truncated to fit.
+  var tmp = document.createElement("canvas").getContext("2d");
+  function wrap(font, text) {
+    if (!text) return [];
+    tmp.font = font;
+    var words = String(text).split(/\s+/);
+    var lines = [], cur = "";
+    for (var i = 0; i < words.length; i++) {
+      var trial = cur ? cur + " " + words[i] : words[i];
+      if (tmp.measureText(trial).width <= maxLineW) cur = trial;
+      else { if (cur) lines.push(cur); cur = words[i]; }
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  }
+
+  var titleFont   = "600 16px " + fontFamily;
+  var assetFont   = "13px " + fontFamily;
+  var statsFont   = "11px " + fontFamily;
+  var labelFont   = "600 11px " + fontFamily;
+  var commentFont = "13px " + fontFamily;
+
+  var titleLines   = wrap(titleFont, parts.title);
+  var assetLines   = wrap(assetFont, parts.asset);
+  var statsLines   = wrap(statsFont, parts.stats);
+  var commentLines = wrap(commentFont, parts.comment);
+
+  var titleLineH = 22, assetLineH = 18, statsLineH = 16, commentLineH = 18;
+  var sectionGap = 14, chartGap = 14;
+
+  var totalH = pad
+    + titleLines.length * titleLineH
+    + (assetLines.length ? 2 + assetLines.length * assetLineH : 0)
+    + (statsLines.length ? 4 + statsLines.length * statsLineH : 0)
+    + (commentLines.length ? sectionGap + 16 + commentLines.length * commentLineH : 0)
+    + (parts.tput ? sectionGap + parts.tput.height : 0)
+    + (parts.errs ? chartGap   + parts.errs.height : 0)
+    + pad;
+
+  var canvas = document.createElement("canvas");
+  canvas.width  = canvasW * scale;
+  canvas.height = totalH * scale;
+  var ctx = canvas.getContext("2d");
+  ctx.scale(scale, scale);
+  ctx.fillStyle = bgPrimary;
+  ctx.fillRect(0, 0, canvasW, totalH);
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+
+  var y = pad;
+  ctx.fillStyle = clrText;
+  ctx.font = titleFont;
+  titleLines.forEach(function (l) { ctx.fillText(l, pad, y); y += titleLineH; });
+
+  if (assetLines.length) {
+    y += 2;
+    ctx.fillStyle = clrSec;
+    ctx.font = assetFont;
+    assetLines.forEach(function (l) { ctx.fillText(l, pad, y); y += assetLineH; });
+  }
+
+  if (statsLines.length) {
+    y += 4;
+    ctx.fillStyle = clrSec;
+    ctx.font = statsFont;
+    statsLines.forEach(function (l) { ctx.fillText(l, pad, y); y += statsLineH; });
+  }
+
+  if (commentLines.length) {
+    y += sectionGap;
+    ctx.fillStyle = clrSec;
+    ctx.font = labelFont;
+    ctx.fillText("INTERFACE COMMENTS", pad, y);
+    y += 16;
+    ctx.fillStyle = clrText;
+    ctx.font = commentFont;
+    commentLines.forEach(function (l) { ctx.fillText(l, pad, y); y += commentLineH; });
+  }
+
+  if (parts.tput) {
+    y += sectionGap;
+    ctx.drawImage(parts.tput.img, pad + (chartW - parts.tput.width) / 2, y, parts.tput.width, parts.tput.height);
+    y += parts.tput.height;
+    URL.revokeObjectURL(parts.tput.url);
+  }
+  if (parts.errs) {
+    y += chartGap;
+    ctx.drawImage(parts.errs.img, pad + (chartW - parts.errs.width) / 2, y, parts.errs.width, parts.errs.height);
+    y += parts.errs.height;
+    URL.revokeObjectURL(parts.errs.url);
+  }
+
+  canvas.toBlob(function (blob) {
+    if (!blob) { showToast("Screenshot failed", "error"); return; }
+    if (!navigator.clipboard || typeof ClipboardItem === "undefined" || !navigator.clipboard.write) {
+      showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+      return;
+    }
+    navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]).then(function () {
+      showToast("Interface screenshot copied to clipboard");
+    }).catch(function () {
+      showToast("Screenshot failed — requires HTTPS or clipboard permission", "error");
+    });
+  }, "image/png");
+}
+
 // Combined CPU + Memory chart on a single 0–100% y-axis. CPU stays anchored
 // at 0–100 so spikes remain meaningful; memory plots over the same axis as
 // a percentage (computed from bytes when only bytes were sampled). One hit
@@ -2970,11 +3187,16 @@ async function openInterfaceDetailPanel(asset, ifName) {
   metaEl.textContent = asset.hostname || asset.ipAddress || asset.id;
   bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading…</p>';
   footerEl.innerHTML =
+    '<button class="btn btn-sm btn-secondary" id="btn-iface-panel-screenshot">Screenshot</button>' +
+    '<span style="flex:1"></span>' +
     '<button class="btn btn-sm btn-secondary" id="btn-iface-panel-close-btn">Close</button>';
   requestAnimationFrame(function () {
     document.getElementById("iface-panel-overlay").classList.add("open");
   });
   document.getElementById("btn-iface-panel-close-btn").addEventListener("click", closeIfacePanel);
+  document.getElementById("btn-iface-panel-screenshot").addEventListener("click", function () {
+    _screenshotInterfacePanel(asset, ifName);
+  });
 
   var rangeBtns =
     '<button class="btn btn-sm btn-primary iface-range-btn" data-range="1h">1h</button>' +
