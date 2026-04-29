@@ -412,6 +412,7 @@ function _openAutoAllocateModal(subnetId) {
     '<div class="form-group"><label>Network</label><input type="text" value="' + subnetLabel + '" disabled></div>' +
     '<p class="hint" style="margin-bottom:12px">The next available host IP will be reserved automatically.</p>' +
     '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
+    '<div class="form-group"><label>MAC Address</label><input type="text" id="f-macAddress" placeholder="aa:bb:cc:dd:ee:ff"><p class="hint">Required when this network\'s integration is configured to push reservations to a FortiGate (DHCP reservations are MAC&rarr;IP).</p></div>' +
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
@@ -425,6 +426,7 @@ function _openAutoAllocateModal(subnetId) {
     btn.disabled = true;
     try {
       var expiresVal = document.getElementById("f-expiresAt").value;
+      var macVal = document.getElementById("f-macAddress").value.trim();
       var input = {
         subnetId: subnetId,
         hostname: document.getElementById("f-hostname").value.trim(),
@@ -432,10 +434,14 @@ function _openAutoAllocateModal(subnetId) {
         projectRef: document.getElementById("f-projectRef").value.trim() || undefined,
         expiresAt: expiresVal ? new Date(expiresVal).toISOString() : undefined,
         notes: document.getElementById("f-notes").value.trim() || undefined,
+        macAddress: macVal || undefined,
       };
       var reservation = await api.reservations.nextAvailable(input);
       closeModal();
-      showToast("Reserved " + reservation.ipAddress);
+      var pushed = reservation && reservation.pushStatus === "synced";
+      showToast(pushed
+        ? ("Reserved " + reservation.ipAddress + " and pushed to FortiGate")
+        : ("Reserved " + reservation.ipAddress));
       _ipPanelDirty = true;
       _fetchIpPage();
     } catch (err) {
@@ -458,6 +464,7 @@ function _openReserveModal(subnetId, ipAddress) {
         : '<input type="text" id="f-ipAddress" placeholder="e.g. ' + (s ? escapeHtml(s.cidr.replace(/\/.*/, '').replace(/\.0$/, '.10')) : '10.0.1.10') + '">') +
     '</div>' +
     '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
+    '<div class="form-group"><label>MAC Address</label><input type="text" id="f-macAddress" placeholder="aa:bb:cc:dd:ee:ff"><p class="hint">Required when this network\'s integration is configured to push reservations to a FortiGate (DHCP reservations are MAC&rarr;IP).</p></div>' +
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
@@ -472,6 +479,7 @@ function _openReserveModal(subnetId, ipAddress) {
     try {
       var ipEl = document.getElementById("f-ipAddress");
       var expiresVal = document.getElementById("f-expiresAt").value;
+      var macVal = document.getElementById("f-macAddress").value.trim();
       var input = {
         subnetId: subnetId,
         ipAddress: ipAddress || (ipEl ? ipEl.value.trim() : undefined) || undefined,
@@ -480,10 +488,12 @@ function _openReserveModal(subnetId, ipAddress) {
         projectRef: document.getElementById("f-projectRef").value.trim() || undefined,
         expiresAt: expiresVal ? new Date(expiresVal).toISOString() : undefined,
         notes: document.getElementById("f-notes").value.trim() || undefined,
+        macAddress: macVal || undefined,
       };
-      await api.reservations.create(input);
+      var reservation = await api.reservations.create(input);
       closeModal();
-      showToast("Reservation created");
+      var pushed = reservation && reservation.pushStatus === "synced";
+      showToast(pushed ? "Reservation created and pushed to FortiGate" : "Reservation created");
       _ipPanelDirty = true;
       _fetchIpPage();
     } catch (err) {

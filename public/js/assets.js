@@ -392,8 +392,9 @@ function _reserveActionHTML(a) {
 
 async function reserveAssetIp(id) {
   try {
-    await api.assets.reserve(id);
-    showToast('Reservation created');
+    var reservation = await api.assets.reserve(id);
+    var pushed = reservation && reservation.pushStatus === "synced";
+    showToast(pushed ? 'Reservation created and pushed to FortiGate' : 'Reservation created');
     loadAssets();
   } catch (err) {
     showToast(err.message || 'Reservation failed', 'error');
