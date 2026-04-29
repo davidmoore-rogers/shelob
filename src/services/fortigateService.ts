@@ -211,6 +211,11 @@ export async function discoverDhcpSubnets(
   const fortiSwitches: DiscoveredFortiSwitch[] = [];
   const fortiAps: DiscoveredFortiAP[] = [];
   const vips: DiscoveredVip[] = [];
+  // "Did the inventory query land successfully?" flags — see fortimanagerService
+  // for why we track these separately from the result arrays. A 404 (feature
+  // not licensed) counts as success because the controller is reachable.
+  let didSwitchQuery = false;
+  let didApQuery = false;
 
   // Step 2: Resolve the FortiGate's management interface IP from its own config.
   // We don't know its mgmt IP from /sys/status; fall back to the host we connected to.
@@ -257,7 +262,7 @@ export async function discoverDhcpSubnets(
 
   // Stop early if aborted
   if (signal?.aborted) {
-    return { subnets: [], devices, interfaceIps, dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [deviceName], fortiSwitches: [], fortiAps: [], vips: [] };
+    return { subnets: [], devices, interfaceIps, dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [deviceName], fortiSwitches: [], fortiAps: [], vips: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
   // Step 3: DHCP server configuration
@@ -473,6 +478,7 @@ export async function discoverDhcpSubnets(
       query: { ...queryBase, format: "connecting_from|fgt_peer_intf_name|join_time|os_version|serial|switch-id|state|status" },
       signal,
     });
+    didSwitchQuery = true;
     let switchCount = 0;
     if (Array.isArray(swResults)) {
       for (const sw of swResults) {
@@ -492,8 +498,11 @@ export async function discoverDhcpSubnets(
     }
     log("discover.fortiswitches", "info", `${deviceHostname}: Found ${switchCount} managed FortiSwitch(es)`, deviceHostname);
   } catch (err: any) {
-    // 404 means switch-controller not licensed/available — downgrade to info
+    // 404 means switch-controller not licensed/available — downgrade to info.
+    // Treat 404 as "query succeeded with empty result" so the decommission
+    // sweep can act on stale switches behind this controller.
     const isNotFound = err instanceof AppError && err.httpStatus === 404;
+    if (isNotFound) didSwitchQuery = true;
     log("discover.fortiswitches", isNotFound ? "info" : "error", `${deviceHostname}: ${isNotFound ? "switch-controller not available — skipping" : `Failed to query managed FortiSwitches — ${err.message || "Unknown error"}`}`, deviceHostname);
   }
 
@@ -503,6 +512,7 @@ export async function discoverDhcpSubnets(
       query: { ...queryBase, format: "name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|base_mac|mac|status|state|version|firmware_version" },
       signal,
     });
+    didApQuery = true;
     let apCount = 0;
     if (Array.isArray(apResults)) {
       for (const ap of apResults) {
@@ -524,6 +534,7 @@ export async function discoverDhcpSubnets(
     log("discover.fortiaps", "info", `${deviceHostname}: Found ${apCount} managed FortiAP(s)`, deviceHostname);
   } catch (err: any) {
     const isNotFound = err instanceof AppError && err.httpStatus === 404;
+    if (isNotFound) didApQuery = true;
     log("discover.fortiaps", isNotFound ? "info" : "error", `${deviceHostname}: ${isNotFound ? "wifi/managed_ap not available — skipping" : `Failed to query managed FortiAPs — ${err.message || "Unknown error"}`}`, deviceHostname);
   }
 
@@ -680,6 +691,8 @@ export async function discoverDhcpSubnets(
     fortiSwitches,
     fortiAps,
     vips,
+    switchInventoriedDevices: didSwitchQuery ? [deviceName] : [],
+    apInventoriedDevices:     didApQuery     ? [deviceName] : [],
   };
 }
 

@@ -98,6 +98,15 @@ router.use(requireNetworkAdmin);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
+// Per-integration switch/AP monitor stamping. When enabled, discovery sets
+// each newly-found FortiSwitch/FortiAP's monitorType to "snmp" with the
+// chosen credential — but only when the asset has no operator override.
+// Disabled or no credential → discovery leaves monitor fields alone.
+const FortinetClassMonitorSchema = z.object({
+  enabled:          z.boolean().optional().default(false),
+  snmpCredentialId: z.string().uuid().nullable().optional(),
+}).optional().default({ enabled: false, snmpCredentialId: null });
+
 const FortiManagerConfigSchema = z.object({
   host:      z.string().optional().default(""),
   port:      z.number().int().min(1).max(65535).optional().default(443),
@@ -123,6 +132,10 @@ const FortiManagerConfigSchema = z.object({
   // to this integration uses the named SNMP credential instead of the
   // FortiOS REST API. SNMP sysUpTime is dramatically faster than the API.
   monitorCredentialId: z.string().uuid().nullable().optional(),
+  // Per-class auto-monitor settings for managed FortiSwitches / FortiAPs
+  // discovered through this integration. See FortinetClassMonitorSchema.
+  fortiswitchMonitor: FortinetClassMonitorSchema,
+  fortiapMonitor:     FortinetClassMonitorSchema,
 });
 
 const FortiGateConfigSchema = z.object({
@@ -138,6 +151,8 @@ const FortiGateConfigSchema = z.object({
   inventoryExcludeInterfaces: z.array(z.string()).optional().default([]),
   inventoryIncludeInterfaces: z.array(z.string()).optional().default([]),
   monitorCredentialId: z.string().uuid().nullable().optional(),
+  fortiswitchMonitor: FortinetClassMonitorSchema,
+  fortiapMonitor:     FortinetClassMonitorSchema,
 });
 
 const WindowsServerConfigSchema = z.object({
@@ -294,11 +309,30 @@ router.post("/", async (req, res, next) => {
   try {
     const input = CreateIntegrationSchema.parse(req.body);
     if (input.type === "fortimanager" || input.type === "fortigate") {
-      const credId = (input.config as any).monitorCredentialId;
+      const cfg = input.config as any;
+      // Validate the FortiGate response-time SNMP override credential.
+      const credId = cfg.monitorCredentialId;
       if (credId) {
         const cred = await prisma.credential.findUnique({ where: { id: credId } });
         if (!cred) throw new AppError(400, "Selected monitor credential not found");
         if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
+      }
+      // Validate the per-class FortiSwitch / FortiAP monitor credentials.
+      // These are SNMP-only — discovery stamps monitorType="snmp" on each
+      // discovered switch/AP, so any other type would land assets in a
+      // permanently-down state.
+      for (const [field, label] of [
+        ["fortiswitchMonitor", "FortiSwitch monitor credential"],
+        ["fortiapMonitor",     "FortiAP monitor credential"],
+      ] as const) {
+        const block = cfg[field];
+        const cId = block?.snmpCredentialId;
+        if (block?.enabled && !cId) throw new AppError(400, `${label} must be selected when direct polling is enabled`);
+        if (cId) {
+          const cred = await prisma.credential.findUnique({ where: { id: cId } });
+          if (!cred) throw new AppError(400, `${label} not found`);
+          if (cred.type !== "snmp") throw new AppError(400, `${label} must be SNMP`);
+        }
       }
     }
     const integration = await prisma.integration.create({
@@ -348,7 +382,7 @@ router.post("/", async (req, res, next) => {
           // Windows Server stamps subnets with config.host as their fortigateDevice,
           // so the "known roster" is just the DHCP server host itself.
           const wsHost = (input.config as any).host as string;
-          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [] };
+          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
         } else if (input.type === "fortigate") {
           discoveryResult = await fortigate.discoverDhcpSubnets(input.config as any, ac.signal);
         } else {
@@ -416,6 +450,23 @@ router.put("/:id", async (req, res, next) => {
           const cred = await prisma.credential.findUnique({ where: { id: credId } });
           if (!cred) throw new AppError(400, "Selected monitor credential not found");
           if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
+        }
+        // Per-class FortiSwitch / FortiAP monitor credentials. Same rules as
+        // POST: the credential must exist and must be of type "snmp".
+        for (const [field, label] of [
+          ["fortiswitchMonitor", "FortiSwitch monitor credential"],
+          ["fortiapMonitor",     "FortiAP monitor credential"],
+        ] as const) {
+          const block = (newConfig as any)[field];
+          if (!block) continue;
+          // Normalize empty-string credentialIds to null for consistency with the probe path.
+          if (block.snmpCredentialId === "") block.snmpCredentialId = null;
+          if (block.enabled && !block.snmpCredentialId) throw new AppError(400, `${label} must be selected when direct polling is enabled`);
+          if (block.snmpCredentialId) {
+            const cred = await prisma.credential.findUnique({ where: { id: block.snmpCredentialId } });
+            if (!cred) throw new AppError(400, `${label} not found`);
+            if (cred.type !== "snmp") throw new AppError(400, `${label} must be SNMP`);
+          }
         }
       }
       data.config = newConfig;
@@ -880,7 +931,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       let discoveryResult: DiscoveryResult;
 
       // Accumulate per-device sync totals for the completion log
-      const syncTotals = { created: [] as string[], updated: [] as string[], skipped: [] as string[], deprecated: [] as string[] };
+      const syncTotals = { created: [] as string[], updated: [] as string[], skipped: [] as string[], deprecated: [] as string[], decommissionedSwitches: [] as string[], decommissionedAps: [] as string[] };
 
       // Per-device callback: sync each FortiGate's data as it arrives (phases 1, 3–9).
       // Phase 2 (stale deprecation) runs separately at the end once all devices are known.
@@ -912,7 +963,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       } else if (integration.type === "windowsserver") {
         const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
         const wsHost = (config as any).host as string;
-        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [] };
+        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
         // Windows Server is a single host — no per-device iteration, sync the full result normally
         const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
         syncTotals.created.push(...r.created);
@@ -928,6 +979,8 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
           syncTotals.updated.push(...r.updated);
           syncTotals.skipped.push(...r.skipped);
           syncTotals.deprecated.push(...r.deprecated);
+          syncTotals.decommissionedSwitches.push(...(r.decommissionedSwitches || []));
+          syncTotals.decommissionedAps.push(...(r.decommissionedAps || []));
         }
       } else {
         // FortiManager: onDeviceComplete fires after each managed FortiGate is queried,
@@ -940,6 +993,8 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
           // Run deprecation + DNS/OUI lookups once, now that all devices have been synced.
           const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor, "finalize");
           syncTotals.deprecated.push(...r.deprecated);
+          syncTotals.decommissionedSwitches.push(...(r.decommissionedSwitches || []));
+          syncTotals.decommissionedAps.push(...(r.decommissionedAps || []));
         }
       }
 
@@ -952,7 +1007,9 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         logEvent({ action: "integration.discover.aborted", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "warning", message: `${label} ${kindLabel} aborted for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped${abortSuffix}` });
       } else {
         const deprecatedSuffix = assetsOnly ? "" : `, ${syncTotals.deprecated.length} deprecated`;
-        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} ${kindLabel} completed for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped${deprecatedSuffix}` });
+        const decomSwSuffix = syncTotals.decommissionedSwitches.length > 0 ? `, ${syncTotals.decommissionedSwitches.length} FortiSwitch(es) decommissioned` : "";
+        const decomApSuffix = syncTotals.decommissionedAps.length      > 0 ? `, ${syncTotals.decommissionedAps.length} FortiAP(s) decommissioned`      : "";
+        logEvent({ action: "integration.discover.completed", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} ${kindLabel} completed for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped${deprecatedSuffix}${decomSwSuffix}${decomApSuffix}` });
         // Record overall duration sample for slow-run detection. Aborts and
         // errors are intentionally not recorded — a failed run would poison
         // the rolling average used to compute the "slow" threshold.
@@ -1305,10 +1362,48 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   const dhcpReservations: string[] = [];
   const inventoryAssets: string[] = [];
   const deprecated: string[] = [];
+  const decommissionedSwitches: string[] = [];
+  const decommissionedAps: string[] = [];
   let dnsResolved = 0;
   let ouiResolved = 0;
   let ouiOverridden = 0;
   const now = new Date().toISOString();
+
+  // Per-class auto-monitor settings (FortiSwitch/FortiAP). Read from the
+  // integration's config so the discovery sync knows whether to stamp
+  // monitorType/monitorCredentialId on each freshly-discovered switch/AP.
+  // FMG and standalone FortiGate share the same config keys; other
+  // integration types simply have no fortiswitchMonitor/fortiapMonitor
+  // entry, in which case the helpers below resolve to disabled.
+  let switchMonitorCfg: { enabled: boolean; snmpCredentialId: string | null } = { enabled: false, snmpCredentialId: null };
+  let apMonitorCfg:     { enabled: boolean; snmpCredentialId: string | null } = { enabled: false, snmpCredentialId: null };
+  if (integrationType === "fortimanager" || integrationType === "fortigate") {
+    const integ = await prisma.integration.findUnique({ where: { id: integrationId }, select: { config: true } });
+    const cfg = (integ?.config as Record<string, unknown>) || {};
+    const sw = (cfg.fortiswitchMonitor as Record<string, unknown> | undefined) || {};
+    const ap = (cfg.fortiapMonitor     as Record<string, unknown> | undefined) || {};
+    switchMonitorCfg = { enabled: sw.enabled === true, snmpCredentialId: typeof sw.snmpCredentialId === "string" ? sw.snmpCredentialId : null };
+    apMonitorCfg     = { enabled: ap.enabled === true, snmpCredentialId: typeof ap.snmpCredentialId === "string" ? ap.snmpCredentialId : null };
+  }
+
+  // Sighting sets for the FortiSwitch / FortiAP decommission sweep below.
+  // Populated unconditionally so the pass works in both per-device sync
+  // mode (full / skip-deprecation) and the post-pass finalize mode, which
+  // gets the *aggregated* discoveryResult and runs the deprecation step.
+  const seenSwitchSerials   = new Set<string>();
+  const seenSwitchHostnames = new Set<string>();
+  const seenApSerials       = new Set<string>();
+  const seenApHostnames     = new Set<string>();
+  for (const sw of result.fortiSwitches || []) {
+    if (sw.serial) seenSwitchSerials.add(sw.serial);
+    if (sw.name)   seenSwitchHostnames.add(sw.name);
+  }
+  for (const ap of result.fortiAps || []) {
+    if (ap.serial) seenApSerials.add(ap.serial);
+    if (ap.name)   seenApHostnames.add(ap.name);
+  }
+  const switchInventoriedDevices = new Set<string>(result.switchInventoriedDevices || []);
+  const apInventoriedDevices     = new Set<string>(result.apInventoriedDevices     || []);
 
   // ── Pre-load all data in parallel (4 queries total) ──
   const [blocks, allSubnetsRaw, allReservationsRaw, allAssetsRaw] = await Promise.all([
@@ -1490,7 +1585,62 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
   }
 
-  } // end mode !== "skip-deprecation" (Phase 2)
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 2b — Decommission stale FortiSwitches / FortiAPs
+  // ══════════════════════════════════════════════════════════════════════════════
+  //
+  // For every previously-discovered FortiSwitch / FortiAP whose controller
+  // was queried successfully this run but whose serial (or hostname, when
+  // there's no serial on file) no longer appears in the controller's
+  // managed inventory: flip the asset to status="decommissioned".
+  //
+  // This is gated on the *successful* per-controller inventory queries,
+  // which is exactly the signal we already use to short-circuit "controller
+  // offline" (a controller that timed out doesn't take its switches/APs
+  // down with it). A decommissioned switch/AP is automatically reactivated
+  // by the Phase-3b update path above when its serial reappears.
+  if (switchInventoriedDevices.size > 0 || apInventoriedDevices.size > 0) {
+    const candidates = await prisma.asset.findMany({
+      where: {
+        discoveredByIntegrationId: integrationId,
+        assetType: { in: ["switch", "access_point"] },
+        status: { not: "decommissioned" },
+      },
+      select: { id: true, hostname: true, serialNumber: true, assetType: true, fortinetTopology: true, status: true },
+    });
+    const staleIds: string[] = [];
+    for (const a of candidates) {
+      const topo = (a.fortinetTopology as Record<string, unknown> | null) || null;
+      const controller = (topo?.controllerFortigate as string | undefined) || "";
+      const inventoriedSet = a.assetType === "switch" ? switchInventoriedDevices : apInventoriedDevices;
+      // Skip when this asset's controller wasn't reachable this run — we
+      // didn't get a fresh answer either way.
+      if (!controller || !inventoriedSet.has(controller)) continue;
+      const seenBySerial   = a.serialNumber && (a.assetType === "switch" ? seenSwitchSerials   : seenApSerials).has(a.serialNumber);
+      const seenByHostname = a.hostname     && (a.assetType === "switch" ? seenSwitchHostnames : seenApHostnames).has(a.hostname);
+      if (seenBySerial || seenByHostname) continue;
+      staleIds.push(a.id);
+      if (a.assetType === "switch")        decommissionedSwitches.push(a.hostname || a.serialNumber || a.id);
+      else if (a.assetType === "access_point") decommissionedAps.push(a.hostname || a.serialNumber || a.id);
+      logEvent({
+        action: a.assetType === "switch" ? "asset.fortiswitch.decommissioned" : "asset.fortiap.decommissioned",
+        resourceType: "asset",
+        resourceId: a.id,
+        resourceName: a.hostname || a.serialNumber || a.id,
+        actor,
+        message: `${a.assetType === "switch" ? "FortiSwitch" : "FortiAP"} "${a.hostname || a.serialNumber}" decommissioned — controller "${controller}" no longer reports it`,
+        details: { reason: "missing-from-controller", controllerFortigate: controller, integrationId, integrationName },
+      });
+    }
+    if (staleIds.length > 0) {
+      await prisma.asset.updateMany({
+        where: { id: { in: staleIds } },
+        data: { status: "decommissioned", statusChangedAt: new Date(now), statusChangedBy: integrationLabel },
+      });
+    }
+  }
+
+  } // end mode !== "skip-deprecation" (Phase 2 + 2b)
 
   if (mode === "full" || mode === "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
@@ -1590,6 +1740,38 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   // Phase 3b — Create/update FortiSwitch and FortiAP assets + reservations
   // ══════════════════════════════════════════════════════════════════════════════
 
+  // Auto-stamping policy for managed FortiSwitch / FortiAP:
+  //   - When the integration's per-class monitor config is enabled AND a
+  //     credential is set, freshly-created assets are stamped with
+  //     monitored=true / monitorType="snmp" / monitorCredentialId=<id>.
+  //   - Existing assets are *only* re-stamped when the operator hasn't set
+  //     a custom monitorType. Detected by: monitorType is null, or it's
+  //     "snmp" against this same integration's credentialId. Anything else
+  //     (icmp, winrm, ssh, fortinet defaults, an SNMP cred we didn't pick)
+  //     counts as an operator override and is preserved.
+  function buildClassMonitorStamp(
+    cfg: { enabled: boolean; snmpCredentialId: string | null },
+    existing?: { monitorType?: string | null; monitorCredentialId?: string | null; monitored?: boolean | null },
+  ): Record<string, unknown> {
+    if (!cfg.enabled || !cfg.snmpCredentialId) {
+      // Discovery is opt-in for switches/APs — don't *unset* anything when
+      // disabled, just leave the existing monitor config alone.
+      return {};
+    }
+    if (existing) {
+      const isOperatorOverride =
+        existing.monitorType != null &&
+        !(existing.monitorType === "snmp" && existing.monitorCredentialId === cfg.snmpCredentialId);
+      if (isOperatorOverride) return {};
+    }
+    return {
+      discoveredByIntegrationId: integrationId,
+      monitored: true,
+      monitorType: "snmp",
+      monitorCredentialId: cfg.snmpCredentialId,
+    };
+  }
+
   for (const sw of result.fortiSwitches || []) {
     const swStatus = sw.state === "Unauthorized" ? "storage" : "active";
     const swJoinDate = sw.joinTime && Number.isFinite(sw.joinTime) && sw.joinTime > 0
@@ -1607,6 +1789,10 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       if (existingAsset) {
         const acquiredAtUpdate = swJoinDate && (!existingAsset.acquiredAt || swJoinDate < new Date(existingAsset.acquiredAt))
           ? swJoinDate : undefined;
+        // Re-discovery resurrects a previously-decommissioned asset back to
+        // its current FortiOS-reported state (active or storage). Mirrors
+        // the FortiAP path right below.
+        const reactivate = existingAsset.status === "decommissioned";
         const updateData: Record<string, unknown> = {
           ipAddress: sw.ipAddress || existingAsset.ipAddress,
           ...(sw.ipAddress ? { ipSource: sw.device || integrationType } : {}),
@@ -1618,12 +1804,14 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           lastSeen: new Date(now),
           fortinetTopology: swTopology,
           ...(acquiredAtUpdate ? { acquiredAt: acquiredAtUpdate } : {}),
+          ...buildClassMonitorStamp(switchMonitorCfg, existingAsset),
         };
         clampAcquiredToLastSeen(updateData, existingAsset);
         await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
         if (sw.ipAddress) existingAsset.ipAddress = sw.ipAddress;
+        if (reactivate) existingAsset.status = swStatus;
         assetIdx.reindex(existingAsset);
-        assetNames.push(`${sw.name} (updated)`);
+        assetNames.push(`${sw.name} (updated${reactivate ? " — reactivated" : ""})`);
       } else {
         const createData: Record<string, unknown> = {
           ipAddress: sw.ipAddress || null,
@@ -1637,6 +1825,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           statusChangedAt: new Date(now),
           statusChangedBy: integrationLabel,
           osVersion: sw.osVersion || null,
+          ...buildClassMonitorStamp(switchMonitorCfg),
           learnedLocation: sw.device || null,
           acquiredAt: swJoinDate,
           lastSeen: new Date(now),
@@ -1724,6 +1913,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           lastSeen: new Date(now),
           fortinetTopology: apTopology,
           ...(existingAsset.status === "decommissioned" ? { status: "active", statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
+          ...buildClassMonitorStamp(apMonitorCfg, existingAsset),
         };
         clampAcquiredToLastSeen(updateData, existingAsset);
         await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
@@ -1750,6 +1940,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             learnedLocation: ap.device || null,
             lastSeen: new Date(now),
             fortinetTopology: apTopology,
+            ...buildClassMonitorStamp(apMonitorCfg),
             notes: `Auto-discovered from FortiGate ${ap.device} via ${integrationLabel}`,
             tags: ["fortiap", "auto-discovered"],
           },
@@ -2390,7 +2581,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   } // end Phases 8–9 (full | finalize)
 
-  return { created, updated, skipped, deprecated, assets: assetNames, reservations: reservationNames, vips: vipNames.length, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length, dnsResolved, ouiResolved, ouiOverridden };
+  return { created, updated, skipped, deprecated, assets: assetNames, reservations: reservationNames, vips: vipNames.length, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length, dnsResolved, ouiResolved, ouiOverridden, decommissionedSwitches, decommissionedAps };
 }
 
 // ─── Entra ID asset sync ─────────────────────────────────────────────────────

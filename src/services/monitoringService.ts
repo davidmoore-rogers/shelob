@@ -58,32 +58,67 @@ export interface ProbeResult {
   error?: string;
 }
 
-export interface MonitorSettings {
-  intervalSeconds: number;
-  failureThreshold: number;
-  sampleRetentionDays: number;
-  // System tab cadences. Telemetry = CPU% + memory snapshot (lightweight,
-  // ~60s by default). System info = full interface + storage scrape
-  // (heavier, ~600s/10min by default). Retention is per stream so we can
-  // keep CPU/mem trends longer than per-interface counters if storage
-  // pressure becomes an issue.
+// Per-asset-class timer + retention group. Same shape as the top-level
+// monitor settings, just isolated so Fortinet switches/APs (which usually
+// don't need the same cadence as a busy FortiGate) can be tuned separately.
+// Resolution: an asset matching a class group falls back to the *class*
+// values; everything else (Cisco/Juniper/etc.) keeps using the top-level.
+export interface MonitorClassSettings {
+  intervalSeconds:           number;
+  failureThreshold:          number;
+  sampleRetentionDays:       number;
   telemetryIntervalSeconds:  number;
   systemInfoIntervalSeconds: number;
   telemetryRetentionDays:    number;
   systemInfoRetentionDays:   number;
 }
 
+export interface MonitorSettings extends MonitorClassSettings {
+  // Per-class overrides for Fortinet switches / APs. Applied when an asset's
+  // assetType+manufacturer matches; otherwise the top-level values are used.
+  fortiswitch: MonitorClassSettings;
+  fortiap:     MonitorClassSettings;
+}
+
 const SETTING_KEY = "monitorSettings";
 
-const DEFAULT_SETTINGS: MonitorSettings = {
-  intervalSeconds: 60,
-  failureThreshold: 3,
-  sampleRetentionDays: 30,
+const DEFAULT_CLASS_SETTINGS: MonitorClassSettings = {
+  intervalSeconds:           60,
+  failureThreshold:          3,
+  sampleRetentionDays:       30,
   telemetryIntervalSeconds:  60,
   systemInfoIntervalSeconds: 600,
   telemetryRetentionDays:    30,
   systemInfoRetentionDays:   30,
 };
+
+const DEFAULT_SETTINGS: MonitorSettings = {
+  ...DEFAULT_CLASS_SETTINGS,
+  fortiswitch: { ...DEFAULT_CLASS_SETTINGS },
+  fortiap:     { ...DEFAULT_CLASS_SETTINGS },
+};
+
+// Asset-class signature passed to the per-class resolver. We include
+// manufacturer because we only want the Fortinet-specific overrides to
+// apply to Fortinet hardware — a Cisco SNMP-monitored switch should keep
+// the top-level defaults.
+export type AssetClassSig = {
+  assetType:    string | null | undefined;
+  manufacturer: string | null | undefined;
+};
+
+/**
+ * Pick the right per-class settings group for a given asset, or null when
+ * the asset doesn't match any class override (in which case callers should
+ * fall back to the top-level fields).
+ */
+export function pickMonitorClass(settings: MonitorSettings, sig: AssetClassSig): MonitorClassSettings | null {
+  const mfg = (sig.manufacturer || "").trim().toLowerCase();
+  if (mfg !== "fortinet") return null;
+  if (sig.assetType === "switch")       return settings.fortiswitch;
+  if (sig.assetType === "access_point") return settings.fortiap;
+  return null;
+}
 
 const PROBE_TIMEOUT_MS = 10_000;
 const sysUpTimeOid = "1.3.6.1.2.1.1.3.0";
@@ -104,24 +139,39 @@ export function getAdMonitorProtocol(os: string | null | undefined): "winrm" | "
   return null;
 }
 
-export async function getMonitorSettings(): Promise<MonitorSettings> {
-  const row = await prisma.setting.findUnique({ where: { key: SETTING_KEY } });
-  const v = (row?.value as Record<string, unknown> | null) ?? {};
+function readClassFromJson(v: Record<string, unknown> | undefined, defaults: MonitorClassSettings): MonitorClassSettings {
+  const o = v ?? {};
   return {
-    intervalSeconds:           toPositiveInt(v.intervalSeconds,           DEFAULT_SETTINGS.intervalSeconds),
-    failureThreshold:          toPositiveInt(v.failureThreshold,          DEFAULT_SETTINGS.failureThreshold),
-    sampleRetentionDays:       toPositiveInt(v.sampleRetentionDays,       DEFAULT_SETTINGS.sampleRetentionDays),
-    telemetryIntervalSeconds:  toPositiveInt(v.telemetryIntervalSeconds,  DEFAULT_SETTINGS.telemetryIntervalSeconds),
-    systemInfoIntervalSeconds: toPositiveInt(v.systemInfoIntervalSeconds, DEFAULT_SETTINGS.systemInfoIntervalSeconds),
-    telemetryRetentionDays:    toPositiveInt(v.telemetryRetentionDays,    DEFAULT_SETTINGS.telemetryRetentionDays),
-    systemInfoRetentionDays:   toPositiveInt(v.systemInfoRetentionDays,   DEFAULT_SETTINGS.systemInfoRetentionDays),
+    intervalSeconds:           toPositiveInt(o.intervalSeconds,           defaults.intervalSeconds),
+    failureThreshold:          toPositiveInt(o.failureThreshold,          defaults.failureThreshold),
+    sampleRetentionDays:       toPositiveInt(o.sampleRetentionDays,       defaults.sampleRetentionDays),
+    telemetryIntervalSeconds:  toPositiveInt(o.telemetryIntervalSeconds,  defaults.telemetryIntervalSeconds),
+    systemInfoIntervalSeconds: toPositiveInt(o.systemInfoIntervalSeconds, defaults.systemInfoIntervalSeconds),
+    telemetryRetentionDays:    toPositiveInt(o.telemetryRetentionDays,    defaults.telemetryRetentionDays),
+    systemInfoRetentionDays:   toPositiveInt(o.systemInfoRetentionDays,   defaults.systemInfoRetentionDays),
   };
 }
 
-export async function updateMonitorSettings(input: Partial<MonitorSettings>): Promise<MonitorSettings> {
-  const current = await getMonitorSettings();
+export async function getMonitorSettings(): Promise<MonitorSettings> {
+  const row = await prisma.setting.findUnique({ where: { key: SETTING_KEY } });
+  const v = (row?.value as Record<string, unknown> | null) ?? {};
+  // Top-level fields are the baseline default for every class group too —
+  // a fresh install with no per-class entries inherits the operator's
+  // top-level values, not the hard-coded constants.
+  const base = readClassFromJson(v, DEFAULT_CLASS_SETTINGS);
+  const fsRaw = (v.fortiswitch as Record<string, unknown> | undefined) || undefined;
+  const faRaw = (v.fortiap     as Record<string, unknown> | undefined) || undefined;
+  return {
+    ...base,
+    fortiswitch: readClassFromJson(fsRaw, base),
+    fortiap:     readClassFromJson(faRaw, base),
+  };
+}
+
+function mergeClassUpdate(current: MonitorClassSettings, input: Partial<MonitorClassSettings> | undefined): MonitorClassSettings {
+  if (!input) return current;
   const pick = (v: unknown, fallback: number): number => v != null ? toPositiveInt(v, fallback) : fallback;
-  const next: MonitorSettings = {
+  return {
     intervalSeconds:           pick(input.intervalSeconds,           current.intervalSeconds),
     failureThreshold:          pick(input.failureThreshold,          current.failureThreshold),
     sampleRetentionDays:       pick(input.sampleRetentionDays,       current.sampleRetentionDays),
@@ -129,6 +179,32 @@ export async function updateMonitorSettings(input: Partial<MonitorSettings>): Pr
     systemInfoIntervalSeconds: pick(input.systemInfoIntervalSeconds, current.systemInfoIntervalSeconds),
     telemetryRetentionDays:    pick(input.telemetryRetentionDays,    current.telemetryRetentionDays),
     systemInfoRetentionDays:   pick(input.systemInfoRetentionDays,   current.systemInfoRetentionDays),
+  };
+}
+
+export type MonitorSettingsUpdateInput = Partial<MonitorClassSettings> & {
+  fortiswitch?: Partial<MonitorClassSettings>;
+  fortiap?:     Partial<MonitorClassSettings>;
+};
+
+export async function updateMonitorSettings(input: MonitorSettingsUpdateInput): Promise<MonitorSettings> {
+  const current = await getMonitorSettings();
+  // Top-level values are written directly at the JSON root for backward compat
+  // with the existing API consumers.
+  const baseUpdate: Partial<MonitorClassSettings> = {
+    intervalSeconds:           input.intervalSeconds,
+    failureThreshold:          input.failureThreshold,
+    sampleRetentionDays:       input.sampleRetentionDays,
+    telemetryIntervalSeconds:  input.telemetryIntervalSeconds,
+    systemInfoIntervalSeconds: input.systemInfoIntervalSeconds,
+    telemetryRetentionDays:    input.telemetryRetentionDays,
+    systemInfoRetentionDays:   input.systemInfoRetentionDays,
+  };
+  const base = mergeClassUpdate(current, baseUpdate);
+  const next: MonitorSettings = {
+    ...base,
+    fortiswitch: mergeClassUpdate(current.fortiswitch, input.fortiswitch),
+    fortiap:     mergeClassUpdate(current.fortiap,     input.fortiap),
   };
   await prisma.setting.upsert({
     where:  { key: SETTING_KEY },
@@ -1948,6 +2024,8 @@ export async function recordProbeResult(assetId: string, result: ProbeResult): P
     select: {
       id: true,
       hostname: true,
+      assetType: true,
+      manufacturer: true,
       monitored: true,
       monitorStatus: true,
       consecutiveFailures: true,
@@ -1955,13 +2033,17 @@ export async function recordProbeResult(assetId: string, result: ProbeResult): P
   });
   if (!asset) return;
 
+  // Per-class failure threshold so Fortinet switches/APs can be tuned more
+  // tolerantly than firewalls if the operator wants.
+  const cls = pickMonitorClass(settings, { assetType: asset.assetType, manufacturer: asset.manufacturer }) ?? settings;
+
   const now = new Date();
   const newConsec = result.success ? 0 : (asset.consecutiveFailures ?? 0) + 1;
   const previousStatus = asset.monitorStatus ?? "unknown";
   let nextStatus: "up" | "down" | "unknown";
   if (result.success) {
     nextStatus = "up";
-  } else if (newConsec >= settings.failureThreshold) {
+  } else if (newConsec >= cls.failureThreshold) {
     nextStatus = "down";
   } else {
     // Below threshold — keep prior up/down status (we know it's failing
@@ -2037,6 +2119,7 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
     where: { monitored: true, monitorType: { not: null } },
     select: {
       id: true,
+      assetType: true, manufacturer: true,
       lastMonitorAt: true, monitorIntervalSec: true,
       lastTelemetryAt: true, telemetryIntervalSec: true,
       lastSystemInfoAt: true, systemInfoIntervalSec: true,
@@ -2061,7 +2144,10 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
     fastFiltered: boolean;
   };
   const work: Work[] = candidates.map((a) => {
-    const probe = isDue(a.lastMonitorAt, a.monitorIntervalSec, settings.intervalSeconds);
+    // Per-class default resolution: Fortinet switches/APs may carry their own
+    // interval/retention overrides; everything else uses the top-level values.
+    const cls = pickMonitorClass(settings, { assetType: a.assetType, manufacturer: a.manufacturer }) ?? settings;
+    const probe = isDue(a.lastMonitorAt, a.monitorIntervalSec, cls.intervalSeconds);
     const hasFastPin =
       (Array.isArray(a.monitoredInterfaces)   && a.monitoredInterfaces.length   > 0) ||
       (Array.isArray(a.monitoredStorage)      && a.monitoredStorage.length      > 0) ||
@@ -2069,8 +2155,8 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
     return {
       id: a.id,
       probe,
-      telemetry:    isDue(a.lastTelemetryAt,  a.telemetryIntervalSec,  settings.telemetryIntervalSeconds),
-      systemInfo:   isDue(a.lastSystemInfoAt, a.systemInfoIntervalSec, settings.systemInfoIntervalSeconds),
+      telemetry:    isDue(a.lastTelemetryAt,  a.telemetryIntervalSec,  cls.telemetryIntervalSeconds),
+      systemInfo:   isDue(a.lastSystemInfoAt, a.systemInfoIntervalSec, cls.systemInfoIntervalSeconds),
       // Pinned interfaces / storage / tunnels ride the response-time cadence —
       // intervalSeconds defaults to 60s. The full systemInfo pass at ~10 min
       // still covers everything, so this only adds work for the pinned subset.
@@ -2152,18 +2238,75 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
   return stats;
 }
 
+// ─── Retention prune helpers ────────────────────────────────────────────────
+//
+// Retention is per-class (default / fortiswitch / fortiap), so each prune
+// query runs three buckets: Fortinet switches with the fortiswitch retention,
+// Fortinet APs with the fortiap retention, and everything else with the
+// top-level retention. Any class with retentionDays <= 0 is skipped (= keep
+// forever for that bucket).
+
+async function getFortinetClassAssetIds(): Promise<{ swIds: string[]; apIds: string[] }> {
+  const rows = await prisma.asset.findMany({
+    where:  { manufacturer: { equals: "Fortinet", mode: "insensitive" }, assetType: { in: ["switch", "access_point"] } },
+    select: { id: true, assetType: true },
+  });
+  const swIds: string[] = [];
+  const apIds: string[] = [];
+  for (const r of rows) {
+    if (r.assetType === "switch")       swIds.push(r.id);
+    else if (r.assetType === "access_point") apIds.push(r.id);
+  }
+  return { swIds, apIds };
+}
+
+type SamplePruneFn = (where: Record<string, unknown>) => Promise<{ count: number }>;
+
+async function pruneOneTable(
+  fn: SamplePruneFn,
+  retentionDays: { default: number; fortiswitch: number; fortiap: number },
+  classIds: { swIds: string[]; apIds: string[] },
+): Promise<number> {
+  const nowMs = Date.now();
+  const fortinetClassIds = [...classIds.swIds, ...classIds.apIds];
+  let total = 0;
+  // Default bucket: every asset NOT in the Fortinet switch/AP classes.
+  if (retentionDays.default > 0) {
+    const cutoff = new Date(nowMs - retentionDays.default * 24 * 3600 * 1000);
+    const where: Record<string, unknown> = { timestamp: { lt: cutoff } };
+    if (fortinetClassIds.length > 0) where.assetId = { notIn: fortinetClassIds };
+    const { count } = await fn(where);
+    total += count;
+  }
+  if (retentionDays.fortiswitch > 0 && classIds.swIds.length > 0) {
+    const cutoff = new Date(nowMs - retentionDays.fortiswitch * 24 * 3600 * 1000);
+    const { count } = await fn({ assetId: { in: classIds.swIds }, timestamp: { lt: cutoff } });
+    total += count;
+  }
+  if (retentionDays.fortiap > 0 && classIds.apIds.length > 0) {
+    const cutoff = new Date(nowMs - retentionDays.fortiap * 24 * 3600 * 1000);
+    const { count } = await fn({ assetId: { in: classIds.apIds }, timestamp: { lt: cutoff } });
+    total += count;
+  }
+  return total;
+}
+
 /**
  * Trim AssetMonitorSample rows older than the configured retention window.
- * 0 (or negative) disables retention.
+ * 0 (or negative) disables retention for that class.
  */
 export async function pruneMonitorSamples(): Promise<number> {
-  const { sampleRetentionDays } = await getMonitorSettings();
-  if (!sampleRetentionDays || sampleRetentionDays <= 0) return 0;
-  const cutoff = new Date(Date.now() - sampleRetentionDays * 24 * 3600 * 1000);
-  const { count } = await prisma.assetMonitorSample.deleteMany({
-    where: { timestamp: { lt: cutoff } },
-  });
-  return count;
+  const settings = await getMonitorSettings();
+  const ids = await getFortinetClassAssetIds();
+  return pruneOneTable(
+    (where) => prisma.assetMonitorSample.deleteMany({ where: where as any }),
+    {
+      default:     settings.sampleRetentionDays,
+      fortiswitch: settings.fortiswitch.sampleRetentionDays,
+      fortiap:     settings.fortiap.sampleRetentionDays,
+    },
+    ids,
+  );
 }
 
 /**
@@ -2173,14 +2316,18 @@ export async function pruneMonitorSamples(): Promise<number> {
  * other when stitching them onto the same chart.
  */
 export async function pruneTelemetrySamples(): Promise<number> {
-  const { telemetryRetentionDays } = await getMonitorSettings();
-  if (!telemetryRetentionDays || telemetryRetentionDays <= 0) return 0;
-  const cutoff = new Date(Date.now() - telemetryRetentionDays * 24 * 3600 * 1000);
+  const settings = await getMonitorSettings();
+  const ids = await getFortinetClassAssetIds();
+  const r = {
+    default:     settings.telemetryRetentionDays,
+    fortiswitch: settings.fortiswitch.telemetryRetentionDays,
+    fortiap:     settings.fortiap.telemetryRetentionDays,
+  };
   const [tel, temps] = await Promise.all([
-    prisma.assetTelemetrySample.deleteMany({   where: { timestamp: { lt: cutoff } } }),
-    prisma.assetTemperatureSample.deleteMany({ where: { timestamp: { lt: cutoff } } }),
+    pruneOneTable((where) => prisma.assetTelemetrySample.deleteMany({   where: where as any }), r, ids),
+    pruneOneTable((where) => prisma.assetTemperatureSample.deleteMany({ where: where as any }), r, ids),
   ]);
-  return tel.count + temps.count;
+  return tel + temps;
 }
 
 /**
@@ -2188,13 +2335,17 @@ export async function pruneTelemetrySamples(): Promise<number> {
  * older than the system info retention window. Returns total rows removed.
  */
 export async function pruneSystemInfoSamples(): Promise<number> {
-  const { systemInfoRetentionDays } = await getMonitorSettings();
-  if (!systemInfoRetentionDays || systemInfoRetentionDays <= 0) return 0;
-  const cutoff = new Date(Date.now() - systemInfoRetentionDays * 24 * 3600 * 1000);
+  const settings = await getMonitorSettings();
+  const ids = await getFortinetClassAssetIds();
+  const r = {
+    default:     settings.systemInfoRetentionDays,
+    fortiswitch: settings.fortiswitch.systemInfoRetentionDays,
+    fortiap:     settings.fortiap.systemInfoRetentionDays,
+  };
   const [ifaces, storage, ipsec] = await Promise.all([
-    prisma.assetInterfaceSample.deleteMany({    where: { timestamp: { lt: cutoff } } }),
-    prisma.assetStorageSample.deleteMany({      where: { timestamp: { lt: cutoff } } }),
-    prisma.assetIpsecTunnelSample.deleteMany({  where: { timestamp: { lt: cutoff } } }),
+    pruneOneTable((where) => prisma.assetInterfaceSample.deleteMany({    where: where as any }), r, ids),
+    pruneOneTable((where) => prisma.assetStorageSample.deleteMany({      where: where as any }), r, ids),
+    pruneOneTable((where) => prisma.assetIpsecTunnelSample.deleteMany({  where: where as any }), r, ids),
   ]);
-  return ifaces.count + storage.count + ipsec.count;
+  return ifaces + storage + ipsec;
 }

@@ -300,23 +300,26 @@ router.get("/monitor-settings", async (_req, res, next) => {
 // PUT /api/v1/assets/monitor-settings — update global monitor defaults (admin)
 router.put("/monitor-settings", requireAssetsAdmin, async (req, res, next) => {
   try {
-    const body = z.object({
+    const classGroup = z.object({
       intervalSeconds:           z.number().int().min(5).max(86400).optional(),
       failureThreshold:          z.number().int().min(1).max(100).optional(),
       sampleRetentionDays:       z.number().int().min(0).max(3650).optional(),
-      // System tab cadences. Telemetry minimum 15s (anything faster wastes
-      // probes; the data only changes meaningfully every minute or so).
-      // System info minimum 60s (interface scrapes are heavier).
       telemetryIntervalSeconds:  z.number().int().min(15).max(86400).optional(),
       systemInfoIntervalSeconds: z.number().int().min(60).max(86400).optional(),
       telemetryRetentionDays:    z.number().int().min(0).max(3650).optional(),
       systemInfoRetentionDays:   z.number().int().min(0).max(3650).optional(),
+    });
+    const body = classGroup.extend({
+      // Per-class overrides for Fortinet switches / APs. Each field falls
+      // back to its top-level counterpart when omitted.
+      fortiswitch: classGroup.optional(),
+      fortiap:     classGroup.optional(),
     }).parse(req.body);
     const next = await updateMonitorSettings(body);
     logEvent({
       action: "monitor.settings.updated",
       actor: req.session?.username,
-      message: `Monitor settings updated (probe ${next.intervalSeconds}s/threshold ${next.failureThreshold}/retain ${next.sampleRetentionDays}d, telemetry ${next.telemetryIntervalSeconds}s/retain ${next.telemetryRetentionDays}d, sysinfo ${next.systemInfoIntervalSeconds}s/retain ${next.systemInfoRetentionDays}d)`,
+      message: `Monitor settings updated (probe ${next.intervalSeconds}s/threshold ${next.failureThreshold}/retain ${next.sampleRetentionDays}d, telemetry ${next.telemetryIntervalSeconds}s/retain ${next.telemetryRetentionDays}d, sysinfo ${next.systemInfoIntervalSeconds}s/retain ${next.systemInfoRetentionDays}d; fortiswitch probe ${next.fortiswitch.intervalSeconds}s/sysinfo ${next.fortiswitch.systemInfoIntervalSeconds}s; fortiap probe ${next.fortiap.intervalSeconds}s/sysinfo ${next.fortiap.systemInfoIntervalSeconds}s)`,
     });
     res.json(next);
   } catch (err) { next(err); }

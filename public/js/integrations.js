@@ -266,41 +266,124 @@ function integrationMonitorOverrideHTML(credentials, selectedId) {
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">';
 }
 
-// Renders the Monitoring tab. Edits the *global* monitor settings, plus an
-// optional per-integration SNMP credential override (FMG/FortiGate only).
-// The override speeds up the response-time probe for firewall assets locked
-// to this integration — SNMP sysUpTime returns in <50 ms vs hundreds of ms
-// over the FortiOS REST API. Telemetry/system-info still flow over REST.
-function monitorSettingsFormHTML(s, opts) {
+// Build a per-class timer block. The id prefix lets the FortiGate /
+// FortiSwitch / FortiAP subtabs each use their own DOM ids while sharing
+// the same field set. `defaults` is the FortiGate (top-level) class so
+// the FortiSwitch / FortiAP subtabs render the same defaults the operator
+// would see if they hadn't customized anything yet.
+function _classTimerFieldsHTML(idPrefix, s, defaults) {
   s = s || {};
-  opts = opts || {};
-  function num(id, label, value, defaultValue, min, max, hint) {
+  defaults = defaults || {};
+  function num(name, label, value, defaultValue, min, max, hint) {
     return '<div class="form-group"><label>' + escapeHtml(label) + '</label>' +
-      '<input type="number" id="f-mon-' + id + '" value="' + (value != null ? value : defaultValue) + '" min="' + min + '" max="' + max + '" style="width:120px">' +
+      '<input type="number" id="' + idPrefix + name + '" value="' + (value != null ? value : defaultValue) + '" min="' + min + '" max="' + max + '" style="width:120px">' +
       (hint ? '<p class="hint">' + hint + '</p>' : '') +
     '</div>';
   }
-  return integrationMonitorOverrideHTML(opts.snmpCredentials, opts.monitorCredentialId) +
-    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
-      'The settings below are <strong style="color:var(--color-text-primary)">global</strong> — they apply to every monitored asset across all integrations, not just this one. Changes are saved when you Save the integration.' +
-    '</div>' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Response-time polling</p>' +
-    num("intervalSeconds", "Polling interval (seconds)", s.intervalSeconds, 60, 5, 86400, "How often each monitored asset is probed for an up/down ping. Default 60 s.") +
-    num("failureThreshold", "Failure threshold (consecutive misses)", s.failureThreshold, 3, 1, 100, "Number of consecutive failed probes before an asset is marked Down.") +
-    num("sampleRetentionDays", "Sample retention (days)", s.sampleRetentionDays, 30, 0, 3650, "How long each asset\'s response-time samples are kept. 0 = forever.") +
+  return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Response-time polling</p>' +
+    num("intervalSeconds",          "Polling interval (seconds)",            s.intervalSeconds,          defaults.intervalSeconds          || 60,  5,  86400, "How often each monitored asset in this class is probed for an up/down ping. Default 60 s.") +
+    num("failureThreshold",         "Failure threshold (consecutive misses)", s.failureThreshold,        defaults.failureThreshold         || 3,   1,  100,   "Number of consecutive failed probes before an asset is marked Down.") +
+    num("sampleRetentionDays",      "Sample retention (days)",                s.sampleRetentionDays,     defaults.sampleRetentionDays      || 30,  0,  3650,  "How long this class's response-time samples are kept. 0 = forever.") +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Telemetry (CPU + memory)</p>' +
-    num("telemetryIntervalSeconds", "Telemetry interval (seconds)", s.telemetryIntervalSeconds, 60, 15, 86400, "How often each monitored asset\'s CPU and memory snapshot is taken. Default 60 s.") +
-    num("telemetryRetentionDays", "Telemetry retention (days)", s.telemetryRetentionDays, 30, 0, 3650, "How long telemetry samples are kept. 0 = forever.") +
+    num("telemetryIntervalSeconds", "Telemetry interval (seconds)",           s.telemetryIntervalSeconds, defaults.telemetryIntervalSeconds || 60, 15,  86400, "How often each asset's CPU and memory snapshot is taken. Default 60 s.") +
+    num("telemetryRetentionDays",   "Telemetry retention (days)",             s.telemetryRetentionDays,   defaults.telemetryRetentionDays   || 30,  0,  3650,  "How long telemetry samples are kept. 0 = forever.") +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate interface &amp; storage discovery</p>' +
-    num("systemInfoIntervalSeconds", "Discovery interval (seconds)", s.systemInfoIntervalSeconds, 600, 60, 86400, "How often each monitored asset\'s interfaces and storage are scraped — for FortiGates this also refreshes <code>Asset.associatedIps</code>. Default 600 s (10 min).") +
-    num("systemInfoRetentionDays", "Sample retention (days)", s.systemInfoRetentionDays, 30, 0, 3650, "How long interface and storage samples are kept. 0 = forever.");
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface &amp; storage discovery</p>' +
+    num("systemInfoIntervalSeconds","Discovery interval (seconds)",            s.systemInfoIntervalSeconds, defaults.systemInfoIntervalSeconds || 600, 60, 86400, "How often interfaces and storage are scraped. Default 600 s (10 min).") +
+    num("systemInfoRetentionDays",  "Sample retention (days)",                 s.systemInfoRetentionDays,  defaults.systemInfoRetentionDays   || 30,  0,  3650,  "How long interface and storage samples are kept. 0 = forever.");
 }
 
-function getMonitorSettingsFromForm() {
-  function n(id) {
-    var el = document.getElementById("f-mon-" + id);
+// Picker block for the FortiSwitch / FortiAP subtab — "enable direct polling"
+// checkbox + SNMP credential dropdown. id prefix collides if you instantiate
+// twice on the same page; we use distinct prefixes per class.
+function _classDirectPollHTML(idPrefix, kindLabel, snmpCredentials, currentEnabled, currentCredId) {
+  var snmp = (snmpCredentials || []).filter(function (c) { return c.type === "snmp"; });
+  var options = '<option value="">— select credential —</option>' +
+    snmp.map(function (c) {
+      var sel = (currentCredId && c.id === currentCredId) ? " selected" : "";
+      return '<option value="' + escapeHtml(c.id) + '"' + sel + '>' + escapeHtml(c.name) + '</option>';
+    }).join("");
+  var emptyHint = snmp.length === 0
+    ? '<p class="hint" style="color:var(--color-warning)">No SNMP credentials defined yet — add one under Server Settings &gt; Credentials before enabling direct polling.</p>'
+    : '<p class="hint">Discovery stamps each newly-found ' + escapeHtml(kindLabel) + ' with this credential. Operator overrides on existing assets are preserved.</p>';
+  return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Direct polling</p>' +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.6rem 0">Managed ' + escapeHtml(kindLabel) + 's in FortiLink mode usually keep their own management plane locked down. Polaris can\'t reach them through the controller FortiGate, so direct polling only works when SNMP has been explicitly enabled on the ' + escapeHtml(kindLabel) + ' itself.</p>' +
+      '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.6rem">' +
+        '<input type="checkbox" id="' + idPrefix + 'enabled" ' + (currentEnabled ? "checked" : "") + ' style="width:auto">' +
+        '<label for="' + idPrefix + 'enabled" style="margin:0;font-weight:500">Enable direct polling of managed ' + escapeHtml(kindLabel) + 's</label>' +
+      '</div>' +
+      '<div class="form-group" style="margin-bottom:0">' +
+        '<label>SNMP credential</label>' +
+        '<select id="' + idPrefix + 'credentialId">' + options + '</select>' +
+        emptyHint +
+      '</div>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">';
+}
+
+// Renders the Monitoring tab as 3 sub-tabs: FortiGates, FortiSwitches,
+// FortiAPs. The FortiGates subtab keeps the existing FortiGate-specific
+// content (per-integration SNMP probe override + global FortiGate timers).
+// FortiSwitches / FortiAPs add a "direct polling" block (enable + SNMP
+// credential picker) that drives discovery-time auto-stamping, plus their
+// own per-class timer fields (default = the FortiGate values).
+//
+// The classDefaults below are pulled from the top-level monitor settings
+// because the FortiSwitch / FortiAP groups inherit from them on a fresh
+// install (server-side resolver picks the top-level when a class field is
+// unset). Showing the inherited number as the placeholder lets the operator
+// see what's currently in effect even if they haven't customized this class.
+function monitorSettingsFormHTML(s, opts) {
+  s = s || {};
+  opts = opts || {};
+  var classDefaults = {
+    intervalSeconds: s.intervalSeconds, failureThreshold: s.failureThreshold,
+    sampleRetentionDays: s.sampleRetentionDays,
+    telemetryIntervalSeconds: s.telemetryIntervalSeconds, telemetryRetentionDays: s.telemetryRetentionDays,
+    systemInfoIntervalSeconds: s.systemInfoIntervalSeconds, systemInfoRetentionDays: s.systemInfoRetentionDays,
+  };
+  var fsClass = s.fortiswitch || {};
+  var faClass = s.fortiap     || {};
+  var fwSwCfg = opts.fortiswitchMonitor || { enabled: false, snmpCredentialId: null };
+  var fwApCfg = opts.fortiapMonitor     || { enabled: false, snmpCredentialId: null };
+
+  var fortigatePanel =
+    integrationMonitorOverrideHTML(opts.snmpCredentials, opts.monitorCredentialId) +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
+      'These timers apply <strong style="color:var(--color-text-primary)">globally</strong> to every monitored asset that isn\'t a Fortinet switch or AP — Cisco SNMP, Windows WinRM, Linux SSH, ICMP, etc. Switches and APs use the values on their own subtabs.' +
+    '</div>' +
+    _classTimerFieldsHTML("f-mon-", s, {});
+
+  var switchPanel =
+    _classDirectPollHTML("f-mon-fortiswitch-", "FortiSwitch", opts.snmpCredentials, fwSwCfg.enabled === true, fwSwCfg.snmpCredentialId || null) +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
+      'These timers apply <strong style="color:var(--color-text-primary)">globally</strong> to every monitored Fortinet FortiSwitch — across all integrations, not just this one. Empty fields fall back to the values on the FortiGates subtab.' +
+    '</div>' +
+    _classTimerFieldsHTML("f-mon-fortiswitch-", fsClass, classDefaults);
+
+  var apPanel =
+    _classDirectPollHTML("f-mon-fortiap-", "FortiAP", opts.snmpCredentials, fwApCfg.enabled === true, fwApCfg.snmpCredentialId || null) +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">' +
+      'These timers apply <strong style="color:var(--color-text-primary)">globally</strong> to every monitored Fortinet FortiAP — across all integrations, not just this one. Empty fields fall back to the values on the FortiGates subtab.' +
+    '</div>' +
+    _classTimerFieldsHTML("f-mon-fortiap-", faClass, classDefaults);
+
+  // Inner sub-tab bar inside the outer "Monitoring" tab. Same _intRenderTabbedBody
+  // pattern, just with a unique prefix so the two tab bars don't collide.
+  return _intRenderTabbedBody("intg-mon", [
+    { key: "fortigates",    label: "FortiGates",    html: fortigatePanel },
+    { key: "fortiswitches", label: "FortiSwitches", html: switchPanel },
+    { key: "fortiaps",      label: "FortiAPs",      html: apPanel },
+  ]);
+}
+
+// Reads one class's timer block (FortiGate / FortiSwitch / FortiAP) and
+// returns the seven-field shape the server expects for that class.
+function _readClassTimers(prefix) {
+  function n(name) {
+    var el = document.getElementById(prefix + name);
     if (!el) return undefined;
     var v = parseInt(el.value, 10);
     return Number.isFinite(v) ? v : undefined;
@@ -313,6 +396,33 @@ function getMonitorSettingsFromForm() {
     telemetryRetentionDays:    n("telemetryRetentionDays"),
     systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
     systemInfoRetentionDays:   n("systemInfoRetentionDays"),
+  };
+}
+
+function getMonitorSettingsFromForm() {
+  // Top-level (FortiGate subtab) + nested per-class (Switch/AP subtabs).
+  // Only include the per-class blocks when the corresponding subtab actually
+  // rendered — tab might be hidden when the modal hasn't been opened yet.
+  var top = _readClassTimers("f-mon-");
+  var out = top;
+  if (document.getElementById("f-mon-fortiswitch-intervalSeconds")) {
+    out.fortiswitch = _readClassTimers("f-mon-fortiswitch-");
+  }
+  if (document.getElementById("f-mon-fortiap-intervalSeconds")) {
+    out.fortiap = _readClassTimers("f-mon-fortiap-");
+  }
+  return out;
+}
+
+// Reads the "enable direct polling" + SNMP credential picker for one class
+// (FortiSwitch or FortiAP). Returns null when the subtab didn't render.
+function _readClassMonitorBlock(prefix) {
+  var enabledEl = document.getElementById(prefix + "enabled");
+  var credEl    = document.getElementById(prefix + "credentialId");
+  if (!enabledEl || !credEl) return null;
+  return {
+    enabled: enabledEl.checked === true,
+    snmpCredentialId: credEl.value || null,
   };
 }
 
@@ -839,7 +949,11 @@ async function openCreateModal(type) {
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create</button>';
   openModal(title, body, footer);
-  if (isFmg || isFgt) _intWireModalTabs("intg-edit");
+  if (isFmg || isFgt) {
+    _intWireModalTabs("intg-edit");
+    // Inner sub-tabs inside the Monitoring tab (FortiGates / FortiSwitches / FortiAPs).
+    _intWireModalTabs("intg-mon");
+  }
 
   document.getElementById("btn-test-new").addEventListener("click", async function () {
     var btn = this;
@@ -880,6 +994,10 @@ async function openCreateModal(type) {
       if (isFmg || isFgt) {
         var credId = _readMonitorCredentialId();
         if (credId) createConfig.monitorCredentialId = credId;
+        var swBlockNew = _readClassMonitorBlock("f-mon-fortiswitch-");
+        var apBlockNew = _readClassMonitorBlock("f-mon-fortiap-");
+        if (swBlockNew) createConfig.fortiswitchMonitor = swBlockNew;
+        if (apBlockNew) createConfig.fortiapMonitor     = apBlockNew;
       }
       var input = {
         type: type,
@@ -1061,7 +1179,12 @@ async function openEditModal(id) {
       try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
       body = _intRenderTabbedBody("intg-edit", [
         { key: "general",    label: "General",    html: body },
-        { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: config.monitorCredentialId || null }) },
+        { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, {
+          snmpCredentials: creds,
+          monitorCredentialId: config.monitorCredentialId || null,
+          fortiswitchMonitor: config.fortiswitchMonitor || null,
+          fortiapMonitor:     config.fortiapMonitor     || null,
+        }) },
       ]);
     }
 
@@ -1069,7 +1192,10 @@ async function openEditModal(id) {
       '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Integration", body, footer);
-    if (isFmgOrFgt) _intWireModalTabs("intg-edit");
+    if (isFmgOrFgt) {
+      _intWireModalTabs("intg-edit");
+      _intWireModalTabs("intg-mon");
+    }
 
     document.getElementById("btn-test-existing").addEventListener("click", async function () {
       var btn = this;
@@ -1125,6 +1251,14 @@ async function openEditModal(id) {
           // Always send the picker value so an explicit clear (back to "FortiOS REST API")
           // round-trips. Empty string is normalized to null on the server.
           editConfig.monitorCredentialId = _readMonitorCredentialId() || null;
+          // Per-class FortiSwitch / FortiAP direct-poll blocks. _readClassMonitorBlock
+          // returns null when the subtab didn't render (e.g. modal opened on a tab
+          // that wasn't switched to) — in that case leave the existing config
+          // alone rather than wiping it.
+          var swBlock = _readClassMonitorBlock("f-mon-fortiswitch-");
+          var apBlock = _readClassMonitorBlock("f-mon-fortiap-");
+          if (swBlock) editConfig.fortiswitchMonitor = swBlock;
+          if (apBlock) editConfig.fortiapMonitor     = apBlock;
         }
         var input = {
           name: val("f-name"),

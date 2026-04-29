@@ -487,6 +487,14 @@ export interface DiscoveryResult {
   fortiSwitches: DiscoveredFortiSwitch[];
   fortiAps: DiscoveredFortiAP[];
   vips: DiscoveredVip[];
+  // Devices whose managed-switch query returned successfully (including
+  // empty results, which mean "no managed switches" rather than "query
+  // failed"). Used by the sync pass to decommission switches whose
+  // controller was reachable but no longer reports them — we never
+  // decommission switches behind an offline controller.
+  switchInventoriedDevices?: string[];
+  // Same as above, for the FortiAP managed_ap query.
+  apInventoriedDevices?: string[];
 }
 
 export type DiscoveryProgressCallback = (
@@ -546,7 +554,7 @@ export async function discoverDhcpSubnets(
     } else {
       log("discover.devices", "info", `No managed devices found in ADOM "${adom}"`);
     }
-    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [], fortiSwitches: [], fortiAps: [], vips: [] };
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [], fortiSwitches: [], fortiAps: [], vips: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
   // Capture the full roster of configured devices (pre-filter, any conn_status).
@@ -566,7 +574,7 @@ export async function discoverDhcpSubnets(
     log("discover.devices", "info", `Found ${devicesData.length} managed device(s) in ADOM "${adom}"`);
   }
   if (devicesData.length === 0) {
-    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames, fortiSwitches: [], fortiAps: [], vips: [] };
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames, fortiSwitches: [], fortiAps: [], vips: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
   const discovered: DiscoveredSubnet[] = [];
@@ -589,7 +597,17 @@ export async function discoverDhcpSubnets(
     fortiSwitches: DiscoveredFortiSwitch[];
     fortiAps: DiscoveredFortiAP[];
     vips: DiscoveredVip[];
+    // Whether each per-device inventory query returned a usable response.
+    // The decommission sweep keys off these flags so a controller whose
+    // switch-controller endpoint timed out doesn't take its switches down
+    // with it.
+    didSwitchQuery: boolean;
+    didApQuery: boolean;
   };
+  // Top-level aggregates used by syncDhcpSubnets to decommission stale
+  // switches/APs only when their controller was reachable.
+  const switchInventoriedDevices = new Set<string>();
+  const apInventoriedDevices = new Set<string>();
 
   const mgmtIfaceName = config.mgmtInterface || "mgmt";
   const useProxy = config.useProxy !== false; // default true
@@ -737,6 +755,11 @@ export async function discoverDhcpSubnets(
           fortiSwitches: fgResult.fortiSwitches,
           fortiAps: fgResult.fortiAps,
           vips: fgResult.vips,
+          // Direct mode delegates inventory to fortigateService — surface the
+          // same per-device "did this query succeed" flags it returns so the
+          // decommission sweep behaves identically across transport modes.
+          didSwitchQuery: !!fgResult.switchInventoriedDevices && fgResult.switchInventoriedDevices.length > 0,
+          didApQuery:     !!fgResult.apInventoriedDevices     && fgResult.apInventoriedDevices.length     > 0,
         };
       } catch (err: any) {
         log("discover.device", "error", `${deviceName}: Direct discovery failed — ${err.message || "Unknown error"}`, deviceName);
@@ -770,6 +793,12 @@ export async function discoverDhcpSubnets(
     const localSwitches: DiscoveredFortiSwitch[] = [];
     const localAps: DiscoveredFortiAP[] = [];
     const localVips: DiscoveredVip[] = [];
+    // Track whether each inventory query returned a usable response so the
+    // sync's decommission pass can distinguish "controller offline" (don't
+    // decommission its switches/APs) from "controller responded but no
+    // longer reports this device" (do decommission).
+    let didSwitchQuery = false;
+    let didApQuery = false;
 
     if (localDevice.mgmtIp && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(localDevice.mgmtIp)) {
       localInterfaceIps.push({ device: deviceName, interfaceName: mgmtIfaceName, ipAddress: localDevice.mgmtIp, role: "management" });
@@ -1041,8 +1070,14 @@ export async function discoverDhcpSubnets(
       const switchResults = switchProxyEntry?.response?.results;
       let switchCount = 0;
       if (switchProxyStatus !== 0 || switchHttpStatus === 404) {
+        // 404 = switch-controller feature not licensed/enabled, which is the
+        // same as "controller has zero managed switches." Mark the query as
+        // inventoried so any pre-existing switches behind this gate get
+        // decommissioned (the controller is reachable, just not managing them).
+        didSwitchQuery = true;
         log("discover.fortiswitches", "info", `${deviceName}: switch-controller not available (proxy status ${switchProxyStatus}, HTTP ${switchHttpStatus}) — skipping`, deviceName);
       } else if (Array.isArray(switchResults)) {
+        didSwitchQuery = true;
         for (const sw of switchResults) {
           localSwitches.push({
             device: deviceName,
@@ -1087,8 +1122,13 @@ export async function discoverDhcpSubnets(
       const apResults = apProxyEntry?.response?.results;
       let apCount = 0;
       if (apProxyStatus !== 0 || apHttpStatus === 404) {
+        // Same reasoning as the switch path: 404 here means wireless-controller
+        // is not licensed/enabled. The controller is reachable, so the
+        // decommission sweep can act on stale APs behind it.
+        didApQuery = true;
         log("discover.fortiaps", "info", `${deviceName}: wifi/managed_ap not available (proxy status ${apProxyStatus}, HTTP ${apHttpStatus}) — skipping`, deviceName);
       } else if (Array.isArray(apResults)) {
+        didApQuery = true;
         for (const ap of apResults) {
           const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || "";
           const rawApMac = ap.base_mac || ap.mac || "";
@@ -1259,7 +1299,7 @@ export async function discoverDhcpSubnets(
     }
 
     log("discover.device.complete", "info", `Completed discovery for ${deviceName}`, deviceName);
-    return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips };
+    return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, didSwitchQuery, didApQuery };
   }
 
   // Process up to `concurrency` FortiGates in parallel.
@@ -1303,6 +1343,8 @@ export async function discoverDhcpSubnets(
       fortiSwitches.push(...chunk.fortiSwitches);
       fortiAps.push(...chunk.fortiAps);
       vips.push(...chunk.vips);
+      if (chunk.didSwitchQuery) switchInventoriedDevices.add(chunk.device.name);
+      if (chunk.didApQuery)     apInventoriedDevices.add(chunk.device.name);
 
       if (onDeviceComplete) {
         try {
@@ -1317,6 +1359,8 @@ export async function discoverDhcpSubnets(
             fortiSwitches: chunk.fortiSwitches,
             fortiAps: chunk.fortiAps,
             vips: chunk.vips,
+            switchInventoriedDevices: chunk.didSwitchQuery ? [chunk.device.name] : [],
+            apInventoriedDevices:     chunk.didApQuery     ? [chunk.device.name] : [],
           });
         } catch (err: any) {
           log("discover.device", "error", `${chunk.device.name}: Per-device sync failed — ${err.message || "Unknown error"}`, chunk.device.name);
@@ -1333,7 +1377,20 @@ export async function discoverDhcpSubnets(
   // Step 4: Filtering was applied per-device during collection; log summary and return.
   log("discover.filter", "info", `Filter complete: ${discovered.length} subnet(s) included, ${dhcpEntries.length} DHCP entries, ${deviceInventory.length} inventory device(s)`);
 
-  return { subnets: discovered, devices, interfaceIps, dhcpEntries, deviceInventory, inventoryDevices: [...inventoryDevices], knownDeviceNames, fortiSwitches, fortiAps, vips };
+  return {
+    subnets: discovered,
+    devices,
+    interfaceIps,
+    dhcpEntries,
+    deviceInventory,
+    inventoryDevices: [...inventoryDevices],
+    knownDeviceNames,
+    fortiSwitches,
+    fortiAps,
+    vips,
+    switchInventoriedDevices: [...switchInventoriedDevices],
+    apInventoriedDevices:     [...apInventoriedDevices],
+  };
 }
 
 /** Extract the first (start) IP from a range string like "1.2.3.4-1.2.3.5" or a plain IP. */
