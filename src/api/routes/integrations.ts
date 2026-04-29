@@ -165,6 +165,13 @@ const FortiManagerConfigSchema = z.object({
   fortigateMonitor:   FortiGateClassMonitorSchema,
   fortiswitchMonitor: FortinetClassMonitorSchema,
   fortiapMonitor:     FortinetClassMonitorSchema,
+  // When true, manual reservations created on subnets discovered by this
+  // integration are pushed to the FortiGate at create time. Transport follows
+  // useProxy: true → write via FMG /sys/proxy/json; false → write direct to
+  // each FortiGate's REST API using fortigateApiUser/fortigateApiToken. The
+  // push is verified by reading the entry back; any failure aborts the
+  // reservation create entirely (no row persisted).
+  pushReservations: z.boolean().optional().default(false),
 });
 
 const FortiGateConfigSchema = z.object({

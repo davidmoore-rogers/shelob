@@ -122,6 +122,23 @@ model Reservation {
   conflictMessage String?
   vipInfo         Json?
 
+  // DHCP reservation push to FortiGate. Populated only when an FMG integration
+  // with `pushReservations=true` discovered this subnet AND the reservation is
+  // sourceType=manual. macAddress is the MAC sent to the device (DHCP
+  // reservations are MAC→IP). pushedScopeId / pushedEntryId pin the row on the
+  // FortiGate so unpush hits the exact entry without re-resolving by IP.
+  // pushStatus values: "synced" (verified on device), "drift" (was synced,
+  // missing on rediscovery). On create-time push failure the entire reservation
+  // create aborts and no row is persisted, so "failed" is not a stored state.
+  macAddress    String?
+  pushedToId    String?
+  pushedTo      Integration? @relation("ReservationPushedTo", fields: [pushedToId], references: [id], onDelete: SetNull)
+  pushedScopeId Int?
+  pushedEntryId Int?
+  pushStatus    String?
+  pushedAt      DateTime?
+  pushError     String?      @db.Text
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -136,6 +153,7 @@ model Reservation {
   @@index([status, expiresAt])
   @@index([expiresAt])
   @@index([createdBy])
+  @@index([pushedToId])
   @@map("reservations")
 }
 
@@ -153,8 +171,9 @@ model Integration {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  subnets          Subnet[]
-  discoveredAssets Asset[] // Assets stamped with this integration's id (back-relation)
+  subnets             Subnet[]
+  discoveredAssets    Asset[] // Assets stamped with this integration's id (back-relation)
+  pushedReservations  Reservation[] @relation("ReservationPushedTo")
 
   @@index([type])
   @@index([enabled])
