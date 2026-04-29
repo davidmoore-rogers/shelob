@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as subnetService from "../../services/subnetService.js";
-import { requireNetworkAdmin, requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
+import { requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
 import { AppError } from "../../utils/errors.js";
 import { logEvent, buildChanges } from "./events.js";
 
@@ -95,7 +95,7 @@ const PreviewEntrySchema = z.object({
   prefixLength: z.number().int().min(8).max(32),
   vlan:         z.number().int().min(1).max(4094).nullable().optional(),
 });
-router.post("/bulk-allocate/preview", requireNetworkAdmin, async (req, res, next) => {
+router.post("/bulk-allocate/preview", requireUserOrAbove, async (req, res, next) => {
   try {
     const schema = z.object({
       blockId:      z.string().uuid(),
@@ -110,7 +110,7 @@ router.post("/bulk-allocate/preview", requireNetworkAdmin, async (req, res, next
 });
 
 // POST /subnets/bulk-allocate  (must come before /:id)
-router.post("/bulk-allocate", requireNetworkAdmin, async (req, res, next) => {
+router.post("/bulk-allocate", requireUserOrAbove, async (req, res, next) => {
   try {
     const input = BulkAllocateSchema.parse(req.body);
     const result = await subnetService.bulkAllocate({ ...input, createdBy: req.session?.username ?? undefined });

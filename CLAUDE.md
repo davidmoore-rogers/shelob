@@ -688,7 +688,7 @@ Sessions are PostgreSQL-backed (`connect-pg-simple`), 8-hour max age, HttpOnly/S
 | `user` | Create subnets/reservations and edit/delete their own; read-only on everything else |
 | `readonly` | Read-only on all `requireAuth` routes |
 
-**Ownership model for networks and reservations.** `user` and `assetsadmin` callers can create subnets (`POST /subnets`, `POST /subnets/next-available`) and reservations, but can only edit/delete records where `createdBy` matches their own username. `admin` and `networkadmin` bypass the ownership check. Enforced via the `requireUserOrAbove` middleware + inline `isNetworkAdminOrAbove(req)` check on PUT/DELETE handlers. The `requireNetworkAdmin` guard still applies to block CRUD and bulk subnet allocation.
+**Ownership model for networks and reservations.** `user` and `assetsadmin` callers can create subnets (`POST /subnets`, `POST /subnets/next-available`, `POST /subnets/bulk-allocate` + `/preview`) and reservations, but can only edit/delete records where `createdBy` matches their own username. `admin` and `networkadmin` bypass the ownership check. Enforced via the `requireUserOrAbove` middleware + inline `isNetworkAdminOrAbove(req)` check on PUT/DELETE handlers. The `requireNetworkAdmin` guard still applies to block CRUD. Allocation **templates** are admin-only (`POST/PUT/DELETE /allocation-templates`); `GET /allocation-templates` is open to any authenticated caller so users can pre-fill the bulk-allocate modal from saved templates without being able to create or modify them — the modal hides the Save / Delete buttons for non-admins as a UX hint, but the backend is the source of truth.
 
 Rate limiting: 10 login attempts / 15 min per IP.
 

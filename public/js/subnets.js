@@ -451,15 +451,16 @@ async function openAllocateModal() {
   }
   _allocSelectedTemplateId = "";
 
+  var canEditTemplates = canManageNetworks();
   var body =
-    '<div class="form-group"><label>Block</label>' + blockSelectHTML("f-blockId", true) + '<p class="hint">Required to Allocate; not required to save a template.</p></div>' +
+    '<div class="form-group"><label>Block</label>' + blockSelectHTML("f-blockId", true) + '<p class="hint">Required to Allocate' + (canEditTemplates ? '; not required to save a template' : '') + '.</p></div>' +
     '<div class="form-group">' +
       '<label>Template</label>' +
       '<div class="alloc-template-row">' +
         '<select id="f-template"></select>' +
-        '<button type="button" class="btn btn-sm btn-danger" id="f-template-delete" title="Delete selected template" disabled>&times;</button>' +
+        (canEditTemplates ? '<button type="button" class="btn btn-sm btn-danger" id="f-template-delete" title="Delete selected template" disabled>&times;</button>' : '') +
       '</div>' +
-      '<p class="hint">Pick a saved template to pre-fill the rows below, or build one from scratch.</p>' +
+      '<p class="hint">' + (canEditTemplates ? 'Pick a saved template to pre-fill the rows below, or build one from scratch.' : 'Pick a saved template to pre-fill the rows below.') + '</p>' +
     '</div>' +
     '<div class="alloc-two-col">' +
       '<div class="form-group"><label>Site Name</label><input type="text" id="f-site" placeholder="e.g. Jefferson"><p class="hint">Required to Allocate; prepended to each row name (e.g. <code>Jefferson_Hardware</code>). Not required to save a template.</p></div>' +
@@ -480,7 +481,7 @@ async function openAllocateModal() {
 
   var footer =
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
-    '<button class="btn btn-secondary" id="btn-save-template">Save Template</button>' +
+    (canEditTemplates ? '<button class="btn btn-secondary" id="btn-save-template">Save Template</button>' : '') +
     '<button class="btn btn-primary" id="btn-allocate">Allocate</button>';
 
   openModal("Auto-Allocate Next Networks", body, footer, { wide: true });
@@ -499,7 +500,8 @@ async function openAllocateModal() {
     _onAllocTemplateChange(e);
     _scheduleAllocFootprintUpdate();
   });
-  document.getElementById("f-template-delete").addEventListener("click", _onAllocTemplateDelete);
+  var tplDelBtn = document.getElementById("f-template-delete");
+  if (tplDelBtn) tplDelBtn.addEventListener("click", _onAllocTemplateDelete);
   document.getElementById("f-add-row").addEventListener("click", function () { _addAllocEntryRow(); _scheduleAllocFootprintUpdate(); });
   document.getElementById("f-add-skip").addEventListener("click", function () { _addAllocEntryRow({ skip: true }); _scheduleAllocFootprintUpdate(); });
   document.getElementById("f-entries").addEventListener("click", function (e) {
@@ -519,7 +521,8 @@ async function openAllocateModal() {
   });
   document.getElementById("f-entries").addEventListener("input", _scheduleAllocFootprintUpdate);
 
-  document.getElementById("btn-save-template").addEventListener("click", _onAllocSaveTemplate);
+  var saveTplBtn = document.getElementById("btn-save-template");
+  if (saveTplBtn) saveTplBtn.addEventListener("click", _onAllocSaveTemplate);
   document.getElementById("btn-allocate").addEventListener("click", _onAllocSubmit);
   document.getElementById("f-anchor").addEventListener("change", function () {
     var n = parseInt(this.value, 10);
@@ -626,7 +629,7 @@ function _renderAllocTemplateOptions() {
   });
   sel.innerHTML = html;
   var delBtn = document.getElementById("f-template-delete");
-  if (delBtn) delBtn.disabled = !_allocSelectedTemplateId;
+  if (delBtn) delBtn.disabled = !_allocSelectedTemplateId;  // omitted from DOM for non-admins
 }
 
 function _addAllocEntryRow(entry) {
@@ -732,6 +735,13 @@ async function _onAllocSaveTemplate() {
   catch (err) { showToast(err.message, "error"); return; }
   if (entries.length === 0) { showToast("Add at least one subnet row before saving", "error"); return; }
 
+  // Capture anchor BEFORE any await — _promptSaveTemplateChoice / _promptText
+  // open their own modals which wipe the auto-allocate modal's DOM, so by the
+  // time we'd read f-anchor afterwards the input is gone and anchorPrefix
+  // silently becomes undefined (the "anchor not saved into template" bug).
+  var anchorRaw = parseInt(document.getElementById("f-anchor")?.value, 10);
+  var anchorPrefix = (Number.isInteger(anchorRaw) && anchorRaw >= 8 && anchorRaw <= 32) ? anchorRaw : undefined;
+
   var loaded = _allocSelectedTemplateId
     ? _allocTemplates.find(function (t) { return t.id === _allocSelectedTemplateId; })
     : null;
@@ -741,9 +751,6 @@ async function _onAllocSaveTemplate() {
     choice = await _promptSaveTemplateChoice(loaded.name);
     if (!choice) return;
   }
-
-  var anchorRaw = parseInt(document.getElementById("f-anchor")?.value, 10);
-  var anchorPrefix = (Number.isInteger(anchorRaw) && anchorRaw >= 8 && anchorRaw <= 32) ? anchorRaw : undefined;
 
   try {
     if (choice === "update" && loaded) {
