@@ -806,6 +806,18 @@ function getAssetFormData() {
       var iv = parseInt(ivEl.value, 10);
       data.monitorIntervalSec = Number.isFinite(iv) && iv >= 5 ? iv : null;
     }
+    // Per-stream transport overrides. Each select returns "" (= inherit), "rest", or "snmp".
+    function readTransport(id) {
+      var el = document.getElementById(id);
+      if (!el) return undefined;
+      return el.value === "rest" || el.value === "snmp" ? el.value : null;
+    }
+    var rt = readTransport("f-monitorResponseTimeSource");
+    var tl = readTransport("f-monitorTelemetrySource");
+    var iv2 = readTransport("f-monitorInterfacesSource");
+    if (rt !== undefined) data.monitorResponseTimeSource = rt;
+    if (tl !== undefined) data.monitorTelemetrySource    = tl;
+    if (iv2 !== undefined) data.monitorInterfacesSource  = iv2;
   }
   return data;
 }
@@ -878,6 +890,42 @@ function assetMonitoringFormHTML(asset) {
     '</select>' +
     defaultHintHtml;
 
+  // Per-stream transport overrides — only meaningful when the asset is on
+  // the FMG/FortiGate integration default (the only path that has a REST vs
+  // SNMP choice). Hidden for AD-discovered, generic snmp/icmp/winrm/ssh, or
+  // manually-created assets. Refresh hook in _wireMonitorEditTab toggles
+  // visibility live as the operator changes monitorType.
+  var canShowTransport = (integrationDefault === "fortimanager" || integrationDefault === "fortigate");
+  function transportSelect(id, currentVal) {
+    var v = currentVal || "";
+    return '<select id="' + id + '">' +
+        '<option value=""'      + (v === ""      ? " selected" : "") + '>Integration default</option>' +
+        '<option value="rest"'  + (v === "rest"  ? " selected" : "") + '>REST</option>' +
+        '<option value="snmp"'  + (v === "snmp"  ? " selected" : "") + '>SNMP</option>' +
+      '</select>';
+  }
+  var transportBlockHtml = "";
+  if (canShowTransport) {
+    transportBlockHtml =
+      '<div id="f-transport-wrap" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border)">' +
+        '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.5rem">Per-stream transport overrides</p>' +
+        '<p class="hint" style="margin-bottom:0.75rem">Inherit pulls from the integration\'s Monitoring tab. Per-asset overrides win when set.</p>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:1rem">' +
+          '<label style="margin:0;min-width:160px">Response time</label>' +
+          transportSelect("f-monitorResponseTimeSource", asset && asset.monitorResponseTimeSource) +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:1rem">' +
+          '<label style="margin:0;min-width:160px">Telemetry</label>' +
+          transportSelect("f-monitorTelemetrySource", asset && asset.monitorTelemetrySource) +
+        '</div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:1rem">' +
+          '<label style="margin:0;min-width:160px">Interfaces</label>' +
+          transportSelect("f-monitorInterfacesSource", asset && asset.monitorInterfacesSource) +
+        '</div>' +
+        '<p class="hint">SNMP uses this asset\'s credential when set; otherwise the integration\'s. IPsec tunnels always stay on REST.</p>' +
+      '</div>';
+  }
+
   return (
     '<div class="form-group">' +
       '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
@@ -898,7 +946,8 @@ function assetMonitoringFormHTML(asset) {
       '<label>Poll Interval Override (seconds)</label>' +
       '<input type="number" id="f-monitorInterval" min="5" max="86400" value="' + escapeHtml(String(interval)) + '" placeholder="leave blank for global default" style="max-width:240px">' +
       '<p class="hint">Default is set in <a href="/events.html?tab=settings">Events → Settings</a>. Minimum 5 seconds.</p>' +
-    '</div>'
+    '</div>' +
+    transportBlockHtml
   );
 }
 
@@ -910,6 +959,7 @@ async function _wireMonitorEditTab(_asset) {
   var credSel = document.getElementById("f-monitorCredential");
   var intervalEl = document.getElementById("f-monitorInterval");
 
+  var transportWrap = document.getElementById("f-transport-wrap");
   function refresh() {
     var enabled = !!(monChk && monChk.checked);
     var t = typeSel ? typeSel.value : "";
@@ -921,6 +971,12 @@ async function _wireMonitorEditTab(_asset) {
     if (enabled && needsCred && credSel) {
       var current = credSel.getAttribute("data-current-id") || "";
       credSel.innerHTML = _credentialOptionsFor(t, current);
+    }
+    // Per-stream transport overrides only apply on the FMG/FortiGate paths.
+    // Hide otherwise so the operator doesn't think they affect a generic
+    // snmp/icmp probe.
+    if (transportWrap) {
+      transportWrap.style.display = (enabled && (t === "fortimanager" || t === "fortigate")) ? "block" : "none";
     }
   }
   if (typeSel) typeSel.addEventListener("change", refresh);

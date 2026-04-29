@@ -284,6 +284,16 @@ model Asset {
   lastResponseTimeMs  Int?
   consecutiveFailures Int         @default(0)
 
+  // Per-stream transport overrides for FortiManager/FortiGate-discovered firewalls.
+  // null = inherit from the integration's matching toggle (which itself defaults to "rest").
+  // "rest" = use FortiOS REST API; "snmp" = use SNMP via the asset's monitorCredential
+  // (or, if null, the integration's monitorCredentialId). Only consulted when monitorType
+  // resolves to fortimanager or fortigate; ignored on assets the operator switched to a
+  // generic snmp/winrm/ssh/icmp probe (those follow monitorType end-to-end).
+  monitorResponseTimeSource String?   // null | "rest" | "snmp"
+  monitorTelemetrySource    String?   // null | "rest" | "snmp" — covers CPU + memory + temperature
+  monitorInterfacesSource   String?   // null | "rest" | "snmp" — covers interfaces + storage; IPsec always REST
+
   // System tab cadences. Telemetry = CPU% + memory snapshot, taken once per minute by default.
   // System info = full interface + storage scrape, taken once per ten minutes by default.
   // The per-asset *IntervalSec columns override the global setting when non-null.

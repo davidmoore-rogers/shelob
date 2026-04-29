@@ -64,12 +64,18 @@ const CreateAssetSchema = z.object({
 });
 
 const MonitorTypeEnum = z.enum(["fortimanager", "fortigate", "activedirectory", "snmp", "winrm", "ssh", "icmp"]);
+const MonitorTransportEnum = z.enum(["rest", "snmp"]);
 
 const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   monitored:             z.boolean().optional(),
   monitorType:           MonitorTypeEnum.nullable().optional(),
   monitorCredentialId:   z.string().uuid().nullable().optional(),
   monitorIntervalSec:    z.number().int().min(5).max(86400).nullable().optional(),
+  // Per-stream transport overrides for FMG/FortiGate-discovered firewalls.
+  // null = inherit from the integration's matching toggle.
+  monitorResponseTimeSource: MonitorTransportEnum.nullable().optional(),
+  monitorTelemetrySource:    MonitorTransportEnum.nullable().optional(),
+  monitorInterfacesSource:   MonitorTransportEnum.nullable().optional(),
   // Per-asset cadence overrides for the System tab. Null falls back to
   // monitor.telemetryIntervalSeconds / systemInfoIntervalSeconds.
   telemetryIntervalSec:  z.number().int().min(15).max(86400).nullable().optional(),

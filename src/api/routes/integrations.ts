@@ -119,6 +119,13 @@ const FortiGateClassMonitorSchema = z.object({
   addAsMonitored: z.boolean().optional().default(false),
 }).optional().default({ addAsMonitored: false });
 
+// Per-stream transport toggle. Default "rest" preserves the legacy behaviour
+// (FortiOS REST for everything). Setting to "snmp" reroutes that stream
+// through the integration's `monitorCredentialId` (or the asset's own
+// `monitorCredentialId` when set, which wins). Only consulted when the asset's
+// `monitorType` resolves to fortimanager or fortigate.
+const MonitorTransportSchema = z.enum(["rest", "snmp"]).optional().default("rest");
+
 const FortiManagerConfigSchema = z.object({
   host:      z.string().optional().default(""),
   port:      z.number().int().min(1).max(65535).optional().default(443),
@@ -140,10 +147,17 @@ const FortiManagerConfigSchema = z.object({
   fortigateApiUser:  z.string().optional().default(""),
   fortigateApiToken: z.string().optional().default(""),
   fortigateVerifySsl: z.boolean().optional().default(false),
-  // Optional: when set, the response-time probe for firewall assets locked
-  // to this integration uses the named SNMP credential instead of the
-  // FortiOS REST API. SNMP sysUpTime is dramatically faster than the API.
+  // Optional: stored SNMP credential used by any per-stream transport toggle
+  // below set to "snmp". Without a credential, "snmp" toggles surface the
+  // configuration error in the System tab refresh toast.
   monitorCredentialId: z.string().uuid().nullable().optional(),
+  // Per-stream transport toggles. Default "rest" preserves the legacy path
+  // (FortiOS REST) for response-time, telemetry (CPU/mem/temperature), and
+  // interfaces. "snmp" reroutes that stream through monitorCredentialId.
+  // IPsec stays on REST regardless — SNMP has no equivalent.
+  monitorResponseTimeSource: MonitorTransportSchema,
+  monitorTelemetrySource:    MonitorTransportSchema,
+  monitorInterfacesSource:   MonitorTransportSchema,
   // Per-class auto-monitor settings for assets discovered through this
   // integration. fortigateMonitor only carries `addAsMonitored` since
   // FortiGates always get a monitorType stamped at discovery; the switch /
@@ -166,6 +180,9 @@ const FortiGateConfigSchema = z.object({
   inventoryExcludeInterfaces: z.array(z.string()).optional().default([]),
   inventoryIncludeInterfaces: z.array(z.string()).optional().default([]),
   monitorCredentialId: z.string().uuid().nullable().optional(),
+  monitorResponseTimeSource: MonitorTransportSchema,
+  monitorTelemetrySource:    MonitorTransportSchema,
+  monitorInterfacesSource:   MonitorTransportSchema,
   fortigateMonitor:   FortiGateClassMonitorSchema,
   fortiswitchMonitor: FortinetClassMonitorSchema,
   fortiapMonitor:     FortinetClassMonitorSchema,
@@ -333,6 +350,15 @@ router.post("/", async (req, res, next) => {
         if (!cred) throw new AppError(400, "Selected monitor credential not found");
         if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
       }
+      // Any per-stream toggle set to "snmp" requires an SNMP credential at
+      // the integration level. Per-asset overrides can still bring their own.
+      const snmpStreams: string[] = [];
+      if (cfg.monitorResponseTimeSource === "snmp") snmpStreams.push("Response time");
+      if (cfg.monitorTelemetrySource    === "snmp") snmpStreams.push("Telemetry");
+      if (cfg.monitorInterfacesSource   === "snmp") snmpStreams.push("Interfaces");
+      if (snmpStreams.length > 0 && !credId) {
+        throw new AppError(400, `Select an SNMP credential to route ${snmpStreams.join(", ")} via SNMP`);
+      }
       // Validate the per-class FortiSwitch / FortiAP monitor credentials.
       // Direct-polling SNMP requires a credential; ICMP fallback (when
       // addAsMonitored=true and direct polling is off) doesn't.
@@ -465,6 +491,14 @@ router.put("/:id", async (req, res, next) => {
           const cred = await prisma.credential.findUnique({ where: { id: credId } });
           if (!cred) throw new AppError(400, "Selected monitor credential not found");
           if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
+        }
+        // Match the POST validation: any toggle set to "snmp" requires a credential.
+        const snmpStreams: string[] = [];
+        if (newConfig.monitorResponseTimeSource === "snmp") snmpStreams.push("Response time");
+        if (newConfig.monitorTelemetrySource    === "snmp") snmpStreams.push("Telemetry");
+        if (newConfig.monitorInterfacesSource   === "snmp") snmpStreams.push("Interfaces");
+        if (snmpStreams.length > 0 && !newConfig.monitorCredentialId) {
+          throw new AppError(400, `Select an SNMP credential to route ${snmpStreams.join(", ")} via SNMP`);
         }
         // Per-class FortiSwitch / FortiAP monitor credentials. Same rules as
         // POST: the credential must exist and must be of type "snmp".
