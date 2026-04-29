@@ -684,7 +684,7 @@ router.post("/:id/reserve", requireUserOrAbove, async (req, res, next) => {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
       where: { id },
-      select: { id: true, hostname: true, assetTag: true, ipAddress: true },
+      select: { id: true, hostname: true, assetTag: true, ipAddress: true, macAddress: true },
     });
     if (!asset) throw new AppError(404, "Asset not found");
     if (!asset.ipAddress) throw new AppError(400, "Asset has no IP address to reserve");
@@ -714,19 +714,27 @@ router.post("/:id/reserve", requireUserOrAbove, async (req, res, next) => {
     }
 
     const hostname = asset.hostname || asset.assetTag || asset.ipAddress;
+    // Pass the asset's MAC through so reservationService can push the reservation
+    // to the FortiGate when the containing subnet's integration has push enabled.
+    // The service throws AppError(400) if the subnet is push-eligible and the
+    // asset has no MAC — propagated to the client as a normal error.
     const reservation = await reservationService.createReservation({
       subnetId: containing.id,
       ipAddress: asset.ipAddress,
       hostname,
       createdBy: req.session?.username,
+      macAddress: asset.macAddress ?? undefined,
     });
+    const pushedSuffix = reservation.pushStatus === "synced"
+      ? ` and pushed to FortiGate`
+      : "";
     logEvent({
       action: "reservation.created",
       resourceType: "reservation",
       resourceId: reservation.id,
       resourceName: hostname,
       actor: req.session?.username,
-      message: `Reservation created for asset ${hostname} (${asset.ipAddress}) in ${containing.cidr}`,
+      message: `Reservation created for asset ${hostname} (${asset.ipAddress}) in ${containing.cidr}${pushedSuffix}`,
     });
     res.status(201).json(reservation);
   } catch (err) { next(err); }
