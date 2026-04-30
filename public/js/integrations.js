@@ -903,7 +903,7 @@ function fortiManagerFormHTML(defaults) {
     '<div class="form-group"><label>Device Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-deviceMode" style="width:auto">' +
-          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (devMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these managed FortiGates from all discovery queries</span>' +
@@ -916,7 +916,7 @@ function fortiManagerFormHTML(defaults) {
     '<div class="form-group"><label>DHCP Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-dhcpMode" style="width:auto">' +
-          '<option value="include"' + (dhcpMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (dhcpMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (dhcpMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces from DHCP server scope discovery</span>' +
@@ -929,7 +929,7 @@ function fortiManagerFormHTML(defaults) {
     '<div class="form-group"><label>Interface Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-ifaceMode" style="width:auto">' +
-          '<option value="include"' + (ifaceMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (ifaceMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (ifaceMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces from interface IP discovery</span>' +
@@ -943,7 +943,7 @@ function fortiManagerFormHTML(defaults) {
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-inventoryMode" style="width:auto">' +
           '<option value="exclude"' + (invMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
-          '<option value="include"' + (invMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (invMode === "include" ? " selected" : "") + '>Include</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">devices seen on these interfaces from asset discovery</span>' +
       '</div>' +
@@ -1027,7 +1027,7 @@ function fortiGateFormHTML(defaults) {
     '<div class="form-group"><label>Interface Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-dhcpMode" style="width:auto">' +
-          '<option value="include"' + (dhcpMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (dhcpMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (dhcpMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces when querying DHCP servers</span>' +
@@ -1041,7 +1041,7 @@ function fortiGateFormHTML(defaults) {
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-inventoryMode" style="width:auto">' +
           '<option value="exclude"' + (invMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
-          '<option value="include"' + (invMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (invMode === "include" ? " selected" : "") + '>Include</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">devices seen on these interfaces from asset discovery</span>' +
       '</div>' +
@@ -1153,7 +1153,7 @@ function entraIdFormHTML(defaults) {
     '<div class="form-group"><label>Device Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-deviceMode" style="width:auto">' +
-          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (devMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these devices by display name</span>' +
@@ -1231,7 +1231,7 @@ function activeDirectoryFormHTML(defaults) {
     '<div class="form-group"><label>OU Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-deviceMode" style="width:auto">' +
-          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include only</option>' +
+          '<option value="include"' + (devMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (devMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
         '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these OUs (matched against distinguished name)</span>' +
