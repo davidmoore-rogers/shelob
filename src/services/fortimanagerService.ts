@@ -1353,8 +1353,8 @@ export async function discoverDhcpSubnets(
         const geoStatus = geoEntry?.status?.code ?? 0;
         const geoResults = geoEntry?.response?.results;
         if (geoStatus === 0 && geoResults && typeof geoResults === "object" && !Array.isArray(geoResults)) {
-          const lat = parseFloat(String(geoResults.latitude ?? ""));
-          const lng = parseFloat(String(geoResults.longitude ?? ""));
+          const lat = parseFloat(String(geoResults["gui-device-latitude"] ?? geoResults.latitude ?? ""));
+          const lng = parseFloat(String(geoResults["gui-device-longitude"] ?? geoResults.longitude ?? ""));
           if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
             localDevice.latitude = lat;
             localDevice.longitude = lng;

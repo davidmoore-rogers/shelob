@@ -610,8 +610,8 @@ export async function discoverDhcpSubnets(
       ? sysGlobal
       : null;
     if (globalObj && devices[0]) {
-      const lat = parseFloat(String(globalObj.latitude ?? ""));
-      const lng = parseFloat(String(globalObj.longitude ?? ""));
+      const lat = parseFloat(String(globalObj["gui-device-latitude"] ?? globalObj.latitude ?? ""));
+      const lng = parseFloat(String(globalObj["gui-device-longitude"] ?? globalObj.longitude ?? ""));
       if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
         devices[0].latitude = lat;
         devices[0].longitude = lng;
