@@ -184,6 +184,7 @@ export async function discoverDhcpSubnets(
   onProgress?: DiscoveryProgressCallback,
   _inventoryMaxAgeHours = 24, // Monitor endpoints only return live state on direct FGT
   _onDeviceComplete?: (result: DiscoveryResult) => Promise<void>,
+  skipGeoLog = false,
 ): Promise<DiscoveryResult> {
   const log = onProgress || (() => {});
   const vdom = config.vdom || "root";
@@ -615,7 +616,9 @@ export async function discoverDhcpSubnets(
       if (Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0)) {
         devices[0].latitude = lat;
         devices[0].longitude = lng;
-        log("discover.geo", "info", `${deviceHostname}: Resolved coordinates ${lat.toFixed(4)}, ${lng.toFixed(4)}`, deviceHostname);
+        if (!skipGeoLog) {
+          log("discover.geo", "info", `${deviceHostname}: Resolved coordinates ${lat.toFixed(4)}, ${lng.toFixed(4)}`, deviceHostname);
+        }
       } else {
         const keys = Object.keys(globalObj).slice(0, 30).join(", ");
         log("discover.geo", "info", `${deviceHostname}: No latitude/longitude in system/global (keys: ${keys || "(empty)"})`, deviceHostname);

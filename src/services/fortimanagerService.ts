@@ -814,7 +814,7 @@ export async function discoverDhcpSubnets(
       };
 
       try {
-        const fgResult = await discoverViaFortigate(fgConfig, signal, log, inventoryMaxAgeHours);
+        const fgResult = await discoverViaFortigate(fgConfig, signal, log, inventoryMaxAgeHours, undefined, true);
         // fortigateService reports one "device" keyed by the FortiGate's own
         // hostname/serial. Remap every cross-reference to FMG's canonical
         // deviceName so the downstream sync pipeline treats this as one device
