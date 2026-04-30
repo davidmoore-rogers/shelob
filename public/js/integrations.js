@@ -29,17 +29,12 @@ function _runFortigateSampleProbe(runner) {
 // UI semantics are inverted. Shows/hides the FortiGate credentials block
 // and locks the parallelism input.
 function _fmgToggleDirectMode(useDirect) {
-  var credsBlock = document.getElementById("f-fgt-creds-block");
+  var directBlock = document.getElementById("f-direct-mode-block");
   var parallelInput = document.getElementById("f-discoveryParallelism");
-  var parallelNote = document.getElementById("f-parallelism-note");
-  if (credsBlock) credsBlock.style.display = useDirect ? "" : "none";
-  if (parallelInput) {
-    parallelInput.disabled = !useDirect;
-    if (!useDirect) parallelInput.value = 1;
-  }
-  if (parallelNote) {
-    parallelNote.textContent = useDirect ? "gates at once" : "locked to 1 when proxy is enabled";
-  }
+  if (directBlock) directBlock.style.display = useDirect ? "" : "none";
+  // Force parallelism back to 1 when collapsing so getFormConfig
+  // doesn't ship a stale direct-mode value with proxy mode.
+  if (parallelInput && !useDirect) parallelInput.value = 1;
 }
 
 function _discoverBtnHTML(id, name, discovery, disabled) {
@@ -837,7 +832,56 @@ function _readFortigateMonitorBlock(prefix) {
   };
 }
 
-function fortiManagerFormHTML(defaults) {
+function fortiManagerGeneralHTML(defaults) {
+  var d = defaults || {};
+  return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(d.name || "") + '" placeholder="e.g. Production FortiManager"></div>' +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">This integration is for <strong style="color:var(--color-text-primary)">on-premise FortiManager</strong> only (not FortiManager Cloud). Requires version <strong style="color:var(--color-text-primary)">7.4.7+</strong> or <strong style="color:var(--color-text-primary)">7.6.2+</strong>. Older versions do not support bearer token authentication.</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Connection Settings</p>' +
+    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px">' +
+      '<div class="form-group"><label>Host / IP *</label><input type="text" id="f-host" value="' + escapeHtml(d.host || "") + '" placeholder="e.g. fmg.example.com"></div>' +
+      '<div class="form-group"><label>Port</label><input type="number" id="f-port" value="' + (d.port || 443) + '" min="1" max="65535" style="width:90px"></div>' +
+    '</div>' +
+    '<div class="form-group"><label>API User</label><input type="text" id="f-apiUser" value="' + escapeHtml(d.apiUser || "") + '" placeholder="e.g. api-admin"></div>' +
+    '<div class="form-group"><label>API Token</label><input type="password" id="f-apiToken" value="' + (d.apiTokenPlaceholder ? "" : escapeHtml(d.apiToken || "")) + '" placeholder="' + (d.apiTokenPlaceholder || "Bearer token") + '"><p class="hint">Generate from FortiManager under System Settings &gt; Admin &gt; API Users</p></div>' +
+    '<div class="form-group"><label>ADOM</label><input type="text" id="f-adom" value="' + escapeHtml(d.adom || "root") + '" placeholder="root"><p class="hint">Administrative Domain (leave as "root" for default)</p></div>' +
+    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-verifySsl" ' + (d.verifySsl ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-verifySsl" style="margin:0">Verify SSL certificate</label>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-enabled" ' + (d.enabled !== false ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-enabled" style="margin:0">Enabled</label>' +
+    '</div>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
+      '<input type="checkbox" id="f-autoDiscover" ' + (d.autoDiscover !== false ? "checked" : "") + ' style="width:auto">' +
+      '<label for="f-autoDiscover" style="margin:0">Enable auto-discovery</label>' +
+    '</div>' +
+    '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to automatically query for DHCP updates (1–24 hours)</p></div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
+        // Backend field is still `useProxy`; UI shows the inverse — checked = direct, unchecked = proxy.
+        '<input type="checkbox" id="f-useDirect" ' + (d.useProxy === false ? "checked" : "") + ' style="width:auto" onchange="_fmgToggleDirectMode(this.checked)">' +
+        '<label for="f-useDirect" style="margin:0;font-weight:500">Query each FortiGate directly (bypass FortiManager proxy)</label>' +
+      '</div>' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.75rem 0">When checked, Polaris skips FortiManager\'s <code>/sys/proxy/json</code> and talks straight to each managed FortiGate\'s management IP using the REST API credentials below — supports up to 20 parallel queries. When unchecked (default), all per-device DHCP/interface/switch/AP/VIP queries are proxied through FortiManager, which serializes them to one at a time.</p>' +
+      '<p style="font-size:0.82rem;color:var(--color-warning);line-height:1.5;margin:0 0 0.75rem 0;background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.25);border-radius:4px;padding:0.5rem 0.65rem"><strong>Tip:</strong> If your environment has more than 20 managed FortiGates, switching to direct queries is strongly recommended — proxy mode polls them one at a time, so a full discovery run scales linearly with device count.</p>' +
+      '<div id="f-direct-mode-block" style="' + (d.useProxy === false ? "" : "display:none;") + 'border-top:1px solid rgba(79,195,247,0.2);padding-top:0.75rem;margin-top:0.5rem">' +
+        '<div class="form-group"><label>Parallel FortiGate Queries</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-discoveryParallelism" value="' + (d.useProxy === false ? (d.discoveryParallelism || 5) : 1) + '" min="1" max="20" style="width:80px"><span id="f-parallelism-note" style="color:var(--color-text-tertiary);font-size:0.85rem">gates at once</span></div><p class="hint">Up to 20 FortiGates concurrently.</p></div>' +
+        '<div class="form-group"><label>FortiGate API User</label><input type="text" id="f-fortigateApiUser" value="' + escapeHtml(d.fortigateApiUser || "") + '" placeholder="e.g. polaris-ro"><p class="hint">REST API admin username configured on each managed FortiGate</p></div>' +
+        '<div class="form-group"><label>FortiGate API Token</label><input type="password" id="f-fortigateApiToken" value="' + (d.fortigateApiTokenPlaceholder ? "" : escapeHtml(d.fortigateApiToken || "")) + '" placeholder="' + (d.fortigateApiTokenPlaceholder || "Bearer token") + '"><p class="hint">Bearer token for the above admin. Must be the same across all managed FortiGates.</p></div>' +
+        '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0">' +
+          '<input type="checkbox" id="f-fortigateVerifySsl" ' + (d.fortigateVerifySsl ? "checked" : "") + ' style="width:auto">' +
+          '<label for="f-fortigateVerifySsl" style="margin:0">Verify SSL certificate on FortiGates</label>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+function fortiManagerFiltersHTML(defaults) {
   var d = defaults || {};
   var ifaceInclude = d.interfaceInclude || [];
   var ifaceExclude = d.interfaceExclude || [];
@@ -851,55 +895,7 @@ function fortiManagerFormHTML(defaults) {
   var invIfaces = invMode === "include" ? (d.inventoryIncludeInterfaces || []) : (d.inventoryExcludeInterfaces || []);
   var devMode = (d.deviceInclude && d.deviceInclude.length > 0) ? "include" : "exclude";
   var devNames = devMode === "include" ? (d.deviceInclude || []) : (d.deviceExclude || []);
-  return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(d.name || "") + '" placeholder="e.g. Production FortiManager"></div>' +
-    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">This integration is for <strong style="color:var(--color-text-primary)">on-premise FortiManager</strong> only (not FortiManager Cloud). Requires version <strong style="color:var(--color-text-primary)">7.4.7+</strong> or <strong style="color:var(--color-text-primary)">7.6.2+</strong>. Older versions do not support bearer token authentication.</div>' +
-    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Connection Settings</p>' +
-    '<div style="display:grid;grid-template-columns:1fr auto;gap:8px">' +
-      '<div class="form-group"><label>Host / IP *</label><input type="text" id="f-host" value="' + escapeHtml(d.host || "") + '" placeholder="e.g. fmg.example.com"></div>' +
-      '<div class="form-group"><label>Port</label><input type="number" id="f-port" value="' + (d.port || 443) + '" min="1" max="65535" style="width:90px"></div>' +
-    '</div>' +
-    '<div class="form-group"><label>API User</label><input type="text" id="f-apiUser" value="' + escapeHtml(d.apiUser || "") + '" placeholder="e.g. api-admin"></div>' +
-    '<div class="form-group"><label>API Token</label><input type="password" id="f-apiToken" value="' + (d.apiTokenPlaceholder ? "" : escapeHtml(d.apiToken || "")) + '" placeholder="' + (d.apiTokenPlaceholder || "Bearer token") + '"><p class="hint">Generate from FortiManager under System Settings &gt; Admin &gt; API Users</p></div>' +
-    '<div class="form-group"><label>ADOM</label><input type="text" id="f-adom" value="' + escapeHtml(d.adom || "root") + '" placeholder="root"><p class="hint">Administrative Domain (leave as "root" for default)</p></div>' +
-    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
-      '<input type="checkbox" id="f-verifySsl" ' + (d.verifySsl ? "checked" : "") + ' style="width:auto">' +
-      '<label for="f-verifySsl" style="margin:0">Verify SSL certificate</label>' +
-    '</div>' +
-    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Per-Device Query Transport</p>' +
-    '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
-      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
-        // Backend field is still `useProxy`; UI shows the inverse — checked = direct, unchecked = proxy.
-        '<input type="checkbox" id="f-useDirect" ' + (d.useProxy === false ? "checked" : "") + ' style="width:auto" onchange="_fmgToggleDirectMode(this.checked)">' +
-        '<label for="f-useDirect" style="margin:0;font-weight:500">Query each FortiGate directly (bypass FortiManager proxy)</label>' +
-      '</div>' +
-      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.75rem 0">When checked, Polaris skips FortiManager\'s <code>/sys/proxy/json</code> and talks straight to each managed FortiGate\'s management IP using the REST API credentials below — supports up to 20 parallel queries. When unchecked (default), all per-device DHCP/interface/switch/AP/VIP queries are proxied through FortiManager, which serializes them to one at a time.</p>' +
-      '<p style="font-size:0.82rem;color:var(--color-warning);line-height:1.5;margin:0 0 0.75rem 0;background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.25);border-radius:4px;padding:0.5rem 0.65rem"><strong>Tip:</strong> If your environment has more than 20 managed FortiGates, switching to direct queries is strongly recommended — proxy mode polls them one at a time, so a full discovery run scales linearly with device count.</p>' +
-      '<div class="form-group" style="margin-bottom:0"><label>Parallel FortiGate Queries</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-discoveryParallelism" value="' + (d.useProxy === false ? (d.discoveryParallelism || 5) : 1) + '" min="1" max="20" style="width:80px"' + (d.useProxy === false ? "" : " disabled") + '><span id="f-parallelism-note" style="color:var(--color-text-tertiary);font-size:0.85rem">' + (d.useProxy === false ? "gates at once" : "locked to 1 when proxy is enabled") + '</span></div><p class="hint">With proxy enabled this is forced to 1 (FortiManager drops parallel connections past very low parallelism). Enable direct queries to use up to 20 FortiGates concurrently.</p></div>' +
-      '<div id="f-fgt-creds-block" style="' + (d.useProxy === false ? "" : "display:none;") + 'border-top:1px solid rgba(79,195,247,0.2);padding-top:0.75rem;margin-top:0.5rem">' +
-        '<div class="form-group"><label>FortiGate API User</label><input type="text" id="f-fortigateApiUser" value="' + escapeHtml(d.fortigateApiUser || "") + '" placeholder="e.g. polaris-ro"><p class="hint">REST API admin username configured on each managed FortiGate</p></div>' +
-        '<div class="form-group"><label>FortiGate API Token</label><input type="password" id="f-fortigateApiToken" value="' + (d.fortigateApiTokenPlaceholder ? "" : escapeHtml(d.fortigateApiToken || "")) + '" placeholder="' + (d.fortigateApiTokenPlaceholder || "Bearer token") + '"><p class="hint">Bearer token for the above admin. Must be the same across all managed FortiGates.</p></div>' +
-        '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0">' +
-          '<input type="checkbox" id="f-fortigateVerifySsl" ' + (d.fortigateVerifySsl ? "checked" : "") + ' style="width:auto">' +
-          '<label for="f-fortigateVerifySsl" style="margin:0">Verify SSL certificate on FortiGates</label>' +
-        '</div>' +
-      '</div>' +
-    '</div>' +
-    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
-      '<input type="checkbox" id="f-enabled" ' + (d.enabled !== false ? "checked" : "") + ' style="width:auto">' +
-      '<label for="f-enabled" style="margin:0">Enabled</label>' +
-    '</div>' +
-    '<div class="form-group" style="display:flex;align-items:center;gap:8px">' +
-      '<input type="checkbox" id="f-autoDiscover" ' + (d.autoDiscover !== false ? "checked" : "") + ' style="width:auto">' +
-      '<label for="f-autoDiscover" style="margin:0">Enable auto-discovery</label>' +
-    '</div>' +
-    '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to automatically query for DHCP updates (1–24 hours)</p></div>' +
-    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate Settings</p>' +
-    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>' +
-    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate Device Scope</p>' +
+  return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate Device Scope</p>' +
     '<div class="form-group"><label>Device Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-deviceMode" style="width:auto">' +
@@ -950,6 +946,13 @@ function fortiManagerFormHTML(defaults) {
       '<textarea id="f-inventoryInterfaces" rows="2" placeholder="One per line — e.g. lan&#10;wifi*&#10;*guest">' + escapeHtml(invIfaces.join("\n")) + '</textarea>' +
       '<p class="hint">Leave empty to include all interfaces. Wildcards supported: <code>port*</code>, <code>*lan</code>, <code>*mgmt*</code></p>' +
     '</div>';
+}
+
+// Flat-form fallback for any caller that wants the full FMG form in a single
+// string. The Add and Edit modals split it into General + Filters tabs and
+// call the two helpers above directly.
+function fortiManagerFormHTML(defaults) {
+  return fortiManagerGeneralHTML(defaults) + fortiManagerFiltersHTML(defaults);
 }
 
 function getFormConfig() {
@@ -1366,11 +1369,15 @@ async function openCreateModal(type) {
     var creds = [];
     try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
     try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
+    var generalHtml = isFmg ? fortiManagerGeneralHTML({}) : _formHTMLForType(type, {});
     var addTabs = [
-      { key: "general",    label: "General",    html: _formHTMLForType(type, {}) },
-      { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: null, integrationId: null }) },
+      { key: "general", label: "General", html: generalHtml },
     ];
-    // FMG only: third tab for the Reservation Push toggle. Defaults to off.
+    if (isFmg) {
+      addTabs.push({ key: "filters", label: "Filters", html: fortiManagerFiltersHTML({}) });
+    }
+    addTabs.push({ key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: null, integrationId: null }) });
+    // FMG only: tab for the Reservation Push toggle. Defaults to off.
     // useProxy on a fresh integration defaults to true (the FMG proxy path).
     if (isFmg) {
       addTabs.push({ key: "push", label: "Reservation Push", html: reservationPushFormHTML(false, true) });
@@ -1625,8 +1632,14 @@ async function openEditModal(id) {
       var creds = [];
       try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
       try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
+      var generalHtml = (intg.type === "fortimanager") ? fortiManagerGeneralHTML(defaults) : body;
       var editTabs = [
-        { key: "general",    label: "General",    html: body },
+        { key: "general",    label: "General",    html: generalHtml },
+      ];
+      if (intg.type === "fortimanager") {
+        editTabs.push({ key: "filters", label: "Filters", html: fortiManagerFiltersHTML(defaults) });
+      }
+      editTabs.push(
         { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, {
           snmpCredentials: creds,
           monitorCredentialId: config.monitorCredentialId || null,
@@ -1641,7 +1654,7 @@ async function openEditModal(id) {
           fortiapMonitor:     config.fortiapMonitor     || null,
           integrationId:      id,
         }) },
-      ];
+      );
       // FMG only: third tab for the Reservation Push toggle. The body uses
       // the integration's current useProxy setting to label the active mode.
       if (intg.type === "fortimanager") {
@@ -1656,7 +1669,6 @@ async function openEditModal(id) {
 
     var footer = '<button class="btn btn-secondary" id="btn-test-existing">Test Connection</button>' +
       '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
-      (isFmgOrFgt ? '<button class="btn btn-secondary" id="btn-save-apply" title="Save changes, then immediately apply Auto-Monitor Interfaces selections to existing assets (without waiting for the next discovery cycle).">Save and apply now</button>' : '') +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal("Edit Integration", body, footer);
     if (isFmgOrFgt) {
@@ -1708,11 +1720,9 @@ async function openEditModal(id) {
       }
     });
 
-    // The save handler builds the request body (the same way for both
-    // "Save Changes" and "Save and apply now"), PUTs it, and then optionally
-    // runs the auto-monitor apply pass for any subtab that has a non-null
-    // selection. Returns the editConfig used so the caller can decide which
-    // classes to apply.
+    // Builds the request body, PUTs it, and returns the editConfig so the
+    // caller can drive the auto-monitor apply pass for any class with a
+    // non-null selection.
     async function performSave() {
       var autoDiscoverEl = document.getElementById("f-autoDiscover");
       var editConfig = formGetter();
@@ -1765,28 +1775,14 @@ async function openEditModal(id) {
       btn.textContent = "Saving...";
       try {
         var saved = await performSave();
-        closeModal();
-        showToast("Integration updated");
-        loadIntegrations();
-        if (saved.result && saved.result.conflicts && saved.result.conflicts.length) {
-          showConflictModal(saved.result.id || id, saved.result.conflicts);
-        }
-      } catch (err) {
-        showToast(err.message, "error");
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Save Changes";
-      }
-    });
+        var classes = isFmgOrFgt ? [
+          ["fortigate",   saved.editConfig.fortigateMonitor],
+          ["fortiswitch", saved.editConfig.fortiswitchMonitor],
+          ["fortiap",     saved.editConfig.fortiapMonitor],
+        ] : [];
+        var hasSelection = classes.some(function (c) { return c[1] && c[1].autoMonitorInterfaces; });
 
-    var saveApplyBtn = document.getElementById("btn-save-apply");
-    if (saveApplyBtn) {
-      saveApplyBtn.addEventListener("click", async function () {
-        var btn = this;
-        btn.disabled = true;
-        btn.textContent = "Saving...";
-        try {
-          var saved = await performSave();
+        if (hasSelection) {
           // Capacity guard: warn before applying selections that would pin
           // a large number of interfaces. We sniff the cached count from
           // each preview block; missing/stale values just skip the warning.
@@ -1803,21 +1799,13 @@ async function openEditModal(id) {
               "Continue applying now?"
             );
             if (!ok) {
-              btn.textContent = "Save and apply now";
-              btn.disabled = false;
               closeModal();
               showToast("Integration updated; auto-monitor not applied");
               loadIntegrations();
               return;
             }
           }
-          // Apply each class whose selection is non-null.
           btn.textContent = "Applying...";
-          var classes = [
-            ["fortigate",   saved.editConfig.fortigateMonitor],
-            ["fortiswitch", saved.editConfig.fortiswitchMonitor],
-            ["fortiap",     saved.editConfig.fortiapMonitor],
-          ];
           var totalDevices = 0;
           var totalIfaces = 0;
           var failures = [];
@@ -1839,18 +1827,21 @@ async function openEditModal(id) {
           } else {
             showToast("Saved, but apply had errors — " + failures.join("; "), "error");
           }
-          loadIntegrations();
-          if (saved.result && saved.result.conflicts && saved.result.conflicts.length) {
-            showConflictModal(saved.result.id || id, saved.result.conflicts);
-          }
-        } catch (err) {
-          showToast(err.message, "error");
-        } finally {
-          btn.disabled = false;
-          btn.textContent = "Save and apply now";
+        } else {
+          closeModal();
+          showToast("Integration updated");
         }
-      });
-    }
+        loadIntegrations();
+        if (saved.result && saved.result.conflicts && saved.result.conflicts.length) {
+          showConflictModal(saved.result.id || id, saved.result.conflicts);
+        }
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Save Changes";
+      }
+    });
   } catch (err) {
     showToast(err.message, "error");
   }
