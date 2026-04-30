@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy/setup-rhel-nodb.sh — Shelob deployment script for RHEL / Rocky / Alma Linux 9
+# deploy/setup-rhel-nodb.sh — Polaris deployment script for RHEL / Rocky / Alma Linux 9
 #                              with a remote/external PostgreSQL database
 #
 # Run as root:  bash deploy/setup-rhel-nodb.sh --db-url "postgresql://user:pass@db-host:5432/shelob"
@@ -22,7 +22,7 @@ set -euo pipefail
 APP_DIR="/opt/shelob"
 APP_USER="shelob"
 APP_GROUP="shelob"
-REPO_URL="https://github.com/davidmoore-rogers/shelob.git"
+REPO_URL="https://github.com/davidmoore-rogers/polaris.git"
 DATABASE_URL=""
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ if [[ ! "$DATABASE_URL" =~ ^postgres(ql)?:// ]]; then
   error "Invalid DATABASE_URL — must start with postgresql:// or postgres://"
 fi
 
-info "Starting Shelob deployment on $(hostname) (remote database mode)"
+info "Starting Polaris deployment on $(hostname) (remote database mode)"
 
 # ─── 1. Install Node.js 20 ───────────────────────────────────────────────────
 if command -v node &>/dev/null && [[ "$(node -v)" == v20* || "$(node -v)" == v22* ]]; then
@@ -198,7 +198,7 @@ info "Waiting for service to start..."
 sleep 2
 
 if systemctl is-active --quiet shelob; then
-  info "Shelob service is running"
+  info "Polaris service is running"
 else
   warn "Service may not have started — check: journalctl -u shelob -f"
 fi
@@ -213,7 +213,7 @@ fi
 # ─── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 info "============================================"
-info "  Shelob deployment complete!"
+info "  Polaris deployment complete!"
 info "  Mode:  Remote database"
 info "  URL:   http://$(hostname -I | awk '{print $1}'):3000"
 info "  Login: admin / admin"

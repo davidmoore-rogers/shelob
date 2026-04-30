@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy/update-linux.sh — Shelob update script for RHEL / Ubuntu / Debian
+# deploy/update-linux.sh — Polaris update script for RHEL / Ubuntu / Debian
 #
 # Run as root:  bash deploy/update-linux.sh
 #

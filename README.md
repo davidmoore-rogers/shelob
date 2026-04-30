@@ -82,21 +82,21 @@ Automated scripts install Node.js 20, PostgreSQL 15, the `shelob` system user, t
 **RHEL / Rocky / Alma 9:**
 
 ```bash
-git clone https://github.com/davidmoore-rogers/shelob.git && cd shelob
+git clone https://github.com/davidmoore-rogers/polaris.git && cd polaris
 bash deploy/setup-rhel.sh
 ```
 
 **Ubuntu / Debian:**
 
 ```bash
-git clone https://github.com/davidmoore-rogers/shelob.git && cd shelob
+git clone https://github.com/davidmoore-rogers/polaris.git && cd polaris
 bash deploy/setup-ubuntu.sh
 ```
 
 **Windows Server 2019 / 2022** (run as Administrator):
 
 ```powershell
-git clone https://github.com/davidmoore-rogers/shelob.git; cd shelob
+git clone https://github.com/davidmoore-rogers/polaris.git; cd polaris
 powershell -ExecutionPolicy Bypass -File deploy\setup-windows.ps1
 ```
 
@@ -126,7 +126,7 @@ If you prefer not to use the scripts:
 
 ```bash
 useradd --system --shell /bin/false --home-dir /opt/shelob shelob
-git clone https://github.com/davidmoore-rogers/shelob.git /opt/shelob
+git clone https://github.com/davidmoore-rogers/polaris.git /opt/shelob
 chown -R shelob:shelob /opt/shelob && cd /opt/shelob
 cp .env.example .env     # set DATABASE_URL, SESSION_SECRET, NODE_ENV=production
 sudo -u shelob npm ci && sudo -u shelob npx tsc

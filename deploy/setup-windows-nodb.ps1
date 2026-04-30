@@ -1,10 +1,10 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Shelob deployment script for Windows Server 2019/2022 with a remote/external PostgreSQL database.
+    Polaris deployment script for Windows Server 2019/2022 with a remote/external PostgreSQL database.
 
 .DESCRIPTION
-    Installs Node.js 20 and deploys Shelob as a Windows Service, connecting to an external PostgreSQL database.
+    Installs Node.js 20 and deploys Polaris as a Windows Service, connecting to an external PostgreSQL database.
     Does NOT install PostgreSQL locally.
 
     Run as Administrator:
@@ -15,7 +15,7 @@
       2. Clones or copies the application to C:\shelob
       3. Configures .env with the provided DATABASE_URL
       4. Installs dependencies, builds, and runs migrations against the remote database
-      5. Installs NSSM and registers Shelob as a Windows Service
+      5. Installs NSSM and registers Polaris as a Windows Service
       6. Opens port 3000 in Windows Firewall
 
     Use this script when your PostgreSQL database is hosted externally
@@ -27,7 +27,7 @@
 param(
     [string]$DbUrl      = "",
     [string]$AppDir     = "C:\shelob",
-    [string]$RepoUrl    = "https://github.com/davidmoore-rogers/shelob.git",
+    [string]$RepoUrl    = "https://github.com/davidmoore-rogers/polaris.git",
     [int]   $Port       = 3000,
     [string]$NssmUrl    = "https://nssm.cc/release/nssm-2.24.zip"
 )
@@ -69,7 +69,7 @@ if ($DbUrl -notmatch "^postgres(ql)?://") {
     Write-Err "Invalid DATABASE_URL — must start with postgresql:// or postgres://"
 }
 
-Write-Info "Starting Shelob deployment on $env:COMPUTERNAME (remote database mode)"
+Write-Info "Starting Polaris deployment on $env:COMPUTERNAME (remote database mode)"
 
 $hasWinget = Test-Command "winget"
 
@@ -231,7 +231,7 @@ $nodeExe = (Get-Command node).Source
 & $nssmExe set $serviceName AppParameters "dist\index.js"
 & $nssmExe set $serviceName AppDirectory $AppDir
 & $nssmExe set $serviceName AppEnvironmentExtra "NODE_ENV=production"
-& $nssmExe set $serviceName Description "Shelob — IP Management Tool"
+& $nssmExe set $serviceName Description "Polaris — IP Management Tool"
 & $nssmExe set $serviceName Start SERVICE_AUTO_START
 & $nssmExe set $serviceName AppStdout (Join-Path $AppDir "logs\service-stdout.log")
 & $nssmExe set $serviceName AppStderr (Join-Path $AppDir "logs\service-stderr.log")
@@ -246,7 +246,7 @@ Start-Sleep -Seconds 3
 
 $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
-    Write-Info "Shelob service is running"
+    Write-Info "Polaris service is running"
 } else {
     Write-Warn "Service may not have started — check: nssm status $serviceName"
 }
@@ -269,7 +269,7 @@ if (-not $ip) { $ip = "localhost" }
 
 Write-Host ""
 Write-Info "============================================"
-Write-Info "  Shelob deployment complete!"
+Write-Info "  Polaris deployment complete!"
 Write-Info "  Mode:  Remote database"
 Write-Info "  URL:   http://${ip}:${Port}"
 Write-Info "  Login: admin / admin"

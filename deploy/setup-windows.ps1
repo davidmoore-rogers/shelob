@@ -1,10 +1,10 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Shelob deployment script for Windows Server 2019/2022.
+    Polaris deployment script for Windows Server 2019/2022.
 
 .DESCRIPTION
-    Installs Node.js 20, PostgreSQL 15, and deploys Shelob as a Windows Service.
+    Installs Node.js 20, PostgreSQL 15, and deploys Polaris as a Windows Service.
 
     Run as Administrator:
         powershell -ExecutionPolicy Bypass -File deploy\setup-windows.ps1
@@ -15,7 +15,7 @@
       3. Creates the PostgreSQL database and role
       4. Clones or copies the application to C:\shelob
       5. Installs dependencies and runs migrations
-      6. Installs NSSM and registers Shelob as a Windows Service
+      6. Installs NSSM and registers Polaris as a Windows Service
       7. Opens port 3000 in Windows Firewall
 
     After running, the app will be available at http://<server-ip>:3000
@@ -26,7 +26,7 @@ param(
     [string]$DbName     = "shelob",
     [string]$DbUser     = "shelob",
     [string]$DbPass     = "shelob",
-    [string]$RepoUrl    = "https://github.com/davidmoore-rogers/shelob.git",
+    [string]$RepoUrl    = "https://github.com/davidmoore-rogers/polaris.git",
     [int]   $Port       = 3000,
     [string]$NssmUrl    = "https://nssm.cc/release/nssm-2.24.zip"
 )
@@ -53,7 +53,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Write-Err "This script must be run as Administrator"
 }
 
-Write-Info "Starting Shelob deployment on $env:COMPUTERNAME"
+Write-Info "Starting Polaris deployment on $env:COMPUTERNAME"
 
 $hasWinget = Test-Command "winget"
 
@@ -296,7 +296,7 @@ $nodeExe = (Get-Command node).Source
 & $nssmExe set $serviceName AppParameters "dist\index.js"
 & $nssmExe set $serviceName AppDirectory $AppDir
 & $nssmExe set $serviceName AppEnvironmentExtra "NODE_ENV=production"
-& $nssmExe set $serviceName Description "Shelob — IP Management Tool"
+& $nssmExe set $serviceName Description "Polaris — IP Management Tool"
 & $nssmExe set $serviceName Start SERVICE_AUTO_START
 & $nssmExe set $serviceName AppStdout (Join-Path $AppDir "logs\service-stdout.log")
 & $nssmExe set $serviceName AppStderr (Join-Path $AppDir "logs\service-stderr.log")
@@ -313,7 +313,7 @@ Start-Sleep -Seconds 3
 
 $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
-    Write-Info "Shelob service is running"
+    Write-Info "Polaris service is running"
 } else {
     Write-Warn "Service may not have started — check: nssm status $serviceName"
 }
@@ -336,7 +336,7 @@ if (-not $ip) { $ip = "localhost" }
 
 Write-Host ""
 Write-Info "============================================"
-Write-Info "  Shelob deployment complete!"
+Write-Info "  Polaris deployment complete!"
 Write-Info "  URL:   http://${ip}:${Port}"
 Write-Info "  Login: admin / admin"
 Write-Info "  Logs:  $AppDir\logs\"

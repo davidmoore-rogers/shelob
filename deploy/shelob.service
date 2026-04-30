@@ -1,6 +1,6 @@
 [Unit]
-Description=Shelob — IP Management Tool
-Documentation=https://github.com/davidmoore-rogers/shelob
+Description=Polaris — IP Management Tool
+Documentation=https://github.com/davidmoore-rogers/polaris
 After=network.target postgresql.service
 Requires=postgresql.service
 

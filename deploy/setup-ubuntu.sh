@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy/setup-ubuntu.sh — Shelob deployment script for Ubuntu / Debian
+# deploy/setup-ubuntu.sh — Polaris deployment script for Ubuntu / Debian
 #
 # Run as root:  bash deploy/setup-ubuntu.sh
 #
@@ -21,7 +21,7 @@ APP_GROUP="shelob"
 DB_NAME="shelob"
 DB_USER="shelob"
 DB_PASS="shelob"
-REPO_URL="https://github.com/davidmoore-rogers/shelob.git"
+REPO_URL="https://github.com/davidmoore-rogers/polaris.git"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -34,7 +34,7 @@ if [[ $EUID -ne 0 ]]; then
   error "This script must be run as root"
 fi
 
-info "Starting Shelob deployment on $(hostname)"
+info "Starting Polaris deployment on $(hostname)"
 
 # Ensure apt is up to date
 info "Updating package lists..."
@@ -164,7 +164,7 @@ info "Waiting for service to start..."
 sleep 2
 
 if systemctl is-active --quiet shelob; then
-  info "Shelob service is running"
+  info "Polaris service is running"
 else
   warn "Service may not have started — check: journalctl -u shelob -f"
 fi
@@ -184,7 +184,7 @@ fi
 # ─── Done ─────────────────────────────────────────────────────────────────────
 echo ""
 info "============================================"
-info "  Shelob deployment complete!"
+info "  Polaris deployment complete!"
 info "  URL:   http://$(hostname -I | awk '{print $1}'):3000"
 info "  Login: admin / admin"
 info "  Logs:  journalctl -u shelob -f"

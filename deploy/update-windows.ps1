@@ -1,10 +1,10 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Shelob update script for Windows Server.
+    Polaris update script for Windows Server.
 
 .DESCRIPTION
-    Updates an existing Shelob installation to the latest version.
+    Updates an existing Polaris installation to the latest version.
 
     Run as Administrator:
         powershell -ExecutionPolicy Bypass -File deploy\update-windows.ps1
@@ -55,7 +55,7 @@ $nssmExe = "C:\nssm\nssm.exe"
 if (-not (Test-Path $nssmExe)) {
     # Try PATH
     if (Test-Command "nssm") { $nssmExe = "nssm" }
-    else { Write-Err "NSSM not found at C:\nssm\nssm.exe — is Shelob installed?"; exit 1 }
+    else { Write-Err "NSSM not found at C:\nssm\nssm.exe — is Polaris installed?"; exit 1 }
 }
 
 # ─── Preflight ────────────────────────────────────────────────────────────────
