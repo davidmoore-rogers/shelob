@@ -4658,33 +4658,109 @@ async function openIpHistoryModal(assetId, label) {
   }
 }
 
-function _assetDetailPairs() {
-  var body = document.getElementById('asset-panel-body') ||
-             document.querySelector('#modal-overlay .modal-body');
-  if (!body) return [];
-  var pairs = [];
-  body.querySelectorAll('.detail-row').forEach(function (row) {
-    var label = row.querySelector('.detail-label');
-    var value = row.querySelector('.detail-value');
-    if (!label || !value) return;
-    var labelText = (label.innerText || label.textContent || '').trim();
-    var valueText = (value.innerText || value.textContent || '').trim();
-    pairs.push({ label: labelText, value: valueText });
-  });
-  return pairs;
+// Find the visible content of the asset details slide-in: the active tab
+// panel when the slide-in is rendered with tabs, otherwise the body itself
+// (modal-style edit views without tabs).
+function _activeAssetPanel() {
+  var panels = document.querySelectorAll('[id^="asset-view-tab-"]');
+  for (var i = 0; i < panels.length; i++) {
+    if (panels[i].classList.contains('active')) return panels[i];
+  }
+  return document.getElementById('asset-panel-body') ||
+         document.querySelector('#modal-overlay .modal-body');
+}
+
+function _activeAssetTabLabel() {
+  var btn = document.querySelector('#asset-view-tabs .page-tab.active');
+  return btn ? (btn.innerText || btn.textContent || '').trim() : '';
+}
+
+// Walk the active tab panel and extract structured content blocks. Three
+// block shapes power both copy and screenshot:
+//   { type: 'kv',      label, value }   from .detail-row pairs (General tab)
+//   { type: 'table',   headers, rows }  from any <table> (System/Quarantine/etc.)
+//   { type: 'heading', text }           from .section-label and <h1>-<h6>
+// Anything else (charts, buttons, hidden nodes) is skipped.
+function _extractTabBlocks(root) {
+  if (!root) return [];
+  var blocks = [];
+  function isHidden(el) {
+    if (!el) return true;
+    var cs = el.ownerDocument && el.ownerDocument.defaultView
+      ? el.ownerDocument.defaultView.getComputedStyle(el)
+      : null;
+    return cs && (cs.display === 'none' || cs.visibility === 'hidden');
+  }
+  function walk(node) {
+    if (!node || node.nodeType !== 1) return;
+    var el = node;
+    if (isHidden(el)) return;
+    if (el.classList && el.classList.contains('detail-row')) {
+      var lbl = el.querySelector('.detail-label');
+      var val = el.querySelector('.detail-value');
+      if (lbl && val) {
+        blocks.push({
+          type: 'kv',
+          label: (lbl.innerText || lbl.textContent || '').trim(),
+          value: (val.innerText || val.textContent || '').trim(),
+        });
+      }
+      return;
+    }
+    if (el.tagName === 'TABLE') {
+      var headers = [];
+      el.querySelectorAll('thead th').forEach(function (th) {
+        headers.push((th.innerText || th.textContent || '').trim());
+      });
+      var rows = [];
+      el.querySelectorAll('tbody tr').forEach(function (tr) {
+        var row = [];
+        tr.querySelectorAll('td').forEach(function (td) {
+          row.push((td.innerText || td.textContent || '').trim().replace(/\s+/g, ' '));
+        });
+        if (row.length) rows.push(row);
+      });
+      if (rows.length) blocks.push({ type: 'table', headers: headers, rows: rows });
+      return;
+    }
+    if (el.classList && el.classList.contains('section-label')) {
+      var st = (el.innerText || el.textContent || '').trim();
+      if (st) blocks.push({ type: 'heading', text: st });
+      return;
+    }
+    if (/^H[1-6]$/.test(el.tagName)) {
+      var ht = (el.innerText || el.textContent || '').trim();
+      if (ht) blocks.push({ type: 'heading', text: ht });
+      return;
+    }
+    for (var i = 0; i < el.childNodes.length; i++) walk(el.childNodes[i]);
+  }
+  walk(root);
+  return blocks;
 }
 
 function _copyAssetDetails() {
-  var pairs = _assetDetailPairs();
-  if (pairs.length === 0) { showToast("Nothing to copy", "error"); return; }
-  var text = pairs.map(function (p) {
-    if (p.value.indexOf('\n') !== -1) {
-      var indented = p.value.split('\n').map(function (l) { return '  ' + l; }).join('\n');
-      return p.label + ':\n' + indented;
+  var blocks = _extractTabBlocks(_activeAssetPanel());
+  if (blocks.length === 0) { showToast("Nothing to copy", "error"); return; }
+  var lines = [];
+  blocks.forEach(function (b) {
+    if (b.type === 'heading') {
+      if (lines.length) lines.push('');
+      lines.push(b.text);
+      lines.push(new Array(b.text.length + 1).join('-'));
+    } else if (b.type === 'kv') {
+      if (b.value.indexOf('\n') !== -1) {
+        var indented = b.value.split('\n').map(function (l) { return '  ' + l; }).join('\n');
+        lines.push(b.label + ':\n' + indented);
+      } else {
+        lines.push(b.label + ': ' + (b.value || '-'));
+      }
+    } else if (b.type === 'table') {
+      if (b.headers && b.headers.length) lines.push(b.headers.join(' | '));
+      b.rows.forEach(function (r) { lines.push(r.join(' | ')); });
     }
-    return p.label + ': ' + (p.value || '-');
-  }).join('\n');
-  navigator.clipboard.writeText(text).then(function () {
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(function () {
     showToast("Asset details copied to clipboard");
   }).catch(function () {
     showToast("Copy failed", "error");
@@ -4692,8 +4768,8 @@ function _copyAssetDetails() {
 }
 
 function _screenshotAssetDetails(asset) {
-  var pairs = _assetDetailPairs();
-  if (pairs.length === 0) { showToast("Nothing to screenshot", "error"); return; }
+  var blocks = _extractTabBlocks(_activeAssetPanel());
+  if (blocks.length === 0) { showToast("Nothing to screenshot", "error"); return; }
 
   var cs = getComputedStyle(document.documentElement);
   var bgPrimary = cs.getPropertyValue("--color-bg-primary").trim() || "#ffffff";
@@ -4707,19 +4783,40 @@ function _screenshotAssetDetails(asset) {
   var titleH = 48;
   var labelColW = 180;
   var valueColW = 480;
-  var tableW = labelColW + valueColW;
+  var contentW = labelColW + valueColW;
   var lineH = 18;
   var rowPadV = 10;
-  var w = tableW + pad * 2;
+  var headingH = 32;
+  var tableHeaderH = 26;
+  var tableRowH = 22;
+  var tableGap = 12;
+  var w = contentW + pad * 2;
 
-  var rows = pairs.map(function (p) {
-    var lines = p.value.split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l.length > 0; });
-    if (lines.length === 0) lines = ['-'];
-    return { label: p.label, lines: lines, h: Math.max(30, lines.length * lineH + rowPadV) };
+  // Pre-measure each block so the canvas is sized exactly.
+  // Use a throwaway context so font metrics line up with the final draw.
+  var measureCanvas = document.createElement("canvas");
+  var measureCtx = measureCanvas.getContext("2d");
+
+  var laidOut = blocks.map(function (b) {
+    if (b.type === 'heading') {
+      return { block: b, h: headingH };
+    }
+    if (b.type === 'kv') {
+      var lines = b.value.split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l.length > 0; });
+      if (lines.length === 0) lines = ['-'];
+      return { block: b, lines: lines, h: Math.max(30, lines.length * lineH + rowPadV) };
+    }
+    if (b.type === 'table') {
+      var cols = Math.max(1, (b.headers && b.headers.length) || (b.rows[0] ? b.rows[0].length : 1));
+      var bodyH = b.rows.length * tableRowH;
+      var hdrH = b.headers && b.headers.length ? tableHeaderH : 0;
+      return { block: b, cols: cols, h: hdrH + bodyH + tableGap };
+    }
+    return { block: b, h: 0 };
   });
 
-  var totalRowsH = rows.reduce(function (acc, r) { return acc + r.h; }, 0);
-  var h = titleH + totalRowsH + pad;
+  var totalH = laidOut.reduce(function (acc, l) { return acc + l.h; }, 0);
+  var h = titleH + totalH + pad;
 
   var canvas = document.createElement("canvas");
   canvas.width = w * scale;
@@ -4732,39 +4829,87 @@ function _screenshotAssetDetails(asset) {
 
   ctx.fillStyle = clrText;
   ctx.font = "bold 17px system-ui,-apple-system,sans-serif";
+  var tabLabel = _activeAssetTabLabel();
   var title = "Asset Details" + (asset && asset.hostname ? " — " + asset.hostname : "");
+  if (tabLabel) title += " (" + tabLabel + ")";
   ctx.fillText(title, pad, 32);
 
-  var y = titleH;
-  rows.forEach(function (r, i) {
-    if (i % 2 === 1) {
-      ctx.fillStyle = bgSurface;
-      ctx.fillRect(pad, y, tableW, r.h);
+  function fitText(text, maxW) {
+    var t = String(text == null ? '' : text);
+    while (ctx.measureText(t).width > maxW && t.length > 3) {
+      t = t.slice(0, -4) + '…';
     }
+    return t;
+  }
 
-    ctx.fillStyle = clrMuted;
-    ctx.font = "600 10px system-ui,-apple-system,sans-serif";
-    ctx.fillText(r.label.toUpperCase(), pad + 10, y + 20);
-
-    ctx.fillStyle = clrText;
-    ctx.font = "13px system-ui,-apple-system,sans-serif";
-    var maxW = valueColW - 20;
-    r.lines.forEach(function (line, li) {
-      var txt = line;
-      while (ctx.measureText(txt).width > maxW && txt.length > 3) {
-        txt = txt.slice(0, -4) + '…';
+  var y = titleH;
+  var kvRowIndex = 0;
+  laidOut.forEach(function (l) {
+    var b = l.block;
+    if (b.type === 'heading') {
+      ctx.fillStyle = clrText;
+      ctx.font = "600 13px system-ui,-apple-system,sans-serif";
+      ctx.fillText(b.text, pad, y + 22);
+      y += l.h;
+      kvRowIndex = 0;
+      return;
+    }
+    if (b.type === 'kv') {
+      if (kvRowIndex % 2 === 1) {
+        ctx.fillStyle = bgSurface;
+        ctx.fillRect(pad, y, contentW, l.h);
       }
-      ctx.fillText(txt, pad + labelColW + 10, y + 20 + li * lineH);
-    });
-
-    ctx.fillStyle = clrBorder;
-    ctx.fillRect(pad, y + r.h - 1, tableW, 1);
-    y += r.h;
+      ctx.fillStyle = clrMuted;
+      ctx.font = "600 10px system-ui,-apple-system,sans-serif";
+      ctx.fillText(b.label.toUpperCase(), pad + 10, y + 20);
+      ctx.fillStyle = clrText;
+      ctx.font = "13px system-ui,-apple-system,sans-serif";
+      var maxW = valueColW - 20;
+      l.lines.forEach(function (line, li) {
+        ctx.fillText(fitText(line, maxW), pad + labelColW + 10, y + 20 + li * lineH);
+      });
+      ctx.fillStyle = clrBorder;
+      ctx.fillRect(pad, y + l.h - 1, contentW, 1);
+      y += l.h;
+      kvRowIndex += 1;
+      return;
+    }
+    if (b.type === 'table') {
+      var colW = Math.floor(contentW / l.cols);
+      var ty = y;
+      if (b.headers && b.headers.length) {
+        ctx.fillStyle = bgSurface;
+        ctx.fillRect(pad, ty, contentW, tableHeaderH);
+        ctx.fillStyle = clrMuted;
+        ctx.font = "600 10px system-ui,-apple-system,sans-serif";
+        for (var ci = 0; ci < l.cols; ci++) {
+          var label = (b.headers[ci] || '').toUpperCase();
+          ctx.fillText(fitText(label, colW - 16), pad + ci * colW + 8, ty + 17);
+        }
+        ty += tableHeaderH;
+      }
+      ctx.fillStyle = clrText;
+      ctx.font = "12px system-ui,-apple-system,sans-serif";
+      b.rows.forEach(function (row, ri) {
+        if (ri % 2 === 1) {
+          ctx.fillStyle = bgSurface;
+          ctx.fillRect(pad, ty, contentW, tableRowH);
+        }
+        ctx.fillStyle = clrText;
+        for (var c = 0; c < l.cols; c++) {
+          var cell = row[c] || '';
+          ctx.fillText(fitText(cell, colW - 16), pad + c * colW + 8, ty + 15);
+        }
+        ty += tableRowH;
+      });
+      ctx.strokeStyle = clrBorder;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(pad + 0.5, y + 0.5, contentW - 1, ty - y - 1);
+      y += l.h;
+      kvRowIndex = 0;
+      return;
+    }
   });
-
-  ctx.strokeStyle = clrBorder;
-  ctx.lineWidth = 1;
-  ctx.strokeRect(pad + 0.5, titleH + 0.5, tableW - 1, totalRowsH - 1);
 
   canvas.toBlob(function (blob) {
     if (!blob) { showToast("Screenshot failed", "error"); return; }
@@ -5822,10 +5967,19 @@ function _wireQuarantineTab(a) {
         return;
       }
       container.innerHTML =
-        '<table class="data-table" style="font-size:0.82rem"><thead><tr><th>FortiGate</th><th>Source</th><th>Last Seen</th></tr></thead><tbody>' +
+        '<table class="data-table" style="font-size:0.82rem"><thead><tr><th>FortiGate</th><th>IP Address</th><th>VLAN</th><th>Source</th><th>Last Seen</th></tr></thead><tbody>' +
         rows.map(function (s) {
+          var vlanCell = "—";
+          if (s.subnetName || s.vlan != null) {
+            var parts = [];
+            if (s.subnetName) parts.push(escapeHtml(s.subnetName));
+            if (s.vlan != null) parts.push("VLAN " + s.vlan);
+            vlanCell = parts.join(" · ");
+          }
           return '<tr>' +
             '<td>' + escapeHtml(s.fortigateDevice || "?") + '</td>' +
+            '<td>' + escapeHtml(s.ipAddress || "—") + '</td>' +
+            '<td>' + vlanCell + '</td>' +
             '<td><span class="badge badge-type">' + escapeHtml(s.source || "?") + '</span></td>' +
             '<td>' + (s.lastSeen ? formatDate(s.lastSeen) : "—") + '</td>' +
           '</tr>';

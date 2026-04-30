@@ -787,6 +787,7 @@ model AssetFortigateSighting {
   integration     Integration? @relation(fields: [integrationId], references: [id], onDelete: SetNull)
   fortigateDevice String // matches Subnet.fortigateDevice / Asset.learnedLocation
   source          String // "dhcp_lease" | "dhcp_reservation" | "interface_ip" | "vip"
+  ipAddress       String? // IP last seen on this FortiGate (lease/reservation IP); nullable for rows recorded before this column existed
   firstSeen       DateTime     @default(now())
   lastSeen        DateTime     @default(now())
 

@@ -390,6 +390,7 @@ AssetFortigateSighting          -- DHCP-only sightings: tracks which FortiGate e
   integrationId     UUID? FK → Integration (set null on delete)
   fortigateDevice   String          -- FortiGate device name from the DHCP entry
   source            String          -- "dhcp_reservation" | "dhcp_lease"
+  ipAddress         String?         -- IP last seen on this FortiGate. Bumped on every re-sighting alongside lastSeen. Nullable for rows recorded before this column existed; the Quarantine tab joins it against Subnet.cidr (filtered by fortigateDevice) at read time to surface subnet name + VLAN.
   lastSeen          DateTime
   @@unique([assetId, fortigateDevice]) -- one row per (asset, FortiGate); updated on re-sighting
 
@@ -730,7 +731,7 @@ The assets list and single-GET attach a synthesized `ipContext` field to each ro
 #### Quarantine (admin + assetsadmin, or bearer token with `assets:quarantine` scope)
 - `GET    /assets/sighting-settings`            *(auth)* — `{ sightingMaxAgeDays }` (default 180).
 - `PUT    /assets/sighting-settings`            *(assetsadmin)* — `{ sightingMaxAgeDays }`. Max 3650.
-- `GET    /assets/:id/sightings`                *(auth)* — DHCP sighting history for this asset (list of `{ fortigateDevice, source, lastSeen, integrationId }`).
+- `GET    /assets/:id/sightings`                *(auth)* — DHCP sighting history for this asset (list of `{ fortigateDevice, source, ipAddress, lastSeen, integrationId, subnetName, vlan }`). `subnetName` + `vlan` are resolved at request time by matching the stored `ipAddress` against subnets discovered on the same `fortigateDevice` — both are null when the IP doesn't fall inside any known subnet on that device (e.g. the subnet has been deleted or the sighting predates the `ipAddress` column).
 - `GET    /assets/:id/quarantine-status`        *(auth)* — `{ status, quarantineReason, quarantinedAt, quarantinedBy, quarantineTargets }`.
 - `POST   /assets/:id/quarantine`               *(assetsadmin | token:assets:quarantine)* — Push MAC block to every FortiGate that has a sighting within `sightingMaxAgeDays`. Body: `{ reason? }`. Returns `{ message, succeededCount, failedCount, targets[] }`. On at least one push success the asset `status` is set to `quarantined` and `quarantineTargets` is stamped. actor is derived from session username or `req.apiToken.name`. **Infrastructure assets (`assetType` = `firewall` / `switch` / `access_point`) are rejected with 400** — quarantining the device that does the quarantining would lock the operator out of the network. Release endpoints don't enforce the type guard so a misclassified quarantine can still be undone.
 - `DELETE /assets/:id/quarantine`               *(assetsadmin | token:assets:quarantine)* — Best-effort unpush from all synced targets, then restores `statusBeforeQuarantine` (defaults to `active`). Device-side failure does not block release.

@@ -2556,6 +2556,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           fortigateDevice: entry.device,
           source: entry.type === "dhcp-reservation" ? "dhcp_reservation" : "dhcp_lease",
           integrationId,
+          ipAddress: entry.ipAddress,
         });
       }
 

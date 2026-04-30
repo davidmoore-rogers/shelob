@@ -17,7 +17,7 @@ import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { getIpHistory, getHistorySettings, updateHistorySettings, pruneOldHistory } from "../../services/assetIpHistoryService.js";
 import { getSightingsForAsset, getSightingSettings, updateSightingSettings } from "../../services/assetSightingService.js";
 import { quarantineAsset, releaseQuarantine, verifyAssetQuarantine } from "../../services/assetQuarantineService.js";
-import { isValidIpAddress } from "../../utils/cidr.js";
+import { isValidIpAddress, cidrContains } from "../../utils/cidr.js";
 import {
   getMonitorSettings, updateMonitorSettings,
   probeAsset, recordProbeResult,
@@ -1680,12 +1680,44 @@ router.put("/sighting-settings", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // GET /api/v1/assets/:id/sightings — DHCP sighting history (any auth user)
+// Each sighting is decorated with subnet name + VLAN resolved from the stored
+// IP against subnets discovered on the same FortiGate, so the Quarantine tab
+// can show "what was seen and on which VLAN" without a second round-trip.
 router.get("/:id/sightings", async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const exists = await prisma.asset.findUnique({ where: { id }, select: { id: true } });
     if (!exists) throw new AppError(404, "Asset not found");
-    res.json(await getSightingsForAsset(id));
+    const sightings = await getSightingsForAsset(id);
+
+    const devices = Array.from(
+      new Set(sightings.map((s) => s.fortigateDevice).filter(Boolean)),
+    );
+    const subnets = devices.length
+      ? await prisma.subnet.findMany({
+          where: { fortigateDevice: { in: devices } },
+          select: { cidr: true, name: true, vlan: true, fortigateDevice: true },
+        })
+      : [];
+
+    const enriched = sightings.map((s) => {
+      let subnetName: string | null = null;
+      let vlan: number | null = null;
+      if (s.ipAddress) {
+        const match = subnets.find(
+          (sub) =>
+            sub.fortigateDevice === s.fortigateDevice &&
+            cidrContains(sub.cidr, `${s.ipAddress}/32`),
+        );
+        if (match) {
+          subnetName = match.name ?? null;
+          vlan = match.vlan ?? null;
+        }
+      }
+      return { ...s, subnetName, vlan };
+    });
+
+    res.json(enriched);
   } catch (err) {
     next(err);
   }
