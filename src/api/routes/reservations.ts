@@ -10,8 +10,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as reservationService from "../../services/reservationService.js";
+import * as staleService from "../../services/reservationStaleService.js";
 import { AppError } from "../../utils/errors.js";
-import { requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
+import { requireAdmin, requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
 import { logEvent, buildChanges } from "./events.js";
 
 const router = Router();
@@ -57,6 +58,50 @@ const UpdateReservationSchema = z.object({
 });
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
+
+// ─── Stale-reservation alerts (must come before /:id) ──────────────────────
+//
+// Settings are admin-only writes; reads are open to any authenticated user
+// so the Events page can render the badge count for everyone.
+
+const StaleSettingsSchema = z.object({
+  staleAfterDays: z.number().int().min(0).max(3650),
+});
+
+router.get("/stale-settings", async (_req, res, next) => {
+  try {
+    res.json(await staleService.getStaleSettings());
+  } catch (err) { next(err); }
+});
+
+router.put("/stale-settings", requireAdmin, async (req, res, next) => {
+  try {
+    const input = StaleSettingsSchema.parse(req.body);
+    const updated = await staleService.updateStaleSettings(input);
+    logEvent({
+      action: "reservation.stale-settings.updated",
+      resourceType: "setting",
+      actor: req.session?.username,
+      message: `Reservation stale-detection threshold set to ${updated.staleAfterDays} day(s)${updated.staleAfterDays === 0 ? " — alerts disabled" : ""}`,
+      details: { staleAfterDays: updated.staleAfterDays },
+    });
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+router.get("/alerts", async (_req, res, next) => {
+  try {
+    const alerts = await staleService.listStaleReservations();
+    res.json({ alerts, total: alerts.length });
+  } catch (err) { next(err); }
+});
+
+router.get("/alerts/count", async (_req, res, next) => {
+  try {
+    const alerts = await staleService.listStaleReservations();
+    res.json({ count: alerts.length });
+  } catch (err) { next(err); }
+});
 
 // POST /reservations/next-available  (must come before /:id)
 router.post("/next-available", requireUserOrAbove, async (req, res, next) => {
