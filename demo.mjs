@@ -609,6 +609,13 @@ const INTEGRATIONS = [
       mgmtInterface: "port1",
       dhcpInclude: ["dhcp-prod-01", "dhcp-prod-02", "dhcp-monitor", "dhcp-k8s", "dhcp-database", "dhcp-lab-01"],
       dhcpExclude: [],
+      // Auto-Monitor Interfaces — pick a different mode per class to demo
+      // all three. FortiGates pin two named WAN uplinks; FortiSwitches use a
+      // wildcard to cover access ports 47–48 (the typical uplink pair) only
+      // when up; FortiAPs grab every "physical" interface that's online.
+      fortigateMonitor:   { addAsMonitored: true, autoMonitorInterfaces: { mode: "names",    names: ["wan1", "wan2"] } },
+      fortiswitchMonitor: { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: { mode: "wildcard", patterns: ["port4[7-8]"], onlyUp: true } },
+      fortiapMonitor:     { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: { mode: "type",     types: ["physical"], onlyUp: true } },
     },
     enabled: true,
     pollInterval: 12,
@@ -657,6 +664,8 @@ const INTEGRATIONS = [
       dhcpExclude: [],
       inventoryIncludeInterfaces: [],
       inventoryExcludeInterfaces: ["guest*"],
+      // Auto-Monitor Interfaces on the standalone FortiGate path too.
+      fortigateMonitor: { addAsMonitored: false, autoMonitorInterfaces: { mode: "names", names: ["wan1"] } },
     },
     enabled: true,
     pollInterval: 12,
@@ -967,6 +976,10 @@ const ASSETS = [
     purchaseOrder: "PO-2025-0005",
     notes: "Edge firewall — AWS VPN termination",
     tags: ["firewall", "edge", "critical"],
+    // Pre-pinned by the integration's Auto-Monitor Interfaces selection
+    // ({mode:"names", names:["wan1","wan2"]}). Fast-cadence polling for the
+    // two WAN uplinks on top of the regular ~10 min full system-info pass.
+    monitoredInterfaces: ["wan1", "wan2"],
     createdAt: "2026-01-20T15:30:00.000Z",
     updatedAt: "2026-01-20T15:30:00.000Z",
   },
@@ -1070,6 +1083,7 @@ const EVENTS = [
   { id: "ev07", timestamp: "2026-04-16T09:00:00.000Z", level: "info", action: "integration.created", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Integration "Production FortiManager" (fortimanager) created' },
   { id: "ev08", timestamp: "2026-04-16T09:01:00.000Z", level: "info", action: "integration.discover.started", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'DHCP discovery started for "Production FortiManager"' },
   { id: "ev09", timestamp: "2026-04-16T09:01:30.000Z", level: "info", action: "integration.discover.completed", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'DHCP discovery completed for "Production FortiManager" \u2014 2 created, 0 updated, 0 skipped' },
+  { id: "ev09b", timestamp: "2026-04-16T09:01:32.000Z", level: "info", action: "integration.auto_monitor_interfaces.applied", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Auto-monitor interfaces applied for "Production FortiManager" (fortigate) \u2014 1 device(s), 2 interface(s) added', details: { class: "fortigate", devices: 1, interfacesAdded: 2 } },
   { id: "ev10", timestamp: "2026-04-16T09:15:00.000Z", level: "info", action: "integration.test.started", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Connection test started for "Production FortiManager"' },
   { id: "ev11", timestamp: "2026-04-16T09:15:02.000Z", level: "info", action: "integration.test.completed", resourceType: "integration", resourceId: INTEGRATIONS[0].id, resourceName: "Production FortiManager", actor: "admin", message: 'Connection test succeeded for "Production FortiManager": Connected \u2014 FortiManager v7.4.3' },
   { id: "ev12", timestamp: "2026-04-16T10:00:00.000Z", level: "info", action: "asset.created", resourceType: "asset", resourceId: ASSETS[0].id, resourceName: "k8s-worker-01", actor: "dmoore", message: 'Asset "k8s-worker-01" created' },
