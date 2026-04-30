@@ -21,6 +21,7 @@ import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
 import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
+import * as sightings from "../../services/assetSightingService.js";
 
 const router = Router();
 
@@ -2528,6 +2529,10 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     // Collect all updates, then batch-execute
     const assetUpdates: Array<{ id: string; data: any }> = [];
     const resUpdates: Array<{ id: string; data: Record<string, string> }> = [];
+    // Quarantine fan-out hook: every (asset, FortiGate) DHCP attribution
+    // becomes a sighting. The flush at the end of the phase is fire-and-
+    // forget — sighting recording must not fail the discovery sync.
+    const sightingRows: sightings.SightingInput[] = [];
 
     for (const entry of result.dhcpEntries) {
       if (!entry.macAddress || !entry.ipAddress) continue;
@@ -2537,6 +2542,15 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       // a new device's MAC onto the previous lease-holder's asset.
       const asset = assetIdx.findByEntry(entry.macAddress, entry.hostname, entry.ipAddress, { allowIpFallback: false });
       if (!asset) continue;
+
+      if (entry.device) {
+        sightingRows.push({
+          assetId: asset.id,
+          fortigateDevice: entry.device,
+          source: entry.type === "dhcp-reservation" ? "dhcp_reservation" : "dhcp_lease",
+          integrationId,
+        });
+      }
 
       // Resolve subnet up-front so we can stamp it on the MAC entry
       const matchingSubnet = findSubnetForIp(entry.ipAddress);
@@ -2621,6 +2635,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       await batchSettled(resUpdates, (u) =>
         prisma.reservation.update({ where: { id: u.id }, data: u.data })
       );
+    }
+
+    // Flush quarantine-sighting rows. Failures are swallowed inside
+    // recordSightings (Promise.allSettled) — a misbehaving row should not
+    // fail the discovery sync.
+    if (sightingRows.length > 0) {
+      try {
+        await sightings.recordSightings(sightingRows);
+      } catch (err: any) {
+        syncLog("error", `Failed to flush ${sightingRows.length} asset sighting(s): ${err.message || "Unknown error"}`);
+      }
     }
   }
 
