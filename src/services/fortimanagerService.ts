@@ -512,6 +512,13 @@ export interface DiscoveredDhcpEntry {
   accessPoint?: string;     // AP name for wireless leases
   ssid?: string;            // SSID for wireless leases
   vci?: string;             // Vendor class identifier (e.g. "FortiSwitch-108F-FPOE")
+  // True when /api/v2/monitor/system/dhcp confirmed this IP is currently
+  // being actively leased by a client — set on dhcp-lease entries (always)
+  // and on dhcp-reservation entries whose target client is online holding
+  // the lease. Used by the sync to stamp Reservation.lastSeenLeased so the
+  // stale-reservation job can detect static reservations whose target has
+  // never been (or hasn't been recently) seen actively online.
+  seenLeased?: boolean;
 }
 
 export interface DiscoveredInventoryDevice {
@@ -1035,7 +1042,16 @@ export async function discoverDhcpSubnets(
         const leaseMac = lease.mac || "";
         let leaseIface = lease.interface || lease._serverIface || "";
         if (!leaseIp || leaseIp === "0.0.0.0") continue;
-        if (localDhcpEntries.some((e) => e.ipAddress === leaseIp)) continue;
+
+        // CMDB already has this static reservation — mark it as currently
+        // leased so the stale-reservation job knows the target has been
+        // seen actively holding its IP. CMDB wins on field overlap; we just
+        // annotate the seen-leased signal.
+        const existingIdx = localDhcpEntries.findIndex((e) => e.ipAddress === leaseIp);
+        if (existingIdx >= 0) {
+          localDhcpEntries[existingIdx].seenLeased = true;
+          continue;
+        }
         if (!leaseIface) {
           const matched = localSubnets.find((s) => {
             try { return new Netmask(s.cidr).contains(leaseIp); } catch { return false; }
@@ -1053,6 +1069,9 @@ export async function discoverDhcpSubnets(
           accessPoint: lease.access_point || undefined,
           ssid: lease.ssid || undefined,
           vci: lease.vci || undefined,
+          // Monitor confirms the IP is actively leased right now — feeds the
+          // stale-reservation job's "still online" signal.
+          seenLeased: true,
         });
         deviceEntryCount++;
       }

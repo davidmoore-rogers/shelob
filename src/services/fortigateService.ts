@@ -351,10 +351,14 @@ export async function discoverDhcpSubnets(
 
     log("discover.leases", "info", `${deviceHostname}: Raw DHCP entries from monitor: ${flatLeases.length}`, deviceHostname);
 
-    if (flatLeases.length > 0) {
-      // Replace config-based reservation fallback with richer monitor data
-      dhcpEntries.splice(configResStart, dhcpEntries.length - configResStart);
-    }
+    // Merge monitor data INTO the CMDB-derived list rather than wiping it.
+    // /api/v2/monitor/system/dhcp only returns reservations whose target client
+    // is currently online and holding a lease. Static reservations whose
+    // target is offline are in CMDB but not in monitor; wiping the CMDB list
+    // would silently drop them. CMDB is the base set; monitor adds new IPs
+    // (live leases) and stamps `seenLeased=true` on overlapping CMDB entries
+    // so the stale-reservation job can tell which static reservations have
+    // ever been seen actively held by their target.
 
     let deviceEntryCount = 0;
     for (const lease of flatLeases) {
@@ -362,7 +366,14 @@ export async function discoverDhcpSubnets(
       const leaseMac = lease.mac || "";
       let leaseIface = lease.interface || lease._serverIface || "";
       if (!leaseIp || leaseIp === "0.0.0.0") continue;
-      if (dhcpEntries.some((e) => e.ipAddress === leaseIp && e.device === deviceName)) continue;
+
+      const existingIdx = dhcpEntries.findIndex((e) => e.ipAddress === leaseIp && e.device === deviceName);
+      if (existingIdx >= 0) {
+        // CMDB already has this static reservation — mark it as currently
+        // leased so the stale job knows the target has been seen online.
+        dhcpEntries[existingIdx].seenLeased = true;
+        continue;
+      }
 
       if (!leaseIface) {
         const matched = discovered.find((s) => {
@@ -382,6 +393,9 @@ export async function discoverDhcpSubnets(
         accessPoint: lease.access_point || undefined,
         ssid: lease.ssid || undefined,
         vci: lease.vci || undefined,
+        // Monitor confirms the IP is being actively leased by a client right
+        // now — enables the stale-reservation job's "still online" signal.
+        seenLeased: true,
       });
       deviceEntryCount++;
     }

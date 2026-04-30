@@ -2251,6 +2251,16 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       if (existingRes) {
         if (existingRes.sourceType === "manual") {
           await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
+        } else if (entry.seenLeased && isDhcpReservation) {
+          // Static reservation we already know about; bump the
+          // last-seen-leased timestamp so the stale-reservation job knows
+          // its target was online at this discovery run. Cleared
+          // staleNotifiedAt so a freshly-online reservation re-arms the
+          // alert if it goes silent again later.
+          await prisma.reservation.update({
+            where: { id: existingRes.id },
+            data: { lastSeenLeased: new Date(), staleNotifiedAt: null },
+          });
         }
         continue;
       }
@@ -2267,6 +2277,11 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             status: "active",
             sourceType: proposedSourceType,
             expiresAt: proposedExpiresAt,
+            // First-discovery stamp for newly-created dhcp_reservation rows
+            // whose target is currently online — gives the stale job a
+            // baseline so it doesn't immediately flag a brand-new reservation
+            // we just learned about.
+            lastSeenLeased: entry.seenLeased && isDhcpReservation ? new Date() : null,
           },
         });
         activeResMap.set(key, newRes); // Track for MAC cross-update phase

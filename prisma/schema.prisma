@@ -139,6 +139,15 @@ model Reservation {
   pushedAt      DateTime?
   pushError     String?      @db.Text
 
+  // Stale-reservation detection. lastSeenLeased is bumped during DHCP
+  // discovery whenever /api/v2/monitor/system/dhcp confirms the reservation's
+  // IP is actively held by a client right now. staleNotifiedAt tracks the
+  // most recent time the flagStaleReservations job emitted a `reservation.stale`
+  // Event for this row, so the next nightly run doesn't re-fire the same
+  // alert until the threshold is recrossed (lastSeenLeased advances).
+  lastSeenLeased   DateTime?
+  staleNotifiedAt  DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
