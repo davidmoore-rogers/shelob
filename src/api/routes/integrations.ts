@@ -2250,7 +2250,32 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       const existingRes = activeResMap.get(key);
       if (existingRes) {
         if (existingRes.sourceType === "manual") {
-          await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
+          if (existingRes.pushedToId) {
+            // Polaris-pushed manual reservation — discovery is just seeing
+            // its own echo. Flip sourceType silently so the conflict isn't
+            // raised and future discoveries treat this as a normal
+            // dhcp_reservation. We do NOT overwrite the user-provided
+            // hostname / owner / projectRef / notes — the device-side
+            // description is intentionally distinct (Polaris/<user>:
+            // <hostname>) and shouldn't become the Polaris-side hostname.
+            // Also dismiss any pending conflicts already raised on this
+            // row from prior discovery runs that didn't have this guard.
+            await prisma.reservation.update({
+              where: { id: existingRes.id },
+              data: {
+                sourceType: "dhcp_reservation",
+                ...(entry.seenLeased && isDhcpReservation
+                  ? { lastSeenLeased: new Date(), staleNotifiedAt: null, staleSnoozedUntil: null }
+                  : {}),
+              },
+            });
+            await prisma.conflict.updateMany({
+              where: { reservationId: existingRes.id, status: "pending" },
+              data: { status: "rejected", resolvedBy: "auto", resolvedAt: new Date() },
+            });
+          } else {
+            await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
+          }
         } else if (entry.seenLeased && isDhcpReservation) {
           // Static reservation we already know about; bump the
           // last-seen-leased timestamp so the stale-reservation job knows
