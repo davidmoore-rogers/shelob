@@ -301,19 +301,57 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   for (const t of sourceTags) { if (!merged.includes(t)) merged.push(t); }
   update.tags = merged;
 
+  // When the sibling-check path fires (both devices already have their own
+  // Polaris assets), there will be a "ghost" asset carrying the proposed tag.
+  // We can't stamp the same tag onto a different row without hitting the unique
+  // constraint. Solution: merge the ghost's non-empty fields into the accept
+  // target first, then delete the ghost so the accept target becomes the
+  // single canonical record.
+  const proposedTag = `${prefix}${conflict.proposedDeviceId}`;
+  const ghost = await prisma.asset.findFirst({
+    where: { assetTag: proposedTag, id: { not: existing.id } },
+  });
+  if (ghost) {
+    // Absorb any fields from the ghost that the accept target is still missing.
+    if (!update.serialNumber && !existing.serialNumber && ghost.serialNumber) update.serialNumber = ghost.serialNumber;
+    if (!update.macAddress && !existing.macAddress && ghost.macAddress) update.macAddress = ghost.macAddress;
+    if (!update.manufacturer && !existing.manufacturer && ghost.manufacturer) update.manufacturer = ghost.manufacturer;
+    if (!update.model && !existing.model && ghost.model) update.model = ghost.model;
+    if (!update.os && !existing.os && ghost.os) update.os = ghost.os;
+    if (!update.osVersion && !existing.osVersion && ghost.osVersion) update.osVersion = ghost.osVersion;
+    if (!update.assignedTo && !existing.assignedTo && ghost.assignedTo) update.assignedTo = ghost.assignedTo;
+    if (!update.notes && !existing.notes && ghost.notes) update.notes = ghost.notes;
+    if (!update.lastSeen && !existing.lastSeen && ghost.lastSeen) update.lastSeen = ghost.lastSeen;
+    // Merge ghost's macAddresses history.
+    const ghostMacs = Array.isArray(ghost.macAddresses) ? (ghost.macAddresses as any[]) : [];
+    if (ghostMacs.length > 0) {
+      const existingMacs = Array.isArray(existing.macAddresses) ? (existing.macAddresses as any[]) : [];
+      const merged: any[] = [...existingMacs];
+      for (const m of ghostMacs) {
+        const key = (m.mac || "").replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+        if (key && !merged.some((x: any) => (x.mac || "").replace(/[^0-9a-fA-F]/g, "").toUpperCase() === key)) {
+          merged.push(m);
+        }
+      }
+      if (merged.length > existingMacs.length) update.macAddresses = merged;
+    }
+    await prisma.asset.delete({ where: { id: ghost.id } });
+  }
+
   clampAcquiredToLastSeen(update, existing);
   await prisma.asset.update({
     where: { id: existing.id },
     data: update,
   });
 
+  const ghostNote = ghost ? ` (absorbed and removed ghost asset ${ghost.id})` : "";
   logEvent({
     action: "conflict.accepted",
     resourceType: "asset",
     resourceId: existing.id,
     resourceName: existing.hostname ?? undefined,
     actor,
-    message: `Asset conflict accepted — adopted existing asset ${existing.hostname || existing.id} as ${sourceLabel} ${conflict.proposedDeviceId}`,
+    message: `Asset conflict accepted — adopted existing asset ${existing.hostname || existing.id} as ${sourceLabel} ${conflict.proposedDeviceId}${ghostNote}`,
   });
 }
 
