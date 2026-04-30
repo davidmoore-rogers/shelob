@@ -1424,7 +1424,7 @@ async function openCreateModal(type) {
     // FMG only: tabs for the Reservation Push and Quarantine Push toggles.
     // Both default to off; useProxy on a fresh integration defaults to true.
     if (isFmg) {
-      addTabs.push({ key: "push", label: "Reservation Push", html: reservationPushFormHTML(false, true) });
+      addTabs.push({ key: "push", label: "DHCP Push", html: reservationPushFormHTML(false, true) });
       addTabs.push({ key: "quarantine-push", label: "Quarantine Push", html: quarantinePushFormHTML(false, true) });
     }
     body = _intRenderTabbedBody("intg-edit", addTabs);
@@ -1707,7 +1707,7 @@ async function openEditModal(id) {
       if (intg.type === "fortimanager") {
         editTabs.push({
           key: "push",
-          label: "Reservation Push",
+          label: "DHCP Push",
           html: reservationPushFormHTML(config.pushReservations === true, config.useProxy !== false),
         });
         editTabs.push({

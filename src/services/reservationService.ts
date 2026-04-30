@@ -8,6 +8,7 @@ import { ipInCidr, isValidIpAddress, enumerateSubnetIps, detectIpVersion } from 
 import {
   pushReservation,
   unpushReservation,
+  releaseDhcpLease,
   normalizeMac,
   type PushReservationResult,
 } from "./reservationPushService.js";
@@ -330,7 +331,7 @@ export async function releaseReservation(id: string) {
   const reservation = await prisma.reservation.findUnique({
     where: { id },
     include: {
-      subnet: true,
+      subnet: { include: { integration: true } },
       pushedTo: true,
     },
   });
@@ -392,6 +393,50 @@ export async function releaseReservation(id: string) {
           },
         });
       }
+    }
+  }
+
+  // Best-effort DHCP lease release for discovered dhcp_lease rows. The lease
+  // exists on the FortiGate's DHCP server, not in any Polaris-pushed CMDB
+  // entry, so we hit the monitor `release-lease` endpoint to expire it now.
+  // Device-side failure does not block the Polaris release — the operator's
+  // intent has been recorded and the next discovery pass will rediscover the
+  // lease if FortiOS still holds it.
+  if (
+    reservation.sourceType === "dhcp_lease" &&
+    reservation.ipAddress &&
+    reservation.subnet.integration &&
+    reservation.subnet.fortigateDevice
+  ) {
+    const integration = reservation.subnet.integration;
+    const deviceName = reservation.subnet.fortigateDevice;
+    const ip = reservation.ipAddress;
+    try {
+      await releaseDhcpLease({ integration, deviceName, ip });
+      void logEvent({
+        action: "reservation.lease_release.succeeded",
+        level: "info",
+        resourceType: "reservation",
+        resourceId: id,
+        resourceName: reservation.hostname || ip,
+        message: `DHCP lease for ${ip} released on FortiGate "${deviceName}"`,
+        details: { deviceName, ip, integrationId: integration.id },
+      });
+    } catch (err: any) {
+      void logEvent({
+        action: "reservation.lease_release.failed",
+        level: "warning",
+        resourceType: "reservation",
+        resourceId: id,
+        resourceName: reservation.hostname || ip,
+        message: `DHCP lease release for ${ip} on FortiGate "${deviceName}" failed — Polaris release proceeded but the device may still hold the lease: ${err?.message || "Unknown error"}`,
+        details: {
+          deviceName,
+          ip,
+          integrationId: integration.id,
+          error: err?.message || String(err),
+        },
+      });
     }
   }
 

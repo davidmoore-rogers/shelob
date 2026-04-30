@@ -24,6 +24,7 @@ import {
   resolveDeviceMgmtIpViaFmg,
   type FortiManagerConfig,
 } from "./fortimanagerService.js";
+import { isValidIpAddress } from "../utils/cidr.js";
 
 // ─── FortiOS DHCP CMDB shapes (subset we use) ───────────────────────────────
 
@@ -55,6 +56,38 @@ interface FortiOsWriteResponse {
 type Transport =
   | { kind: "direct-fortigate"; fgConfig: FortiGateConfig; vdom: string }
   | { kind: "fmg-proxy"; fmgConfig: FortiManagerConfig; deviceName: string; vdom: string };
+
+/**
+ * Build a transport from an Integration row. FMG integrations follow the
+ * proxy/direct toggle as before; standalone FortiGate integrations always
+ * use direct REST with the integration's own credentials.
+ */
+async function buildTransportForIntegration(
+  integration: { id: string; type: string; config: unknown },
+  deviceName: string,
+): Promise<Transport> {
+  if (integration.type === "fortimanager") {
+    return buildTransport(integration.config as FortiManagerConfig, deviceName);
+  }
+  if (integration.type === "fortigate") {
+    const cfg = integration.config as FortiGateConfig;
+    if (!cfg?.host || !cfg?.apiToken) {
+      throw new AppError(
+        400,
+        `Standalone FortiGate integration ${integration.id} is missing host or apiToken`,
+      );
+    }
+    return {
+      kind: "direct-fortigate",
+      fgConfig: { ...cfg, vdom: cfg.vdom || "root" },
+      vdom: cfg.vdom || "root",
+    };
+  }
+  throw new AppError(
+    400,
+    `DHCP write is not supported for integration type "${integration.type}"`,
+  );
+}
 
 async function buildTransport(
   fmgConfig: FortiManagerConfig,
@@ -371,4 +404,52 @@ export async function unpushReservation(
   );
 
   return { removed: true, alreadyAbsent: false };
+}
+
+// ─── DHCP Lease Release ─────────────────────────────────────────────────────
+
+export interface ReleaseDhcpLeaseParams {
+  integration: { id: string; type: string; config: unknown };
+  deviceName: string;
+  ip: string;
+}
+
+export interface ReleaseDhcpLeaseResult {
+  released: boolean;
+}
+
+/**
+ * Tell the FortiGate's DHCP server to drop the current lease for `ip`. Used
+ * when an operator frees a discovered `dhcp_lease` reservation in Polaris —
+ * we want the device-side state to match the operator's intent.
+ *
+ * Note: FortiOS only forgets the *current* lease; the same client can DHCP
+ * back the same IP on its next request. This is "expire now," not a block.
+ *
+ * Endpoint: POST /api/v2/monitor/system/dhcp/release-lease  body: {ip}
+ *
+ * Throws AppError on transport / auth / device-side failure. Callers should
+ * treat this as best-effort and not block the Polaris release on failure.
+ */
+export async function releaseDhcpLease(
+  params: ReleaseDhcpLeaseParams,
+): Promise<ReleaseDhcpLeaseResult> {
+  if (!params.deviceName) {
+    throw new AppError(
+      400,
+      "Lease release requires a discovered FortiGate device name",
+    );
+  }
+  if (!isValidIpAddress(params.ip)) {
+    throw new AppError(400, `Invalid IP for lease release: ${params.ip}`);
+  }
+
+  const t = await buildTransportForIntegration(params.integration, params.deviceName);
+  await callFortiOs<unknown>(
+    t,
+    "POST",
+    "/api/v2/monitor/system/dhcp/release-lease",
+    { ip: params.ip },
+  );
+  return { released: true };
 }
