@@ -5,7 +5,7 @@
 // ─── Theme ──────────────────────────────────────────────────────────────────
 
 (function () {
-  var saved = localStorage.getItem("shelob-theme") || "dark";
+  var saved = localStorage.getItem("polaris-theme") || "dark";
   document.documentElement.setAttribute("data-theme", saved);
 })();
 
@@ -15,7 +15,7 @@ function _getCurrentTheme() {
 
 function _setTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem("shelob-theme", theme);
+  localStorage.setItem("polaris-theme", theme);
   // Update toggle button label if it exists
   var btn = document.getElementById("btn-theme-toggle");
   if (btn) {
@@ -47,10 +47,10 @@ async function fetchCurrentUser() {
       currentUserRole = data.role;
       currentUsername = data.username;
       try {
-        localStorage.setItem("shelob-user", JSON.stringify({ role: data.role, username: data.username }));
+        localStorage.setItem("polaris-user", JSON.stringify({ role: data.role, username: data.username }));
       } catch (_) {}
     } else {
-      try { localStorage.removeItem("shelob-user"); } catch (_) {}
+      try { localStorage.removeItem("polaris-user"); } catch (_) {}
     }
   } catch (_) {}
   if (_userReadyResolve) { _userReadyResolve(); _userReadyResolve = null; }
@@ -546,7 +546,7 @@ function applyBranding(b, skipCache) {
   if (!b) return;
   _branding = b;
   if (!skipCache) {
-    try { localStorage.setItem("shelob-branding", JSON.stringify(b)); } catch (_) {}
+    try { localStorage.setItem("polaris-branding", JSON.stringify(b)); } catch (_) {}
   }
 
   // Update sidebar logo + name
@@ -599,7 +599,7 @@ function applyBranding(b, skipCache) {
 
 async function fetchBranding() {
   try {
-    var cached = JSON.parse(localStorage.getItem("shelob-branding") || "null");
+    var cached = JSON.parse(localStorage.getItem("polaris-branding") || "null");
     if (cached) applyBranding(cached, true);
   } catch (_) {}
   try {
@@ -1384,9 +1384,9 @@ function checkPgTuning() {
     if (ramContainer) {
       if (!data.ramInsufficient) {
         // RAM is now adequate — clear any prior dismissal so warning reappears if load grows again
-        localStorage.removeItem("shelob_ram_dismissed");
+        localStorage.removeItem("polaris_ram_dismissed");
         ramContainer.style.display = "none";
-      } else if (localStorage.getItem("shelob_ram_dismissed")) {
+      } else if (localStorage.getItem("polaris_ram_dismissed")) {
         ramContainer.style.display = "none";
       } else {
         ramContainer.innerHTML =
@@ -1403,7 +1403,7 @@ function checkPgTuning() {
         ramContainer.style.display = "block";
 
         document.getElementById("ram-warning-dismiss").addEventListener("click", function () {
-          localStorage.setItem("shelob_ram_dismissed", "1");
+          localStorage.setItem("polaris_ram_dismissed", "1");
           ramContainer.style.display = "none";
         });
       }
@@ -1453,7 +1453,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   // Render nav immediately from cache so the sidebar doesn't flash on navigation
   var roleBeforeFetch = null;
   try {
-    var cachedUser = JSON.parse(localStorage.getItem("shelob-user") || "null");
+    var cachedUser = JSON.parse(localStorage.getItem("polaris-user") || "null");
     if (cachedUser && cachedUser.role) {
       currentUserRole = cachedUser.role;
       currentUsername = cachedUser.username;

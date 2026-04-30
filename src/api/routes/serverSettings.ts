@@ -230,7 +230,7 @@ router.post("/database/backup", async (req, res, next) => {
       const cipher = createCipheriv("aes-256-gcm", key, iv);
       const encrypted = Buffer.concat([cipher.update(payload), cipher.final()]);
       const authTag = cipher.getAuthTag();
-      const magic = Buffer.from("SHELOB1\0");
+      const magic = Buffer.from("POLARIS\0");
       payload = Buffer.concat([magic, salt, iv, authTag, encrypted]);
     }
 
@@ -274,7 +274,7 @@ router.post("/database/restore", restoreUpload.single("file"), async (req, res, 
     const connUrl = process.env.DATABASE_URL || "";
 
     // Check magic bytes from disk to detect encryption without loading the whole file
-    const magic = Buffer.from("SHELOB1\0");
+    const magic = Buffer.from("POLARIS\0");
     const headerBuf = Buffer.alloc(8);
     const fd = openSync(uploadedPath!, "r");
     try { readSync(fd, headerBuf, 0, 8, 0); } finally { closeSync(fd); }

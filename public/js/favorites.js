@@ -7,7 +7,7 @@
 var _favoritesCache = {};
 
 function _favoritesKey(entity) {
-  return "shelob-favs-" + entity + "-" + (currentUsername || "anon");
+  return "polaris-favs-" + entity + "-" + (currentUsername || "anon");
 }
 
 function getFavorites(entity) {

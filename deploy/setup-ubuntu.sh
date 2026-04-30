@@ -5,9 +5,9 @@
 #
 # What this script does:
 #   1. Installs Node.js 20 and PostgreSQL 15 (if not already installed)
-#   2. Creates a dedicated 'shelob' system user
+#   2. Creates a dedicated 'polaris' system user
 #   3. Creates the PostgreSQL database and role
-#   4. Clones or copies the application to /opt/shelob
+#   4. Clones or copies the application to /opt/polaris
 #   5. Installs dependencies and runs migrations
 #   6. Installs and enables a systemd service
 #
@@ -15,12 +15,12 @@
 
 set -euo pipefail
 
-APP_DIR="/opt/shelob"
-APP_USER="shelob"
-APP_GROUP="shelob"
-DB_NAME="shelob"
-DB_USER="shelob"
-DB_PASS="shelob"
+APP_DIR="/opt/polaris"
+APP_USER="polaris"
+APP_GROUP="polaris"
+DB_NAME="polaris"
+DB_USER="polaris"
+DB_PASS="polaris"
 REPO_URL="https://github.com/davidmoore-rogers/polaris.git"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" |
 
 info "Database '$DB_NAME' ready"
 
-# Ensure pg_hba.conf allows password auth for the shelob user
+# Ensure pg_hba.conf allows password auth for the polaris user
 PG_HBA=$(sudo -u postgres psql -tc "SHOW hba_file;" | tr -d ' ')
 if ! grep -q "$DB_USER" "$PG_HBA" 2>/dev/null; then
   warn "Adding md5 auth entry for '$DB_USER' to pg_hba.conf"
@@ -156,17 +156,17 @@ fi
 
 # ─── 8. Install systemd service ──────────────────────────────────────────────
 info "Installing systemd service..."
-cp "$APP_DIR/deploy/shelob.service" /etc/systemd/system/shelob.service
+cp "$APP_DIR/deploy/polaris.service" /etc/systemd/system/polaris.service
 systemctl daemon-reload
-systemctl enable --now shelob
+systemctl enable --now polaris
 
 info "Waiting for service to start..."
 sleep 2
 
-if systemctl is-active --quiet shelob; then
+if systemctl is-active --quiet polaris; then
   info "Polaris service is running"
 else
-  warn "Service may not have started — check: journalctl -u shelob -f"
+  warn "Service may not have started — check: journalctl -u polaris -f"
 fi
 
 # ─── 9. Firewall ─────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ info "============================================"
 info "  Polaris deployment complete!"
 info "  URL:   http://$(hostname -I | awk '{print $1}'):3000"
 info "  Login: admin / admin"
-info "  Logs:  journalctl -u shelob -f"
+info "  Logs:  journalctl -u polaris -f"
 info "============================================"
 echo ""
 warn "Change the default admin password after first login!"

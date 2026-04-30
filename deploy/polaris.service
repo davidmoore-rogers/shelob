@@ -6,11 +6,11 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-User=shelob
-Group=shelob
-WorkingDirectory=/opt/shelob
+User=polaris
+Group=polaris
+WorkingDirectory=/opt/polaris
 ExecStart=/usr/bin/node dist/index.js
-EnvironmentFile=/opt/shelob/.env
+EnvironmentFile=/opt/polaris/.env
 Restart=on-failure
 RestartSec=5
 
@@ -18,13 +18,13 @@ RestartSec=5
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/shelob
+ReadWritePaths=/opt/polaris
 PrivateTmp=true
 
 # Logging — stdout/stderr go to journald
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=shelob
+SyslogIdentifier=polaris
 
 [Install]
 WantedBy=multi-user.target

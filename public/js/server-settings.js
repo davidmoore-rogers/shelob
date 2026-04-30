@@ -44,7 +44,7 @@ function checkRamBanner() {
     var banner = document.getElementById("ram-insufficient-banner");
     if (!banner) return;
     if (!data.ramInsufficient) {
-      localStorage.removeItem("shelob_ram_dismissed");
+      localStorage.removeItem("polaris_ram_dismissed");
       banner.style.display = "none";
       return;
     }
@@ -1414,8 +1414,8 @@ function selectRestoreFile(file) {
   document.getElementById("restore-filename").textContent = file.name;
   document.getElementById("restore-filesize").textContent = formatFileSize(file.size);
 
-  // Extract version from filename: polaris-backup-1.0.0-2026-...gz (or legacy shelob-backup-*)
-  var versionMatch = file.name.match(/(?:polaris|shelob)-backup-(\d+\.\d+\.\d+)-/);
+  // Extract version from filename: polaris-backup-1.0.0-2026-...gz
+  var versionMatch = file.name.match(/polaris-backup-(\d+\.\d+\.\d+)-/);
   var backupVersion = versionMatch ? versionMatch[1] : null;
   var currentVersion = _branding && _branding.version ? _branding.version : null;
   var versionEl = document.getElementById("restore-version");
@@ -1455,7 +1455,7 @@ function selectRestoreFile(file) {
     reader.onload = function () {
       var arr = new Uint8Array(reader.result);
       var magic = String.fromCharCode.apply(null, arr.slice(0, 7));
-      if (magic === "SHELOB1") {
+      if (magic === "POLARIS") {
         document.getElementById("restore-encrypted").innerHTML = '<span class="badge badge-warning" style="font-size:0.75rem">Yes</span>';
         document.getElementById("restore-password-row").style.display = "";
       }
@@ -2022,7 +2022,7 @@ function renderUpdateFailed(status) {
             '<li>Stop the Polaris service on the server:<br>' +
               '<code style="font-size:0.8rem;background:var(--color-bg-secondary);padding:1px 5px;border-radius:3px">sudo systemctl stop polaris</code>' +
               ' &nbsp;(Linux) &nbsp;or&nbsp; ' +
-              '<code style="font-size:0.8rem;background:var(--color-bg-secondary);padding:1px 5px;border-radius:3px">nssm stop Shelob</code>' +
+              '<code style="font-size:0.8rem;background:var(--color-bg-secondary);padding:1px 5px;border-radius:3px">nssm stop Polaris</code>' +
               ' (Windows)</li>' +
             '<li>Restore the database — replace <code style="font-size:0.8rem">DATABASE_URL</code> with the value from your <code style="font-size:0.8rem">.env</code> file:<br>' +
               '<code style="display:block;margin-top:0.3rem;font-size:0.8rem;background:var(--color-bg-secondary);padding:4px 8px;border-radius:3px;white-space:nowrap;overflow-x:auto">' + escapeHtml(cmd) + '</code>' +
@@ -2030,7 +2030,7 @@ function renderUpdateFailed(status) {
             '<li>Restart the service:<br>' +
               '<code style="font-size:0.8rem;background:var(--color-bg-secondary);padding:1px 5px;border-radius:3px">sudo systemctl start polaris</code>' +
               ' &nbsp;(Linux) &nbsp;or&nbsp; ' +
-              '<code style="font-size:0.8rem;background:var(--color-bg-secondary);padding:1px 5px;border-radius:3px">nssm start Shelob</code>' +
+              '<code style="font-size:0.8rem;background:var(--color-bg-secondary);padding:1px 5px;border-radius:3px">nssm start Polaris</code>' +
               ' (Windows)</li>' +
           '</ol>' +
         '</details>' +

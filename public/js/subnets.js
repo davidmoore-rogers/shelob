@@ -13,7 +13,7 @@ var _subnetsSelected = new Set();
 function _saveSubnetsPrefs() {
   if (!currentUsername) return;
   try {
-    localStorage.setItem("shelob-prefs-subnets-" + currentUsername, JSON.stringify({
+    localStorage.setItem("polaris-prefs-subnets-" + currentUsername, JSON.stringify({
       pageSize: _subnetsPageSize,
       block: document.getElementById("filter-block").value,
       creator: document.getElementById("filter-creator").value,
@@ -27,7 +27,7 @@ function _saveSubnetsPrefs() {
 function _restoreSubnetsPrefs() {
   if (!currentUsername) return;
   var raw;
-  try { raw = localStorage.getItem("shelob-prefs-subnets-" + currentUsername); } catch (_) { return; }
+  try { raw = localStorage.getItem("polaris-prefs-subnets-" + currentUsername); } catch (_) { return; }
   if (!raw) return;
   try {
     var p = JSON.parse(raw);
@@ -382,7 +382,7 @@ var _allocTemplates = [];
 var _allocSelectedTemplateId = "";
 
 function _allocAnchorKey() {
-  return currentUsername ? "shelob-prefs-alloc-anchor-" + currentUsername : null;
+  return currentUsername ? "polaris-prefs-alloc-anchor-" + currentUsername : null;
 }
 function _loadAllocAnchor() {
   var key = _allocAnchorKey();

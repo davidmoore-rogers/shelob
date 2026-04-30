@@ -49,8 +49,8 @@ random_page_cost = 1.1
 
    ```sql
    -- As the postgres superuser:
-   CREATE USER shelob WITH PASSWORD 'shelob';
-   CREATE DATABASE shelob OWNER shelob;
+   CREATE USER polaris WITH PASSWORD 'polaris';
+   CREATE DATABASE polaris OWNER polaris;
    ```
 
 2. **Install Node.js 20+** (https://nodejs.org).
@@ -77,7 +77,7 @@ In-memory server on port 3000 with sample data. No database required.
 
 ## Production Deployment
 
-Automated scripts install Node.js 20, PostgreSQL 15, the `shelob` system user, the database, app code (to `/opt/shelob` or `C:\shelob`), a random `SESSION_SECRET`, and a hardened service — then open port 3000 in the firewall. Run on a fresh server:
+Automated scripts install Node.js 20, PostgreSQL 15, the `polaris` system user, the database, app code (to `/opt/polaris` or `C:\polaris`), a random `SESSION_SECRET`, and a hardened service — then open port 3000 in the firewall. Run on a fresh server:
 
 **RHEL / Rocky / Alma 9:**
 
@@ -117,22 +117,22 @@ Updates can also be triggered from the **Server Settings → Database** page in-
 
 ### Managing the service
 
-**Linux (systemd):** `systemctl status|restart shelob`, `journalctl -u shelob -f`
-**Windows (NSSM):** `nssm status|restart Shelob`, logs in `C:\shelob\logs\service-stdout.log`
+**Linux (systemd):** `systemctl status|restart polaris`, `journalctl -u polaris -f`
+**Windows (NSSM):** `nssm status|restart Polaris`, logs in `C:\polaris\logs\service-stdout.log`
 
 ### Manual setup
 
 If you prefer not to use the scripts:
 
 ```bash
-useradd --system --shell /bin/false --home-dir /opt/shelob shelob
-git clone https://github.com/davidmoore-rogers/polaris.git /opt/shelob
-chown -R shelob:shelob /opt/shelob && cd /opt/shelob
+useradd --system --shell /bin/false --home-dir /opt/polaris polaris
+git clone https://github.com/davidmoore-rogers/polaris.git /opt/polaris
+chown -R polaris:polaris /opt/polaris && cd /opt/polaris
 cp .env.example .env     # set DATABASE_URL, SESSION_SECRET, NODE_ENV=production
-sudo -u shelob npm ci && sudo -u shelob npx tsc
-sudo -u shelob npx prisma migrate deploy
-cp deploy/shelob.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now shelob
+sudo -u polaris npm ci && sudo -u polaris npx tsc
+sudo -u polaris npx prisma migrate deploy
+cp deploy/polaris.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now polaris
 ```
 
 ## API Overview
@@ -196,7 +196,7 @@ The AD `objectGUID` is stored on `Asset.assetTag` as `ad:{guid}`. Hybrid-joined 
 
 - TLS 1.2+ with AEAD-only cipher suites and configurable certificates
 - Helmet.js Content Security Policy, HSTS, X-Frame-Options
-- Synchronizer-token CSRF protection on all state-changing API calls (`shelob_csrf` cookie + `X-CSRF-Token` header)
+- Synchronizer-token CSRF protection on all state-changing API calls (`polaris_csrf` cookie + `X-CSRF-Token` header)
 - 10 login attempts / 15-minute window per IP; per-account temporary lockout after repeated failures
 - HttpOnly + SameSite=Lax session cookies, session ID regenerated on login, configurable inactivity timeout
 - SAML RelayState CSRF protection on SSO callbacks

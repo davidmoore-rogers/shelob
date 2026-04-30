@@ -3790,8 +3790,8 @@ async function routeAPI(method, path, params, body, res, req) {
       const cipher = createCipheriv("aes-256-gcm", key, iv);
       const encrypted = Buffer.concat([cipher.update(payload), cipher.final()]);
       const authTag = cipher.getAuthTag();
-      // Format: SHELOB1 + salt(32) + iv(16) + authTag(16) + ciphertext
-      const magic = Buffer.from("SHELOB1\0");
+      // Format: POLARIS + salt(32) + iv(16) + authTag(16) + ciphertext
+      const magic = Buffer.from("POLARIS\0");
       payload = Buffer.concat([magic, salt, iv, authTag, encrypted]);
     }
 
@@ -4170,8 +4170,8 @@ function routeMultipart(method, path, rawBody, contentType, res) {
     try {
       let payload = Buffer.from(file.content, "binary");
 
-      // Check if encrypted (starts with SHELOB1 magic)
-      const magic = Buffer.from("SHELOB1\0");
+      // Check if encrypted (starts with POLARIS magic)
+      const magic = Buffer.from("POLARIS\0");
       const isEncrypted = payload.length > 72 && payload.subarray(0, 8).equals(magic);
 
       if (isEncrypted) {
@@ -4205,7 +4205,7 @@ function routeMultipart(method, path, rawBody, contentType, res) {
         return json(res, { error: "Invalid backup file — could not parse JSON data" }, 400);
       }
 
-      if (!snapshot._polaris_backup && !snapshot._shelob_backup) {
+      if (!snapshot._polaris_backup) {
         return json(res, { error: "Invalid backup file — not a Polaris backup" }, 400);
       }
 

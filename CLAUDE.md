@@ -4,7 +4,7 @@
 
 **Polaris** is an IP management tool that allows users to reserve and manage IP address space (IPv4 and IPv6) for use across other infrastructure projects. Named after the North Star — a fixed reference point operators can navigate by when wiring up everything else. It provides a central registry for subnets, individual IPs, and reservations — preventing conflicts and giving teams visibility into IP utilization.
 
-> **Legacy identifiers:** several internal names (`shelob_csrf` cookie, `shelob-*` localStorage keys, `SHELOB1\0` backup magic bytes, `deploy/shelob.service` systemd unit, `/opt/shelob` Linux install path, `C:\shelob` Windows install path, the `Shelob` NSSM service name, the `Shelob (TCP <port>)` Windows firewall rule label, the `shelob` Postgres database/user, the `__shelob_timing_dummy__` argon2 constant) are intentionally kept under the project's previous name to avoid logging users out, invalidating preferences, breaking encrypted backup restores, orphaning systemd units / NSSM services / firewall rules on existing hosts, or requiring host-level migrations. Treat them as fixed identifiers, not branding — operator-facing chatter, README, and service descriptions can use "Polaris" freely, but the on-disk / on-host identifiers stay.
+> **Naming:** the project was previously called Shelob and has been fully rebranded — every on-host identifier (install path, system user, Postgres DB/user, systemd unit, NSSM service name, firewall rule label), browser-side identifier (CSRF cookie, localStorage keys), and source-level constant (argon2 timing dummy, encrypted-backup magic) now uses `polaris` / `Polaris` / `POLARIS`. Encrypted backups are versioned by the 8-byte magic header `POLARIS\0`; the previous `SHELOB1\0` format is no longer recognized. Existing installs migrate via dump-and-reinstall (plain `pg_dump` carries cleanly into a polaris-named DB).
 
 Current version: **0.9.x** (pre-release; patch = git commit count, minor per release). Version is shown in the sidebar and embedded in backup filenames. The patch is derived automatically at startup from `git rev-list --count HEAD` — never bump it manually.
 
@@ -67,7 +67,7 @@ polaris/
 │   │   ├── router.ts                # Express router aggregator + auth guards
 │   │   ├── middleware/
 │   │   │   ├── auth.ts              # Session auth + RBAC middleware
-│   │   │   ├── csrf.ts              # Synchronizer-token CSRF protection (`shelob_csrf` cookie + `X-CSRF-Token` header)
+│   │   │   ├── csrf.ts              # Synchronizer-token CSRF protection (`polaris_csrf` cookie + `X-CSRF-Token` header)
 │   │   │   ├── validate.ts          # Zod request validation middleware
 │   │   │   └── errorHandler.ts      # Global error handler
 │   │   └── routes/
@@ -1008,7 +1008,7 @@ Vanilla JavaScript SPA served from `/public/`. No build step — plain ES module
 
 ```env
 # Database
-DATABASE_URL=postgresql://user:password@localhost:5432/shelob
+DATABASE_URL=postgresql://user:password@localhost:5432/polaris
 
 # App
 PORT=3000

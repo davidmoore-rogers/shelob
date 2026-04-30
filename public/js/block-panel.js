@@ -35,7 +35,7 @@ function _ensureBlockPanelDOM() {
   });
   document.getElementById("block-panel-close").addEventListener("click", closeBlockPanel);
 
-  initSlideoverResize(document.getElementById("block-panel"), "shelob.panel.width.block");
+  initSlideoverResize(document.getElementById("block-panel"), "polaris.panel.width.block");
 }
 
 function openBlockPanel(blockId) {

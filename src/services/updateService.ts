@@ -257,7 +257,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
  *
  * @param password Optional AES-256-GCM password for encrypting the pre-update
  *                 database backup. When set, the backup is wrapped in the same
- *                 SHELOB1\0 envelope used by manual backups so the existing
+ *                 POLARIS\0 envelope used by manual backups so the existing
  *                 restore flow accepts it.
  */
 export async function applyUpdate(password?: string | null): Promise<void> {
@@ -343,7 +343,7 @@ export async function applyUpdate(password?: string | null): Promise<void> {
 
         if (isEncrypted) {
           // Stream pg_dump → gzip → AES-256-GCM cipher → temp ciphertext file,
-          // then assemble the final file as: [SHELOB1\0][salt][iv][authTag][ciphertext].
+          // then assemble the final file as: [POLARIS\0][salt][iv][authTag][ciphertext].
           // We can't write the auth tag until the cipher finishes, so we stage
           // the ciphertext separately rather than reserving and patching bytes.
           const salt = randomBytes(32);
@@ -358,7 +358,7 @@ export async function applyUpdate(password?: string | null): Promise<void> {
           ]);
 
           const authTag = cipher.getAuthTag();
-          const header = Buffer.concat([Buffer.from("SHELOB1\0"), salt, iv, authTag]);
+          const header = Buffer.concat([Buffer.from("POLARIS\0"), salt, iv, authTag]);
           const out = createWriteStream(backupFile);
           await new Promise<void>((resolve, reject) => {
             out.write(header, (err) => (err ? reject(err) : resolve()));
@@ -481,7 +481,7 @@ function restartService() {
 
   if (isWindows) {
     // NSSM restart — spawn detached so it survives parent exit
-    const child = spawn("cmd.exe", ["/c", "C:\\nssm\\nssm.exe restart Shelob"], {
+    const child = spawn("cmd.exe", ["/c", "C:\\nssm\\nssm.exe restart Polaris"], {
       detached: true,
       stdio: "ignore",
       windowsHide: true,

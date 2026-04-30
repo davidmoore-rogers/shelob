@@ -2,12 +2,12 @@
 # deploy/setup-ubuntu-nodb.sh — Polaris deployment script for Ubuntu / Debian
 #                                with a remote/external PostgreSQL database
 #
-# Run as root:  bash deploy/setup-ubuntu-nodb.sh --db-url "postgresql://user:pass@db-host:5432/shelob"
+# Run as root:  bash deploy/setup-ubuntu-nodb.sh --db-url "postgresql://user:pass@db-host:5432/polaris"
 #
 # What this script does:
 #   1. Installs Node.js 20, git, and PostgreSQL client tools (no server)
-#   2. Creates a dedicated 'shelob' system user
-#   3. Clones or copies the application to /opt/shelob
+#   2. Creates a dedicated 'polaris' system user
+#   3. Clones or copies the application to /opt/polaris
 #   4. Configures .env with the provided DATABASE_URL
 #   5. Installs dependencies, builds, and runs migrations against the remote database
 #   6. Installs and enables a systemd service
@@ -19,9 +19,9 @@
 
 set -euo pipefail
 
-APP_DIR="/opt/shelob"
-APP_USER="shelob"
-APP_GROUP="shelob"
+APP_DIR="/opt/polaris"
+APP_USER="polaris"
+APP_GROUP="polaris"
 REPO_URL="https://github.com/davidmoore-rogers/polaris.git"
 DATABASE_URL=""
 
@@ -38,11 +38,11 @@ while [[ $# -gt 0 ]]; do
     --app-dir)  APP_DIR="$2"; shift 2 ;;
     --repo-url) REPO_URL="$2"; shift 2 ;;
     --help|-h)
-      echo "Usage: bash setup-ubuntu-nodb.sh --db-url \"postgresql://user:pass@host:5432/shelob\""
+      echo "Usage: bash setup-ubuntu-nodb.sh --db-url \"postgresql://user:pass@host:5432/polaris\""
       echo ""
       echo "Options:"
       echo "  --db-url    PostgreSQL connection URL (required)"
-      echo "  --app-dir   Installation directory (default: /opt/shelob)"
+      echo "  --app-dir   Installation directory (default: /opt/polaris)"
       echo "  --repo-url  Git repository URL"
       exit 0 ;;
     *) error "Unknown option: $1" ;;
@@ -195,20 +195,20 @@ fi
 
 # ─── 9. Install systemd service ──────────────────────────────────────────────
 info "Installing systemd service..."
-cp "$APP_DIR/deploy/shelob.service" /etc/systemd/system/shelob.service
+cp "$APP_DIR/deploy/polaris.service" /etc/systemd/system/polaris.service
 # Remove PostgreSQL dependency since the DB is remote
-sed -i 's/After=network.target postgresql.service/After=network.target/' /etc/systemd/system/shelob.service
-sed -i '/^Requires=postgresql.service/d' /etc/systemd/system/shelob.service
+sed -i 's/After=network.target postgresql.service/After=network.target/' /etc/systemd/system/polaris.service
+sed -i '/^Requires=postgresql.service/d' /etc/systemd/system/polaris.service
 systemctl daemon-reload
-systemctl enable --now shelob
+systemctl enable --now polaris
 
 info "Waiting for service to start..."
 sleep 2
 
-if systemctl is-active --quiet shelob; then
+if systemctl is-active --quiet polaris; then
   info "Polaris service is running"
 else
-  warn "Service may not have started — check: journalctl -u shelob -f"
+  warn "Service may not have started — check: journalctl -u polaris -f"
 fi
 
 # ─── 10. Firewall ────────────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ info "  Polaris deployment complete!"
 info "  Mode:  Remote database"
 info "  URL:   http://$(hostname -I | awk '{print $1}'):3000"
 info "  Login: admin / admin"
-info "  Logs:  journalctl -u shelob -f"
+info "  Logs:  journalctl -u polaris -f"
 info "============================================"
 echo ""
 warn "Change the default admin password after first login!"

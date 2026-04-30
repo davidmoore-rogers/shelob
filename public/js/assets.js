@@ -11,7 +11,7 @@ var _assetsSelected = new Set();
 function _saveAssetsPrefs() {
   if (!currentUsername) return;
   try {
-    localStorage.setItem("shelob-prefs-assets-" + currentUsername, JSON.stringify({
+    localStorage.setItem("polaris-prefs-assets-" + currentUsername, JSON.stringify({
       pageSize: _assetsPageSize,
       status: document.getElementById("filter-status").value,
       type: document.getElementById("filter-type").value,
@@ -27,7 +27,7 @@ function _saveAssetsPrefs() {
 function _restoreAssetsPrefs() {
   if (!currentUsername) return;
   var raw;
-  try { raw = localStorage.getItem("shelob-prefs-assets-" + currentUsername); } catch (_) { return; }
+  try { raw = localStorage.getItem("polaris-prefs-assets-" + currentUsername); } catch (_) { return; }
   if (!raw) return;
   try {
     var p = JSON.parse(raw);
@@ -1197,7 +1197,7 @@ function _ensureAssetPanelDOM() {
   });
   document.getElementById("asset-panel-close").addEventListener("click", closeAssetPanel);
 
-  initSlideoverResize(document.getElementById("asset-panel"), "shelob.panel.width.asset");
+  initSlideoverResize(document.getElementById("asset-panel"), "polaris.panel.width.asset");
 }
 
 function closeAssetPanel() {
@@ -2120,7 +2120,7 @@ function _ensureSensorPanelDOM() {
     if (e.target === overlay) closeSensorPanel();
   });
   document.getElementById("sensor-panel-close").addEventListener("click", closeSensorPanel);
-  initSlideoverResize(document.getElementById("sensor-panel"), "shelob.panel.width.sensor");
+  initSlideoverResize(document.getElementById("sensor-panel"), "polaris.panel.width.sensor");
 }
 
 function closeSensorPanel() {
@@ -3343,7 +3343,7 @@ function _ensureIfacePanelDOM() {
     if (e.target === overlay) closeIfacePanel();
   });
   document.getElementById("iface-panel-close").addEventListener("click", closeIfacePanel);
-  initSlideoverResize(document.getElementById("iface-panel"), "shelob.panel.width.iface");
+  initSlideoverResize(document.getElementById("iface-panel"), "polaris.panel.width.iface");
 }
 
 function closeIfacePanel() {
@@ -3947,7 +3947,7 @@ function _ensureIpsecPanelDOM() {
     if (e.target === overlay) closeIpsecPanel();
   });
   document.getElementById("ipsec-panel-close").addEventListener("click", closeIpsecPanel);
-  initSlideoverResize(document.getElementById("ipsec-panel"), "shelob.panel.width.ipsec");
+  initSlideoverResize(document.getElementById("ipsec-panel"), "polaris.panel.width.ipsec");
 }
 
 function closeIpsecPanel() {
@@ -4279,7 +4279,7 @@ function _ensureStoragePanelDOM() {
     if (e.target === overlay) closeStoragePanel();
   });
   document.getElementById("storage-panel-close").addEventListener("click", closeStoragePanel);
-  initSlideoverResize(document.getElementById("storage-panel"), "shelob.panel.width.storage");
+  initSlideoverResize(document.getElementById("storage-panel"), "polaris.panel.width.storage");
 }
 
 function closeStoragePanel() {

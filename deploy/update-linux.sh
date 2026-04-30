@@ -16,11 +16,11 @@
 
 set -euo pipefail
 
-APP_DIR="/opt/shelob"
-APP_USER="shelob"
-DB_NAME="shelob"
-BACKUP_DIR="/opt/shelob/backups"
-SERVICE_NAME="shelob"
+APP_DIR="/opt/polaris"
+APP_USER="polaris"
+DB_NAME="polaris"
+BACKUP_DIR="/opt/polaris/backups"
+SERVICE_NAME="polaris"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -54,7 +54,7 @@ info "Current version: v${OLD_VERSION} (${OLD_COMMIT})"
 step "2/7  Creating pre-update database backup..."
 
 mkdir -p "$BACKUP_DIR"
-BACKUP_FILE="${BACKUP_DIR}/shelob-pre-update-${OLD_VERSION}-$(date +%Y%m%d-%H%M%S).sql.gz"
+BACKUP_FILE="${BACKUP_DIR}/polaris-pre-update-${OLD_VERSION}-$(date +%Y%m%d-%H%M%S).sql.gz"
 
 if command -v pg_dump &>/dev/null; then
   sudo -u postgres pg_dump --clean --if-exists "$DB_NAME" | gzip > "$BACKUP_FILE"
@@ -194,9 +194,9 @@ info "============================================"
 echo ""
 
 # Clean up old backups (keep last 10)
-BACKUP_COUNT=$(ls -1 "$BACKUP_DIR"/shelob-pre-update-*.sql.gz 2>/dev/null | wc -l)
+BACKUP_COUNT=$(ls -1 "$BACKUP_DIR"/polaris-pre-update-*.sql.gz 2>/dev/null | wc -l)
 if [[ "$BACKUP_COUNT" -gt 10 ]]; then
   REMOVE_COUNT=$((BACKUP_COUNT - 10))
-  ls -1t "$BACKUP_DIR"/shelob-pre-update-*.sql.gz | tail -n "$REMOVE_COUNT" | xargs rm -f
+  ls -1t "$BACKUP_DIR"/polaris-pre-update-*.sql.gz | tail -n "$REMOVE_COUNT" | xargs rm -f
   info "Cleaned up $REMOVE_COUNT old pre-update backup(s)"
 fi

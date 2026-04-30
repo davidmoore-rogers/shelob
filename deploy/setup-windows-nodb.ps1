@@ -8,11 +8,11 @@
     Does NOT install PostgreSQL locally.
 
     Run as Administrator:
-        powershell -ExecutionPolicy Bypass -File deploy\setup-windows-nodb.ps1 -DbUrl "postgresql://user:pass@db-host:5432/shelob"
+        powershell -ExecutionPolicy Bypass -File deploy\setup-windows-nodb.ps1 -DbUrl "postgresql://user:pass@db-host:5432/polaris"
 
     What this script does:
       1. Installs Node.js 20 LTS (via winget or direct MSI)
-      2. Clones or copies the application to C:\shelob
+      2. Clones or copies the application to C:\polaris
       3. Configures .env with the provided DATABASE_URL
       4. Installs dependencies, builds, and runs migrations against the remote database
       5. Installs NSSM and registers Polaris as a Windows Service
@@ -26,7 +26,7 @@
 
 param(
     [string]$DbUrl      = "",
-    [string]$AppDir     = "C:\shelob",
+    [string]$AppDir     = "C:\polaris",
     [string]$RepoUrl    = "https://github.com/davidmoore-rogers/polaris.git",
     [int]   $Port       = 3000,
     [string]$NssmUrl    = "https://nssm.cc/release/nssm-2.24.zip"
@@ -212,7 +212,7 @@ if (-not (Test-Path $nssmExe)) {
     Write-Info "NSSM already installed at $nssmExe"
 }
 
-$serviceName = "Shelob"
+$serviceName = "Polaris"
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
 if ($existingService) {
@@ -252,10 +252,10 @@ if ($svc -and $svc.Status -eq "Running") {
 }
 
 # ─── 7. Firewall ─────────────────────────────────────────────────────────────
-$fwRule = Get-NetFirewallRule -DisplayName "Shelob (TCP $Port)" -ErrorAction SilentlyContinue
+$fwRule = Get-NetFirewallRule -DisplayName "Polaris (TCP $Port)" -ErrorAction SilentlyContinue
 if (-not $fwRule) {
     Write-Info "Opening port $Port in Windows Firewall..."
-    New-NetFirewallRule -DisplayName "Shelob (TCP $Port)" `
+    New-NetFirewallRule -DisplayName "Polaris (TCP $Port)" `
         -Direction Inbound -Protocol TCP -LocalPort $Port `
         -Action Allow -Profile Domain,Private | Out-Null
     Write-Info "Firewall rule created (Domain + Private profiles)"

@@ -39,7 +39,7 @@ function _readCookie(name) {
 // blob downloads, etc).
 function _csrfHeaders(extra) {
   var headers = extra ? Object.assign({}, extra) : {};
-  var csrf = _readCookie("shelob_csrf");
+  var csrf = _readCookie("polaris_csrf");
   if (csrf) headers["X-CSRF-Token"] = csrf;
   return headers;
 }
@@ -55,7 +55,7 @@ async function request(method, path, body, signal) {
   // Attach CSRF token on state-changing methods. GETs are exempt.
   var upper = method.toUpperCase();
   if (upper !== "GET" && upper !== "HEAD" && upper !== "OPTIONS") {
-    var csrf = _readCookie("shelob_csrf");
+    var csrf = _readCookie("polaris_csrf");
     if (csrf) opts.headers["X-CSRF-Token"] = csrf;
   }
 

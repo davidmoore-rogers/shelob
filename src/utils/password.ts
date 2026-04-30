@@ -22,7 +22,7 @@ const ARGON2_PARAMS = {
 // when the caller passes `stored = null` (user-not-found case) so response
 // time matches the valid-user-wrong-password path — prevents username
 // enumeration via timing analysis on the login endpoint.
-const DUMMY_HASH: Promise<string> = argonHash("__shelob_timing_dummy__", ARGON2_PARAMS);
+const DUMMY_HASH: Promise<string> = argonHash("__polaris_timing_dummy__", ARGON2_PARAMS);
 
 /** Produce a new argon2id hash for a plaintext password. */
 export async function hashPassword(plaintext: string): Promise<string> {

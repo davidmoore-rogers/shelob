@@ -16,7 +16,7 @@ import type { Request, Response, NextFunction } from "express";
 import { randomBytes } from "node:crypto";
 import { AppError } from "../../utils/errors.js";
 
-const COOKIE_NAME = "shelob_csrf";
+const COOKIE_NAME = "polaris_csrf";
 const HEADER_NAME = "x-csrf-token";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

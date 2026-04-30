@@ -38,7 +38,7 @@ function _ensurePanelDOM() {
   });
   document.getElementById("ip-panel-close").addEventListener("click", closeIpPanel);
 
-  initSlideoverResize(document.getElementById("ip-panel"), "shelob.panel.width.ip");
+  initSlideoverResize(document.getElementById("ip-panel"), "polaris.panel.width.ip");
 }
 
 function openIpPanel(subnetId) {

@@ -22,9 +22,9 @@
 #>
 
 param(
-    [string]$AppDir      = "C:\shelob",
-    [string]$DbName      = "shelob",
-    [string]$ServiceName = "Shelob",
+    [string]$AppDir      = "C:\polaris",
+    [string]$DbName      = "polaris",
+    [string]$ServiceName = "Polaris",
     [int]   $Port        = 3000
 )
 
@@ -99,7 +99,7 @@ function Invoke-Rollback {
         Write-Warn "Restoring database from backup..."
         $sql = & "C:\Program Files\PostgreSQL\15\bin\pg_restore.exe" 2>$null  # just to check
         # Use psql to restore the SQL dump
-        $tempSql = "$env:TEMP\shelob-restore.sql"
+        $tempSql = "$env:TEMP\polaris-restore.sql"
         # Decompress .gz to temp file
         $fs = [System.IO.File]::OpenRead($BackupFile)
         $gz = New-Object System.IO.Compression.GzipStream($fs, [System.IO.Compression.CompressionMode]::Decompress)
@@ -139,7 +139,7 @@ if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir
 
 if (Test-Command "pg_dump") {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $BackupFile = Join-Path $backupDir "shelob-pre-update-${OldVersion}-${timestamp}.sql.gz"
+    $BackupFile = Join-Path $backupDir "polaris-pre-update-${OldVersion}-${timestamp}.sql.gz"
 
     # pg_dump → gzip compress → file
     $sqlDump = & pg_dump -U postgres --clean --if-exists $DbName 2>$null
@@ -280,7 +280,7 @@ Write-Info "============================================"
 Write-Host ""
 
 # Clean up old backups (keep last 10)
-$oldBackups = Get-ChildItem "$backupDir\shelob-pre-update-*.sql.gz" -ErrorAction SilentlyContinue |
+$oldBackups = Get-ChildItem "$backupDir\polaris-pre-update-*.sql.gz" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending |
     Select-Object -Skip 10
 if ($oldBackups) {

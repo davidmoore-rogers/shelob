@@ -13,7 +13,7 @@
       1. Installs Node.js 20 LTS (via winget or direct MSI)
       2. Installs PostgreSQL 15 (via winget or direct installer)
       3. Creates the PostgreSQL database and role
-      4. Clones or copies the application to C:\shelob
+      4. Clones or copies the application to C:\polaris
       5. Installs dependencies and runs migrations
       6. Installs NSSM and registers Polaris as a Windows Service
       7. Opens port 3000 in Windows Firewall
@@ -22,10 +22,10 @@
 #>
 
 param(
-    [string]$AppDir     = "C:\shelob",
-    [string]$DbName     = "shelob",
-    [string]$DbUser     = "shelob",
-    [string]$DbPass     = "shelob",
+    [string]$AppDir     = "C:\polaris",
+    [string]$DbName     = "polaris",
+    [string]$DbUser     = "polaris",
+    [string]$DbPass     = "polaris",
     [string]$RepoUrl    = "https://github.com/davidmoore-rogers/polaris.git",
     [int]   $Port       = 3000,
     [string]$NssmUrl    = "https://nssm.cc/release/nssm-2.24.zip"
@@ -275,7 +275,7 @@ if (-not (Test-Path $nssmExe)) {
     Write-Info "NSSM already installed at $nssmExe"
 }
 
-$serviceName = "Shelob"
+$serviceName = "Polaris"
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
 if ($existingService) {
@@ -319,10 +319,10 @@ if ($svc -and $svc.Status -eq "Running") {
 }
 
 # ─── 8. Firewall ─────────────────────────────────────────────────────────────
-$fwRule = Get-NetFirewallRule -DisplayName "Shelob (TCP $Port)" -ErrorAction SilentlyContinue
+$fwRule = Get-NetFirewallRule -DisplayName "Polaris (TCP $Port)" -ErrorAction SilentlyContinue
 if (-not $fwRule) {
     Write-Info "Opening port $Port in Windows Firewall..."
-    New-NetFirewallRule -DisplayName "Shelob (TCP $Port)" `
+    New-NetFirewallRule -DisplayName "Polaris (TCP $Port)" `
         -Direction Inbound -Protocol TCP -LocalPort $Port `
         -Action Allow -Profile Domain,Private | Out-Null
     Write-Info "Firewall rule created (Domain + Private profiles)"
