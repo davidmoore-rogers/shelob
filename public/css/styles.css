@@ -1200,6 +1200,107 @@ body.sf-resizing * { user-select: none !important; }
 }
 .sf-col-chooser-row { padding: 4px 10px; }
 
+/* ─── Text filter operator chooser ────────────────────────────────────────── */
+.sf-filter-text { display: flex; align-items: stretch; gap: 2px; position: relative; }
+.sf-filter-op {
+  flex-shrink: 0;
+  width: 18px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-tertiary);
+  font-size: 0.6rem;
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1;
+}
+.sf-filter-op:hover { color: var(--color-text-primary); border-color: var(--color-accent); }
+.sf-filter-op.sf-filter-op-active {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-bg-primary);
+}
+.sf-filter-text .sf-filter { flex: 1; min-width: 0; }
+.sf-filter-readonly {
+  font-style: italic;
+  color: var(--color-text-tertiary);
+  cursor: default;
+  background: var(--color-bg-primary);
+}
+.sf-op-popover { padding: 2px 0; }
+.sf-op-row {
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.sf-op-row:hover { background: var(--color-bg-secondary); }
+
+/* ─── Date-range filter ───────────────────────────────────────────────────── */
+.sf-filter-date { position: relative; }
+.sf-date-button {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: 0;
+  padding-right: 16px;
+  position: relative;
+}
+.sf-date-button::after {
+  content: "▾";
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.6rem;
+  opacity: 0.6;
+  pointer-events: none;
+}
+.sf-date-popover { padding: 8px 10px; min-width: 200px; }
+.sf-date-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-text-primary);
+}
+.sf-date-row > span { width: 36px; color: var(--color-text-secondary); }
+.sf-date-row input[type="date"] {
+  flex: 1;
+  font-size: 0.78rem;
+  padding: 2px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
+.sf-date-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border);
+}
+.sf-btn-clear {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.sf-btn-clear:hover { color: var(--color-text-primary); border-color: var(--color-accent); }
+
 /* ─── Bulk Action Bar ──────────────────────────────────────────────────────── */
 .bulk-bar {
   display: flex;

@@ -42,6 +42,7 @@ TableSF.prototype._setup = function () {
         '<span class="sf-sort-icon">⇅</span>' +
       '</div>';
 
+    var typeAttr = th.getAttribute("data-sf-type") || "string";
     if (optsRaw != null) {
       // Empty data-sf-options="" marks the column as a dynamic multi-select;
       // setColumnOptions() will populate the checkbox list once data loads.
@@ -53,10 +54,29 @@ TableSF.prototype._setup = function () {
           '<button type="button" class="sf-filter sf-multi-button" title="Filter by value">All</button>' +
           '<div class="sf-multi-popover" hidden>' + checks + '</div>' +
         '</div>';
+    } else if (typeAttr === "date") {
+      th.innerHTML = headerHtml +
+        '<div class="sf-filter-date">' +
+          '<button type="button" class="sf-filter sf-date-button" title="Filter by date range">Any date</button>' +
+          '<div class="sf-multi-popover sf-date-popover" hidden>' +
+            '<label class="sf-date-row"><span>From</span><input type="date" data-sf-date="from"></label>' +
+            '<label class="sf-date-row"><span>To</span><input type="date" data-sf-date="to"></label>' +
+            '<div class="sf-date-actions"><button type="button" class="sf-btn-clear">Clear</button></div>' +
+          '</div>' +
+        '</div>';
     } else {
       th.innerHTML = headerHtml +
-        '<input class="sf-filter" type="text" placeholder="filter…"' +
-          ' title="Type to filter. Prefix with ! to exclude rows (e.g. !foo).">';
+        '<div class="sf-filter-text">' +
+          '<button type="button" class="sf-filter-op" title="Filter mode">▾</button>' +
+          '<input class="sf-filter" type="text" placeholder="filter…"' +
+            ' title="Type to filter. Prefix with ! to exclude rows (e.g. !foo).">' +
+          '<div class="sf-multi-popover sf-op-popover" hidden>' +
+            '<div class="sf-op-row" data-op="contains">Contains text</div>' +
+            '<div class="sf-op-row" data-op="not-contains">Does not contain</div>' +
+            '<div class="sf-op-row" data-op="empty">Is empty</div>' +
+            '<div class="sf-op-row" data-op="notempty">Is not empty</div>' +
+          '</div>' +
+        '</div>';
     }
 
     th.querySelector(".sf-header").addEventListener("click", function () {
@@ -96,15 +116,10 @@ TableSF.prototype._setup = function () {
         self._updateMultiButtonLabel(th);
         self._onChange();
       });
+    } else if (typeAttr === "date") {
+      self._wireDateFilter(th, key);
     } else {
-      var inp = th.querySelector(".sf-filter");
-      inp.addEventListener("click", function (e) { e.stopPropagation(); });
-      inp.addEventListener("input", debounce(function () {
-        var v = inp.value.trim();
-        if (v && v !== "!") self._filters[key] = v;
-        else                delete self._filters[key];
-        self._onChange();
-      }, 200));
+      self._wireTextFilter(th, key);
     }
   });
 
@@ -122,6 +137,170 @@ TableSF.prototype._setup = function () {
       if (e.key === "Escape") closeAll();
     });
   }
+};
+
+TableSF.prototype._wireTextFilter = function (th, key) {
+  var self = this;
+  var wrap = th.querySelector(".sf-filter-text");
+  var opBtn = wrap.querySelector(".sf-filter-op");
+  var inp   = wrap.querySelector(".sf-filter");
+  var pop   = wrap.querySelector(".sf-op-popover");
+
+  wrap.addEventListener("click", function (e) { e.stopPropagation(); });
+  inp.addEventListener("click", function (e) { e.stopPropagation(); });
+
+  function commitText() {
+    var v = inp.value.trim();
+    var raw = self._filters[key];
+    var op = "contains";
+    if (raw && typeof raw === "object" && raw.op === "not-contains") op = "not-contains";
+    if (op === "contains") {
+      if (v && v !== "!") self._filters[key] = v;
+      else                delete self._filters[key];
+    } else {
+      if (v) self._filters[key] = { op: "not-contains", q: v };
+      else   delete self._filters[key];
+    }
+    self._updateTextOpUI(th, key);
+    self._onChange();
+  }
+  inp.addEventListener("input", debounce(commitText, 200));
+
+  opBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var willOpen = pop.hasAttribute("hidden");
+    document.querySelectorAll(".sf-multi-popover").forEach(function (p) { p.setAttribute("hidden", ""); });
+    if (willOpen) {
+      pop.removeAttribute("hidden");
+      self._positionPopover(opBtn, pop);
+    }
+  });
+  pop.addEventListener("click", function (e) {
+    var row = e.target.closest(".sf-op-row");
+    if (!row) return;
+    var op = row.getAttribute("data-op");
+    pop.setAttribute("hidden", "");
+    if (op === "empty" || op === "notempty") {
+      self._filters[key] = { op: op };
+    } else if (op === "not-contains") {
+      var v = inp.value.trim();
+      if (v) self._filters[key] = { op: "not-contains", q: v };
+      else   delete self._filters[key];
+    } else {
+      // contains (default) — drop any prior object form, leave plain text input
+      var v2 = inp.value.trim();
+      if (v2) self._filters[key] = v2;
+      else    delete self._filters[key];
+    }
+    self._updateTextOpUI(th, key);
+    self._onChange();
+  });
+};
+
+TableSF.prototype._updateTextOpUI = function (th, key) {
+  var wrap = th.querySelector(".sf-filter-text");
+  if (!wrap) return;
+  var opBtn = wrap.querySelector(".sf-filter-op");
+  var inp   = wrap.querySelector(".sf-filter");
+  var raw   = this._filters[key];
+  var op    = "contains";
+  if (raw && typeof raw === "object" && raw.op) op = raw.op;
+  if (op === "empty" || op === "notempty") {
+    // Don't write a sentinel value into the input — keeping value empty means
+    // switching back to "contains" doesn't accidentally commit "(is empty)" as
+    // the search query. Placeholder communicates the state instead.
+    inp.value = "";
+    inp.readOnly = true;
+    inp.classList.add("sf-filter-readonly");
+    inp.placeholder = (op === "empty" ? "(is empty)" : "(is not empty)");
+  } else {
+    inp.readOnly = false;
+    inp.classList.remove("sf-filter-readonly");
+    inp.placeholder = "filter…";
+    if (raw && typeof raw === "object" && raw.op === "not-contains") {
+      if (inp.value !== raw.q) inp.value = raw.q || "";
+    } else if (typeof raw === "string") {
+      if (inp.value !== raw) inp.value = raw;
+    }
+  }
+  var active = (raw != null);
+  opBtn.classList.toggle("sf-filter-op-active", !!active);
+  opBtn.title = "Filter mode — current: " + (
+    op === "empty"        ? "is empty" :
+    op === "notempty"     ? "is not empty" :
+    op === "not-contains" ? "does not contain" :
+                            "contains text"
+  );
+};
+
+TableSF.prototype._wireDateFilter = function (th, key) {
+  var self = this;
+  var wrap = th.querySelector(".sf-filter-date");
+  var btn  = wrap.querySelector(".sf-date-button");
+  var pop  = wrap.querySelector(".sf-date-popover");
+  var fromInp = pop.querySelector('input[data-sf-date="from"]');
+  var toInp   = pop.querySelector('input[data-sf-date="to"]');
+  var clearBtn = pop.querySelector(".sf-btn-clear");
+
+  wrap.addEventListener("click", function (e) { e.stopPropagation(); });
+  btn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var willOpen = pop.hasAttribute("hidden");
+    document.querySelectorAll(".sf-multi-popover").forEach(function (p) { p.setAttribute("hidden", ""); });
+    if (willOpen) {
+      pop.removeAttribute("hidden");
+      self._positionPopover(btn, pop);
+    }
+  });
+
+  function commit() {
+    var from = fromInp.value || null;
+    var to   = toInp.value   || null;
+    if (!from && !to) delete self._filters[key];
+    else self._filters[key] = { type: "date", from: from, to: to };
+    self._updateDateButtonLabel(th, key);
+    self._onChange();
+  }
+  fromInp.addEventListener("change", commit);
+  toInp.addEventListener("change", commit);
+  clearBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    fromInp.value = "";
+    toInp.value = "";
+    delete self._filters[key];
+    self._updateDateButtonLabel(th, key);
+    self._onChange();
+  });
+};
+
+TableSF.prototype._updateDateButtonLabel = function (th, key) {
+  var btn = th.querySelector(".sf-date-button");
+  if (!btn) return;
+  var raw = this._filters[key];
+  function fmt(s) {
+    if (!s) return "";
+    var d = new Date(s + "T00:00:00");
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+  if (raw && raw.type === "date" && (raw.from || raw.to)) {
+    var label;
+    if (raw.from && raw.to) label = fmt(raw.from) + " – " + fmt(raw.to);
+    else if (raw.from)      label = "Since " + fmt(raw.from);
+    else                    label = "Until " + fmt(raw.to);
+    btn.textContent = label;
+    btn.classList.add("sf-multi-active");
+  } else {
+    btn.textContent = "Any date";
+    btn.classList.remove("sf-multi-active");
+  }
+};
+
+TableSF.prototype._isEmptyValue = function (v) {
+  if (v == null) return true;
+  if (typeof v === "string") return v.trim() === "";
+  if (Array.isArray(v)) return v.length === 0;
+  return false;
 };
 
 TableSF.prototype._parseOptions = function (raw) {
@@ -209,21 +388,42 @@ TableSF.prototype.restoreFilterUI = function () {
     var key = th.getAttribute("data-sf-key");
     var raw = self._filters[key];
     var multi = th.querySelector(".sf-filter-multi");
+    var dateWrap = th.querySelector(".sf-filter-date");
+    var textWrap = th.querySelector(".sf-filter-text");
     if (multi) {
       var values = Array.isArray(raw) ? raw : [];
-      // Drop any restored values that aren't actually a string filter for
-      // the legacy text-input variant of this column.
       if (!Array.isArray(raw) && raw != null) delete self._filters[key];
       multi.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
         cb.checked = values.indexOf(cb.value) >= 0;
       });
       self._updateMultiButtonLabel(th);
-    } else {
-      var inp = th.querySelector(".sf-filter");
-      if (inp) {
-        if (typeof raw === "string") inp.value = raw;
-        else { inp.value = ""; if (raw != null) delete self._filters[key]; }
+    } else if (dateWrap) {
+      var fromInp = dateWrap.querySelector('input[data-sf-date="from"]');
+      var toInp   = dateWrap.querySelector('input[data-sf-date="to"]');
+      if (raw && raw.type === "date") {
+        if (fromInp) fromInp.value = raw.from || "";
+        if (toInp)   toInp.value   = raw.to   || "";
+      } else {
+        if (raw != null) delete self._filters[key];
+        if (fromInp) fromInp.value = "";
+        if (toInp)   toInp.value   = "";
       }
+      self._updateDateButtonLabel(th, key);
+    } else if (textWrap) {
+      var inp = textWrap.querySelector(".sf-filter");
+      if (inp) {
+        if (typeof raw === "string") {
+          inp.value = raw;
+        } else if (raw && typeof raw === "object" && raw.op === "not-contains") {
+          inp.value = raw.q || "";
+        } else if (raw && typeof raw === "object" && (raw.op === "empty" || raw.op === "notempty")) {
+          // _updateTextOpUI sets the readonly placeholder
+        } else {
+          inp.value = "";
+          if (raw != null) delete self._filters[key];
+        }
+      }
+      self._updateTextOpUI(th, key);
     }
   });
 };
@@ -244,6 +444,16 @@ TableSF.prototype._val = function (row, key) {
   key.split(".").forEach(function (p) { v = v != null ? v[p] : null; });
   if (Array.isArray(v)) return v.join(" ");
   return v == null ? "" : v;
+};
+
+// Same path resolution as _val but without coercing null/array — used by the
+// is-empty / is-not-empty / date-range filters that need to inspect the raw
+// underlying value (so a literal "0" or false isn't mistaken for null, and so
+// a missing string and an empty array are both correctly classified as empty).
+TableSF.prototype._rawVal = function (row, key) {
+  var v = row;
+  key.split(".").forEach(function (p) { v = v != null ? v[p] : null; });
+  return v;
 };
 
 TableSF.prototype._ipNum = function (ip) {
@@ -311,6 +521,33 @@ TableSF.prototype.apply = function (data) {
             if (rv === String(raw[i]).toLowerCase()) return true;
           }
           return false;
+        }
+        if (raw && typeof raw === "object") {
+          // Operator-based text filter
+          if (raw.op === "empty")    return self._isEmptyValue(self._rawVal(row, k));
+          if (raw.op === "notempty") return !self._isEmptyValue(self._rawVal(row, k));
+          if (raw.op === "not-contains") {
+            var qn = String(raw.q || "").toLowerCase();
+            if (!qn) return true;
+            return !String(self._val(row, k)).toLowerCase().includes(qn);
+          }
+          // Date range
+          if (raw.type === "date") {
+            var rv2 = self._rawVal(row, k);
+            if (rv2 == null || rv2 === "") return false;
+            var d = new Date(rv2);
+            if (isNaN(d.getTime())) return false;
+            if (raw.from) {
+              var fromD = new Date(raw.from + "T00:00:00");
+              if (d < fromD) return false;
+            }
+            if (raw.to) {
+              var toD = new Date(raw.to + "T23:59:59.999");
+              if (d > toD) return false;
+            }
+            return true;
+          }
+          return true;
         }
         var exclude = raw.charAt(0) === "!";
         var q       = (exclude ? raw.slice(1) : raw).toLowerCase();
