@@ -3527,6 +3527,8 @@ async function deleteCredential(id, name) {
 
 var _apiTokensLoaded = false;
 
+var _quarantineIntegrations = [];
+
 async function loadApiTokensTab() {
   var container = document.getElementById("tab-api-tokens");
   if (!container) return;
@@ -3534,19 +3536,34 @@ async function loadApiTokensTab() {
   container.innerHTML = '<p class="empty-state" style="padding:2rem">Loading…</p>';
   try {
     var data = await api.apiTokens.list();
-    renderApiTokensTab(data.tokens || [], data.knownScopes || []);
+    _quarantineIntegrations = data.quarantineIntegrations || [];
+    renderApiTokensTab(data.tokens || [], data.knownScopes || [], _quarantineIntegrations);
   } catch (err) {
     container.innerHTML = '<p class="empty-state" style="color:var(--color-danger,#c0392b);padding:2rem">' + escapeHtml(err.message || "Failed to load API tokens") + '</p>';
   }
 }
 
-function renderApiTokensTab(tokens, knownScopes) {
+function _integrationLabel(intg) {
+  var typeLabel = intg.type === "fortimanager" ? "FortiManager" : "FortiGate";
+  return intg.name + " (" + typeLabel + ")";
+}
+
+function _integrationStatusNote(intg) {
+  if (!intg.enabled) return '<span style="color:var(--color-danger,#c0392b)"> — integration disabled, quarantine push will fail</span>';
+  if (!intg.pushQuarantineEnabled) return '<span style="color:var(--color-warning,#d68910)"> — Quarantine Push toggle is off on this integration; pushes will be skipped</span>';
+  return '';
+}
+
+function renderApiTokensTab(tokens, knownScopes, quarantineIntegrations) {
   var container = document.getElementById("tab-api-tokens");
   if (!container) return;
 
+  var integrationById = {};
+  (quarantineIntegrations || []).forEach(function (i) { integrationById[i.id] = i; });
+
   var tableHtml = tokens.length
     ? '<div class="table-wrapper"><table class="data-table"><thead><tr>' +
-        '<th>Name</th><th>Prefix</th><th>Scopes</th><th>Created By</th><th>Last Used</th><th>Expires</th><th>Status</th><th>Actions</th>' +
+        '<th>Name</th><th>Prefix</th><th>Scopes</th><th>Integrations</th><th>Created By</th><th>Last Used</th><th>Expires</th><th>Status</th><th>Actions</th>' +
       '</tr></thead><tbody>' +
       tokens.map(function (t) {
         var statusBadge = t.revokedAt
@@ -3558,10 +3575,22 @@ function renderApiTokensTab(tokens, knownScopes) {
           ? '<button class="btn btn-sm btn-danger" onclick="deleteApiToken(\'' + t.id + '\',\'' + escapeHtml(t.name) + '\')">Delete</button>'
           : '<button class="btn btn-sm btn-secondary" onclick="revokeApiToken(\'' + t.id + '\',\'' + escapeHtml(t.name) + '\')">Revoke</button>' +
             '<button class="btn btn-sm btn-danger" onclick="deleteApiToken(\'' + t.id + '\',\'' + escapeHtml(t.name) + '\')">Delete</button>';
+        var intgHtml = (t.integrationIds && t.integrationIds.length)
+          ? t.integrationIds.map(function (id) {
+              var intg = integrationById[id];
+              if (!intg) {
+                return '<div><span class="badge badge-type">deleted: ' + escapeHtml(id.slice(0, 8)) + '…</span></div>';
+              }
+              return '<div><span class="badge badge-type">' + escapeHtml(_integrationLabel(intg)) + '</span>' + _integrationStatusNote(intg) + '</div>';
+            }).join("")
+          : (t.scopes || []).indexOf("assets:quarantine") >= 0
+            ? '<span style="color:var(--color-danger,#c0392b)">none — token cannot push</span>'
+            : '<span style="color:var(--color-text-secondary)">n/a</span>';
         return '<tr>' +
           '<td><strong>' + escapeHtml(t.name) + '</strong></td>' +
           '<td class="mono">' + escapeHtml(t.tokenPrefix || "—") + '…</td>' +
           '<td>' + (t.scopes || []).map(function (s) { return '<span class="badge badge-type">' + escapeHtml(s) + '</span> '; }).join("") + '</td>' +
+          '<td style="font-size:0.85rem">' + intgHtml + '</td>' +
           '<td>' + escapeHtml(t.createdBy || "—") + '</td>' +
           '<td>' + (t.lastUsedAt ? formatDate(t.lastUsedAt) + (t.lastUsedIp ? ' <span class="mono" style="font-size:0.78rem;color:var(--color-text-secondary)">(' + escapeHtml(t.lastUsedIp) + ')</span>' : '') : "—") + '</td>' +
           '<td>' + (t.expiresAt ? formatDate(t.expiresAt) : "Never") + '</td>' +
@@ -3572,9 +3601,35 @@ function renderApiTokensTab(tokens, knownScopes) {
       '</tbody></table></div>'
     : '<p class="empty-state" style="padding:1.5rem 0">No API tokens yet.</p>';
 
+  // Scope checkboxes: the assets:quarantine row gets a contextual alert
+  // pointing the operator at the integration picker below.
   var scopeOpts = (knownScopes || []).map(function (s) {
-    return '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" name="scope" value="' + escapeHtml(s) + '"> ' + escapeHtml(s) + '</label>';
-  }).join(" ");
+    var hint = '';
+    if (s === "assets:quarantine") {
+      hint = '<div style="margin-left:22px;font-size:0.82rem;color:var(--color-text-secondary)">Quarantine push targets a specific FortiManager or FortiGate. Pick which integration(s) below — pushes are skipped on disabled integrations or those without the Quarantine Push toggle.</div>';
+    }
+    return '<div style="display:flex;flex-direction:column;gap:2px">' +
+      '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" name="scope" value="' + escapeHtml(s) + '" data-scope="' + escapeHtml(s) + '"> ' + escapeHtml(s) + '</label>' +
+      hint +
+    '</div>';
+  }).join("");
+
+  // Integration picker — only relevant for assets:quarantine. Hidden until
+  // that scope is checked. Required (server enforces non-empty).
+  var integrationPickerHtml;
+  if (!quarantineIntegrations || quarantineIntegrations.length === 0) {
+    integrationPickerHtml =
+      '<div class="alert alert-warning" style="padding:0.6rem 0.75rem;border-radius:6px;background:rgba(214,137,16,0.12);border:1px solid var(--color-warning,#d68910);color:var(--color-text)">' +
+        'No FortiManager or FortiGate integrations exist yet. Add one (with Quarantine Push enabled) before minting an assets:quarantine token.' +
+      '</div>';
+  } else {
+    integrationPickerHtml = quarantineIntegrations.map(function (intg) {
+      return '<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;padding:4px 0">' +
+        '<input type="checkbox" name="token-integration" value="' + escapeHtml(intg.id) + '" style="margin-top:3px">' +
+        '<span><strong>' + escapeHtml(_integrationLabel(intg)) + '</strong>' + _integrationStatusNote(intg) + '</span>' +
+      '</label>';
+    }).join("");
+  }
 
   container.innerHTML =
     '<div class="settings-section">' +
@@ -3585,14 +3640,19 @@ function renderApiTokensTab(tokens, knownScopes) {
     '</div>' +
     '<div class="settings-section" style="margin-top:1.5rem">' +
       '<h4 style="margin:0 0 0.75rem">Create New Token</h4>' +
-      '<div style="display:grid;gap:0.75rem;max-width:480px">' +
+      '<div style="display:grid;gap:0.75rem;max-width:560px">' +
         '<div>' +
           '<label class="form-label" for="f-token-name">Name <span style="color:var(--color-danger,#c0392b)">*</span></label>' +
           '<input type="text" id="f-token-name" class="form-input" placeholder="e.g. SIEM Quarantine" maxlength="80">' +
         '</div>' +
         '<div>' +
           '<label class="form-label">Scopes <span style="color:var(--color-danger,#c0392b)">*</span></label>' +
-          '<div style="display:flex;gap:1rem;flex-wrap:wrap">' + scopeOpts + '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:0.5rem">' + scopeOpts + '</div>' +
+        '</div>' +
+        '<div id="f-token-integrations-block" style="display:none">' +
+          '<label class="form-label">Integrations <span style="color:var(--color-danger,#c0392b)">*</span></label>' +
+          '<div style="font-size:0.82rem;color:var(--color-text-secondary);margin:0 0 0.4rem">This token will only be allowed to quarantine via the selected integrations. At least one is required.</div>' +
+          '<div style="border:1px solid var(--color-border);border-radius:6px;padding:0.5rem 0.75rem">' + integrationPickerHtml + '</div>' +
         '</div>' +
         '<div>' +
           '<label class="form-label" for="f-token-expires">Expires (optional)</label>' +
@@ -3603,6 +3663,15 @@ function renderApiTokensTab(tokens, knownScopes) {
     '</div>';
 
   document.getElementById("btn-create-api-token").addEventListener("click", createApiToken);
+
+  // Toggle the integration block when assets:quarantine is checked/unchecked.
+  var quarantineCheckbox = container.querySelector('input[data-scope="assets:quarantine"]');
+  var integrationsBlock = document.getElementById("f-token-integrations-block");
+  if (quarantineCheckbox && integrationsBlock) {
+    var sync = function () { integrationsBlock.style.display = quarantineCheckbox.checked ? "block" : "none"; };
+    quarantineCheckbox.addEventListener("change", sync);
+    sync();
+  }
 }
 
 async function createApiToken() {
@@ -3610,8 +3679,14 @@ async function createApiToken() {
   if (!name) { showToast("Token name is required", "error"); return; }
   var scopes = Array.from(document.querySelectorAll('input[name="scope"]:checked')).map(function (cb) { return cb.value; });
   if (!scopes.length) { showToast("Select at least one scope", "error"); return; }
+  var integrationIds = Array.from(document.querySelectorAll('input[name="token-integration"]:checked')).map(function (cb) { return cb.value; });
+  if (scopes.indexOf("assets:quarantine") >= 0 && integrationIds.length === 0) {
+    showToast("Pick at least one integration for assets:quarantine", "error");
+    return;
+  }
   var expiresAt = document.getElementById("f-token-expires").value;
   var body = { name: name, scopes: scopes };
+  if (integrationIds.length) body.integrationIds = integrationIds;
   if (expiresAt) body.expiresAt = new Date(expiresAt).toISOString();
 
   var btn = document.getElementById("btn-create-api-token");

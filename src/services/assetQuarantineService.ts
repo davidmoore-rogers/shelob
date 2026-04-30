@@ -397,6 +397,12 @@ export interface QuarantineAssetParams {
   assetId: string;
   actor: string; // "user:<username>" | "api:<token-name>" | "system:auto-quarantine"
   reason?: string;
+  // When provided (bearer-token callers), restricts which integrations the
+  // push will fan out to. Sightings whose originating integration is not in
+  // this list are silently ignored, so a SIEM token minted for "Site A" can
+  // never accidentally quarantine via Site B's FortiGate. Undefined =
+  // session-authenticated or system caller; no filter applied.
+  tokenIntegrationIds?: string[];
 }
 
 export interface QuarantineAssetResult {
@@ -443,11 +449,25 @@ export async function quarantineAsset(
     );
   }
 
-  const candidates: AssetSighting[] = await getQuarantineCandidates(asset.id);
-  if (candidates.length === 0) {
+  const allCandidates: AssetSighting[] = await getQuarantineCandidates(asset.id);
+  if (allCandidates.length === 0) {
     throw new AppError(
       409,
       `Asset ${asset.hostname || asset.id} has no recent FortiGate sightings — nothing to push to`,
+    );
+  }
+
+  // Bearer-token callers are scoped to a fixed integration set. Drop any
+  // sighting whose integration isn't in that set before doing any work; if
+  // nothing survives, fail with a 403 rather than silently no-op'ing.
+  const tokenScope = params.tokenIntegrationIds;
+  const candidates = tokenScope
+    ? allCandidates.filter((c) => c.integrationId && tokenScope.includes(c.integrationId))
+    : allCandidates;
+  if (tokenScope && candidates.length === 0) {
+    throw new AppError(
+      403,
+      `Asset ${asset.hostname || asset.id} has no recent sightings on the integrations this token is allowed to push to`,
     );
   }
 
@@ -587,6 +607,12 @@ export async function quarantineAsset(
 export interface ReleaseQuarantineParams {
   assetId: string;
   actor: string;
+  // See QuarantineAssetParams.tokenIntegrationIds. For release, we refuse
+  // outright if the existing quarantine touches integrations outside the
+  // token's scope — partial release would leave the asset's status flipped
+  // back to active in Polaris while orphan entries linger on the out-of-
+  // scope gateways. Session/system callers leave this undefined.
+  tokenIntegrationIds?: string[];
 }
 
 export interface ReleaseQuarantineResult {
@@ -616,6 +642,19 @@ export async function releaseQuarantine(
   const recordedTargets = Array.isArray(asset.quarantineTargets)
     ? (asset.quarantineTargets as unknown as QuarantineTargetRecord[])
     : [];
+
+  // Token-scope guard: refuse partial release.
+  if (params.tokenIntegrationIds) {
+    const allowed = new Set(params.tokenIntegrationIds);
+    const outside = recordedTargets.filter((t) => !allowed.has(t.integrationId));
+    if (outside.length > 0) {
+      const names = Array.from(new Set(outside.map((t) => t.fortigateDevice))).join(", ");
+      throw new AppError(
+        403,
+        `Quarantine for ${asset.hostname || asset.id} touches FortiGate(s) ${names} on integrations this token is not allowed to operate against — release must be performed by an admin or a token covering all targets`,
+      );
+    }
+  }
 
   // Group by integrationId so we load each integration once.
   const integrationIds = new Set(recordedTargets.map((t) => t.integrationId).filter(Boolean));
@@ -722,7 +761,10 @@ export async function releaseQuarantine(
  * "drift" if the device no longer holds the target / required MACs.
  * Caller is responsible for persisting the result.
  */
-export async function verifyAssetQuarantine(assetId: string): Promise<{
+export async function verifyAssetQuarantine(
+  assetId: string,
+  tokenIntegrationIds?: string[],
+): Promise<{
   targets: QuarantineTargetRecord[];
   driftDetected: boolean;
 }> {
@@ -733,6 +775,18 @@ export async function verifyAssetQuarantine(assetId: string): Promise<{
   const recordedTargets = Array.isArray(asset.quarantineTargets)
     ? (asset.quarantineTargets as unknown as QuarantineTargetRecord[])
     : [];
+
+  if (tokenIntegrationIds) {
+    const allowed = new Set(tokenIntegrationIds);
+    const outside = recordedTargets.filter((t) => !allowed.has(t.integrationId));
+    if (outside.length > 0) {
+      const names = Array.from(new Set(outside.map((t) => t.fortigateDevice))).join(", ");
+      throw new AppError(
+        403,
+        `Quarantine for ${asset.hostname || asset.id} touches FortiGate(s) ${names} on integrations this token is not allowed to read`,
+      );
+    }
+  }
 
   const integrationIds = new Set(recordedTargets.map((t) => t.integrationId).filter(Boolean));
   const integrations = await prisma.integration.findMany({

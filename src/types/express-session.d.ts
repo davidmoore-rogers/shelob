@@ -21,7 +21,7 @@ declare global {
       // Set by apiTokenAuth middleware when the request presented a valid
       // bearer token. Mutually exclusive with req.session.userId in
       // practice — token callers don't get a session.
-      apiToken?: { id: string; name: string; scopes: string[] };
+      apiToken?: { id: string; name: string; scopes: string[]; integrationIds: string[] };
     }
   }
 }

@@ -1757,6 +1757,7 @@ router.post("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadmin
       assetId: id,
       actor,
       reason: input.reason,
+      tokenIntegrationIds: req.apiToken?.integrationIds,
     });
     res.json(result);
   } catch (err) {
@@ -1772,6 +1773,7 @@ router.delete("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadm
     const result = await releaseQuarantine({
       assetId: id,
       actor,
+      tokenIntegrationIds: req.apiToken?.integrationIds,
     });
     res.json(result);
   } catch (err) {
@@ -1783,7 +1785,7 @@ router.delete("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadm
 router.post("/:id/quarantine/verify", requireSessionOrTokenScope(["admin", "assetsadmin"], "assets:quarantine"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
-    const verifyResult = await verifyAssetQuarantine(id);
+    const verifyResult = await verifyAssetQuarantine(id, req.apiToken?.integrationIds);
     if (verifyResult.driftDetected) {
       // Persist the drift flip + log the event so the operator has an audit trail.
       await prisma.asset.update({
@@ -1821,7 +1823,7 @@ router.post("/bulk-quarantine", requireSessionOrTokenScope(["admin", "assetsadmi
     const results: Array<{ id: string; ok: boolean; message: string; succeededCount?: number; failedCount?: number }> = [];
     for (const id of input.ids) {
       try {
-        const r = await quarantineAsset({ assetId: id, actor, reason: input.reason });
+        const r = await quarantineAsset({ assetId: id, actor, reason: input.reason, tokenIntegrationIds: req.apiToken?.integrationIds });
         results.push({ id, ok: true, message: r.message, succeededCount: r.succeededCount, failedCount: r.failedCount });
       } catch (err: any) {
         results.push({ id, ok: false, message: err?.message || "Quarantine failed" });
@@ -1842,7 +1844,7 @@ router.post("/bulk-quarantine/release", requireSessionOrTokenScope(["admin", "as
     const results: Array<{ id: string; ok: boolean; message: string }> = [];
     for (const id of input.ids) {
       try {
-        const r = await releaseQuarantine({ assetId: id, actor });
+        const r = await releaseQuarantine({ assetId: id, actor, tokenIntegrationIds: req.apiToken?.integrationIds });
         results.push({ id, ok: true, message: r.message });
       } catch (err: any) {
         results.push({ id, ok: false, message: err?.message || "Release failed" });

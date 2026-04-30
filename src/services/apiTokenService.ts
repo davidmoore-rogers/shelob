@@ -31,6 +31,7 @@ export interface ApiTokenSummary {
   name: string;
   tokenPrefix: string;
   scopes: string[];
+  integrationIds: string[];
   createdBy: string;
   createdAt: Date;
   expiresAt: Date | null;
@@ -44,6 +45,7 @@ export interface AuthenticatedToken {
   id: string;
   name: string;
   scopes: string[];
+  integrationIds: string[];
 }
 
 function generateRawToken(): string {
@@ -71,8 +73,40 @@ function validateScopes(scopes: string[]): void {
 export interface CreateTokenInput {
   name: string;
   scopes: string[];
+  integrationIds?: string[];
   expiresAt?: Date | null;
   createdBy: string;
+}
+
+const QUARANTINE_INTEGRATION_TYPES = new Set(["fortimanager", "fortigate"]);
+
+async function validateIntegrationIds(scopes: string[], integrationIds: string[]): Promise<string[]> {
+  const needsIntegrations = scopes.includes("assets:quarantine");
+  if (!needsIntegrations) return [];
+  if (integrationIds.length === 0) {
+    throw new AppError(
+      400,
+      "Tokens with the assets:quarantine scope must select at least one FortiManager or FortiGate integration",
+    );
+  }
+  const unique = Array.from(new Set(integrationIds));
+  const rows = await prisma.integration.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, type: true },
+  });
+  const found = new Map(rows.map((r) => [r.id, r.type]));
+  const missing = unique.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    throw new AppError(400, `Unknown integration id(s): ${missing.join(", ")}`);
+  }
+  const wrongType = unique.filter((id) => !QUARANTINE_INTEGRATION_TYPES.has(found.get(id) || ""));
+  if (wrongType.length > 0) {
+    throw new AppError(
+      400,
+      `Integration(s) ${wrongType.join(", ")} are not FortiManager or FortiGate — quarantine push only supports those types`,
+    );
+  }
+  return unique;
 }
 
 export interface CreateTokenResult {
@@ -87,6 +121,8 @@ export async function createToken(input: CreateTokenInput): Promise<CreateTokenR
   const existing = await prisma.apiToken.findUnique({ where: { name: input.name.trim() } });
   if (existing) throw new AppError(409, `A token named "${input.name}" already exists`);
 
+  const integrationIds = await validateIntegrationIds(input.scopes, input.integrationIds ?? []);
+
   const raw = generateRawToken();
   const tokenHash = await hashPassword(raw);
   const tokenPrefix = raw.slice(0, TOKEN_PREFIX.length + 8); // "polaris_xxxxxxxx"
@@ -97,6 +133,7 @@ export async function createToken(input: CreateTokenInput): Promise<CreateTokenR
       tokenHash,
       tokenPrefix,
       scopes: input.scopes,
+      integrationIds,
       createdBy: input.createdBy,
       expiresAt: input.expiresAt ?? null,
     },
@@ -130,6 +167,7 @@ function toSummary(row: {
   name: string;
   tokenPrefix: string;
   scopes: string[];
+  integrationIds: string[];
   createdBy: string;
   createdAt: Date;
   expiresAt: Date | null;
@@ -143,6 +181,7 @@ function toSummary(row: {
     name: row.name,
     tokenPrefix: row.tokenPrefix,
     scopes: row.scopes,
+    integrationIds: row.integrationIds,
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
@@ -189,7 +228,7 @@ export async function verifyToken(
         /* ignore */
       });
 
-    return { id: row.id, name: row.name, scopes: row.scopes };
+    return { id: row.id, name: row.name, scopes: row.scopes, integrationIds: row.integrationIds };
   }
   return null;
 }

@@ -815,6 +815,12 @@ model ApiToken {
   tokenHash   String // argon2id hash of the raw token
   tokenPrefix String // first 8 chars of the raw token for UI display
   scopes      String[]  @default([]) // e.g. ["assets:quarantine", "assets:read"]
+  // Integration ids this token may operate against. Required + non-empty for
+  // tokens with `assets:quarantine`; ignored for read-only scopes. Tokens
+  // with this set will only quarantine/release/verify against sightings whose
+  // originating integration id is in this list — so a token minted for "Site
+  // A FortiGate" can never accidentally push to Site B's gateway.
+  integrationIds String[] @default([])
   createdBy   String // username of the admin who minted the token
   createdAt   DateTime  @default(now())
   expiresAt   DateTime?

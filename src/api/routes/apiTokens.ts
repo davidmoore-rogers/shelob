@@ -8,6 +8,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
+import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import {
   KNOWN_SCOPES,
@@ -25,12 +26,36 @@ const ScopeEnum = z.enum(KNOWN_SCOPES as unknown as [string, ...string[]]);
 const CreateTokenSchema = z.object({
   name: z.string().min(1).max(80),
   scopes: z.array(ScopeEnum).min(1),
+  integrationIds: z.array(z.string().uuid()).optional(),
   expiresAt: z.string().datetime().optional(),
 });
 
 router.get("/", async (_req, res, next) => {
   try {
-    res.json({ tokens: await listTokens(), knownScopes: KNOWN_SCOPES });
+    // Surface the FMG/FortiGate integrations along with each one's enabled
+    // flag and pushQuarantine-config flag so the API Tokens UI can render the
+    // per-integration picker + the "push disabled" alert without making a
+    // second authenticated round-trip to /integrations.
+    const rows = await prisma.integration.findMany({
+      where: { type: { in: ["fortimanager", "fortigate"] } },
+      select: { id: true, name: true, type: true, enabled: true, config: true },
+      orderBy: { name: "asc" },
+    });
+    const quarantineIntegrations = rows.map((r) => {
+      const cfg = (r.config ?? {}) as Record<string, unknown>;
+      return {
+        id: r.id,
+        name: r.name,
+        type: r.type,
+        enabled: r.enabled,
+        pushQuarantineEnabled: cfg.pushQuarantine === true,
+      };
+    });
+    res.json({
+      tokens: await listTokens(),
+      knownScopes: KNOWN_SCOPES,
+      quarantineIntegrations,
+    });
   } catch (err) {
     next(err);
   }
@@ -46,6 +71,7 @@ router.post("/", async (req, res, next) => {
     const result = await createToken({
       name: input.name,
       scopes: input.scopes,
+      integrationIds: input.integrationIds,
       expiresAt,
       createdBy: req.session?.username || "unknown",
     });
