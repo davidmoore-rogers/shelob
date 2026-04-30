@@ -258,8 +258,10 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   if (!existing.macAddress && proposed.macAddress) update.macAddress = proposed.macAddress;
   if (!existing.manufacturer && proposed.manufacturer) update.manufacturer = proposed.manufacturer;
   if (!existing.model && proposed.model) update.model = proposed.model;
-  if (!existing.os && proposed.os) update.os = proposed.os;
-  if (!existing.osVersion && proposed.osVersion) update.osVersion = proposed.osVersion;
+  // os/osVersion are always overwritten — auto-discovered from Entra/AD, not
+  // user-entered, so the latest value from the source is always authoritative.
+  if (proposed.os) update.os = proposed.os;
+  if (proposed.osVersion) update.osVersion = proposed.osVersion;
   if (!existing.assignedTo && proposed.assignedTo) update.assignedTo = proposed.assignedTo;
   if (!existing.dnsName && proposed.dnsName) update.dnsName = proposed.dnsName;
   if (!existing.location && !existing.learnedLocation && proposed.learnedLocation) update.learnedLocation = proposed.learnedLocation;
@@ -317,8 +319,8 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
     if (!update.macAddress && !existing.macAddress && ghost.macAddress) update.macAddress = ghost.macAddress;
     if (!update.manufacturer && !existing.manufacturer && ghost.manufacturer) update.manufacturer = ghost.manufacturer;
     if (!update.model && !existing.model && ghost.model) update.model = ghost.model;
-    if (!update.os && !existing.os && ghost.os) update.os = ghost.os;
-    if (!update.osVersion && !existing.osVersion && ghost.osVersion) update.osVersion = ghost.osVersion;
+    if (!update.os && ghost.os) update.os = ghost.os;
+    if (!update.osVersion && ghost.osVersion) update.osVersion = ghost.osVersion;
     if (!update.assignedTo && !existing.assignedTo && ghost.assignedTo) update.assignedTo = ghost.assignedTo;
     if (!update.notes && !existing.notes && ghost.notes) update.notes = ghost.notes;
     if (!update.lastSeen && !existing.lastSeen && ghost.lastSeen) update.lastSeen = ghost.lastSeen;

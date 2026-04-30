@@ -753,13 +753,17 @@ function getAlertsFormData() {
       ["assignedTo", "Primary User"],
     ];
 
+    // os/osVersion are always overwritten on Accept (authoritative from Entra/AD).
+    // Never highlight them as a conflict — just show as informational context.
+    var autoUpdateFields = new Set(["os", "osVersion"]);
     var rows = fields.map(function (pair) {
       var key = pair[0], label = pair[1];
       var existingVal = existing[key] || null;
       var proposedVal = proposed[key] || null;
-      var differs = existingVal && proposedVal && String(existingVal).toLowerCase() !== String(proposedVal).toLowerCase();
+      var differs = !autoUpdateFields.has(key) && existingVal && proposedVal && String(existingVal).toLowerCase() !== String(proposedVal).toLowerCase();
+      var autoUpdate = autoUpdateFields.has(key) && proposedVal && String(existingVal || "").toLowerCase() !== String(proposedVal).toLowerCase();
       return '<tr class="' + (differs ? "conflict-changed" : "") + '">' +
-        '<td class="conflict-field">' + escapeHtml(label) + '</td>' +
+        '<td class="conflict-field">' + escapeHtml(label) + (autoUpdate ? ' <span style="color:var(--color-text-tertiary);font-size:0.7rem">(auto)</span>' : '') + '</td>' +
         '<td>' + (existingVal ? escapeHtml(existingVal) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
         '<td>' + (proposedVal ? (differs ? '<strong>' + escapeHtml(proposedVal) + '</strong>' : escapeHtml(proposedVal)) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
         '</tr>';
