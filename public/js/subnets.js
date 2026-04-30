@@ -51,12 +51,7 @@ function _restoreSubnetsPrefs() {
       if (p.sortDir) _subnetsSF._sortDir = p.sortDir;
       if (p.sfFilters) {
         _subnetsSF._filters = p.sfFilters;
-        if (_subnetsSF._thead) {
-          _subnetsSF._thead.querySelectorAll("th[data-sf-key]").forEach(function (th) {
-            var inp = th.querySelector(".sf-filter");
-            if (inp && p.sfFilters[th.getAttribute("data-sf-key")]) inp.value = p.sfFilters[th.getAttribute("data-sf-key")];
-          });
-        }
+        _subnetsSF.restoreFilterUI();
       }
       _subnetsSF._updateIcons();
     }

@@ -10,6 +10,12 @@
  *
  * Supported types: string (default), number, date, ip, array
  * Nested keys work:  data-sf-key="block.name"  or  data-sf-key="_count.subnets"
+ *
+ * Multi-select dropdown filter: add data-sf-options="value1|value2|value3" to
+ * render a checkbox popover instead of a free-text input. Each option may use
+ * "value=Label" form to override the displayed label (defaults to capitalized
+ * value). Selected values are matched case-insensitively against the row's
+ * value via exact equality, and the filter is stored as an array.
  */
 function TableSF(tbodyId, onChange) {
   var tbody = document.getElementById(tbodyId);
@@ -24,17 +30,39 @@ function TableSF(tbodyId, onChange) {
 TableSF.prototype._setup = function () {
   var self = this;
   this._thead.querySelectorAll("th[data-sf-key]").forEach(function (th) {
-    var key   = th.getAttribute("data-sf-key");
-    var label = th.textContent.trim();
+    var key     = th.getAttribute("data-sf-key");
+    var label   = th.textContent.trim();
+    var optsRaw = th.getAttribute("data-sf-options");
 
     th.classList.add("sf-th");
-    th.innerHTML =
+
+    var headerHtml =
       '<div class="sf-header">' +
         '<span class="sf-label">' + escapeHtml(label) + '</span>' +
         '<span class="sf-sort-icon">⇅</span>' +
-      '</div>' +
-      '<input class="sf-filter" type="text" placeholder="filter…"' +
-        ' title="Type to filter. Prefix with ! to exclude rows (e.g. !foo).">';
+      '</div>';
+
+    if (optsRaw) {
+      var opts = optsRaw.split("|").map(function (raw) {
+        var idx = raw.indexOf("=");
+        if (idx >= 0) return { value: raw.slice(0, idx), label: raw.slice(idx + 1) };
+        return { value: raw, label: raw.charAt(0).toUpperCase() + raw.slice(1).replace(/_/g, " ") };
+      });
+      var checks = opts.map(function (o) {
+        return '<label class="sf-multi-option">' +
+          '<input type="checkbox" value="' + escapeHtml(o.value) + '">' +
+          '<span>' + escapeHtml(o.label) + '</span></label>';
+      }).join("");
+      th.innerHTML = headerHtml +
+        '<div class="sf-filter-multi">' +
+          '<button type="button" class="sf-filter sf-multi-button" title="Filter by value">All</button>' +
+          '<div class="sf-multi-popover" hidden>' + checks + '</div>' +
+        '</div>';
+    } else {
+      th.innerHTML = headerHtml +
+        '<input class="sf-filter" type="text" placeholder="filter…"' +
+          ' title="Type to filter. Prefix with ! to exclude rows (e.g. !foo).">';
+    }
 
     th.querySelector(".sf-header").addEventListener("click", function () {
       if (self._sortKey === key) {
@@ -47,14 +75,111 @@ TableSF.prototype._setup = function () {
       self._onChange();
     });
 
-    var inp = th.querySelector(".sf-filter");
-    inp.addEventListener("click", function (e) { e.stopPropagation(); });
-    inp.addEventListener("input", debounce(function () {
-      var v = inp.value.trim();
-      if (v && v !== "!") self._filters[key] = v;
-      else                delete self._filters[key];
-      self._onChange();
-    }, 200));
+    if (optsRaw) {
+      var wrap = th.querySelector(".sf-filter-multi");
+      var btn  = wrap.querySelector(".sf-multi-button");
+      var pop  = wrap.querySelector(".sf-multi-popover");
+
+      wrap.addEventListener("click", function (e) { e.stopPropagation(); });
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var willOpen = pop.hasAttribute("hidden");
+        document.querySelectorAll(".sf-multi-popover").forEach(function (p) {
+          p.setAttribute("hidden", "");
+        });
+        if (willOpen) {
+          pop.removeAttribute("hidden");
+          self._positionPopover(btn, pop);
+        }
+      });
+      pop.addEventListener("change", function () {
+        var selected = Array.prototype.slice.call(
+          pop.querySelectorAll('input[type="checkbox"]:checked')
+        ).map(function (cb) { return cb.value; });
+        if (selected.length) self._filters[key] = selected;
+        else                  delete self._filters[key];
+        self._updateMultiButtonLabel(th);
+        self._onChange();
+      });
+    } else {
+      var inp = th.querySelector(".sf-filter");
+      inp.addEventListener("click", function (e) { e.stopPropagation(); });
+      inp.addEventListener("input", debounce(function () {
+        var v = inp.value.trim();
+        if (v && v !== "!") self._filters[key] = v;
+        else                delete self._filters[key];
+        self._onChange();
+      }, 200));
+    }
+  });
+
+  if (!TableSF._docWired) {
+    TableSF._docWired = true;
+    var closeAll = function () {
+      document.querySelectorAll(".sf-multi-popover").forEach(function (p) {
+        p.setAttribute("hidden", "");
+      });
+    };
+    document.addEventListener("click", closeAll);
+    window.addEventListener("scroll", closeAll, true);
+    window.addEventListener("resize", closeAll);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeAll();
+    });
+  }
+};
+
+TableSF.prototype._positionPopover = function (btn, pop) {
+  var r = btn.getBoundingClientRect();
+  pop.style.position = "fixed";
+  pop.style.top  = (r.bottom + 2) + "px";
+  pop.style.left = r.left + "px";
+  pop.style.minWidth = r.width + "px";
+};
+
+TableSF.prototype._updateMultiButtonLabel = function (th) {
+  var btn = th.querySelector(".sf-multi-button");
+  var pop = th.querySelector(".sf-multi-popover");
+  if (!btn || !pop) return;
+  var checked = pop.querySelectorAll('input[type="checkbox"]:checked');
+  if (checked.length === 0) {
+    btn.textContent = "All";
+    btn.classList.remove("sf-multi-active");
+  } else if (checked.length === 1) {
+    btn.textContent = checked[0].nextElementSibling.textContent;
+    btn.classList.add("sf-multi-active");
+  } else if (checked.length === pop.querySelectorAll('input[type="checkbox"]').length) {
+    btn.textContent = "All";
+    btn.classList.remove("sf-multi-active");
+  } else {
+    btn.textContent = checked.length + " selected";
+    btn.classList.add("sf-multi-active");
+  }
+};
+
+TableSF.prototype.restoreFilterUI = function () {
+  var self = this;
+  if (!self._thead) return;
+  self._thead.querySelectorAll("th[data-sf-key]").forEach(function (th) {
+    var key = th.getAttribute("data-sf-key");
+    var raw = self._filters[key];
+    var multi = th.querySelector(".sf-filter-multi");
+    if (multi) {
+      var values = Array.isArray(raw) ? raw : [];
+      // Drop any restored values that aren't actually a string filter for
+      // the legacy text-input variant of this column.
+      if (!Array.isArray(raw) && raw != null) delete self._filters[key];
+      multi.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+        cb.checked = values.indexOf(cb.value) >= 0;
+      });
+      self._updateMultiButtonLabel(th);
+    } else {
+      var inp = th.querySelector(".sf-filter");
+      if (inp) {
+        if (typeof raw === "string") inp.value = raw;
+        else { inp.value = ""; if (raw != null) delete self._filters[key]; }
+      }
+    }
   });
 };
 
@@ -133,7 +258,15 @@ TableSF.prototype.apply = function (data) {
   if (fKeys.length) {
     result = result.filter(function (row) {
       return fKeys.every(function (k) {
-        var raw     = self._filters[k];
+        var raw = self._filters[k];
+        if (Array.isArray(raw)) {
+          if (!raw.length) return true;
+          var rv = String(self._val(row, k)).toLowerCase();
+          for (var i = 0; i < raw.length; i++) {
+            if (rv === String(raw[i]).toLowerCase()) return true;
+          }
+          return false;
+        }
         var exclude = raw.charAt(0) === "!";
         var q       = (exclude ? raw.slice(1) : raw).toLowerCase();
         if (!q) return true;

@@ -45,12 +45,7 @@ function _restoreAssetsPrefs() {
       if (p.sortDir) _assetsSF._sortDir = p.sortDir;
       if (p.sfFilters) {
         _assetsSF._filters = p.sfFilters;
-        if (_assetsSF._thead) {
-          _assetsSF._thead.querySelectorAll("th[data-sf-key]").forEach(function (th) {
-            var inp = th.querySelector(".sf-filter");
-            if (inp && p.sfFilters[th.getAttribute("data-sf-key")]) inp.value = p.sfFilters[th.getAttribute("data-sf-key")];
-          });
-        }
+        _assetsSF.restoreFilterUI();
       }
       _assetsSF._updateIcons();
     }
@@ -173,6 +168,11 @@ async function loadAssets() {
     var result = await api.assets.list(filters);
     _assetsData = (result.assets || result).map(function (a) {
       a._server = a.location || a.learnedLocation || "";
+      a._monitor = (!a.monitored)
+        ? "Unmonitored"
+        : (a.monitorStatus === "up"   ? "Monitored"
+        :  a.monitorStatus === "down" ? "Down"
+        :                                "Pending");
       return a;
     });
     if (statusVal === "hide-decommissioned") {
