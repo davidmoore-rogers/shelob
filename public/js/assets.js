@@ -389,10 +389,12 @@ function _assetsUpdateBulkBar() {
   }
 }
 
-// View Lease cell. Renders a button that jumps to the asset's IP in the
-// network slide-over on the Networks page (the same panel used for IP-level
-// reservation editing). Hidden when the asset has no IP or no non-deprecated
-// containing subnet — there is nothing to navigate to.
+// View Lease cell. Renders a button that opens a lightweight reservation
+// slide-over right on the Assets page — the user gets the lease details for
+// this one IP without losing their place in the asset list. The footer's
+// "Open in Networks" button is the escape hatch when they want the full
+// subnet IP table. Hidden when the asset has no IP or no non-deprecated
+// containing subnet — there is nothing to look at.
 function _viewLeaseActionHTML(a) {
   if (!a.ipAddress) return '';
   var ctx = a.ipContext;
@@ -404,8 +406,120 @@ function _viewLeaseActionHTML(a) {
 function viewAssetLease(id) {
   var a = (_assetsData || []).find(function (x) { return x.id === id; });
   if (!a || !a.ipAddress || !a.ipContext || !a.ipContext.subnetId) return;
-  var hash = '#ip=' + encodeURIComponent(a.ipContext.subnetId) + '@' + encodeURIComponent(a.ipAddress);
-  window.location.href = '/subnets.html' + hash;
+  openLeasePanel(a);
+}
+
+// ─── Lightweight reservation slide-over (Assets page) ─────────────────────
+//
+// Shows just the lease details for one IP — no full subnet table. Used by
+// the "View Lease" row action. Reuses the asset details slide-over CSS.
+// When the asset has no active reservation we still open the panel and tell
+// the user the IP is unreserved; the footer link to Networks is always
+// present for operators who need the full panel.
+
+function _ensureLeasePanelDOM() {
+  if (document.getElementById("lease-panel-overlay")) return;
+  var overlay = document.createElement("div");
+  overlay.id = "lease-panel-overlay";
+  overlay.className = "slideover-overlay";
+  overlay.innerHTML =
+    '<div class="slideover" id="lease-panel">' +
+      '<div class="slideover-resize-handle"></div>' +
+      '<div class="slideover-header">' +
+        '<div class="slideover-header-top">' +
+          '<h3 id="lease-panel-title">Lease</h3>' +
+          '<button class="btn-icon" id="lease-panel-close" title="Close">&times;</button>' +
+        '</div>' +
+        '<div class="slideover-meta" id="lease-panel-meta"></div>' +
+      '</div>' +
+      '<div class="slideover-body" id="lease-panel-body"><p class="empty-state" style="padding:1rem 1.25rem">Loading…</p></div>' +
+      '<div class="slideover-footer" id="lease-panel-footer"></div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", function (e) {
+    if (e.target === overlay) closeLeasePanel();
+  });
+  document.getElementById("lease-panel-close").addEventListener("click", closeLeasePanel);
+  initSlideoverResize(document.getElementById("lease-panel"), "polaris.panel.width.lease");
+}
+
+function closeLeasePanel() {
+  var ov = document.getElementById("lease-panel-overlay");
+  if (ov) ov.classList.remove("open");
+}
+
+async function openLeasePanel(asset) {
+  _ensureLeasePanelDOM();
+  var titleEl  = document.getElementById("lease-panel-title");
+  var metaEl   = document.getElementById("lease-panel-meta");
+  var bodyEl   = document.getElementById("lease-panel-body");
+  var footerEl = document.getElementById("lease-panel-footer");
+  var ctx = asset.ipContext || {};
+
+  titleEl.textContent = "Lease — " + asset.ipAddress;
+  metaEl.textContent = (asset.hostname || asset.assetTag || asset.id) + (ctx.subnetCidr ? "  ·  " + ctx.subnetCidr : "");
+  bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading…</p>';
+  var openInNetworks =
+    '<button class="btn btn-sm btn-secondary" id="btn-lease-open-networks">Open in Networks</button>';
+  footerEl.innerHTML =
+    openInNetworks +
+    ' <button class="btn btn-sm btn-secondary" id="btn-lease-close">Close</button>';
+  requestAnimationFrame(function () {
+    document.getElementById("lease-panel-overlay").classList.add("open");
+  });
+  document.getElementById("btn-lease-close").addEventListener("click", closeLeasePanel);
+  document.getElementById("btn-lease-open-networks").addEventListener("click", function () {
+    var hash = '#ip=' + encodeURIComponent(ctx.subnetId) + '@' + encodeURIComponent(asset.ipAddress);
+    window.location.href = '/subnets.html' + hash;
+  });
+
+  if (!ctx.reservation || !ctx.reservation.id) {
+    bodyEl.innerHTML =
+      '<div style="padding:1rem 1.25rem">' +
+        '<p style="margin:0 0 0.5rem 0">No active reservation for <code>' + escapeHtml(asset.ipAddress) + '</code>.</p>' +
+        '<p class="empty-state" style="margin:0">This IP sits inside <strong>' + escapeHtml(ctx.subnetCidr || 'its subnet') + '</strong> but has no Polaris reservation. Use <em>Open in Networks</em> to reserve it.</p>' +
+      '</div>';
+    return;
+  }
+
+  try {
+    var r = await api.reservations.get(ctx.reservation.id);
+    bodyEl.innerHTML = _renderLeaseBody(r, ctx);
+  } catch (err) {
+    bodyEl.innerHTML =
+      '<div style="padding:1rem 1.25rem">' +
+        '<p class="empty-state" style="margin:0">Failed to load reservation: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</p>' +
+      '</div>';
+  }
+}
+
+function _renderLeaseBody(r, ctx) {
+  function row(label, value) {
+    if (value === null || value === undefined || value === '') return '';
+    return '<div style="display:grid;grid-template-columns:140px 1fr;gap:0.5rem;padding:0.35rem 0;border-bottom:1px solid var(--color-border)">' +
+             '<div style="color:var(--color-text-secondary);font-size:0.85rem">' + escapeHtml(label) + '</div>' +
+             '<div>' + value + '</div>' +
+           '</div>';
+  }
+  var pushBadge = '';
+  if (r.pushStatus) {
+    var cls = r.pushStatus === 'synced' ? 'badge-success' : (r.pushStatus === 'drift' ? 'badge-warning' : 'badge-secondary');
+    pushBadge = '<span class="badge ' + cls + '">' + escapeHtml(r.pushStatus) + '</span>';
+  }
+  return '<div style="padding:1rem 1.25rem">' +
+    row('IP Address',   '<code>' + escapeHtml(r.ipAddress || '') + '</code>') +
+    row('Status',       statusBadge(r.status)) +
+    row('Source',       '<span class="badge">' + escapeHtml(r.sourceType || 'manual') + '</span>') +
+    row('Hostname',     r.hostname     ? escapeHtml(r.hostname)     : '<span class="empty-state">—</span>') +
+    row('MAC Address',  r.macAddress   ? '<code>' + escapeHtml(r.macAddress) + '</code>' : '<span class="empty-state">—</span>') +
+    row('Owner',        r.owner        ? escapeHtml(r.owner)        : '<span class="empty-state">—</span>') +
+    row('Project Ref',  r.projectRef   ? escapeHtml(r.projectRef)   : '') +
+    row('Expires',      r.expiresAt    ? formatDate(r.expiresAt)    : '<span class="empty-state">never</span>') +
+    row('Created By',   r.createdBy    ? escapeHtml(r.createdBy)    : '') +
+    row('Subnet',       escapeHtml(ctx.subnetCidr || '')) +
+    (pushBadge ? row('FortiGate Push', pushBadge + (r.pushedAt ? ' <span style="color:var(--color-text-secondary);font-size:0.8rem">' + formatDate(r.pushedAt) + '</span>' : '')) : '') +
+    row('Notes',        r.notes        ? '<div style="white-space:pre-wrap">' + escapeHtml(r.notes) + '</div>' : '') +
+  '</div>';
 }
 
 // Quarantine action button in asset row. Only shown to assets-admins; only
