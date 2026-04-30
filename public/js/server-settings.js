@@ -1029,6 +1029,13 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
     '</div>';
 
   var allTables = (dbInfo && dbInfo.tables) || [];
+  var tablesHtml = allTables.map(function (t) {
+    return '<tr>' +
+      '<td class="mono" style="font-size:0.78rem">' + escapeHtml(t.name) + '</td>' +
+      '<td style="text-align:right">' + formatNumber(t.rows) + '</td>' +
+      '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(t.size) + '</td>' +
+      '</tr>';
+  }).join("");
 
   var dbHtml =
     '<div class="capacity-stat-card">' +
@@ -1038,6 +1045,15 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
         dbInfoRow("Steady-state at current settings", _capacityFormatBytes(work.steadyStateSizeBytes)) +
         (allTables.length ? dbInfoRow("Tables", allTables.length) : "") +
       '</div>' +
+      (tablesHtml
+        ? '<div style="margin-top:0.75rem;max-height:240px;overflow-y:auto">' +
+            '<table class="ip-table"><thead><tr>' +
+              '<th>Table</th>' +
+              '<th style="text-align:right">Rows</th>' +
+              '<th style="text-align:right">Size</th>' +
+            '</tr></thead><tbody>' + tablesHtml + '</tbody></table>' +
+          '</div>'
+        : '') +
     '</div>';
 
   var workHtml =
@@ -1147,8 +1163,8 @@ async function loadDatabaseInfo() {
           ? '<div class="settings-cards-row">' + engineCard + poolCard + '</div>'
           : engineCard;
       })() +
-      // ── Storage (left, half) + Backup/Restore/History (right column) ──
-      '<div style="display:flex;flex-direction:column;gap:1rem">' +
+      // ── Backup / Restore / History — three columns ──
+      '<div class="settings-cards-row-3">' +
 
       // ── Backup Card ──
       '<div class="settings-card">' +
@@ -1215,7 +1231,7 @@ async function loadDatabaseInfo() {
         '<div id="backup-history-body"><p class="empty-state">Loading...</p></div>' +
       '</div>' +
 
-      '</div>' + // close vertical stack of Backup/Restore/History cards
+      '</div>' + // close 3-column row of Backup/Restore/History cards
 
       '<div style="display:flex;gap:8px;align-items:center">' +
         '<button class="btn btn-secondary" id="btn-db-refresh">Refresh</button>' +
