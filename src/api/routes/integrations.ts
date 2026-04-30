@@ -3065,6 +3065,19 @@ async function upsertAssetConflict(args: {
   proposedDeviceId: string;
   proposedAssetFields: Record<string, any>;
 }): Promise<void> {
+  // Don't re-raise a conflict the admin already resolved for this exact
+  // (proposedDeviceId, assetId) pair — the decision stands until the
+  // operator manually reopens it.
+  const resolved = await prisma.conflict.findFirst({
+    where: {
+      entityType: "asset",
+      proposedDeviceId: args.proposedDeviceId,
+      assetId: args.collisionAssetId,
+      status: { in: ["accepted", "rejected"] },
+    },
+  });
+  if (resolved) return;
+
   const existing = await prisma.conflict.findFirst({
     where: { entityType: "asset", status: "pending", proposedDeviceId: args.proposedDeviceId },
   });
@@ -3243,6 +3256,35 @@ async function syncEntraDevices(
       }
     }
 
+    // Build the proposed-fields snapshot once; used both in the existing-asset
+    // sibling checks below AND in the no-existing-match collision checks further
+    // down. Defined here so both branches share the same closure.
+    const buildProposed = (
+      collisionReason: "untagged-collision" | "duplicate-registration" | "mac-collision",
+      matchedVia: "exact" | "netbios" | "mac",
+    ) => ({
+      sourceType: "entraid",
+      assetTagPrefix: ENTRA_ASSET_TAG_PREFIX,
+      deviceId: dev.deviceId,
+      hostname: dev.displayName,
+      serialNumber: dev.serialNumber || null,
+      macAddress: dev.macAddress || null,
+      manufacturer: dev.manufacturer || null,
+      model: dev.model || null,
+      os: dev.operatingSystem || null,
+      osVersion: dev.operatingSystemVersion || null,
+      assignedTo: dev.userPrincipalName || null,
+      chassisType: dev.chassisType || null,
+      complianceState: dev.complianceState || null,
+      trustType: dev.trustType || null,
+      onPremisesSecurityIdentifier: dev.onPremisesSecurityIdentifier || null,
+      assetType,
+      lastSeen: dev.lastSyncDateTime || dev.approximateLastSignInDateTime || null,
+      registrationDateTime: dev.registrationDateTime || null,
+      collisionReason,
+      matchedVia,
+    });
+
     if (existing) {
       // Update the existing asset (either Entra-sourced, or SID-matched take-over)
       const updateData: Record<string, unknown> = {
@@ -3285,6 +3327,44 @@ async function syncEntraDevices(
       } catch (err: any) {
         syncLog("error", `Failed to update asset for Entra device ${dev.displayName || dev.deviceId}: ${err.message || "Unknown error"}`);
       }
+
+      // Even though this device has its own asset, scan for sibling assets
+      // that share the same hostname but haven't been reconciled yet. This
+      // catches cases where both assets were created before either was indexed
+      // (same discovery run), or where a prior conflict was rejected and the
+      // sibling remains. upsertAssetConflict skips pairs that were already
+      // resolved so admin decisions are preserved across runs.
+      if (dev.displayName) {
+        const untaggedSibling = lookupHostname(assetByHostnameNoTag, dev.displayName);
+        if (untaggedSibling && untaggedSibling.asset.id !== existing.id) {
+          try {
+            await upsertAssetConflict({
+              collisionAssetId: untaggedSibling.asset.id,
+              integrationId,
+              proposedDeviceId: dev.deviceId,
+              proposedAssetFields: buildProposed("untagged-collision", untaggedSibling.via),
+            });
+            syncLog("warning", `Sibling hostname collision — Entra device "${dev.displayName}" (${dev.deviceId}) has a tagged asset but untagged asset ${untaggedSibling.asset.id} shares the same hostname${untaggedSibling.via === "netbios" ? " (NetBIOS-truncated match)" : ""}.`);
+          } catch (err: any) {
+            syncLog("error", `Failed to queue sibling hostname-collision conflict for "${dev.displayName}": ${err.message || "Unknown error"}`);
+          }
+        }
+        const dupEntraSibling = lookupHostname(assetByHostnameEntraTagged, dev.displayName);
+        if (dupEntraSibling && dupEntraSibling.asset.id !== existing.id) {
+          try {
+            await upsertAssetConflict({
+              collisionAssetId: dupEntraSibling.asset.id,
+              integrationId,
+              proposedDeviceId: dev.deviceId,
+              proposedAssetFields: buildProposed("duplicate-registration", dupEntraSibling.via),
+            });
+            const siblingTag = (dupEntraSibling.asset.assetTag || "").slice(ENTRA_ASSET_TAG_PREFIX.length) || "<unknown>";
+            syncLog("warning", `Sibling duplicate-registration — "${dev.displayName}" (${dev.deviceId}) and existing Entra device ${siblingTag} share a hostname${dupEntraSibling.via === "netbios" ? " (NetBIOS-truncated match)" : ""}.`);
+          } catch (err: any) {
+            syncLog("error", `Failed to queue sibling duplicate-registration conflict for "${dev.displayName}": ${err.message || "Unknown error"}`);
+          }
+        }
+      }
       continue;
     }
 
@@ -3302,31 +3382,7 @@ async function syncEntraDevices(
     // merge (accept) or keep separate (reject). Hostname matching tolerates
     // 15-char NetBIOS truncation so an AD `cn`-derived hostname can match the
     // full Entra displayName and vice versa.
-    const buildProposed = (
-      collisionReason: "untagged-collision" | "duplicate-registration" | "mac-collision",
-      matchedVia: "exact" | "netbios" | "mac",
-    ) => ({
-      sourceType: "entraid",
-      assetTagPrefix: ENTRA_ASSET_TAG_PREFIX,
-      deviceId: dev.deviceId,
-      hostname: dev.displayName,
-      serialNumber: dev.serialNumber || null,
-      macAddress: dev.macAddress || null,
-      manufacturer: dev.manufacturer || null,
-      model: dev.model || null,
-      os: dev.operatingSystem || null,
-      osVersion: dev.operatingSystemVersion || null,
-      assignedTo: dev.userPrincipalName || null,
-      chassisType: dev.chassisType || null,
-      complianceState: dev.complianceState || null,
-      trustType: dev.trustType || null,
-      onPremisesSecurityIdentifier: dev.onPremisesSecurityIdentifier || null,
-      assetType,
-      lastSeen: dev.lastSyncDateTime || dev.approximateLastSignInDateTime || null,
-      registrationDateTime: dev.registrationDateTime || null,
-      collisionReason,
-      matchedVia,
-    });
+    // (buildProposed is declared above the if(existing) block — shared closure)
 
     if (dev.displayName) {
       const untagged = lookupHostname(assetByHostnameNoTag, dev.displayName);

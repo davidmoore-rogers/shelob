@@ -4981,17 +4981,19 @@ function formatMacSource(source) {
 }
 
 function macAddressesViewHTML(macAddresses) {
-  if (!macAddresses || macAddresses.length <= 1) return '';
+  if (!macAddresses || macAddresses.length === 0) return '';
   var rows = macAddresses.map(function (m) {
+    var sourceLabel = formatMacSource(m.source);
     return '<div style="display:flex;gap:12px;align-items:center;padding:3px 0">' +
       '<code style="font-size:0.82rem">' + escapeHtml(m.mac) + '</code>' +
       '<span style="font-size:0.75rem;color:var(--color-text-tertiary)">' +
-        escapeHtml(formatMacSource(m.source)) +
-        (m.lastSeen ? ' &middot; ' + formatDate(m.lastSeen) : '') +
+        (sourceLabel ? escapeHtml(sourceLabel) : '') +
+        (m.lastSeen ? (sourceLabel ? ' &middot; ' : '') + formatDate(m.lastSeen) : '') +
       '</span>' +
     '</div>';
   }).join("");
-  return '<div class="detail-row"><span class="detail-label">All MACs (' + macAddresses.length + ')</span>' +
+  var label = macAddresses.length === 1 ? 'MAC History' : 'All MACs (' + macAddresses.length + ')';
+  return '<div class="detail-row"><span class="detail-label">' + label + '</span>' +
     '<span class="detail-value">' + rows + '</span></div>';
 }
 
