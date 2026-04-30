@@ -602,6 +602,10 @@ code {
   line-height: 1.45;
   padding-left: calc(40px + 8px); /* align under message, past the pill */
 }
+.capacity-reason-pg-settings {
+  margin-top: 6px;
+  padding-left: calc(40px + 8px); /* align with suggestion text */
+}
 
 .capacity-grid {
   display: grid;

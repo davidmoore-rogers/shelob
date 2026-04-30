@@ -955,11 +955,28 @@ function _capacitySeverityLabel(s) {
   return "Healthy";
 }
 
-function renderCapacityCard(capacity, dbInfo) {
+function renderCapacityCard(capacity, dbInfo, pgTuning) {
   if (!capacity) return "";
 
   var severity = capacity.severity || "ok";
   var pillClass = "capacity-pill capacity-pill-" + severity;
+
+  // For pg_tuning_needed, inline the actual current → recommended rows so
+  // operators don't have to scroll down to the sidebar tuning alert to see
+  // what to change.
+  var badPgSettings = (pgTuning && Array.isArray(pgTuning.settings))
+    ? pgTuning.settings.filter(function (s) { return !s.ok; })
+    : [];
+  var pgSettingsRowsHtml = badPgSettings.length
+    ? '<div class="capacity-reason-pg-settings">' +
+        badPgSettings.map(function (s) {
+          return '<div class="pg-tuning-row">' +
+            '<span class="pg-tuning-param">' + escapeHtml(s.name) + '</span>' +
+            '<span class="pg-tuning-values">' + escapeHtml(s.current) + ' &rarr; ' + escapeHtml(s.recommended) + '</span>' +
+          '</div>';
+        }).join("") +
+      '</div>'
+    : '';
 
   // Reasons section — list each issue with severity + suggestion
   var reasonsHtml = "";
@@ -967,6 +984,7 @@ function renderCapacityCard(capacity, dbInfo) {
     reasonsHtml =
       '<div class="capacity-reasons">' +
         capacity.reasons.map(function (r) {
+          var extra = r.code === "pg_tuning_needed" ? pgSettingsRowsHtml : "";
           return '<div class="capacity-reason capacity-reason-' + r.severity + '">' +
             '<div class="capacity-reason-head">' +
               '<span class="capacity-pill capacity-pill-' + r.severity + ' capacity-pill-sm">' +
@@ -975,6 +993,7 @@ function renderCapacityCard(capacity, dbInfo) {
               '<span class="capacity-reason-msg">' + escapeHtml(r.message) + '</span>' +
             '</div>' +
             '<div class="capacity-reason-suggestion">' + escapeHtml(r.suggestion) + '</div>' +
+            extra +
           '</div>';
         }).join("") +
       '</div>';
@@ -1005,26 +1024,7 @@ function renderCapacityCard(capacity, dbInfo) {
         : '<p class="hint" style="margin-top:0.5rem">Disk free is measured on the Polaris install volume. PostgreSQL is on a separate host — its data volume is not visible here.</p>') +
     '</div>';
 
-  // Index dead-tup% by table name from the capacity sample-tables payload —
-  // only the 6 high-volume sample tables carry this stat. All other rows
-  // render the dead column blank.
-  var deadByName = {};
-  (db.sampleTables || []).forEach(function (t) {
-    deadByName[t.name] = t.deadTupRatio;
-  });
-
   var allTables = (dbInfo && dbInfo.tables) || [];
-  var tablesHtml = allTables.map(function (t) {
-    var dead = deadByName[t.name];
-    var deadPct = dead != null ? (dead * 100).toFixed(0) + "%" : "—";
-    var deadCls = dead != null && dead > 0.20 ? ' style="color:var(--color-warning)"' : '';
-    return '<tr>' +
-      '<td class="mono" style="font-size:0.78rem">' + escapeHtml(t.name) + '</td>' +
-      '<td style="text-align:right">' + formatNumber(t.rows) + '</td>' +
-      '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(t.size) + '</td>' +
-      '<td style="text-align:right;font-size:0.82rem"' + deadCls + '>' + deadPct + '</td>' +
-      '</tr>';
-  }).join("");
 
   var dbHtml =
     '<div class="capacity-stat-card">' +
@@ -1034,16 +1034,6 @@ function renderCapacityCard(capacity, dbInfo) {
         dbInfoRow("Steady-state at current settings", _capacityFormatBytes(work.steadyStateSizeBytes)) +
         (allTables.length ? dbInfoRow("Tables", allTables.length) : "") +
       '</div>' +
-      (tablesHtml
-        ? '<div style="margin-top:0.75rem;max-height:200px;overflow-y:auto">' +
-            '<table class="ip-table"><thead><tr>' +
-              '<th>Table</th>' +
-              '<th style="text-align:right">Rows</th>' +
-              '<th style="text-align:right">Size</th>' +
-              '<th style="text-align:right" title="Dead-tuple ratio — how far autovacuum is behind. Tracked on high-volume sample tables only.">Dead</th>' +
-            '</tr></thead><tbody>' + tablesHtml + '</tbody></table>' +
-          '</div>'
-        : '') +
     '</div>';
 
   var workHtml =
@@ -1091,13 +1081,14 @@ async function loadDatabaseInfo() {
     ]);
     if (results[0].status === "rejected") throw results[0].reason;
     var db = results[0].value;
-    var capacity = results[1].status === "fulfilled" && results[1].value && results[1].value.capacity
-      ? results[1].value.capacity
+    var pgTuning = results[1].status === "fulfilled" && results[1].value
+      ? results[1].value
       : null;
+    var capacity = pgTuning && pgTuning.capacity ? pgTuning.capacity : null;
     _dbLoaded = true;
 
     container.innerHTML =
-      renderCapacityCard(capacity, db) +
+      renderCapacityCard(capacity, db, pgTuning) +
       // ── Application Updates card ──
       '<div class="settings-card" id="update-card">' +
         '<h4>Application Updates</h4>' +
