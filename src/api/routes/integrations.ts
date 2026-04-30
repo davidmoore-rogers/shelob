@@ -22,6 +22,7 @@ import { recordSample, getBaselines, type Baseline } from "../../services/discov
 import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
 import * as sightings from "../../services/assetSightingService.js";
+import { quarantineAsset, verifyAssetQuarantine } from "../../services/assetQuarantineService.js";
 
 const router = Router();
 
@@ -2645,6 +2646,51 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         await sightings.recordSightings(sightingRows);
       } catch (err: any) {
         syncLog("error", `Failed to flush ${sightingRows.length} asset sighting(s): ${err.message || "Unknown error"}`);
+      }
+
+      // Auto-quarantine pass: for each unique (asset, FortiGate) sighting,
+      // if the asset is currently quarantined:
+      //   - Not yet a synced target on this FortiGate → extend quarantine.
+      //   - Already a synced target → verify and flip drift if missing.
+      // Best-effort: failures are logged but never block the discovery sync.
+      const seenPairs = new Map<string, string>(); // assetId → Set of fortigateDevices (JSON-encoded unique pairs)
+      const uniquePairs: Array<{ assetId: string; fortigateDevice: string }> = [];
+      for (const row of sightingRows) {
+        const key = `${row.assetId}|${row.fortigateDevice}`;
+        if (!seenPairs.has(key)) {
+          seenPairs.set(key, key);
+          uniquePairs.push({ assetId: row.assetId, fortigateDevice: row.fortigateDevice });
+        }
+      }
+
+      for (const pair of uniquePairs) {
+        try {
+          const asset = await prisma.asset.findUnique({
+            where: { id: pair.assetId },
+            select: { id: true, status: true, quarantineTargets: true },
+          });
+          if (!asset || asset.status !== "quarantined") continue;
+
+          const targets: Array<{ fortigateDevice: string; status: string }> =
+            Array.isArray(asset.quarantineTargets) ? (asset.quarantineTargets as any[]) : [];
+          const existingTarget = targets.find((t) => t.fortigateDevice === pair.fortigateDevice);
+
+          if (!existingTarget || existingTarget.status !== "synced") {
+            // Not covered — extend quarantine to this FortiGate.
+            await quarantineAsset({ assetId: pair.assetId, actor: "system:auto-quarantine" });
+          } else {
+            // Already covered — verify and persist drift if detected.
+            const verifyResult = await verifyAssetQuarantine(pair.assetId);
+            if (verifyResult.driftDetected) {
+              await prisma.asset.update({
+                where: { id: pair.assetId },
+                data: { quarantineTargets: verifyResult.targets as any },
+              });
+            }
+          }
+        } catch (err: any) {
+          syncLog("error", `Auto-quarantine check failed for asset ${pair.assetId} on ${pair.fortigateDevice}: ${err.message || "Unknown error"}`);
+        }
       }
     }
   }
