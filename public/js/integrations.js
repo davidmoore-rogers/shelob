@@ -238,13 +238,16 @@ function _intWireModalTabs(prefix) {
   });
 }
 
-// Reservation Push tab body. Renders the master toggle plus mode-aware
-// guidance: when useProxy is on the reservation lands on the FortiGate via
-// FMG's REST proxy in real time; when it's off the reservation goes direct
-// to the FortiGate's REST API using fortigateApiUser/fortigateApiToken on
-// the Settings tab. Either way, every Polaris reservation create on a
-// subnet discovered by this integration must succeed and verify on the
-// device — failures abort the create.
+// DHCP Push tab body. Renders the master toggle plus mode-aware guidance:
+// when useProxy is on the call lands on the FortiGate via FMG's REST proxy
+// in real time; when it's off it goes direct to the FortiGate's REST API
+// using fortigateApiUser/fortigateApiToken on the Settings tab. The toggle
+// gates both halves of the Polaris → FortiGate DHCP write path:
+//   1. Manual reservation creates → POST /cmdb/system.dhcp/server/<id>/
+//      reserved-address. Verified on read-back; failures abort the create.
+//   2. Freeing a discovered dhcp_lease row → POST /monitor/system/dhcp/
+//      release-lease {ip}. Best-effort; device failure does not block the
+//      Polaris release.
 //
 // `pushReservations` is the current toggle value; `useProxy` is the current
 // transport setting on the General tab (we read it at render time only).
@@ -254,14 +257,18 @@ function reservationPushFormHTML(pushReservations, useProxy) {
     ? "Direct to each FortiGate"
     : "Proxy through FortiManager to each FortiGate";
   var modeBody = (useProxy === false)
-    ? "Reservations are written to each FortiGate's REST API using the per-device API token configured on the Settings tab. FortiManager is bypassed entirely. Each reservation lands on the running config in real time."
-    : "Reservations are written through FortiManager's <code>/sys/proxy/json</code> endpoint, which forwards the call to the target FortiGate using FortiManager's stored device credentials. Each reservation lands on the running config in real time; FortiManager will see the change on its next config sync.";
+    ? "DHCP writes go to each FortiGate's REST API using the per-device API token configured on the Settings tab. FortiManager is bypassed entirely. Each call lands on the running config in real time."
+    : "DHCP writes go through FortiManager's <code>/sys/proxy/json</code> endpoint, which forwards the call to the target FortiGate using FortiManager's stored device credentials. Each call lands on the running config in real time; FortiManager will see the change on its next config sync.";
   return '<div class="form-section">' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
       '<input type="checkbox" id="f-pushReservations" ' + checked + ' style="width:auto">' +
-      '<label for="f-pushReservations" style="margin:0;font-weight:500">Push manual IP reservations from Polaris back to FortiGate</label>' +
+      '<label for="f-pushReservations" style="margin:0;font-weight:500">Write Polaris DHCP changes back to FortiGate</label>' +
     '</div>' +
-    '<p class="hint" style="margin-bottom:1rem">When checked, every manual reservation created on a subnet discovered by this integration is written to the FortiGate at create time. The Polaris reservation only commits if the device write succeeds and the entry verifies on read-back; any failure aborts the create.</p>' +
+    '<p class="hint" style="margin-bottom:0.4rem">When checked, two DHCP writes flow from Polaris back to the originating FortiGate on subnets discovered by this integration:</p>' +
+    '<ul class="hint" style="margin:0 0 1rem 1.2rem;padding:0">' +
+      '<li><strong>Reservation create.</strong> Every manual IP reservation is written to the FortiGate at create time as a <code>reserved-address</code> entry. The Polaris reservation only commits if the device write succeeds and the entry verifies on read-back; any failure aborts the create.</li>' +
+      '<li><strong>DHCP lease revoke.</strong> Freeing a discovered <code>dhcp_lease</code> row tells the FortiGate to forget the current lease via <code>release-lease</code>. Best-effort &mdash; a device-side failure is logged as a warning but does not block the Polaris release. The same client can still DHCP-acquire the IP back on its next request; this is "expire now," not a block.</li>' +
+    '</ul>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">Push transport (current setting)</p>' +
     '<p style="margin:0 0 0.4rem 0;font-weight:500">' + escapeHtml(modeLabel) + '</p>' +

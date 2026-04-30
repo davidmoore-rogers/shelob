@@ -396,17 +396,23 @@ export async function releaseReservation(id: string) {
     }
   }
 
-  // Best-effort DHCP lease release for discovered dhcp_lease rows. The lease
-  // exists on the FortiGate's DHCP server, not in any Polaris-pushed CMDB
-  // entry, so we hit the monitor `release-lease` endpoint to expire it now.
-  // Device-side failure does not block the Polaris release — the operator's
-  // intent has been recorded and the next discovery pass will rediscover the
-  // lease if FortiOS still holds it.
+  // Best-effort DHCP lease release for discovered dhcp_lease rows. Gated on
+  // the originating integration's pushReservations toggle (the "DHCP Push"
+  // tab) — both halves of the Polaris-to-FortiGate DHCP write path live
+  // under that single toggle. The lease exists on the FortiGate's DHCP
+  // server, not in any Polaris-pushed CMDB entry, so we hit the monitor
+  // `release-lease` endpoint to expire it now. Device-side failure does not
+  // block the Polaris release — the operator's intent has been recorded and
+  // the next discovery pass will rediscover the lease if FortiOS still
+  // holds it.
+  const integrationConfig =
+    (reservation.subnet.integration?.config as { pushReservations?: boolean } | null) || null;
   if (
     reservation.sourceType === "dhcp_lease" &&
     reservation.ipAddress &&
     reservation.subnet.integration &&
-    reservation.subnet.fortigateDevice
+    reservation.subnet.fortigateDevice &&
+    integrationConfig?.pushReservations === true
   ) {
     const integration = reservation.subnet.integration;
     const deviceName = reservation.subnet.fortigateDevice;
