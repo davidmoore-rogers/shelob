@@ -1456,7 +1456,17 @@ async function upsertConflict(
   if ((proposed.hostname ?? null) !== (existing.hostname ?? null)) conflictFields.push("hostname");
   if ((proposed.owner ?? null) !== (existing.owner ?? null)) conflictFields.push("owner");
   if ((proposed.projectRef ?? null) !== (existing.projectRef ?? null)) conflictFields.push("projectRef");
-  if (conflictFields.length === 0) return;
+  if (conflictFields.length === 0) {
+    // Values are back in sync — auto-resolve any stale pending conflict on this
+    // reservation that was raised by a previous run when they differed. Without
+    // this, a conflict card lingers in the UI showing two identical-looking
+    // values because conflictFields was frozen at upsert time.
+    await prisma.conflict.updateMany({
+      where: { reservationId, status: "pending" },
+      data: { status: "rejected", resolvedBy: "auto", resolvedAt: new Date() },
+    });
+    return;
+  }
 
   const existingConflict = await prisma.conflict.findFirst({
     where: { reservationId, status: "pending" },
