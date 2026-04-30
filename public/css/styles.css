@@ -605,6 +605,7 @@ code {
 .capacity-reason-pg-settings {
   margin-top: 6px;
   padding-left: calc(40px + 8px); /* align with suggestion text */
+  max-width: 360px; /* keep param/value pair readable on a wide card */
 }
 
 .capacity-grid {
