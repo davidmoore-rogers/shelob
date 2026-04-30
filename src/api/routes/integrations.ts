@@ -20,6 +20,7 @@ import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
 import { getAdMonitorProtocol } from "../../services/monitoringService.js";
+import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
 
 const router = Router();
 
@@ -93,10 +94,59 @@ function inferAssetTypeFromOs(os: string | null | undefined): "workstation" | "s
   return "other";
 }
 
+// Pre-compile every wildcard pattern in fortigate/switch/ap autoMonitor blocks
+// so a syntactically broken pattern fails the save with a clear label instead
+// of throwing later inside the apply pass. Idempotent on configs without any
+// wildcard selections.
+function validateAutoMonitorPatterns(cfg: any): void {
+  if (!cfg || typeof cfg !== "object") return;
+  const labels: Record<string, string> = {
+    fortigateMonitor:   "FortiGate auto-monitor",
+    fortiswitchMonitor: "FortiSwitch auto-monitor",
+    fortiapMonitor:     "FortiAP auto-monitor",
+  };
+  for (const field of Object.keys(labels)) {
+    const sel = cfg[field]?.autoMonitorInterfaces;
+    if (!sel || sel.mode !== "wildcard" || !Array.isArray(sel.patterns)) continue;
+    for (const pat of sel.patterns) {
+      try {
+        autoMonitor.compileWildcard(pat);
+      } catch (err: any) {
+        throw new AppError(400, `${labels[field]} — invalid pattern "${pat}": ${err?.message || "compile failed"}`);
+      }
+    }
+  }
+}
+
 // All integration routes require network admin or admin
 router.use(requireNetworkAdmin);
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
+
+// "Auto-Monitor Interfaces" selection persisted on each *Monitor block. null
+// = disabled (default). Three modes; the apply pass is strictly additive
+// (never strips Asset.monitoredInterfaces). `.strict()` on each branch makes
+// `{mode:"names", onlyUp:true}` and similar mistakes a 400 instead of a
+// silently-stripped field.
+const AutoMonitorByNamesSchema = z.object({
+  mode:  z.literal("names"),
+  names: z.array(z.string().trim().min(1)).min(1, "Pick at least one interface name").max(200, "Too many names — pick at most 200"),
+}).strict();
+const AutoMonitorByWildcardSchema = z.object({
+  mode:     z.literal("wildcard"),
+  patterns: z.array(z.string().trim().min(1)).min(1, "Add at least one pattern").max(50, "Too many patterns — keep it under 50"),
+  onlyUp:   z.boolean().optional().default(false),
+}).strict();
+const AutoMonitorByTypeSchema = z.object({
+  mode:   z.literal("type"),
+  types:  z.array(z.enum(["physical", "aggregate", "vlan", "loopback", "tunnel"])).min(1),
+  onlyUp: z.boolean().optional().default(true),
+}).strict();
+const AutoMonitorInterfacesSchema = z.discriminatedUnion("mode", [
+  AutoMonitorByNamesSchema,
+  AutoMonitorByWildcardSchema,
+  AutoMonitorByTypeSchema,
+]).nullable().optional().default(null);
 
 // Per-integration switch/AP monitor stamping. When `enabled` is true,
 // discovery sets each newly-found FortiSwitch/FortiAP's monitorType to
@@ -107,17 +157,19 @@ router.use(requireNetworkAdmin);
 // asset-by-asset later. `addAsMonitored` requires `enabled` to be true
 // (a switch/AP can't be monitored without a monitorType).
 const FortinetClassMonitorSchema = z.object({
-  enabled:          z.boolean().optional().default(false),
-  snmpCredentialId: z.string().uuid().nullable().optional(),
-  addAsMonitored:   z.boolean().optional().default(false),
-}).optional().default({ enabled: false, snmpCredentialId: null, addAsMonitored: false });
+  enabled:               z.boolean().optional().default(false),
+  snmpCredentialId:      z.string().uuid().nullable().optional(),
+  addAsMonitored:        z.boolean().optional().default(false),
+  autoMonitorInterfaces: AutoMonitorInterfacesSchema,
+}).optional().default({ enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null });
 
 // FortiGate-class equivalent. FortiGates always get a monitorType stamped
 // at discovery (the integration's native type), so this block only carries
 // the `addAsMonitored` flag — no credential/enabled toggle needed.
 const FortiGateClassMonitorSchema = z.object({
-  addAsMonitored: z.boolean().optional().default(false),
-}).optional().default({ addAsMonitored: false });
+  addAsMonitored:        z.boolean().optional().default(false),
+  autoMonitorInterfaces: AutoMonitorInterfacesSchema,
+}).optional().default({ addAsMonitored: false, autoMonitorInterfaces: null });
 
 // Per-stream transport toggle. Default "rest" preserves the legacy behaviour
 // (FortiOS REST for everything). Setting to "snmp" reroutes that stream
@@ -389,6 +441,9 @@ router.post("/", async (req, res, next) => {
           if (cred.type !== "snmp") throw new AppError(400, `${label} must be SNMP`);
         }
       }
+      // Pre-compile any wildcard patterns so a bad pattern is rejected with a
+      // clear message instead of failing later in the apply pass.
+      validateAutoMonitorPatterns(cfg);
     }
     const integration = await prisma.integration.create({
       data: {
@@ -532,6 +587,7 @@ router.put("/:id", async (req, res, next) => {
             if (cred.type !== "snmp") throw new AppError(400, `${label} must be SNMP`);
           }
         }
+        validateAutoMonitorPatterns(newConfig);
       }
       data.config = newConfig;
     }
@@ -774,6 +830,100 @@ router.post("/:id/query", async (req, res, next) => {
     }
 
     throw new AppError(400, "API query is not supported for this integration type");
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Auto-Monitor Interfaces ─────────────────────────────────────────────────
+// Three endpoints power the "Auto-Monitor Interfaces" card on the integration
+// modal's Monitoring tab subtabs:
+//   - GET  ../interface-aggregate?class=...     → "By name" checklist source
+//   - POST ../interface-aggregate/preview       → live preview while editing
+//   - POST ../interface-aggregate/apply         → "Save and apply now" trigger
+//
+// The selection itself is persisted on Integration.config under
+// fortigateMonitor / fortiswitchMonitor / fortiapMonitor as
+// `autoMonitorInterfaces` and validated by the existing PUT handler.
+
+const ClassQuerySchema = z.enum(["fortigate", "fortiswitch", "fortiap"]);
+
+// Mirrors AutoMonitorInterfacesSchema from the top of the file but accepts a
+// client-supplied selection that hasn't been persisted yet (the live preview
+// fires on every keystroke before Save). Same shape, same validation rules.
+const PreviewBodySchema = z.object({
+  class:     ClassQuerySchema,
+  selection: z.discriminatedUnion("mode", [
+    z.object({
+      mode:  z.literal("names"),
+      names: z.array(z.string().trim().min(1)).min(1).max(200),
+    }).strict(),
+    z.object({
+      mode:     z.literal("wildcard"),
+      patterns: z.array(z.string().trim().min(1)).min(1).max(50),
+      onlyUp:   z.boolean().optional().default(false),
+    }).strict(),
+    z.object({
+      mode:   z.literal("type"),
+      types:  z.array(z.enum(["physical", "aggregate", "vlan", "loopback", "tunnel"])).min(1),
+      onlyUp: z.boolean().optional().default(true),
+    }).strict(),
+  ]).nullable(),
+});
+
+router.get("/:id/interface-aggregate", async (req, res, next) => {
+  try {
+    const klass = ClassQuerySchema.parse(req.query.class);
+    const integ = await prisma.integration.findUnique({ where: { id: req.params.id } });
+    if (!integ) throw new AppError(404, "Integration not found");
+    const rows = await autoMonitor.getInterfaceAggregate(req.params.id, klass);
+    res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/:id/interface-aggregate/preview", async (req, res, next) => {
+  try {
+    const body = PreviewBodySchema.parse(req.body);
+    const integ = await prisma.integration.findUnique({ where: { id: req.params.id } });
+    if (!integ) throw new AppError(404, "Integration not found");
+    // Cross-check wildcard patterns syntactically here too — the resolver
+    // would throw on the first call inside previewAutoMonitorForClass, but
+    // doing it up front means a clearer 400 in the editor.
+    if (body.selection?.mode === "wildcard") {
+      for (const pat of body.selection.patterns) autoMonitor.compileWildcard(pat);
+    }
+    const result = await autoMonitor.previewAutoMonitorForClass(req.params.id, body.class, body.selection);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/:id/interface-aggregate/apply", async (req, res, next) => {
+  try {
+    const klass = ClassQuerySchema.parse(req.body?.class);
+    const integ = await prisma.integration.findUnique({ where: { id: req.params.id } });
+    if (!integ) throw new AppError(404, "Integration not found");
+    const cfg = (integ.config ?? {}) as Record<string, any>;
+    const blockKey = klass === "fortigate" ? "fortigateMonitor"
+                    : klass === "fortiswitch" ? "fortiswitchMonitor"
+                    : "fortiapMonitor";
+    const selection = (cfg[blockKey]?.autoMonitorInterfaces ?? null) as autoMonitor.AutoMonitorSelection;
+    const result = await autoMonitor.applyAutoMonitorForClass(req.params.id, klass, selection, (req as any).session?.username);
+    if (result.interfacesAdded > 0) {
+      logEvent({
+        action:       "integration.auto_monitor_interfaces.applied",
+        resourceType: "integration",
+        resourceId:   integ.id,
+        resourceName: integ.name,
+        actor:        (req as any).session?.username,
+        message:      `Auto-monitor interfaces applied for "${integ.name}" (${klass}) — ${result.devices} device(s), ${result.interfacesAdded} interface(s) added`,
+        details:      { class: klass, devices: result.devices, interfacesAdded: result.interfacesAdded },
+      });
+    }
+    res.json(result);
   } catch (err) {
     next(err);
   }
@@ -1717,7 +1867,50 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
   }
 
-  } // end mode !== "skip-deprecation" (Phase 2 + 2b)
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 2c — Auto-Monitor Interfaces apply pass
+  //
+  // For each per-class block (fortigate / fortiswitch / fortiap), if an
+  // `autoMonitorInterfaces` selection has been configured on this integration,
+  // resolve it against each discovered asset's latest AssetInterfaceSample rows
+  // and union the result into Asset.monitoredInterfaces. Strictly additive.
+  //
+  // Only applies to fortimanager + fortigate integrations. windowsserver /
+  // entraid / activeDirectory don't manage Fortinet hardware.
+  if (integrationType === "fortimanager" || integrationType === "fortigate") {
+    const integ = await prisma.integration.findUnique({
+      where: { id: integrationId },
+      select: { config: true },
+    });
+    const cfg = (integ?.config ?? {}) as Record<string, any>;
+    for (const [klass, blockKey] of [
+      ["fortigate",   "fortigateMonitor"],
+      ["fortiswitch", "fortiswitchMonitor"],
+      ["fortiap",     "fortiapMonitor"],
+    ] as const) {
+      const selection = (cfg[blockKey]?.autoMonitorInterfaces ?? null) as autoMonitor.AutoMonitorSelection;
+      if (!selection) continue;
+      try {
+        const r = await autoMonitor.applyAutoMonitorForClass(integrationId, klass, selection, actor);
+        if (r.interfacesAdded > 0) {
+          syncLog("info", `Auto-monitor (${klass}): pinned ${r.interfacesAdded} interface(s) on ${r.devices} device(s)`);
+          await logEvent({
+            action:       "integration.auto_monitor_interfaces.applied",
+            resourceType: "integration",
+            resourceId:   integrationId,
+            resourceName: integrationName,
+            actor,
+            message:      `Auto-monitor interfaces applied for "${integrationName}" (${klass}) — ${r.devices} device(s), ${r.interfacesAdded} interface(s) added`,
+            details:      { class: klass, devices: r.devices, interfacesAdded: r.interfacesAdded },
+          });
+        }
+      } catch (err: any) {
+        syncLog("error", `Auto-monitor (${klass}) failed: ${err?.message || "Unknown error"}`);
+      }
+    }
+  }
+
+  } // end mode !== "skip-deprecation" (Phase 2 + 2b + 2c)
 
   if (mode === "full" || mode === "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
@@ -2283,9 +2476,6 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           // staleNotifiedAt (so a freshly-online reservation re-arms the
           // alert if it goes silent again later) and staleSnoozedUntil (so
           // an operator snooze on a now-online reservation doesn't linger).
-          // staleIgnored is intentionally NOT cleared — that flag is the
-          // operator's deliberate "stop alerting on this forever," and we
-          // honor it across online/offline cycles until they un-ignore.
           await prisma.reservation.update({
             where: { id: existingRes.id },
             data: {

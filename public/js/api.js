@@ -265,6 +265,9 @@ const api = {
     query:         (id, body) => request("POST", `/integrations/${id}/query`, body),
     discoveries:   ()    => request("GET", "/integrations/discoveries"),
     abortDiscover: (id)  => request("DELETE", `/integrations/${id}/discover`),
+    interfaceAggregate:        (id, klass) => request("GET", `/integrations/${id}/interface-aggregate?class=${encodeURIComponent(klass)}`),
+    interfaceAggregatePreview: (id, body)  => request("POST", `/integrations/${id}/interface-aggregate/preview`, body),
+    interfaceAggregateApply:   (id, klass) => trackedRequest("Applying auto-monitor interfaces", "POST", `/integrations/${id}/interface-aggregate/apply`, { class: klass }),
   },
   conflicts: {
     list:   (params) => request("GET", "/conflicts" + toQuery(params)),
