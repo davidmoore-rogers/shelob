@@ -440,14 +440,23 @@
       });
     });
     // LLDP-derived ghost nodes for non-Polaris neighbors. The dashed border
-    // and orange tint signal "observed via LLDP, not authoritatively managed";
-    // matched neighbors (a Polaris asset hit by chassis MAC / mgmt IP / sysName)
-    // are already in elements above and only get the dashed edge.
+    // and orange tint signal "observed via LLDP, not authoritatively managed".
     (data.lldpNodes || []).forEach(function (n) {
       var label = n.hostname || n.managementIp || n.chassisId || "Unknown";
       if (n.managementIp && n.hostname) label += "\n" + n.managementIp;
       elements.push({
         data: { id: n.id, label: label, role: "lldp" },
+      });
+    });
+    // Cross-site Polaris assets observed via LLDP from this site. Separate
+    // role so the styling can flag "real asset, just elsewhere" — and
+    // tagged with `assetId` so the click handler can pivot to that asset's
+    // details page.
+    (data.remoteAssetNodes || []).forEach(function (n) {
+      var label = n.hostname || n.ipAddress || n.id;
+      if (n.ipAddress && n.hostname) label += "\n" + n.ipAddress;
+      elements.push({
+        data: { id: n.id, label: label, role: "remote-asset", assetId: n.id, assetType: n.assetType || null },
       });
     });
     (data.lldpEdges || []).forEach(function (e, i) {
@@ -514,6 +523,21 @@
             height: 36,
           },
         },
+        // Cross-site Polaris asset observed via LLDP (e.g. a firewall at
+        // another site that this site's FortiGate sees as an upstream
+        // neighbor). Solid border + blue tint signals "real Polaris asset,
+        // just not this site". Click navigates to the asset details page.
+        {
+          selector: 'node[role="remote-asset"]',
+          style: {
+            "background-color": "#1e3a5f",
+            "border-color": "#4fc3f7",
+            "border-style": "solid",
+            "border-width": 2,
+            width: 44,
+            height: 44,
+          },
+        },
         {
           selector: "edge",
           style: {
@@ -544,6 +568,16 @@
           },
         },
       ],
+    });
+
+    // Click-through on cross-site Polaris asset nodes — navigate to that
+    // asset's details page on the Assets tab. Other node kinds (firewall,
+    // switch, AP, ghost-LLDP) don't have a navigation target so we skip.
+    cyInstance.on("tap", 'node[role="remote-asset"]', function (evt) {
+      var assetId = evt.target.data("assetId");
+      if (assetId) {
+        window.location.href = "/assets.html#view=asset:" + assetId;
+      }
     });
   }
 

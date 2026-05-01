@@ -335,7 +335,23 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       systemDescription: string | null;
       capabilities: string[];
     };
+    // Synthesized "ghost" nodes for non-Polaris LLDP neighbors. Stable
+    // ids prefixed with `lldp:` so they don't collide with real asset
+    // UUIDs, and dedup'd by chassisId so multi-link aggregates collapse.
     const lldpNodes = new Map<string, LldpNode>();
+    // Cross-site LLDP-matched Polaris assets — separate from ghost nodes
+    // because they ARE real assets, just at a different site. Need their
+    // own node entries in the topology payload so the frontend Cytoscape
+    // graph doesn't choke on edges with no target node, AND their own
+    // visual style + click-through to the asset details page.
+    type RemoteAssetNode = {
+      id: string;             // Asset.id (UUID)
+      hostname: string | null;
+      ipAddress: string | null;
+      assetType: string | null;
+      model: string | null;
+    };
+    const remoteAssetNodes = new Map<string, RemoteAssetNode>();
     const siblingIds = new Set(siteAssetIds);
     const existingEdge = new Set(edges.map((e) => `${e.source}|${e.target}`));
     type LldpEdge = {
@@ -364,6 +380,19 @@ router.get("/sites/:id/topology", async (req, res, next) => {
         targetId = n.matchedAsset.id;
         targetLabel = n.matchedAsset.hostname || n.matchedAsset.ipAddress || n.matchedAsset.id;
         targetIsAsset = true;
+        // Record the cross-site node so the topology payload's edge target
+        // resolves to a real node on the frontend (Cytoscape errors on
+        // edges referencing nonexistent nodes). Dedup'd by asset id so a
+        // multi-link cross-site uplink collapses to one node.
+        if (!remoteAssetNodes.has(targetId)) {
+          remoteAssetNodes.set(targetId, {
+            id: targetId,
+            hostname: n.matchedAsset.hostname,
+            ipAddress: n.matchedAsset.ipAddress,
+            assetType: n.matchedAsset.assetType,
+            model: n.matchedAsset.model,
+          });
+        }
       } else {
         // Synthesize a stable ghost id from chassisId (preferred) or system
         // name. This collapses multi-link aggregates to one node so the graph
@@ -421,6 +450,13 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       // styling can distinguish authoritative fortinetTopology edges from
       // observed LLDP edges. `lldpNodes` is the array form of the Map above.
       lldpNodes: Array.from(lldpNodes.values()),
+      // Cross-site Polaris assets observed via LLDP from this site —
+      // separate from `lldpNodes` (ghost neighbors) so the frontend can
+      // render them with a "real asset, just elsewhere" style and a
+      // click-through to the asset details page. Without this, edges in
+      // `lldpEdges` whose target is a cross-site asset id would reference
+      // nonexistent Cytoscape nodes and the graph would error out on load.
+      remoteAssetNodes: Array.from(remoteAssetNodes.values()),
       lldpEdges,
     });
   } catch (err) {
