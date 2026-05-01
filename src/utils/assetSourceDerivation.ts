@@ -46,7 +46,9 @@ export interface AssetSnapshot {
   os: string | null;
   osVersion: string | null;
   serialNumber: string | null;
+  manufacturer: string | null;
   model: string | null;
+  assetType: string | null;
   status: string | null;
   learnedLocation: string | null;
   dnsName: string | null;
@@ -85,8 +87,14 @@ export function deriveAssetSources(asset: AssetSnapshot): DerivedSource[] {
         observed: buildAdObserved(asset, guid, tags),
       });
     }
-  } else if (tag?.startsWith("fortigate:")) {
-    const serial = tag.slice("fortigate:".length).trim();
+  } else if (tag?.startsWith("fgt:")) {
+    // Firewall asset created by the FortiGate or FortiManager discovery path.
+    // Discovery's assetTag prefix is "fgt:" (used as the Device Map's stable
+    // lookup key); externalId on the source row is the canonical
+    // serialNumber field on the Asset row, which the discovery code uses for
+    // re-discovery via the in-memory bySerial index.
+    const tagSerial = tag.slice("fgt:".length).trim();
+    const serial = (asset.serialNumber || tagSerial).trim();
     if (serial) {
       out.push({
         sourceKind: "fortigate-firewall",
@@ -96,6 +104,27 @@ export function deriveAssetSources(asset: AssetSnapshot): DerivedSource[] {
         observed: buildFortigateFirewallObserved(asset, serial),
       });
     }
+  }
+
+  // Fallback path for pre-`fgt:`-tag firewalls: any asset whose discovery
+  // signature reads as a Fortinet firewall with a non-empty serialNumber.
+  // The `fgt:` assetTag was added later, so there are existing firewalls in
+  // the wild without it. The next FMG/FortiGate discovery run will stamp
+  // the tag for forward compatibility; this fallback covers the gap so
+  // backfill produces a proper fortigate-firewall source row immediately.
+  if (
+    out.length === 0 &&
+    asset.assetType === "firewall" &&
+    (asset.manufacturer || "").toLowerCase() === "fortinet" &&
+    asset.serialNumber
+  ) {
+    out.push({
+      sourceKind: "fortigate-firewall",
+      externalId: asset.serialNumber,
+      integrationId: asset.discoveredByIntegrationId,
+      inferred: false,
+      observed: buildFortigateFirewallObserved(asset, asset.serialNumber),
+    });
   }
 
   // 2. Recover an AD source when Entra has taken over the assetTag but a

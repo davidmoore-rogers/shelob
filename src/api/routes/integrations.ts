@@ -1502,6 +1502,76 @@ async function batchSettled<T>(items: T[], fn: (item: T) => Promise<any>): Promi
   return results;
 }
 
+// ─── FortiGate firewall AssetSource helpers (Phase 2 cutover) ──────────────
+
+// Source-shaped observed blob written to the "fortigate-firewall" AssetSource
+// row for each discovered FortiGate. Mirrors the per-source JSON shape
+// sketched in CLAUDE.md ("Per-source observed shapes / sourceKind:
+// fortigate-firewall"). The firewall's lookup mechanism stays serial-number
+// based on Asset.serialNumber (in-memory `findBySerial` index) — this row
+// captures the source perspective for the asset details modal without
+// changing the discovery hot path.
+function buildFortigateFirewallObservedBlob(
+  device: { name?: string; hostname?: string; serial?: string; model?: string; mgmtIp?: string; osVersion?: string; latitude?: number; longitude?: number },
+  integrationType: "fortimanager" | "fortigate",
+  syncedAt: Date,
+): Record<string, unknown> {
+  return {
+    kind: "fortigate-firewall",
+    syncedAt: syncedAt.toISOString(),
+    serial: device.serial || null,
+    hostname: device.hostname || device.name || null,
+    model: device.model || null,
+    osVersion: device.osVersion || null,
+    mgmtIp: device.mgmtIp || null,
+    latitude: Number.isFinite(device.latitude) ? device.latitude : null,
+    longitude: Number.isFinite(device.longitude) ? device.longitude : null,
+    managedBy: integrationType,
+  };
+}
+
+// Upsert the fortigate-firewall AssetSource row for a discovered firewall.
+// Best-effort: failures are logged via syncLog but don't unwind the Asset
+// write that already landed.
+async function upsertFortigateFirewallAssetSource(
+  assetId: string,
+  integrationId: string,
+  serial: string,
+  observed: Record<string, unknown>,
+  syncedAt: Date,
+  lastSeen: Date,
+): Promise<void> {
+  await prisma.assetSource.upsert({
+    where: { sourceKind_externalId: { sourceKind: "fortigate-firewall", externalId: serial } },
+    create: {
+      assetId,
+      sourceKind: "fortigate-firewall",
+      externalId: serial,
+      integrationId,
+      observed: observed as any,
+      inferred: false,
+      syncedAt,
+      firstSeen: lastSeen,
+      lastSeen,
+    },
+    update: {
+      assetId,
+      integrationId,
+      observed: observed as any,
+      inferred: false,
+      syncedAt,
+      lastSeen,
+    },
+  });
+  // Pre-`fgt:`-tag firewalls were classified as "manual" by the phase-1
+  // backfill (they had no recognized assetTag prefix). Once we've written
+  // the proper fortigate-firewall row, drop the phantom manual row keyed on
+  // this asset's id so the source list reflects truth.
+  await prisma.assetSource.deleteMany({
+    where: { assetId, sourceKind: "manual", externalId: assetId },
+  });
+}
+
 // ─── Asset index — multi-key lookup for MAC, serial, hostname, IP ───────────
 class AssetIndex {
   private byId = new Map<string, any>();
@@ -1973,6 +2043,19 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           };
           clampAcquiredToLastSeen(updateData, existingAsset);
           await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
+          // Explicit fortigate-firewall AssetSource upsert. Lookup index for
+          // re-discovery still uses Asset.serialNumber (stable column,
+          // findBySerial), so the source row exists for the per-source view
+          // rather than for primary lookup.
+          if (device.serial) {
+            try {
+              const syncedAt = new Date(now);
+              const observed = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", syncedAt);
+              await upsertFortigateFirewallAssetSource(existingAsset.id, integrationId, device.serial, observed, syncedAt, syncedAt);
+            } catch (err: any) {
+              syncLog("error", `Updated FortiGate asset ${device.name} but failed to upsert AssetSource row: ${err?.message || "Unknown error"}`);
+            }
+          }
           // Update in-memory
           if (device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
           if (device.hostname) existingAsset.hostname = device.hostname;
@@ -2021,6 +2104,19 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           tags: ["fortigate", "auto-discovered"],
         },
       });
+      // Explicit fortigate-firewall AssetSource upsert with rich observed
+      // blob. The Asset.create already triggered the shadow-write extension
+      // which laid down a skeleton row from the assetTag — this overwrites
+      // it with truth.
+      if (device.serial) {
+        try {
+          const syncedAt = new Date(now);
+          const observed = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", syncedAt);
+          await upsertFortigateFirewallAssetSource(newAsset.id, integrationId, device.serial, observed, syncedAt, syncedAt);
+        } catch (err: any) {
+          syncLog("error", `Created FortiGate asset ${device.name} but failed to upsert AssetSource row: ${err?.message || "Unknown error"}`);
+        }
+      }
       assetIdx.add(newAsset);
       assetNames.push(device.name);
     } catch (err: any) {
