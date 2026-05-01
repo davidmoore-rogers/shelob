@@ -3869,7 +3869,11 @@ async function syncEntraDevices(
     if (dev.complianceState) tags.push(`intune-${dev.complianceState.toLowerCase()}`);
     else if (dev.isCompliant === true) tags.push("compliant");
     else if (dev.isCompliant === false) tags.push("noncompliant");
-    if (isMeaningfulSid(dev.onPremisesSecurityIdentifier)) tags.push(sidTag(dev.onPremisesSecurityIdentifier!));
+    // Phase 4b: SID is now stored as AssetSource.observed.onPremisesSecurityIdentifier
+    // on the entra source row; the legacy `sid:<SID>` tag is no longer written.
+    // The hybrid-cross-link lookup in `buildEntraSyncIndex` reads from
+    // AssetSource directly. Existing tagged rows are scrubbed by the
+    // `scrubLegacySidGuidTags` startup job.
 
     // Prefer Intune's lastSync (freshest hands-on-device signal) over Entra's sign-in time
     const lastSeenIso = dev.lastSyncDateTime || dev.approximateLastSignInDateTime;
@@ -4467,8 +4471,12 @@ async function syncActiveDirectoryDevices(
     // credentials, mirroring how FMG owns its discovered firewalls.
     const adMonitorable = getAdMonitorProtocol(dev.operatingSystem) !== null;
 
-    const tags: string[] = ["activedirectory", "auto-discovered", `${AD_GUID_TAG_PREFIX}${guidKey}`];
-    if (isMeaningfulSid(dev.objectSid)) tags.push(sidTag(dev.objectSid));
+    // Phase 4b: AD GUID lives on AssetSource.externalId (sourceKind="ad")
+    // and SID lives on AssetSource.observed.objectSid. Neither needs a
+    // mirroring tag any more — the legacy `ad-guid:<guid>` and `sid:<SID>`
+    // tag writes are dropped here. Existing rows are scrubbed by the
+    // `scrubLegacySidGuidTags` startup job.
+    const tags: string[] = ["activedirectory", "auto-discovered"];
     if (dev.disabled) tags.push("ad-disabled");
 
     const lastLogon = dev.lastLogonTimestamp ? new Date(dev.lastLogonTimestamp) : null;

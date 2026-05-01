@@ -1857,7 +1857,8 @@ router.post("/:id/sources/:sourceId/split", requireAdmin, async (req, res, next)
       assetTag = `ad:${target.externalId}`;
       assetType = "workstation";
       tagSet.add("activedirectory");
-      tagSet.add(`ad-guid:${target.externalId}`);
+      // Phase 4b: ad-guid:<guid> tag is no longer written — externalId on
+      // the new AssetSource row is the canonical lookup key.
     } else if (target.sourceKind === "fortigate-firewall") {
       assetTag = `fgt:${target.externalId}`;
       assetType = "firewall";
