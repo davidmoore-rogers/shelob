@@ -651,6 +651,17 @@ export interface DiscoveryResult {
   // internally; these arrays expose the same data to the sync layer.
   switchMacTable: DiscoveredSwitchMacEntry[];
   arpTable: DiscoveredArpEntry[];
+  // CMDB-known managed-switch / FortiAP rosters per FortiGate, queried
+  // natively from FMG's CMDB (not via /sys/proxy/json — bypasses the
+  // proxy-mode concurrency=1 throttle). Defensive: a switch/AP that's
+  // configured at FMG but currently offline / in a brief post-config-push
+  // window may be missing from the live monitor query; surfacing the
+  // CMDB-known serials lets the decommission sweep treat them as "still
+  // known" rather than declaring them stale. One serial per (FortiGate,
+  // device) pair — duplicates across FortiGates are possible if a
+  // misconfigured switch is authorized on two controllers.
+  cmdbSwitchSerials: string[];
+  cmdbApSerials: string[];
   // Devices whose managed-switch query returned successfully (including
   // empty results, which mean "no managed switches" rather than "query
   // failed"). Used by the sync pass to decommission switches whose
@@ -718,7 +729,7 @@ export async function discoverDhcpSubnets(
     } else {
       log("discover.devices", "info", `No managed devices found in ADOM "${adom}"`);
     }
-    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
   // Capture the full roster of configured devices (pre-filter, any conn_status).
@@ -738,7 +749,7 @@ export async function discoverDhcpSubnets(
     log("discover.devices", "info", `Found ${devicesData.length} managed device(s) in ADOM "${adom}"`);
   }
   if (devicesData.length === 0) {
-    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames, fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames, fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
   const discovered: DiscoveredSubnet[] = [];
@@ -752,6 +763,8 @@ export async function discoverDhcpSubnets(
   const vips: DiscoveredVip[] = [];
   const switchMacTable: DiscoveredSwitchMacEntry[] = [];
   const arpTable: DiscoveredArpEntry[] = [];
+  const cmdbSwitchSerials: string[] = [];
+  const cmdbApSerials: string[] = [];
 
   type DeviceChunk = {
     device: DiscoveredDevice;
@@ -765,6 +778,8 @@ export async function discoverDhcpSubnets(
     vips: DiscoveredVip[];
     switchMacTable: DiscoveredSwitchMacEntry[];
     arpTable: DiscoveredArpEntry[];
+    cmdbSwitchSerials: string[];
+    cmdbApSerials: string[];
     // Whether each per-device inventory query returned a usable response.
     // The decommission sweep keys off these flags so a controller whose
     // switch-controller endpoint timed out doesn't take its switches down
@@ -925,6 +940,8 @@ export async function discoverDhcpSubnets(
           vips: fgResult.vips,
           switchMacTable: fgResult.switchMacTable,
           arpTable: fgResult.arpTable,
+          cmdbSwitchSerials: fgResult.cmdbSwitchSerials,
+          cmdbApSerials: fgResult.cmdbApSerials,
           // Direct mode delegates inventory to fortigateService — surface the
           // same per-device "did this query succeed" flags it returns so the
           // decommission sweep behaves identically across transport modes.
@@ -964,6 +981,8 @@ export async function discoverDhcpSubnets(
     const localAps: DiscoveredFortiAP[] = [];
     const localSwitchMacTable: DiscoveredSwitchMacEntry[] = [];
     const localArpTable: DiscoveredArpEntry[] = [];
+    const localCmdbSwitchSerials: string[] = [];
+    const localCmdbApSerials: string[] = [];
     const localVips: DiscoveredVip[] = [];
     // Track whether each inventory query returned a usable response so the
     // sync's decommission pass can distinguish "controller offline" (don't
@@ -1291,6 +1310,40 @@ export async function discoverDhcpSubnets(
       log("discover.fortiswitches", "error", `${deviceName}: Failed to query managed FortiSwitches — ${err.message || "Unknown error"}`, deviceName);
     }
 
+    // Step 3c.5: CMDB roster of configured FortiSwitches for this device.
+    // Native FMG CMDB read — no /sys/proxy/json wrapper, parallelizes
+    // freely. Defensive: a switch that's authorized at FMG but currently
+    // offline / in a brief post-config-push window may be missing from
+    // the live status query above; the decommission sweep treats serials
+    // surfaced here as "still known" so they're not declared stale.
+    // Best-effort: failures swallow (we still have the live answer).
+    try {
+      const swCmdbRes = await rpc(
+        baseUrl,
+        {
+          id: 16,
+          method: "get",
+          params: [{
+            url: `/pm/config/device/${deviceName}/global/switch-controller/managed-switch`,
+            fields: ["switch-id", "name"],
+          }],
+        },
+        apiUser, apiToken, verifySsl, signal,
+      );
+      const swCmdbList = swCmdbRes.result?.[0]?.data;
+      if (Array.isArray(swCmdbList)) {
+        for (const sw of swCmdbList) {
+          // FortiSwitches are keyed by their serial as `switch-id` in CMDB
+          // (matches what the live query reports as `switch-id`). The
+          // optional `name` is the operator-set display label.
+          const serial = typeof sw["switch-id"] === "string" ? sw["switch-id"].trim() : "";
+          if (serial) localCmdbSwitchSerials.push(serial);
+        }
+      }
+    } catch (err: any) {
+      log("discover.fortiswitches.cmdb", "info", `${deviceName}: CMDB managed-switch roster lookup skipped — ${err.message || "Unknown error"}`, deviceName);
+    }
+
     // Step 3d: Managed FortiAPs
     try {
       const apPayload: JsonRpcRequest = {
@@ -1350,6 +1403,35 @@ export async function discoverDhcpSubnets(
       }
     } catch (err: any) {
       log("discover.fortiaps", "error", `${deviceName}: Failed to query managed FortiAPs — ${err.message || "Unknown error"}`, deviceName);
+    }
+
+    // Step 3d.4: CMDB roster of configured FortiAPs (WTPs) for this device.
+    // Mirror of Step 3c.5 — native FMG CMDB read, decommission protection
+    // for configured-but-currently-offline APs. Best-effort.
+    try {
+      const apCmdbRes = await rpc(
+        baseUrl,
+        {
+          id: 17,
+          method: "get",
+          params: [{
+            url: `/pm/config/device/${deviceName}/vdom/root/wireless-controller/wtp`,
+            fields: ["wtp-id", "name"],
+          }],
+        },
+        apiUser, apiToken, verifySsl, signal,
+      );
+      const apCmdbList = apCmdbRes.result?.[0]?.data;
+      if (Array.isArray(apCmdbList)) {
+        for (const ap of apCmdbList) {
+          // FortiAPs are keyed by serial as `wtp-id` in CMDB (matches what
+          // the live monitor query reports as `wtp_id` / `serial`).
+          const serial = typeof ap["wtp-id"] === "string" ? ap["wtp-id"].trim() : "";
+          if (serial) localCmdbApSerials.push(serial);
+        }
+      }
+    } catch (err: any) {
+      log("discover.fortiaps.cmdb", "info", `${deviceName}: CMDB WTP roster lookup skipped — ${err.message || "Unknown error"}`, deviceName);
     }
 
     // Step 3d.5: FortiAP → FortiSwitch port mapping via detected-device MAC table
@@ -1574,7 +1656,7 @@ export async function discoverDhcpSubnets(
     }
 
     log("discover.device.complete", "info", `Completed discovery for ${deviceName}`, deviceName);
-    return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, switchMacTable: localSwitchMacTable, arpTable: localArpTable, didSwitchQuery, didApQuery };
+    return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, switchMacTable: localSwitchMacTable, arpTable: localArpTable, cmdbSwitchSerials: localCmdbSwitchSerials, cmdbApSerials: localCmdbApSerials, didSwitchQuery, didApQuery };
   }
 
   // Process up to `concurrency` FortiGates in parallel.
@@ -1620,6 +1702,8 @@ export async function discoverDhcpSubnets(
       vips.push(...chunk.vips);
       switchMacTable.push(...chunk.switchMacTable);
       arpTable.push(...chunk.arpTable);
+      cmdbSwitchSerials.push(...chunk.cmdbSwitchSerials);
+      cmdbApSerials.push(...chunk.cmdbApSerials);
       if (chunk.didSwitchQuery) switchInventoriedDevices.add(chunk.device.name);
       if (chunk.didApQuery)     apInventoriedDevices.add(chunk.device.name);
 
@@ -1638,6 +1722,8 @@ export async function discoverDhcpSubnets(
             vips: chunk.vips,
             switchMacTable: chunk.switchMacTable,
             arpTable: chunk.arpTable,
+            cmdbSwitchSerials: chunk.cmdbSwitchSerials,
+            cmdbApSerials: chunk.cmdbApSerials,
             switchInventoriedDevices: chunk.didSwitchQuery ? [chunk.device.name] : [],
             apInventoriedDevices:     chunk.didApQuery     ? [chunk.device.name] : [],
           });
@@ -1669,6 +1755,8 @@ export async function discoverDhcpSubnets(
     vips,
     switchMacTable,
     arpTable,
+    cmdbSwitchSerials,
+    cmdbApSerials,
     switchInventoriedDevices: [...switchInventoriedDevices],
     apInventoriedDevices:     [...apInventoriedDevices],
   };

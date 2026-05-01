@@ -501,7 +501,7 @@ router.post("/", async (req, res, next) => {
           // Windows Server stamps subnets with config.host as their fortigateDevice,
           // so the "known roster" is just the DHCP server host itself.
           const wsHost = (input.config as any).host as string;
-          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
         } else if (input.type === "fortigate") {
           discoveryResult = await fortigate.discoverDhcpSubnets(input.config as any, ac.signal);
         } else {
@@ -1186,7 +1186,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       } else if (integration.type === "windowsserver") {
         const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
         const wsHost = (config as any).host as string;
-        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
         // Windows Server is a single host — no per-device iteration, sync the full result normally
         const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
         syncTotals.created.push(...r.created);
@@ -1812,6 +1812,13 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     if (ap.serial) seenApSerials.add(ap.serial);
     if (ap.name)   seenApHostnames.add(ap.name);
   }
+  // Decommission protection: a serial that appears in FMG's CMDB roster
+  // (managed-switch / wireless-controller wtp config) but is missing from
+  // the live monitor query is "configured but currently offline" — likely
+  // a brief post-config-push window or an offline device. Don't decommission
+  // it. The CMDB rosters come from native FMG calls (no proxy throttle).
+  for (const serial of result.cmdbSwitchSerials || []) seenSwitchSerials.add(serial);
+  for (const serial of result.cmdbApSerials     || []) seenApSerials.add(serial);
   const switchInventoriedDevices = new Set<string>(result.switchInventoriedDevices || []);
   const apInventoriedDevices     = new Set<string>(result.apInventoriedDevices     || []);
 

@@ -274,7 +274,7 @@ export async function discoverDhcpSubnets(
 
   // Stop early if aborted
   if (signal?.aborted) {
-    return { subnets: [], devices, interfaceIps, dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [deviceName], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+    return { subnets: [], devices, interfaceIps, dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [deviceName], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
   // Step 3: DHCP server configuration
@@ -785,6 +785,13 @@ export async function discoverDhcpSubnets(
     vips,
     switchMacTable,
     arpTable,
+    // Standalone FortiGate: the live monitor/switch-controller/managed-switch/
+    // status query already returns disconnected switches with status="Disconnected"
+    // (the FortiGate is its own CMDB and live source), so the CMDB roster
+    // is redundant here. We surface empty arrays to satisfy the shared
+    // DiscoveryResult shape; FMG mode uses the dedicated CMDB queries.
+    cmdbSwitchSerials: [],
+    cmdbApSerials: [],
     switchInventoriedDevices: didSwitchQuery ? [deviceName] : [],
     apInventoriedDevices:     didApQuery     ? [deviceName] : [],
   };
