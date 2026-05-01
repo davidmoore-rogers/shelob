@@ -54,12 +54,36 @@ describe("projectAssetFromSources — empty + edge cases", () => {
 });
 
 describe("projectAssetFromSources — hostname priority", () => {
-  it("intune wins over entra", () => {
+  it("AD's FQDN wins over Intune+Entra short forms (hybrid Windows endpoint)", () => {
+    // Tuned from production drift: ~7k entries/24h showed Asset.hostname
+    // (FQDN) drifting against an Intune/Entra-preferred projection (short).
+    // AD's FQDN is more useful — operators search for it in DNS / logs.
+    const { projected, provenance } = projectAssetFromSources([
+      src("intune", { deviceName: "MP2YZAC2" }),
+      src("entra", { displayName: "MP2YZAC2" }),
+      src("ad", { dnsHostName: "mp2yzac2.contoso.com", cn: "MP2YZAC2" }),
+    ]);
+    expect(projected.hostname).toBe("mp2yzac2.contoso.com");
+    expect(provenance.hostname).toBe("ad");
+  });
+
+  it("intune wins over entra when no AD source", () => {
     const { projected, provenance } = projectAssetFromSources([
       src("intune", { deviceName: "INTUNE-NAME" }),
       src("entra", { displayName: "ENTRA-NAME" }),
     ]);
     expect(projected.hostname).toBe("INTUNE-NAME");
+    expect(provenance.hostname).toBe("intune");
+  });
+
+  it("intune wins when AD's dnsHostName is short-form (no dot — not FQDN)", () => {
+    // The FQDN-first rule only kicks in when AD's dnsHostName contains a
+    // dot. Short-form dnsHostName falls through to the regular priority.
+    const { projected, provenance } = projectAssetFromSources([
+      src("intune", { deviceName: "LAPTOP-01" }),
+      src("ad", { dnsHostName: "LAPTOP-01" }), // no dot
+    ]);
+    expect(projected.hostname).toBe("LAPTOP-01");
     expect(provenance.hostname).toBe("intune");
   });
 
@@ -72,14 +96,14 @@ describe("projectAssetFromSources — hostname priority", () => {
     expect(provenance.hostname).toBe("entra");
   });
 
-  it("AD prefers dnsHostName over cn", () => {
+  it("AD-only device: dnsHostName preferred (FQDN form)", () => {
     const { projected } = projectAssetFromSources([
       src("ad", { cn: "SHORTNAME", dnsHostName: "shortname.contoso.com" }),
     ]);
     expect(projected.hostname).toBe("shortname.contoso.com");
   });
 
-  it("AD falls back to cn when dnsHostName is missing", () => {
+  it("AD-only device: falls back to cn when dnsHostName is missing", () => {
     const { projected } = projectAssetFromSources([
       src("ad", { cn: "SHORTNAME" }),
     ]);
@@ -97,6 +121,10 @@ describe("projectAssetFromSources — hostname priority", () => {
 
 describe("projectAssetFromSources — manufacturer + model + serial", () => {
   it("intune supplies hardware identity for endpoints", () => {
+    // manufacturer flows through normalizeManufacturer; for inputs not in
+    // the alias cache (which is empty in tests), it returns the value
+    // unchanged. Real production has "Dell Inc." → "Dell" canonicalization
+    // — covered by the manufacturerAliasService tests separately.
     const { projected } = projectAssetFromSources([
       src("intune", {
         serialNumber: "MP2YZAC2",
@@ -134,16 +162,29 @@ describe("projectAssetFromSources — manufacturer + model + serial", () => {
 });
 
 describe("projectAssetFromSources — os + osVersion", () => {
-  it("intune wins over entra wins over AD on OS+version", () => {
+  it("AD wins on os when present (verbose Windows edition); Intune wins on osVersion (specific build)", () => {
+    // Tuned from production drift: AD's verbose `operatingSystem` ("Windows
+    // 10 Pro") carries the edition info Intune/Entra collapse out. For
+    // version, Intune's 4-part build is more specific than AD's "10.0
+    // (build)".
     const { projected, provenance } = projectAssetFromSources([
       src("intune", { operatingSystem: "Windows", osVersion: "10.0.26100" }),
       src("entra", { operatingSystem: "Windows", operatingSystemVersion: "10.0.22000" }),
       src("ad", { operatingSystem: "Windows 11 Pro", operatingSystemVersion: "10.0 (22621)" }),
     ]);
-    expect(projected.os).toBe("Windows");
+    expect(projected.os).toBe("Windows 11 Pro");
     expect(projected.osVersion).toBe("10.0.26100");
-    expect(provenance.os).toBe("intune");
+    expect(provenance.os).toBe("ad");
     expect(provenance.osVersion).toBe("intune");
+  });
+
+  it("Intune wins on os when no AD source", () => {
+    const { projected, provenance } = projectAssetFromSources([
+      src("intune", { operatingSystem: "iOS" }),
+      src("entra", { operatingSystem: "iPadOS" }),
+    ]);
+    expect(projected.os).toBe("iOS");
+    expect(provenance.os).toBe("intune");
   });
 
   it("FortiGate firewall osVersion when no Microsoft sources", () => {
@@ -255,19 +296,20 @@ describe("projectAssetFromSources — hybrid Windows laptop (full integration sc
       }),
     ]);
     expect(projected).toEqual({
-      hostname: "MP2YZAC2", // intune wins
+      hostname: "mp2yzac2.contoso.com", // ad FQDN wins
       serialNumber: "MP2YZAC2",
       manufacturer: "LENOVO",
       model: "83DG",
-      os: "Windows", // intune wins
-      osVersion: "10.0.26200.8246", // intune wins
+      os: "Windows 11 Pro", // ad wins (edition info)
+      osVersion: "10.0.26200.8246", // intune wins (specific build)
       learnedLocation: "OU=HQ/OU=Workstations", // ad
       ipAddress: null, // no source carries endpoint IP
       latitude: null,
       longitude: null,
     });
-    expect(provenance.hostname).toBe("intune");
-    expect(provenance.os).toBe("intune");
+    expect(provenance.hostname).toBe("ad");
+    expect(provenance.os).toBe("ad");
+    expect(provenance.osVersion).toBe("intune");
     expect(provenance.learnedLocation).toBe("ad");
   });
 });

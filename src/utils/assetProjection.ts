@@ -7,6 +7,18 @@
  * disagreement is logged for analysis. Phase 3b.1 will cut Asset writes to
  * use the projection as the source of truth.
  *
+ * Priority rules below were tuned against real shadow-drift logs from
+ * production discovery cycles. Specifically:
+ *   - hostname: AD's `dnsHostName` wins when it's an FQDN (contains a dot)
+ *     because operators value the FQDN form for DNS / log searches.
+ *     Otherwise priority falls through Intune → Entra → AD short forms.
+ *   - os: AD wins when present — its `operatingSystem` carries the Windows
+ *     edition ("Windows 10 Pro") that Intune/Entra collapse to "Windows".
+ *   - manufacturer: Intune's value is normalized through the manufacturer
+ *     alias map before projection so it matches the canonicalized form
+ *     that the Prisma extension stamps on Asset.manufacturer (otherwise
+ *     "Dell Inc." vs "Dell" produces noise drift on every cycle).
+ *
  * Per-field priority order (first truthy wins). Inferred sources are
  * skipped — they're phase-1 backfill skeletons, not authoritative
  * observations, and including them would falsely flag drift on assets
@@ -29,6 +41,8 @@
  * this field." Drift detection should treat that as no-comment, NOT as a
  * disagreement against an Asset value.
  */
+
+import { normalizeManufacturer } from "./manufacturerNormalize.js";
 
 export type AssetSourceKind =
   | "entra"
@@ -93,14 +107,25 @@ type FieldRule = {
 };
 
 const HOSTNAME_RULES: FieldRule[] = [
-  // Intune wins — intune.deviceName is the freshest hands-on signal and
-  // already wins in the legacy Entra/Intune merge code (entraIdService
-  // merge uses `intune?.deviceName || e.displayName`). The split observed
-  // blobs keep the original entra-side displayName separately so this
-  // priority works correctly in the new model.
+  // FQDN from AD wins — when an AD source has a dnsHostName containing a
+  // dot, that's the FQDN form operators search for in DNS / DHCP / logs.
+  // Tuned from production shadow-drift logs where ~7k entries per 24h
+  // showed Asset.hostname (FQDN) drifting against an Intune/Entra-only
+  // projection (short form). Falls through if AD has no dnsHostName, or
+  // if its dnsHostName is short-form (rare — usually means cn-derived
+  // fallback).
+  { sourceKind: "ad", pick: (o) => {
+      const v = obsString(o, "dnsHostName");
+      return v && v.includes(".") ? v : null;
+    }
+  },
+  // Intune wins next — intune.deviceName is the freshest hands-on signal
+  // for non-AD-joined devices (BYO laptops, mobile devices). The split
+  // observed blobs keep the original entra/intune-side names separate so
+  // these priorities work correctly in the new model.
   { sourceKind: "intune", pick: (o) => obsString(o, "deviceName") },
   { sourceKind: "entra",  pick: (o) => obsString(o, "displayName") },
-  // AD: dnsHostName preferred (FQDN) with cn fallback (NetBIOS).
+  // AD non-FQDN fallback — short dnsHostName or cn (NetBIOS).
   { sourceKind: "ad", pick: (o) => obsString(o, "dnsHostName") || obsString(o, "cn") },
   { sourceKind: "fortigate-firewall", pick: (o) => obsString(o, "hostname") },
   { sourceKind: "fortiswitch", pick: (o) => obsString(o, "switchId") },
@@ -115,11 +140,18 @@ const SERIAL_RULES: FieldRule[] = [
 ];
 
 const MANUFACTURER_RULES: FieldRule[] = [
-  // Intune carries the actual hardware vendor (LENOVO, Dell, ...). For
-  // Fortinet infrastructure it's always literally "Fortinet" — encoded
-  // here as a constant rather than read from observed since the per-source
-  // shapes don't include it explicitly.
-  { sourceKind: "intune", pick: (o) => obsString(o, "manufacturer") },
+  // Intune carries the actual hardware vendor ("Dell Inc.", "LENOVO", ...)
+  // pre-canonicalization. Run through normalizeManufacturer so the
+  // projected value matches what the Prisma extension stamps on
+  // Asset.manufacturer post-canonicalization (e.g. "Dell Inc." → "Dell").
+  // Without this, drift fires on every cycle for the gap between the raw
+  // vendor string and the canonical brand name.
+  { sourceKind: "intune", pick: (o) => {
+      const raw = obsString(o, "manufacturer");
+      return raw ? normalizeManufacturer(raw) : null;
+    }
+  },
+  // Fortinet infrastructure: always literally "Fortinet" — already canonical.
   { sourceKind: "fortigate-firewall", pick: () => "Fortinet" },
   { sourceKind: "fortiswitch", pick: () => "Fortinet" },
   { sourceKind: "fortiap", pick: () => "Fortinet" },
@@ -136,9 +168,12 @@ const MODEL_RULES: FieldRule[] = [
 ];
 
 const OS_RULES: FieldRule[] = [
+  // AD's operatingSystem carries the Windows edition ("Windows 10 Pro",
+  // "Windows 11 Enterprise"). Intune/Entra collapse to just "Windows".
+  // Edition is operationally meaningful — keep AD when present.
+  { sourceKind: "ad", pick: (o) => obsString(o, "operatingSystem") },
   { sourceKind: "intune", pick: (o) => obsString(o, "operatingSystem") },
   { sourceKind: "entra", pick: (o) => obsString(o, "operatingSystem") },
-  { sourceKind: "ad", pick: (o) => obsString(o, "operatingSystem") },
 ];
 
 const OS_VERSION_RULES: FieldRule[] = [
