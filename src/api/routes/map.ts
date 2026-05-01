@@ -305,7 +305,7 @@ router.get("/sites/:id/topology", async (req, res, next) => {
     // Edges — FG→switch by uplinkInterface, AP→switch by peerPort, AP→FG for
     // unpaired APs. Uplink label is the interface name; AP label is the port.
     type Edge = { source: string; target: string; label?: string };
-    const edges: Edge[] = [];
+    let edges: Edge[] = [];
     for (const s of switches) {
       edges.push({ source: fg.id, target: s.id, label: s.uplinkInterface || undefined });
     }
@@ -325,6 +325,59 @@ router.get("/sites/:id/topology", async (req, res, next) => {
     // first so interface edges populate `existingEdge` before LLDP de-dup
     // and so the LLDP path can reuse the same dedupe set.
     const ifaceInference = await inferInterfaceTopology(siteAssetIds);
+
+    // Refine the controller-data FG→switch edges using interface-naming
+    // signal. FortiOS reports `fortilink` on every managed switch's
+    // `fgt_peer_intf_name` regardless of whether it's directly cabled or
+    // chained behind another FortiSwitch — so the controller-data edges
+    // can over-connect a multi-switch fleet (e.g. a stacked pair where
+    // only one switch is directly cabled to the FG ends up with two
+    // FG→switch edges). The fix: a switch with a FortiOS-auto aggregate
+    // whose name encodes the FG's serial is a confirmed-direct uplink;
+    // siblings reachable from a confirmed-direct switch through inter-
+    // switch interface edges are downstream and don't get a direct FG
+    // edge. Switches with NO interface-edge to a confirmed-direct
+    // sibling fall through and keep their controller edge — we don't
+    // want to silently disconnect a switch whose aggregates we couldn't
+    // parse (custom names, older firmware, etc).
+    const interfaceConfirmedFgPeers = new Set<string>();
+    for (const e of ifaceInference.edges) {
+      if (e.sourceAssetId === fg.id) interfaceConfirmedFgPeers.add(e.targetAssetId);
+      if (e.targetAssetId === fg.id) interfaceConfirmedFgPeers.add(e.sourceAssetId);
+    }
+    if (interfaceConfirmedFgPeers.size > 0) {
+      // Build an inter-switch adjacency map from interface-only edges so we
+      // can BFS from each confirmed-direct switch and find downstream
+      // siblings through arbitrary chain depth.
+      const interfacePeersOf = new Map<string, Set<string>>();
+      for (const e of ifaceInference.edges) {
+        if (e.sourceAssetId === fg.id || e.targetAssetId === fg.id) continue;
+        if (!interfacePeersOf.has(e.sourceAssetId)) interfacePeersOf.set(e.sourceAssetId, new Set());
+        if (!interfacePeersOf.has(e.targetAssetId)) interfacePeersOf.set(e.targetAssetId, new Set());
+        interfacePeersOf.get(e.sourceAssetId)!.add(e.targetAssetId);
+        interfacePeersOf.get(e.targetAssetId)!.add(e.sourceAssetId);
+      }
+      const reachableFromConfirmed = new Set<string>(interfaceConfirmedFgPeers);
+      const queue = [...interfaceConfirmedFgPeers];
+      while (queue.length) {
+        const cur = queue.shift()!;
+        for (const n of interfacePeersOf.get(cur) ?? []) {
+          if (!reachableFromConfirmed.has(n)) {
+            reachableFromConfirmed.add(n);
+            queue.push(n);
+          }
+        }
+      }
+      const switchIds = new Set(switches.map((s) => s.id));
+      edges = edges.filter((e) => {
+        if (e.source !== fg.id) return true;            // not an FG-out edge
+        if (!switchIds.has(e.target)) return true;      // FG→AP keep as-is
+        if (interfaceConfirmedFgPeers.has(e.target)) return true;
+        // Demote when reachable through a confirmed-direct sibling; otherwise
+        // keep as fallback to avoid orphaning an unparseable switch.
+        return !reachableFromConfirmed.has(e.target);
+      });
+    }
     type InterfaceEdge = {
       source: string;
       target: string;
