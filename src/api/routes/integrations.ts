@@ -1601,7 +1601,22 @@ function buildFortiswitchObservedBlob(
 
 // Source-shaped observed blob for managed FortiAP assets.
 function buildFortiapObservedBlob(
-  ap: { device?: string; name?: string; serial?: string; model?: string; ipAddress?: string; baseMac?: string; status?: string; osVersion?: string; peerSwitch?: string; peerPort?: string; peerVlan?: number },
+  ap: {
+    device?: string;
+    name?: string;
+    serial?: string;
+    model?: string;
+    ipAddress?: string;
+    baseMac?: string;
+    status?: string;
+    osVersion?: string;
+    peerSwitch?: string;
+    peerPort?: string;
+    peerVlan?: number;
+    peerSource?: "lldp" | "detected-device";
+    meshUplink?: "ethernet" | "mesh";
+    parentApSerial?: string;
+  },
   syncedAt: Date,
 ): Record<string, unknown> {
   return {
@@ -1618,6 +1633,13 @@ function buildFortiapObservedBlob(
     parentSwitch: ap.peerSwitch || null,
     parentPort: ap.peerPort || null,
     parentVlan: typeof ap.peerVlan === "number" ? ap.peerVlan : null,
+    // Provenance for the parentSwitch/parentPort pair: "lldp" (authoritative,
+    // from the AP's own LLDP table) or "detected-device" (FortiSwitch MAC
+    // table fallback).
+    peerSource: ap.peerSource ?? null,
+    // Mesh topology — populated for wireless-mesh leaves.
+    meshUplink: ap.meshUplink ?? null,
+    parentApSerial: ap.parentApSerial ?? null,
   };
 }
 
@@ -2398,6 +2420,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         parentSwitch: ap.peerSwitch || null,
         parentPort: ap.peerPort || null,
         parentVlan: ap.peerVlan ?? null,
+        // peerSource records HOW the (parentSwitch, parentPort) pair was
+        // resolved — "lldp" (the AP's own LLDP table; authoritative) or
+        // "detected-device" (FortiSwitch MAC table fallback). Topology
+        // graph can use this to flag uncertain edges if needed.
+        peerSource: ap.peerSource ?? null,
+        // Mesh role + parent. parentApSerial points at the parent AP's
+        // serialNumber when this AP is a wireless-mesh leaf; the topology
+        // graph renders a mesh edge from this AP to the parent instead of
+        // (or in addition to) the wired uplink.
+        meshUplink: ap.meshUplink ?? null,
+        parentApSerial: ap.parentApSerial ?? null,
       };
       if (existingAsset) {
         const updateData: Record<string, unknown> = {

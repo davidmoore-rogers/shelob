@@ -6,6 +6,7 @@
 
 import { Netmask } from "netmask";
 import { AppError } from "../utils/errors.js";
+import { extractApLldpAndMesh } from "../utils/fortiapLldp.js";
 import {
   discoverDhcpSubnets as discoverViaFortigate,
   testConnection as fgTestConnection,
@@ -559,9 +560,23 @@ export interface DiscoveredFortiAP {
   baseMac: string;
   status: string;
   osVersion: string;
-  peerSwitch?: string; // FortiSwitch name this AP's MAC was learned on (from switch-controller/detected-device)
-  peerPort?: string;   // Port on peerSwitch where the AP's MAC was last seen
-  peerVlan?: number;   // VLAN tag of that port
+  // Wired uplink to the controller. peerSource records HOW we learned it:
+  //   "lldp"            — from the AP's own LLDP table (system_description starts with "FortiSwitch-")
+  //   "detected-device" — from the FortiSwitch's detected-device MAC table (legacy fallback)
+  // LLDP wins when both are available — it's authoritative (the AP itself
+  // reports its uplink) and works even when FortiOS filters managed-AP MACs
+  // out of detected-device.
+  peerSwitch?: string; // FortiSwitch name this AP is uplinked to
+  peerPort?: string;   // Port on peerSwitch (e.g. "port9")
+  peerVlan?: number;   // VLAN tag (detected-device only — LLDP path doesn't carry it)
+  peerSource?: "lldp" | "detected-device";
+  // Mesh topology. parent_wtp_id from the FortiOS payload identifies the
+  // parent FortiAP serial when this AP is a mesh leaf (mesh_uplink = "mesh").
+  // Drives the topology graph's wireless-mesh edge — without it, a mesh
+  // leaf would render hanging off the FortiGate or its detected-device
+  // resolved switch instead of its actual mesh parent.
+  meshUplink?: "ethernet" | "mesh";
+  parentApSerial?: string;
 }
 
 export interface DiscoveredVip {
@@ -1232,7 +1247,7 @@ export async function discoverDhcpSubnets(
           data: {
             target: [`/adom/${adom}/device/${deviceName}`],
             action: "get",
-            resource: "/api/v2/monitor/wifi/managed_ap?format=name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|base_mac|mac|status|state|version|firmware_version",
+            resource: "/api/v2/monitor/wifi/managed_ap?format=name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|base_mac|mac|status|state|version|firmware_version|lldp|mesh_uplink|parent_wtp_id",
           },
         }],
       };
@@ -1254,6 +1269,10 @@ export async function discoverDhcpSubnets(
         for (const ap of apResults) {
           const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || "";
           const rawApMac = ap.base_mac || ap.mac || "";
+          // LLDP-resolved wired uplink + mesh fields. The detected-device
+          // fallback further down only fires for APs where peerSwitch is
+          // still empty after this stage.
+          const lldpExt = extractApLldpAndMesh(ap);
           localAps.push({
             device: deviceName,
             name: ap.name || ap.wtp_id || "",
@@ -1263,6 +1282,11 @@ export async function discoverDhcpSubnets(
             baseMac: /^0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}$/i.test(rawApMac) ? "" : rawApMac,
             status: ap.status || ap.state || "",
             osVersion: ap.version || ap.firmware_version || "",
+            ...(lldpExt.lldpUplinkSwitch && lldpExt.lldpUplinkPort
+              ? { peerSwitch: lldpExt.lldpUplinkSwitch, peerPort: lldpExt.lldpUplinkPort, peerSource: "lldp" as const }
+              : {}),
+            ...(lldpExt.meshUplink ? { meshUplink: lldpExt.meshUplink } : {}),
+            ...(lldpExt.parentApSerial ? { parentApSerial: lldpExt.parentApSerial } : {}),
           });
           apCount++;
         }
@@ -1311,7 +1335,16 @@ export async function discoverDhcpSubnets(
           }
         }
         let pairedCount = 0;
+        let lldpAlreadyCount = 0;
         for (const ap of localAps) {
+          // Skip APs already resolved via LLDP — the AP's own LLDP table is
+          // authoritative and works even when FortiOS filters managed-AP
+          // MACs out of detected-device. Only fall back to the MAC-table
+          // path for APs where LLDP gave us nothing.
+          if (ap.peerSource === "lldp") {
+            lldpAlreadyCount++;
+            continue;
+          }
           if (!ap.baseMac) continue;
           const norm = ap.baseMac.toUpperCase().replace(/-/g, ":");
           const hit = macMap.get(norm);
@@ -1319,10 +1352,12 @@ export async function discoverDhcpSubnets(
             ap.peerSwitch = hit.switchId;
             ap.peerPort = hit.portName;
             ap.peerVlan = hit.vlan;
+            ap.peerSource = "detected-device";
             pairedCount++;
           }
         }
-        log("discover.ap-uplinks", "info", `${deviceName}: Resolved ${pairedCount}/${localAps.length} AP→switch-port uplinks`, deviceName);
+        const totalResolved = pairedCount + lldpAlreadyCount;
+        log("discover.ap-uplinks", "info", `${deviceName}: Resolved ${totalResolved}/${localAps.length} AP→switch-port uplinks (${lldpAlreadyCount} via LLDP, ${pairedCount} via detected-device)`, deviceName);
       }
     } catch (err: any) {
       log("discover.ap-uplinks", "info", `${deviceName}: detected-device query skipped — ${err.message || "Unknown error"}`, deviceName);
