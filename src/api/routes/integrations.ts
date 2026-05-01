@@ -4193,8 +4193,12 @@ async function upsertAdAssetSource(
       lastSeen,
     },
   });
-  // Phase 3b.0 shadow drift detection.
-  detectAndLogDrift(assetId, "ad");
+  // Phase 3b.1 cutover: drift detection no longer fires on AD writes —
+  // post-cutover the Asset row matches the projection by construction
+  // (the syncActiveDirectoryDevices caller projects from sources and uses
+  // the result as the Asset write payload). Drift detection still runs on
+  // integrations that haven't cut over yet (Entra, FortiGate-firewall,
+  // FortiSwitch, FortiAP) via their own upsert helpers.
 }
 
 // Build the AD sync's lookup index from AssetSource rows. Replaces the legacy
