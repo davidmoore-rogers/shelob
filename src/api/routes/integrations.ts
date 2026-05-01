@@ -3275,6 +3275,24 @@ async function upsertEntraIntuneSources(
       externalId: { not: externalId },
     },
   });
+
+  // Belt-and-suspenders: if Entra didn't actually contribute to this device
+  // (Intune-only) but a phase-1-backfilled entra source row exists with the
+  // current deviceId — created because the legacy assetTag namespace lumped
+  // Intune-only devices under "entra:..." — drop it. sourceKind="entra"
+  // should mean "registered in Entra ID," and an Intune-only device isn't.
+  // Same rule in reverse for intune: if the device isn't intune-managed and
+  // a stale intune source exists at the current deviceId, drop it.
+  if (!wantsEntra) {
+    await prisma.assetSource.deleteMany({
+      where: { assetId, sourceKind: "entra", externalId },
+    });
+  }
+  if (!wantsIntune) {
+    await prisma.assetSource.deleteMany({
+      where: { assetId, sourceKind: "intune", externalId },
+    });
+  }
 }
 
 // Build the Entra sync's lookup index from AssetSource rows. Replaces the
