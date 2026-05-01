@@ -565,6 +565,9 @@
       // Pan stays as plain drag on background (Cytoscape default).
       boxSelectionEnabled: true,
       selectionType: "additive",
+      // Halve scroll-wheel zoom sensitivity — the default felt jumpy on
+      // typical mouse wheels (one notch was 25–30% zoom step).
+      wheelSensitivity: 0.5,
       layout: {
         name: "dagre",
         rankDir: "TB",
