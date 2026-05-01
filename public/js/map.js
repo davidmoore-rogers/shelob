@@ -668,11 +668,10 @@
       },
     });
     (data.switches || []).forEach(function (s) {
-      var uplink = displayableUplink(s.uplinkInterface);
       elements.push({
         data: {
           id: s.id,
-          label: (s.hostname || "FortiSwitch") + (uplink ? "\n↥ " + uplink : ""),
+          label: s.hostname || "FortiSwitch",
           role: "fortiswitch",
           iconUrl: s.iconUrl || null,
           hasIcon: s.iconUrl ? 1 : 0,
@@ -683,7 +682,7 @@
       elements.push({
         data: {
           id: a.id,
-          label: (a.hostname || "FortiAP") + (a.peerPort ? "\n" + a.peerPort : ""),
+          label: a.hostname || "FortiAP",
           role: "fortiap",
           iconUrl: a.iconUrl || null,
           hasIcon: a.iconUrl ? 1 : 0,
@@ -694,7 +693,7 @@
       elements.push({
         data: {
           id: "e" + i, source: e.source, target: e.target,
-          label: displayableUplink(e.label) || "",
+          label: e.label || "",
           reason: e.reason || "",
         },
       });
@@ -703,7 +702,6 @@
     // and orange tint signal "observed via LLDP, not authoritatively managed".
     (data.lldpNodes || []).forEach(function (n) {
       var label = n.hostname || n.managementIp || n.chassisId || "Unknown";
-      if (n.managementIp && n.hostname) label += "\n" + n.managementIp;
       elements.push({
         data: { id: n.id, label: label, role: "lldp" },
       });
@@ -714,7 +712,6 @@
     // details page.
     (data.remoteAssetNodes || []).forEach(function (n) {
       var label = n.hostname || n.ipAddress || n.id;
-      if (n.ipAddress && n.hostname) label += "\n" + n.ipAddress;
       elements.push({
         data: {
           id: n.id, label: label, role: "remote-asset",

@@ -33,6 +33,10 @@ export interface InterfaceInferredEdge {
   sourceAssetId: string;
   sourceIfName: string;
   targetAssetId: string;
+  /** Target's reciprocal interface name when the inference resolved both
+   * directions (each side's interface name encoded the other's identity).
+   * Null when only the source side carried a parseable peer-aggregate. */
+  targetIfName: string | null;
   matchVia: "serial" | "hostname";
   aggregateIndex: number | null;
 }
@@ -127,9 +131,22 @@ export async function inferInterfaceTopology(
   type Inv = (typeof inventory)[number];
 
   const seedSet = new Set(seedAssetIds);
-  const edges: InterfaceInferredEdge[] = [];
   const remoteAssets = new Map<string, InterfaceInferredRemote>();
-  const emitted = new Set<string>();
+
+  // Walk all candidates first and bucket every (sourceAssetId, targetAssetId)
+  // pair we resolve. Both peers usually have a parseable aggregate naming
+  // each other — bucketing lets us pick up the reciprocal interface name
+  // and stamp it on the edge as `targetIfName`, so the topology graph
+  // can render `<sourceIf> ↔ <targetIf>` instead of one side only.
+  type DirectedHit = {
+    sourceAssetId: string;
+    sourceIfName: string;
+    targetAssetId: string;
+    matched: Inv;
+    matchVia: "serial" | "hostname";
+    aggregateIndex: number | null;
+  };
+  const directedHits: DirectedHit[] = [];
 
   for (const c of candidates) {
     // Try serial match first — FortiOS-auto path, deterministic.
@@ -167,28 +184,49 @@ export async function inferInterfaceTopology(
     if (!matched) continue;
     if (matched.id === c.sourceAssetId) continue;
 
-    const dedupeKey = `${c.sourceAssetId}|${matched.id}`;
-    const reverseKey = `${matched.id}|${c.sourceAssetId}`;
-    if (emitted.has(dedupeKey) || emitted.has(reverseKey)) continue;
-    emitted.add(dedupeKey);
-
-    edges.push({
+    directedHits.push({
       sourceAssetId: c.sourceAssetId,
       sourceIfName: c.ifName,
       targetAssetId: matched.id,
+      matched,
       matchVia,
       aggregateIndex: c.parsed.aggregateIndex,
     });
+  }
 
-    if (!seedSet.has(matched.id)) {
-      remoteAssets.set(matched.id, {
-        id: matched.id,
-        hostname: matched.hostname,
-        serialNumber: matched.serialNumber,
-        ipAddress: matched.ipAddress,
-        assetType: matched.assetType,
-        manufacturer: matched.manufacturer,
-        model: matched.model,
+  // Index hits by directed (source, target) pair so we can fold reciprocals
+  // into a single bidirectional edge.
+  const byPair = new Map<string, DirectedHit>();
+  for (const h of directedHits) {
+    const key = `${h.sourceAssetId}|${h.targetAssetId}`;
+    if (!byPair.has(key)) byPair.set(key, h);
+  }
+
+  const edges: InterfaceInferredEdge[] = [];
+  const emitted = new Set<string>();
+  for (const h of directedHits) {
+    const k = `${h.sourceAssetId}|${h.targetAssetId}`;
+    const reverseKey = `${h.targetAssetId}|${h.sourceAssetId}`;
+    if (emitted.has(k) || emitted.has(reverseKey)) continue;
+    emitted.add(k);
+    const reciprocal = byPair.get(reverseKey) ?? null;
+    edges.push({
+      sourceAssetId: h.sourceAssetId,
+      sourceIfName: h.sourceIfName,
+      targetAssetId: h.targetAssetId,
+      targetIfName: reciprocal ? reciprocal.sourceIfName : null,
+      matchVia: h.matchVia,
+      aggregateIndex: h.aggregateIndex,
+    });
+    if (!seedSet.has(h.matched.id)) {
+      remoteAssets.set(h.matched.id, {
+        id: h.matched.id,
+        hostname: h.matched.hostname,
+        serialNumber: h.matched.serialNumber,
+        ipAddress: h.matched.ipAddress,
+        assetType: h.matched.assetType,
+        manufacturer: h.matched.manufacturer,
+        model: h.matched.model,
       });
     }
   }

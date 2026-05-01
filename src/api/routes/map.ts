@@ -34,6 +34,18 @@ function readTopology(raw: unknown): TopologyMeta {
   return {};
 }
 
+// Operator-friendly name for a port-side of a topology edge. "fortilink"
+// is FortiOS's software-managed FortiLink meta-interface — not a physical
+// port — so it's normalized to "unknown" the same way an empty/null
+// value is. Anything else (real ifName, alias, MAC) passes through.
+function normalizePortName(name: string | null | undefined): string {
+  if (!name) return "unknown";
+  const trimmed = String(name).trim();
+  if (!trimmed) return "unknown";
+  if (trimmed.toLowerCase() === "fortilink") return "unknown";
+  return trimmed;
+}
+
 type MonitorHealth = "up" | "degraded" | "down" | "unknown";
 
 // Map view's traffic-light: examines the last 10 AssetMonitorSample rows for
@@ -387,18 +399,25 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       : [];
 
     // Edges — FG→switch by uplinkInterface, AP→switch by peerPort, AP→FG for
-    // unpaired APs. Uplink label is the interface name; AP label is the port.
-    // `reason` populates the hover tooltip on the topology graph so the
-    // operator can see EXACTLY which rule + which evidence drew each edge.
-    // If an edge is wrong, the tooltip should be enough to point at either
-    // the bad data (FortiOS reported X but reality is Y) or the bad rule
-    // (the matcher is too loose / too strict).
+    // unpaired APs.
+    //
+    // Edge labels are uniformly formatted `<sourcePort> ↔ <targetPort>` so
+    // the operator can see at a glance which port on each side carries
+    // the link. Missing sides render as "unknown" — better than a
+    // one-sided label that hides the asymmetry. The "fortilink"
+    // meta-interface name is folded into "unknown" since it's the
+    // FortiLink software interface, not a physical port.
+    //
+    // `reason` populates the hover tooltip — the operator can audit
+    // EXACTLY which rule + which evidence drew each edge.
     type Edge = { source: string; target: string; label?: string; reason?: string };
     let edges: Edge[] = [];
     const switchHostById = new Map<string, string | null>();
     for (const s of switches) switchHostById.set(s.id, s.hostname);
     const apHostById = new Map<string, string | null>();
     for (const a of aps) apHostById.set(a.id, a.hostname);
+    const portLabel = (a: string | null | undefined, b: string | null | undefined): string =>
+      `${normalizePortName(a)} ↔ ${normalizePortName(b)}`;
     for (const s of switches) {
       const ifLabel = s.uplinkInterface || "fortilink";
       const swLabel = s.hostname || s.id;
@@ -406,7 +425,10 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       edges.push({
         source: fg.id,
         target: s.id,
-        label: s.uplinkInterface || undefined,
+        // FG-side port is not surfaced by managed-switch/status — only the
+        // switch's view of its uplink (fgt_peer_intf_name) is. Use
+        // "unknown" for the FG side until LLDP cross-reference is wired.
+        label: portLabel(null, s.uplinkInterface),
         reason:
           `Rule: controller-data FG→switch edge.\n` +
           `Evidence: switch ${swLabel} carries Asset.fortinetTopology.controllerFortigate = "${fgLabel}" ` +
@@ -422,7 +444,10 @@ router.get("/sites/:id/topology", async (req, res, next) => {
         edges.push({
           source: ap.peerSwitchId,
           target: ap.id,
-          label: ap.peerPort || undefined,
+          // FortiAP's wired uplink is virtually always lan1 in
+          // FortiLink-managed deployments. Use that as the AP-side port
+          // unless we have something better.
+          label: portLabel(ap.peerPort, "lan1"),
           reason:
             `Rule: AP→switch edge from FortiSwitch MAC learning.\n` +
             `Evidence: AP ${apLabel}'s base MAC was seen on switch ${peerSwLabel} port "${ap.peerPort || "?"}" ` +
@@ -435,6 +460,7 @@ router.get("/sites/:id/topology", async (req, res, next) => {
         edges.push({
           source: fg.id,
           target: ap.id,
+          label: portLabel(null, "lan1"),
           reason:
             `Rule: AP→FortiGate fallback edge.\n` +
             `Evidence: AP ${apLabel}'s base MAC was NOT found on any managed FortiSwitch's MAC table at last discovery, ` +
@@ -550,7 +576,7 @@ router.get("/sites/:id/topology", async (req, res, next) => {
         source: e.sourceAssetId,
         target: e.targetAssetId,
         sourceIfName: e.sourceIfName,
-        label: e.sourceIfName,
+        label: portLabel(e.sourceIfName, e.targetIfName),
         via: "interface",
         matchVia: e.matchVia,
         reason,
@@ -752,7 +778,7 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       lldpEdges.push({
         source: n.assetId,
         target: targetId,
-        label:  n.localIfName + (n.portId ? ` ↔ ${n.portId}` : ""),
+        label:  portLabel(n.localIfName, n.portId),
         via:    "lldp",
         targetLabel,
         targetIsAsset,
