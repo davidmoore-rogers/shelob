@@ -1026,9 +1026,11 @@ Scope is the same as FMG (DHCP scopes + reservations + leases, interface IPs, VI
 
 Active Directory and Entra ID identify the same hybrid-joined device with two unrelated GUIDs (AD `objectGUID` vs Entra `deviceId`). The reliable cross-link is the on-prem **SID** — AD's `objectSid` equals Entra's `onPremisesSecurityIdentifier`.
 
-- Both services stamp `sid:{SID}` (uppercase) in the asset's `tags` array.
+- **AD discovery is on the multi-source asset model** (Phase 2 cutover): the AD sync writes an `AssetSource` row with `sourceKind="ad"`, `externalId=<objectGUID>`, and a rich source-shaped `observed` blob containing the raw LDAP fields (objectSid, cn, dnsHostName, distinguishedName, ouPath, OS+version, description, whenCreated, lastLogonTimestamp, accountDisabled). Lookups for re-discovery (GUID match), hybrid-cross-link (SID match), and hostname-collision detection all read from `AssetSource` (joining Entra rows for SID matches via `observed.onPremisesSecurityIdentifier`). The legacy `assetTag = "ad:{guid}"` and `tags = ["ad-guid:{guid}", "sid:{SID}", ...]` markers are still written for back-compat with the rest of the codebase; they're retired in Phase 4.
+- Both services still stamp `sid:{SID}` (uppercase) in the asset's `tags` array.
 - AD additionally stamps `ad-guid:{guid}` (lowercase hex) in `tags` so the AD GUID stays findable even after Entra takes over the primary `assetTag`.
 - **Priority rule:** Entra's `assetTag = "entra:{deviceId}"` always wins when both sources have the device. If AD created the asset first, the next Entra run finds it via the SID tag and replaces the `assetTag` (the `ad-guid:{guid}` tag preserves AD's lookup key). If Entra created it first, the next AD run finds it via SID and updates in place without touching the Entra `assetTag`.
+- **Integration filter** — `assetMatchesIntegrationFilter` for AD prefers the AD AssetSource's `observed.ouPath` over the merged `Asset.learnedLocation`. Source-side data is authoritative because the merged `learnedLocation` field can drift between integrations (a FortiGate sighting can overwrite AD's OU path), but the AD source's own observation is fixed by what LDAP returned at the last AD sync. Falls back to `learnedLocation` for callers that haven't loaded sources yet (back-compat).
 - **Conflict records** — the asset-conflict schema now carries `proposedAssetFields.assetTagPrefix` (`"ad:"` or `"entra:"`) so the accept/reject route applies the correct tag. Entra-only conflicts predating this field still default to the Entra prefix for backward compatibility.
 
 ---

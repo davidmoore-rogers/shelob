@@ -3596,6 +3596,117 @@ function isAdManagedTag(t: string): boolean {
   return ["auto-discovered", "ad-disabled"].includes(t);
 }
 
+// Build the source-shaped observed blob written to AssetSource for an AD
+// discovery. Mirrors the per-source JSON shape sketched in CLAUDE.md
+// ("Per-source observed shapes / sourceKind: ad").
+function buildAdObservedBlob(
+  dev: activeDirectory.DiscoveredAdDevice,
+  syncedAt: Date,
+): Record<string, unknown> {
+  return {
+    kind: "ad",
+    syncedAt: syncedAt.toISOString(),
+    objectGuid: dev.objectGuid.toLowerCase(),
+    objectSid: dev.objectSid || null,
+    cn: dev.cn || null,
+    dnsHostName: dev.dnsHostName || null,
+    distinguishedName: dev.distinguishedName || null,
+    ouPath: dev.ouPath || null,
+    operatingSystem: dev.operatingSystem || null,
+    operatingSystemVersion: dev.operatingSystemVersion || null,
+    description: dev.description || null,
+    whenCreated: dev.whenCreated || null,
+    lastLogonTimestamp: dev.lastLogonTimestamp || null,
+    accountDisabled: !!dev.disabled,
+  };
+}
+
+// Upsert the AD AssetSource row tied to a freshly-discovered device. The
+// shadow-write Prisma extension also fires when the Asset is created/updated
+// — its UPDATE path intentionally leaves `observed` alone so this explicit
+// write owns the rich source-shaped payload. Best-effort: failures are
+// logged via the syncLog but never block the Asset write that already
+// landed.
+async function upsertAdAssetSource(
+  assetId: string,
+  integrationId: string,
+  dev: activeDirectory.DiscoveredAdDevice,
+  syncedAt: Date,
+  lastSeen: Date,
+): Promise<void> {
+  const externalId = dev.objectGuid.toLowerCase();
+  const observed = buildAdObservedBlob(dev, syncedAt);
+  await prisma.assetSource.upsert({
+    where: { sourceKind_externalId: { sourceKind: "ad", externalId } },
+    create: {
+      assetId,
+      sourceKind: "ad",
+      externalId,
+      integrationId,
+      observed: observed as any,
+      inferred: false,
+      syncedAt,
+      firstSeen: lastSeen,
+      lastSeen,
+    },
+    update: {
+      assetId,
+      integrationId,
+      observed: observed as any,
+      inferred: false,
+      syncedAt,
+      lastSeen,
+    },
+  });
+}
+
+// Build the AD sync's lookup index from AssetSource rows. Replaces the legacy
+// in-memory scan over Asset.assetTag / Asset.tags for "ad:" / "ad-guid:" /
+// "sid:" markers. Both representations are kept in sync during Phase 2 by
+// the shadow-write Prisma extension + backfill job — Phase 4 retires the tag
+// conventions entirely.
+async function buildAdSyncIndex(
+  allAssets: { id: string; hostname: string | null; assetTag: string | null }[],
+): Promise<{
+  adSourceByGuid: Map<string, { source: any; asset: any }>;
+  assetIdBySid: Map<string, string>;
+  assetIdsWithAdSource: Set<string>;
+  assetIdsWithEntraSource: Set<string>;
+  assetById: Map<string, any>;
+}> {
+  const assetById = new Map<string, any>();
+  for (const a of allAssets) assetById.set(a.id, a);
+
+  const sources = await prisma.assetSource.findMany({
+    where: { sourceKind: { in: ["ad", "entra"] } },
+  });
+
+  const adSourceByGuid = new Map<string, { source: any; asset: any }>();
+  const assetIdBySid = new Map<string, string>();
+  const assetIdsWithAdSource = new Set<string>();
+  const assetIdsWithEntraSource = new Set<string>();
+
+  for (const src of sources) {
+    const obs = (src.observed as Record<string, unknown> | null) || {};
+    if (src.sourceKind === "ad") {
+      assetIdsWithAdSource.add(src.assetId);
+      const a = assetById.get(src.assetId);
+      if (a) adSourceByGuid.set(src.externalId.toLowerCase(), { source: src, asset: a });
+      const sid = typeof obs.objectSid === "string" ? obs.objectSid.toUpperCase() : null;
+      if (sid) assetIdBySid.set(sid, src.assetId);
+    } else if (src.sourceKind === "entra") {
+      assetIdsWithEntraSource.add(src.assetId);
+      const sid =
+        typeof obs.onPremisesSecurityIdentifier === "string"
+          ? obs.onPremisesSecurityIdentifier.toUpperCase()
+          : null;
+      if (sid) assetIdBySid.set(sid, src.assetId);
+    }
+  }
+
+  return { adSourceByGuid, assetIdBySid, assetIdsWithAdSource, assetIdsWithEntraSource, assetById };
+}
+
 async function syncActiveDirectoryDevices(
   integrationId: string,
   integrationName: string,
@@ -3609,28 +3720,33 @@ async function syncActiveDirectoryDevices(
   const updated: string[] = [];
   const skipped: string[] = [];
 
-  // Load the full asset table so we can index by AD assetTag, AD-guid tag, SID tag, and hostname.
+  // Load the full asset table and the AssetSource lookup index. The AD-source
+  // index is now built from AssetSource (Phase 2 cutover); hostname-collision
+  // maps still derive from in-memory asset properties below.
   const allAssets = await prisma.asset.findMany();
-  const assetByAdGuidTag = new Map<string, any>();          // guid → asset (works even after Entra took over assetTag)
-  const assetBySid = new Map<string, any>();                // uppercase SID → asset
-  const assetByHostnameNoTag = new Map<string, any>();      // hostname → asset (untagged only)
-  const assetByHostnameAdTagged = new Map<string, any>();   // hostname → asset (ad-tagged; for duplicate-registration detection)
+  const {
+    adSourceByGuid,
+    assetIdBySid,
+    assetIdsWithAdSource,
+    assetIdsWithEntraSource,
+    assetById,
+  } = await buildAdSyncIndex(allAssets);
+
+  // Untagged-collision map: assets with neither an AD nor an Entra source
+  // (e.g. FortiGate-discovered, manually created, or AD-source row not yet
+  // backfilled). Duplicate-AD-registration map: assets that already carry an
+  // AD source (different externalId — same externalId would have matched in
+  // step 1 above and never reached the collision branch).
+  const assetByHostnameNoTag = new Map<string, any>();
+  const assetByHostnameAdTagged = new Map<string, any>();
   for (const a of allAssets) {
-    const tag = a.assetTag ?? "";
-    if (!tag && a.hostname) {
-      indexHostname(assetByHostnameNoTag, a.hostname, a);
-    } else if (tag.startsWith(AD_ASSET_TAG_PREFIX) && a.hostname) {
+    if (!a.hostname) continue;
+    const hasAd = assetIdsWithAdSource.has(a.id);
+    const hasEntra = assetIdsWithEntraSource.has(a.id);
+    if (hasAd) {
       indexHostname(assetByHostnameAdTagged, a.hostname, a);
-    }
-    if (tag.startsWith(AD_ASSET_TAG_PREFIX)) {
-      assetByAdGuidTag.set(tag.slice(AD_ASSET_TAG_PREFIX.length).toLowerCase(), a);
-    }
-    for (const t of (a.tags as string[] | null) || []) {
-      if (t.startsWith(AD_GUID_TAG_PREFIX)) {
-        assetByAdGuidTag.set(t.slice(AD_GUID_TAG_PREFIX.length).toLowerCase(), a);
-      } else if (t.startsWith(SID_TAG_PREFIX)) {
-        assetBySid.set(t.slice(SID_TAG_PREFIX.length).toUpperCase(), a);
-      }
+    } else if (!hasEntra) {
+      indexHostname(assetByHostnameNoTag, a.hostname, a);
     }
   }
 
@@ -3657,11 +3773,14 @@ async function syncActiveDirectoryDevices(
     const lastLogon = dev.lastLogonTimestamp ? new Date(dev.lastLogonTimestamp) : null;
     const whenCreated = dev.whenCreated ? new Date(dev.whenCreated) : null;
 
-    // Match order: (1) AD guid tag/assetTag (2) SID tag (hybrid; Entra likely
-    // has assetTag) (3) hostname collision → conflict (4) create new.
-    let existing = assetByAdGuidTag.get(guidKey);
+    // Match order: (1) AD source by objectGUID (2) any source's SID (hybrid
+    // — Entra likely owns the assetTag) (3) hostname collision → conflict
+    // (4) create new.
+    const adHit = adSourceByGuid.get(guidKey);
+    let existing: any = adHit?.asset ?? null;
     if (!existing && dev.objectSid) {
-      existing = assetBySid.get(dev.objectSid.toUpperCase());
+      const sidAssetId = assetIdBySid.get(dev.objectSid.toUpperCase());
+      if (sidAssetId) existing = assetById.get(sidAssetId) ?? null;
     }
 
     if (existing) {
@@ -3727,6 +3846,15 @@ async function syncActiveDirectoryDevices(
       try {
         clampAcquiredToLastSeen(updateData, existing);
         await prisma.asset.update({ where: { id: existing.id }, data: updateData });
+        // Explicit AssetSource upsert — owns the rich source-shaped observed
+        // blob. The shadow-write extension's UPDATE branch leaves observed
+        // alone so this stays the source of truth across re-runs.
+        try {
+          const now = new Date();
+          await upsertAdAssetSource(existing.id, integrationId, dev, now, lastLogon ?? now);
+        } catch (err: any) {
+          syncLog("warning", `Updated asset for AD computer ${displayName || dev.objectGuid} but failed to upsert AssetSource row: ${err.message || "Unknown error"}`);
+        }
         updated.push(displayName || dev.objectGuid);
       } catch (err: any) {
         syncLog("error", `Failed to update asset for AD computer ${displayName || dev.objectGuid}: ${err.message || "Unknown error"}`);
@@ -3821,8 +3949,21 @@ async function syncActiveDirectoryDevices(
       };
       clampAcquiredToLastSeen(createData);
       const newAsset = await prisma.asset.create({ data: createData as any });
-      assetByAdGuidTag.set(guidKey, newAsset);
-      if (dev.objectSid) assetBySid.set(dev.objectSid.toUpperCase(), newAsset);
+      // Explicit AssetSource upsert with rich observed blob. The Asset.create
+      // already triggered the shadow-write extension which laid down a
+      // skeleton row from the assetTag — this overwrites it with truth.
+      try {
+        const now = new Date();
+        await upsertAdAssetSource(newAsset.id, integrationId, dev, now, lastLogon ?? now);
+      } catch (err: any) {
+        syncLog("warning", `Created asset for AD computer ${displayName || dev.objectGuid} but failed to upsert AssetSource row: ${err.message || "Unknown error"}`);
+      }
+      // Refresh the in-memory indexes so subsequent devices in this run see
+      // the new asset (e.g. duplicate-registration detection, SID match).
+      assetById.set(newAsset.id, newAsset);
+      adSourceByGuid.set(guidKey, { source: null, asset: newAsset });
+      assetIdsWithAdSource.add(newAsset.id);
+      if (dev.objectSid) assetIdBySid.set(dev.objectSid.toUpperCase(), newAsset.id);
       created.push(displayName || dev.objectGuid);
     } catch (err: any) {
       syncLog("error", `Failed to create asset for AD computer ${displayName || dev.objectGuid}: ${err.message || "Unknown error"}`);

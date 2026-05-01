@@ -8,7 +8,13 @@
  * Per-integration matching:
  *   - fortimanager / fortigate: deviceInclude/deviceExclude vs hostname
  *   - entraid:                   deviceInclude/deviceExclude vs hostname (Entra displayName lands in Asset.hostname)
- *   - activedirectory:           ouInclude/ouExclude vs learnedLocation (the OU path written by the AD sync)
+ *   - activedirectory:           ouInclude/ouExclude vs the AD AssetSource's
+ *     observed.ouPath when supplied; falls back to Asset.learnedLocation for
+ *     callers that haven't been threaded through to the source row yet.
+ *     Source-side data is preferred because the merged learnedLocation field
+ *     can drift between integrations (e.g. a FortiGate-discovered location
+ *     overwriting AD's OU path), but the AD source's own observation is
+ *     authoritative for AD's own filter.
  *
  * Returns { included: true } for any other integration type (we don't have
  * authoritative match data for it) so we never block a refresh on a hunch.
@@ -22,6 +28,10 @@ interface IntegrationLite {
 interface AssetLite {
   hostname: string | null;
   learnedLocation: string | null;
+  // Optional AD source observed.ouPath. When supplied, takes priority over
+  // learnedLocation in the activedirectory filter — see header comment for
+  // rationale.
+  adOuPath?: string | null;
 }
 
 function matchesWildcard(pattern: string, value: string): boolean {
@@ -76,7 +86,9 @@ export function assetMatchesIntegrationFilter(
   if (type === "activedirectory") {
     const include = asStringArray(cfg.ouInclude);
     const exclude = asStringArray(cfg.ouExclude);
-    const ouPath = asset.learnedLocation || "";
+    // Prefer the AD source's own observed.ouPath; fall back to the merged
+    // learnedLocation when the caller hasn't loaded sources.
+    const ouPath = (asset.adOuPath || asset.learnedLocation || "").trim();
     if (!ouPath) return { included: true };
     const candidates = [ouPath, asset.hostname ? `CN=${asset.hostname},${ouPath}` : ""].filter(Boolean);
 

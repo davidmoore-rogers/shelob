@@ -70,13 +70,19 @@ async function shadowWriteAssetSources(base: PrismaClient, asset: any): Promise<
   const seen = snapshot.lastSeen ?? now;
   for (const s of sources) {
     try {
-      // Don't downgrade an existing inferred=false row to inferred=true on
-      // re-derive. Likewise refresh integrationId only when the derived row
-      // has a concrete value (preserves Phase-2 truth from being clobbered
-      // by a later shadow-write that lost the linkage).
+      // The UPDATE path intentionally does NOT touch `observed` — once an
+      // AssetSource row exists, its observed blob is owned by the discovery
+      // path that writes the source explicitly (Phase 2). The shadow-write
+      // here only refreshes metadata (assetId linkage, integrationId,
+      // syncedAt, lastSeen) so it never downgrades a rich source-shaped blob
+      // back to the simple tag-derived one.
+      //
+      // The CREATE path *does* write observed, since this is the first time
+      // the row appears (e.g. a new Asset created before the discovery
+      // cutover for its source kind). The next real discovery run replaces
+      // it via explicit upsert.
       const updateData: Record<string, unknown> = {
         assetId: snapshot.id,
-        observed: s.observed as any,
         syncedAt: now,
         lastSeen: seen,
       };

@@ -536,7 +536,20 @@ router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
     });
     if (!filterAsset) throw new AppError(404, "Asset not found");
     if (filterAsset.discoveredByIntegration) {
-      const filt = assetMatchesIntegrationFilter(filterAsset, filterAsset.discoveredByIntegration);
+      // For AD, prefer the source's own observed.ouPath over the merged
+      // learnedLocation field (which other integrations can overwrite). The
+      // lookup is cheap — one row, indexed by (sourceKind, externalId)'s
+      // assetId index — and only runs on AD-discovered assets.
+      let adOuPath: string | null = null;
+      if (filterAsset.discoveredByIntegration.type === "activedirectory") {
+        const adSource = await prisma.assetSource.findFirst({
+          where: { assetId: id, sourceKind: "ad" },
+          select: { observed: true },
+        });
+        const obs = (adSource?.observed as Record<string, unknown> | null) || null;
+        if (obs && typeof obs.ouPath === "string") adOuPath = obs.ouPath;
+      }
+      const filt = assetMatchesIntegrationFilter({ ...filterAsset, adOuPath }, filterAsset.discoveredByIntegration);
       if (!filt.included) {
         const reason = filt.reason || "Excluded by integration filter";
         const label = filterAsset.hostname || filterAsset.ipAddress || id;
