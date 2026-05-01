@@ -15,6 +15,7 @@ import * as activeDirectory from "../../services/activeDirectoryService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
 import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice, DiscoveredVip, DiscoveryProgressCallback } from "../../services/fortimanagerService.js";
 import { detectAndLogDrift } from "../../services/projectionDriftService.js";
+import { projectAssetFromSources } from "../../utils/assetProjection.js";
 import { logEvent } from "./events.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
@@ -4320,20 +4321,48 @@ async function syncActiveDirectoryDevices(
     }
 
     if (existing) {
-      const updateData: Record<string, unknown> = {
-        os: dev.operatingSystem || existing.os,
-        osVersion: dev.operatingSystemVersion || existing.osVersion,
-        status,
-        ...(status !== existing.status ? { statusChangedAt: new Date(), statusChangedBy: integrationName } : {}),
-      };
-      // Hostname: prefer dnsHostName if present; otherwise cn; never blank out a
-      // human-entered hostname with the empty string.
-      if (displayName) {
-        updateData.hostname = displayName;
-        if (dev.dnsHostName) updateData.dnsName = dev.dnsHostName;
+      // Phase 3b.1 cutover: discovery-owned fields (hostname, os, osVersion,
+      // learnedLocation, serialNumber, manufacturer, model) come from the
+      // projection layer. Order:
+      //   1. Upsert AD source first so projection sees fresh AD data
+      //   2. Re-fetch all sources for this asset
+      //   3. Compute projection
+      //   4. Apply projected fields + non-projected logic in a single
+      //      Asset.update — no double-write.
+      const now = new Date();
+      try {
+        await upsertAdAssetSource(existing.id, integrationId, dev, now, lastLogon ?? now);
+      } catch (err: any) {
+        syncLog("warning", `Failed to upsert AD AssetSource row for ${displayName || dev.objectGuid}: ${err.message || "Unknown error"}`);
       }
-      // learnedLocation: AD OU path if no user-set location.
-      if (!existing.location && dev.ouPath) updateData.learnedLocation = dev.ouPath;
+      const sourceRows = await prisma.assetSource.findMany({
+        where: { assetId: existing.id },
+        select: { sourceKind: true, inferred: true, observed: true },
+      });
+      const { projected } = projectAssetFromSources(
+        sourceRows.map((s) => ({
+          sourceKind: s.sourceKind,
+          inferred: s.inferred,
+          observed: s.observed as Record<string, unknown> | null,
+        })),
+      );
+
+      const updateData: Record<string, unknown> = {
+        status,
+        ...(status !== existing.status ? { statusChangedAt: now, statusChangedBy: integrationName } : {}),
+      };
+      // Discovery-owned fields from the projection. Only write when
+      // projection has a value (null = "no source has an opinion" — leave
+      // the existing Asset value alone).
+      if (projected.hostname !== null) updateData.hostname = projected.hostname;
+      if (projected.os !== null) updateData.os = projected.os;
+      if (projected.osVersion !== null) updateData.osVersion = projected.osVersion;
+      if (projected.learnedLocation !== null) updateData.learnedLocation = projected.learnedLocation;
+      if (projected.serialNumber !== null) updateData.serialNumber = projected.serialNumber;
+      if (projected.manufacturer !== null) updateData.manufacturer = projected.manufacturer;
+      if (projected.model !== null) updateData.model = projected.model;
+      // dnsName is AD-specific (not in projection — separate Asset column).
+      if (dev.dnsHostName) updateData.dnsName = dev.dnsHostName;
       // lastSeen: don't regress a newer existing value (e.g. Entra/Intune had fresher data).
       if (lastLogon) {
         const existingLastSeen = existing.lastSeen ? new Date(existing.lastSeen) : null;
@@ -4382,15 +4411,8 @@ async function syncActiveDirectoryDevices(
       try {
         clampAcquiredToLastSeen(updateData, existing);
         await prisma.asset.update({ where: { id: existing.id }, data: updateData });
-        // Explicit AssetSource upsert — owns the rich source-shaped observed
-        // blob. The shadow-write extension's UPDATE branch leaves observed
-        // alone so this stays the source of truth across re-runs.
-        try {
-          const now = new Date();
-          await upsertAdAssetSource(existing.id, integrationId, dev, now, lastLogon ?? now);
-        } catch (err: any) {
-          syncLog("warning", `Updated asset for AD computer ${displayName || dev.objectGuid} but failed to upsert AssetSource row: ${err.message || "Unknown error"}`);
-        }
+        // (AssetSource upsert already happened above the projection step
+        //  so the projected fields reflect this run's AD data.)
         updated.push(displayName || dev.objectGuid);
       } catch (err: any) {
         syncLog("error", `Failed to update asset for AD computer ${displayName || dev.objectGuid}: ${err.message || "Unknown error"}`);
@@ -4463,17 +4485,28 @@ async function syncActiveDirectoryDevices(
 
     // Create a new asset
     try {
+      // Phase 3b.1 cutover: discovery-owned fields come from the projection
+      // layer. On create the asset has only its own AD source, so we build
+      // the AD observed blob synthetically (same as upsertAdAssetSource will
+      // persist a few lines below) and project from a single-source array —
+      // no DB roundtrip, projection is pure.
+      const now = new Date();
+      const adObserved = buildAdObservedBlob(dev, now);
+      const { projected } = projectAssetFromSources([
+        { sourceKind: "ad", inferred: false, observed: adObserved },
+      ]);
+
       const createData: Record<string, unknown> = {
         assetTag: `${AD_ASSET_TAG_PREFIX}${dev.objectGuid}`,
-        hostname: displayName || null,
+        hostname: projected.hostname,
         dnsName: dev.dnsHostName || null,
         assetType,
         status,
-        statusChangedAt: new Date(),
+        statusChangedAt: now,
         statusChangedBy: integrationName,
-        os: dev.operatingSystem || null,
-        osVersion: dev.operatingSystemVersion || null,
-        learnedLocation: dev.ouPath || null,
+        os: projected.os,
+        osVersion: projected.osVersion,
+        learnedLocation: projected.learnedLocation,
         notes: dev.description || `Auto-discovered from Active Directory integration "${integrationName}"`,
         lastSeen: lastLogon,
         acquiredAt: whenCreated,
@@ -4485,11 +4518,10 @@ async function syncActiveDirectoryDevices(
       };
       clampAcquiredToLastSeen(createData);
       const newAsset = await prisma.asset.create({ data: createData as any });
-      // Explicit AssetSource upsert with rich observed blob. The Asset.create
-      // already triggered the shadow-write extension which laid down a
-      // skeleton row from the assetTag — this overwrites it with truth.
+      // Persist the AD source row. The shadow-write extension already laid
+      // down a skeleton row from the assetTag during Asset.create — this
+      // overwrites it with the rich observed blob the projection just used.
       try {
-        const now = new Date();
         await upsertAdAssetSource(newAsset.id, integrationId, dev, now, lastLogon ?? now);
       } catch (err: any) {
         syncLog("warning", `Created asset for AD computer ${displayName || dev.objectGuid} but failed to upsert AssetSource row: ${err.message || "Unknown error"}`);
