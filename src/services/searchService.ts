@@ -156,11 +156,58 @@ async function searchAssets(like: string, mac: string | null) {
   } else {
     or.push({ macAddress: { contains: like, mode: "insensitive" as const } });
   }
-  return prisma.asset.findMany({
-    where: { OR: or },
-    take: PER_GROUP_LIMIT,
-    orderBy: { hostname: "asc" },
-  });
+  // AssetSource cross-search — operator-typed searches by Entra deviceId,
+  // AD objectGUID, or FortiGate serial used to hit `Asset.assetTag`
+  // (entra:..., ad:..., fgt:... prefixes). After Phase 4d cuts those
+  // assetTag writes, the canonical key is on AssetSource.externalId.
+  // Run both queries in parallel and merge — old rows still match the
+  // legacy assetTag column, new rows match via AssetSource. Strip the
+  // common "<kind>:" prefix so an operator can paste either form.
+  const sourceQuery = stripSourceKindPrefix(like);
+  const [byAsset, sourceHits] = await Promise.all([
+    prisma.asset.findMany({
+      where: { OR: or },
+      take: PER_GROUP_LIMIT,
+      orderBy: { hostname: "asc" },
+    }),
+    prisma.assetSource.findMany({
+      where: {
+        externalId: { contains: sourceQuery, mode: "insensitive" as const },
+      },
+      include: {
+        asset: true,
+      },
+      take: PER_GROUP_LIMIT,
+    }),
+  ]);
+  // Merge dedup by asset id; assetTag-side wins on hostname-sort order
+  // for ties, so the existing presentation is preserved when both
+  // pathways return the same row.
+  const seen = new Set<string>();
+  const merged: typeof byAsset = [];
+  for (const a of byAsset) {
+    if (a && a.id && !seen.has(a.id)) {
+      seen.add(a.id);
+      merged.push(a);
+    }
+  }
+  for (const s of sourceHits) {
+    const a = s.asset;
+    if (!a || !a.id || seen.has(a.id)) continue;
+    seen.add(a.id);
+    merged.push(a as any);
+    if (merged.length >= PER_GROUP_LIMIT) break;
+  }
+  return merged.slice(0, PER_GROUP_LIMIT);
+}
+
+// Strip the "entra:" / "ad:" / "fgt:" / "intune:" / "fortiswitch:" / "fortiap:"
+// prefix from a query so an operator pasting `entra:abcd-1234` matches the
+// AssetSource externalId that just stores `abcd-1234`. Anything not
+// matching one of the known prefixes passes through unchanged.
+function stripSourceKindPrefix(q: string): string {
+  const m = q.match(/^(entra|intune|ad|fgt|fortiswitch|fortiap):(.+)$/i);
+  return m ? m[2].trim() : q;
 }
 
 // Find which subnet contains the IP and whether there is an active reservation.

@@ -2208,7 +2208,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           ...(fwCreateProjected.ipAddress ? { ipSource: fgHostname || integrationType } : {}),
           hostname: fwCreateProjected.hostname || fgHostname,
           serialNumber: fwCreateProjected.serialNumber,
-          assetTag: fgTag,
+          // Phase 4d: legacy `assetTag = fgt:<serial>` write retired —
+          // AssetSource (sourceKind="fortigate-firewall", externalId=serial)
+          // upserted just below is the canonical identity link.
           manufacturer: fwCreateProjected.manufacturer || "Fortinet",
           model: fwCreateProjected.model || "FortiGate",
           assetType: "firewall",
@@ -3735,6 +3737,14 @@ async function buildEntraSyncIndex(
   assetIdsWithEntraSource: Set<string>;
   assetIdsWithAdSource: Set<string>;
   assetById: Map<string, any>;
+  /**
+   * Reverse map: asset id → its current entra/intune source's externalId.
+   * Used by the duplicate-Entra-resolution path when it needs to name the
+   * "loser" Entra deviceId in audit logs and tombstone-conflict
+   * lookups, replacing the legacy `assetTag.slice(ENTRA_PREFIX.length)`
+   * pattern after Phase 4d cut the assetTag write path.
+   */
+  entraDeviceIdByAssetId: Map<string, string>;
 }> {
   const assetById = new Map<string, any>();
   for (const a of allAssets) assetById.set(a.id, a);
@@ -3747,6 +3757,7 @@ async function buildEntraSyncIndex(
   const assetIdBySid = new Map<string, string>();
   const assetIdsWithEntraSource = new Set<string>();
   const assetIdsWithAdSource = new Set<string>();
+  const entraDeviceIdByAssetId = new Map<string, string>();
 
   for (const src of sources) {
     const obs = (src.observed as Record<string, unknown> | null) || {};
@@ -3754,6 +3765,11 @@ async function buildEntraSyncIndex(
       assetIdsWithEntraSource.add(src.assetId);
       const a = assetById.get(src.assetId);
       if (a) assetByEntraDeviceId.set(src.externalId.toLowerCase(), a);
+      // First-seen wins on duplicates; entra and intune share the
+      // externalId namespace so we don't double-stamp.
+      if (!entraDeviceIdByAssetId.has(src.assetId)) {
+        entraDeviceIdByAssetId.set(src.assetId, src.externalId.toLowerCase());
+      }
       const sid =
         typeof obs.onPremisesSecurityIdentifier === "string"
           ? obs.onPremisesSecurityIdentifier.toUpperCase()
@@ -3766,7 +3782,7 @@ async function buildEntraSyncIndex(
     }
   }
 
-  return { assetByEntraDeviceId, assetIdBySid, assetIdsWithEntraSource, assetIdsWithAdSource, assetById };
+  return { assetByEntraDeviceId, assetIdBySid, assetIdsWithEntraSource, assetIdsWithAdSource, assetById, entraDeviceIdByAssetId };
 }
 
 async function syncEntraDevices(
@@ -3794,6 +3810,7 @@ async function syncEntraDevices(
     assetIdsWithEntraSource,
     assetIdsWithAdSource,
     assetById,
+    entraDeviceIdByAssetId,
   } = await buildEntraSyncIndex(allAssets);
 
   // Untagged-collision map: assets with neither an entra/intune nor an ad
@@ -3970,11 +3987,11 @@ async function syncEntraDevices(
       if (projected.manufacturer !== null) updateData.manufacturer = projected.manufacturer;
       if (projected.model !== null) updateData.model = projected.model;
       if (projected.learnedLocation !== null) updateData.learnedLocation = projected.learnedLocation;
-      if (takingOver) {
-        // Priority rule: Entra's assetTag always wins. AD guid is preserved
-        // via ad-guid:{guid} tag so AD sync can still find this asset later.
-        updateData.assetTag = `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`;
-      }
+      // Phase 4d: assetTag is no longer the cross-source identity link —
+      // AssetSource is. The takeover is realized by the entra source row
+      // upsert above (priority rule: Entra source wins on hybrid devices,
+      // SID-cross-link finds the row that AD created first). Existing
+      // assetTag values on the row are preserved for back-compat.
       // Operator-owned / non-projected fields.
       if (intuneMacEntries.length > 0) {
         const { primary, merged } = mergeIntuneMacs(existing.macAddresses as any[]);
@@ -4025,27 +4042,21 @@ async function syncEntraDevices(
         }
         const dupEntraSibling = lookupHostname(assetByHostnameEntraTagged, dev.displayName);
         if (dupEntraSibling && dupEntraSibling.asset.id !== existing.id) {
-          // Auto-resolve by lastSeen: newer activity wins; loser's ID is noted
-          // as a prev-entra: breadcrumb tag on the winner. Tombstone conflict
-          // records prevent re-queuing on subsequent runs.
-          const siblingId = (dupEntraSibling.asset.assetTag || "").slice(ENTRA_ASSET_TAG_PREFIX.length);
+          // Auto-resolve by lastSeen: newer activity wins. Phase 4d/4e:
+          // sibling's prior Entra deviceId now comes from the
+          // entraDeviceIdByAssetId map (built from AssetSource) instead
+          // of slicing the legacy assetTag, and the prev-entra: breadcrumb
+          // tag is no longer written — the auto-resolve syncLog event
+          // captures both deviceIds for audit, and the AssetSource
+          // sweep removes the stale source row from the loser.
+          const siblingId = entraDeviceIdByAssetId.get(dupEntraSibling.asset.id) || "<unknown>";
           const siblingLastSeen = dupEntraSibling.asset.lastSeen ? new Date(dupEntraSibling.asset.lastSeen as any) : null;
           const incomingWins = lastSeen != null && (siblingLastSeen == null || lastSeen > siblingLastSeen);
           try {
             if (incomingWins) {
-              const prevTag = `prev-${ENTRA_ASSET_TAG_PREFIX}${siblingId}`;
-              const currentTags = (existing.tags as string[] | null) || [];
-              if (!currentTags.includes(prevTag)) {
-                await prisma.asset.update({ where: { id: existing.id }, data: { tags: { push: prevTag } } });
-              }
-              syncLog("info", `Auto-resolved sibling duplicate Entra registration "${dev.displayName}" — incoming ${dev.deviceId} (${lastSeen?.toISOString()}) newer than sibling ${siblingId} (${siblingLastSeen?.toISOString() ?? "never"}). Sibling ID noted on winner.`);
+              syncLog("info", `Auto-resolved sibling duplicate Entra registration "${dev.displayName}" — incoming ${dev.deviceId} (${lastSeen?.toISOString()}) newer than sibling ${siblingId} (${siblingLastSeen?.toISOString() ?? "never"}). Sibling ID retired.`);
             } else {
-              const prevTag = `prev-${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`;
-              const siblingTags = (dupEntraSibling.asset.tags as string[] | null) || [];
-              if (!siblingTags.includes(prevTag)) {
-                await prisma.asset.update({ where: { id: dupEntraSibling.asset.id }, data: { tags: { push: prevTag } } });
-              }
-              syncLog("info", `Auto-resolved sibling duplicate Entra registration "${dev.displayName}" — sibling ${siblingId} (${siblingLastSeen?.toISOString() ?? "never"}) is same/newer than incoming ${dev.deviceId} (${lastSeen?.toISOString() ?? "never"}). Incoming ID noted on winner.`);
+              syncLog("info", `Auto-resolved sibling duplicate Entra registration "${dev.displayName}" — sibling ${siblingId} (${siblingLastSeen?.toISOString() ?? "never"}) is same/newer than incoming ${dev.deviceId} (${lastSeen?.toISOString() ?? "never"}). Incoming ID retired.`);
             }
             await tombstoneConflict(dev.deviceId, dupEntraSibling.asset.id, integrationId);
             await tombstoneConflict(siblingId, existing.id, integrationId);
@@ -4093,12 +4104,15 @@ async function syncEntraDevices(
 
       const dupEntra = lookupHostname(assetByHostnameEntraTagged, dev.displayName);
       if (dupEntra) {
-        // Auto-resolve by lastSeen: newer activity wins.
-        // If incoming wins: take over the existing Polaris row (stamp new entra
-        // tag, apply incoming fields, note old ID as prev-entra: breadcrumb).
-        // If existing wins: note incoming ID as prev-entra: on existing row.
+        // Auto-resolve by lastSeen: newer activity wins. Phase 4d/4e:
+        // existing Entra deviceId now comes from entraDeviceIdByAssetId
+        // (built from AssetSource.externalId) instead of slicing the
+        // legacy assetTag, and the prev-entra: breadcrumb tag is no
+        // longer written — the syncLog event captures both deviceIds
+        // for audit and upsertEntraIntuneSources sweeps the stale source
+        // row so the prior identity can't re-link a future discovery.
         // Tombstone conflict records in both directions prevent re-queuing.
-        const existingEntraId = (dupEntra.asset.assetTag || "").slice(ENTRA_ASSET_TAG_PREFIX.length);
+        const existingEntraId = entraDeviceIdByAssetId.get(dupEntra.asset.id) || "<unknown>";
         const existingLastSeen = dupEntra.asset.lastSeen ? new Date(dupEntra.asset.lastSeen as any) : null;
         const incomingWins = lastSeen != null && (existingLastSeen == null || lastSeen > existingLastSeen);
         try {
@@ -4126,11 +4140,11 @@ async function syncEntraDevices(
             );
 
             const preserved = ((dupEntra.asset.tags as string[]) || []).filter((t) => !isEntraManagedTag(t));
-            const prevTag = `prev-${ENTRA_ASSET_TAG_PREFIX}${existingEntraId}`;
             const newTags = [...preserved, ...tags.filter((t) => !preserved.includes(t))];
-            if (!newTags.includes(prevTag)) newTags.push(prevTag);
             const updateFields: Record<string, unknown> = {
-              assetTag: `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`,
+              // Phase 4d: assetTag write retired — AssetSource.externalId on
+              // the upserted entra source row above is the authoritative
+              // identity link. Prior assetTag is preserved on the row.
               lastSeen,
               status,
               ...(status !== dupEntra.asset.status ? { statusChangedAt: now, statusChangedBy: integrationName } : {}),
@@ -4161,19 +4175,22 @@ async function syncEntraDevices(
             // step, including the stale-deviceId sweep that removes the
             // old (entra,oldDeviceId)/(intune,oldDeviceId) rows so the
             // prior identity can't re-link a future discovery.)
-            // Update in-memory index so further iterations find the asset by its new ID.
+            // Update in-memory indexes so further iterations find the asset
+            // by its new Entra ID. The prior key is removed; the new key
+            // points at the same in-memory asset record (with no assetTag
+            // mutation since 4d retired that field's role).
             assetByEntraDeviceId.delete(existingEntraId.toLowerCase());
-            assetByEntraDeviceId.set(deviceIdKey, { ...dupEntra.asset, assetTag: `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}` });
+            assetByEntraDeviceId.set(deviceIdKey, dupEntra.asset);
+            entraDeviceIdByAssetId.set(dupEntra.asset.id, deviceIdKey);
             updated.push(dev.displayName || dev.deviceId);
-            syncLog("info", `Auto-resolved duplicate Entra registration "${dev.displayName}" — incoming ${dev.deviceId} (${lastSeen?.toISOString()}) newer than existing ${existingEntraId} (${existingLastSeen?.toISOString() ?? "never"}). Asset updated; old ID preserved as prev-entra: tag.`);
+            syncLog("info", `Auto-resolved duplicate Entra registration "${dev.displayName}" — incoming ${dev.deviceId} (${lastSeen?.toISOString()}) newer than existing ${existingEntraId} (${existingLastSeen?.toISOString() ?? "never"}). Asset updated; prior identity retired.`);
           } else {
-            const prevTag = `prev-${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`;
-            const existingTags = (dupEntra.asset.tags as string[] | null) || [];
-            if (!existingTags.includes(prevTag)) {
-              await prisma.asset.update({ where: { id: dupEntra.asset.id }, data: { tags: { push: prevTag } } });
-            }
+            // Existing wins. Phase 4e: prev-entra: breadcrumb tag write
+            // retired — the syncLog event captures both deviceIds for
+            // audit; AssetSource on the existing asset still pins
+            // existingEntraId so the next sync re-finds it cleanly.
             skipped.push(`${dev.displayName} (duplicate Entra registration — auto-resolved, existing ${existingEntraId} is same/newer)`);
-            syncLog("info", `Auto-resolved duplicate Entra registration "${dev.displayName}" — existing ${existingEntraId} (${existingLastSeen?.toISOString() ?? "never"}) same/newer than incoming ${dev.deviceId} (${lastSeen?.toISOString() ?? "never"}). Incoming ID noted as prev-entra: tag.`);
+            syncLog("info", `Auto-resolved duplicate Entra registration "${dev.displayName}" — existing ${existingEntraId} (${existingLastSeen?.toISOString() ?? "never"}) same/newer than incoming ${dev.deviceId} (${lastSeen?.toISOString() ?? "never"}). Incoming ID retired.`);
           }
           await tombstoneConflict(dev.deviceId, dupEntra.asset.id, integrationId);
           await tombstoneConflict(existingEntraId, dupEntra.asset.id, integrationId);
@@ -4231,7 +4248,10 @@ async function syncEntraDevices(
 
       const seeded = mergeIntuneMacs([]);
       const createData: Record<string, unknown> = {
-        assetTag: `${ENTRA_ASSET_TAG_PREFIX}${dev.deviceId}`,
+        // Phase 4d: legacy `assetTag = entra:<deviceId>` write retired —
+        // upsertEntraIntuneSources below stamps the AssetSource entra
+        // (and intune, if applicable) row that re-discovery uses as the
+        // canonical identity link.
         hostname: projected.hostname,
         serialNumber: projected.serialNumber,
         macAddress: seeded.primary || dev.macAddress || null,
@@ -4669,7 +4689,9 @@ async function syncActiveDirectoryDevices(
       ]);
 
       const createData: Record<string, unknown> = {
-        assetTag: `${AD_ASSET_TAG_PREFIX}${dev.objectGuid}`,
+        // Phase 4d: legacy `assetTag = ad:<objectGuid>` write retired —
+        // upsertAdAssetSource below stamps the AssetSource ad row that
+        // re-discovery uses as the canonical identity link.
         hostname: projected.hostname,
         dnsName: dev.dnsHostName || null,
         assetType,

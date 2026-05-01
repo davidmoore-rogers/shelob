@@ -236,9 +236,11 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
 
   // Overlay proposed fields onto the existing asset, but only where the existing
   // field is empty — respect any manually-entered data already on the record.
-  const update: Record<string, unknown> = {
-    assetTag: `${prefix}${conflict.proposedDeviceId}`,
-  };
+  // Phase 4d: assetTag is no longer the source-of-truth identity link;
+  // AssetSource (sourceKind+externalId) is. We upsert that row at the end of
+  // this function instead of stamping `assetTag` here. Existing assetTag
+  // values on the row are preserved.
+  const update: Record<string, unknown> = {};
   // Hostname has one extra rule: when the conflict was raised via 15-char
   // NetBIOS truncation (e.g. AD `cn` = "GORDONSVILLE-PL" matched against
   // Entra displayName = "GORDONSVILLE-PLANT"), prefer the longer canonical
@@ -277,26 +279,18 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
     update.statusChangedBy = actor ?? "system";
   }
 
-  // Merge tags — keep existing manual tags, add source-specific tags and
-  // cross-integration identity tags (sid: for hybrid-join, ad-guid: for AD).
+  // Merge tags — keep existing manual tags, add source-specific descriptive
+  // tags. Phase 4b retired the cross-integration identity tags
+  // (sid:* / ad-guid:*); identity now lives on AssetSource. Phase 4e
+  // retired the prev-* breadcrumb tags here too — there is no longer a
+  // prior assetTag to breadcrumb against, since accept doesn't write
+  // assetTag.
   const sourceTags: string[] = isAd ? ["activedirectory", "auto-discovered"] : ["entraid", "auto-discovered"];
   if (isAd) {
-    sourceTags.push(`${AD_GUID_TAG_PREFIX}${String(conflict.proposedDeviceId).toLowerCase()}`);
     if (proposed.disabled === true) sourceTags.push("ad-disabled");
-    if (proposed.objectSid) sourceTags.push(`${SID_TAG_PREFIX}${String(proposed.objectSid).toUpperCase()}`);
   } else {
     if (proposed.trustType) sourceTags.push(String(proposed.trustType).toLowerCase());
     if (proposed.complianceState) sourceTags.push(`intune-${String(proposed.complianceState).toLowerCase()}`);
-    if (proposed.onPremisesSecurityIdentifier) sourceTags.push(`${SID_TAG_PREFIX}${String(proposed.onPremisesSecurityIdentifier).toUpperCase()}`);
-  }
-  // Breadcrumb: when the existing asset already has a source assetTag and we're
-  // overwriting it with a new one (duplicate-registration merge — same hostname,
-  // different deviceId/objectGUID), stash the prior assetTag as a `prev-…` tag
-  // so the original ID stays findable in audit/search after the merge.
-  const priorTag = existing.assetTag || "";
-  if (priorTag && priorTag !== update.assetTag &&
-      (priorTag.startsWith(ENTRA_ASSET_TAG_PREFIX) || priorTag.startsWith(AD_ASSET_TAG_PREFIX))) {
-    sourceTags.push(`prev-${priorTag}`);
   }
   const existingTags = (existing.tags as string[] | null) || [];
   const merged = [...existingTags];
@@ -304,15 +298,21 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   update.tags = merged;
 
   // When the sibling-check path fires (both devices already have their own
-  // Polaris assets), there will be a "ghost" asset carrying the proposed tag.
-  // We can't stamp the same tag onto a different row without hitting the unique
-  // constraint. Solution: merge the ghost's non-empty fields into the accept
-  // target first, then delete the ghost so the accept target becomes the
-  // single canonical record.
-  const proposedTag = `${prefix}${conflict.proposedDeviceId}`;
-  const ghost = await prisma.asset.findFirst({
-    where: { assetTag: proposedTag, id: { not: existing.id } },
+  // Polaris assets), there will be a "ghost" asset carrying the proposed
+  // source's AssetSource row. Two assets can't both own a row with the
+  // same (sourceKind, externalId) because of the unique constraint —
+  // before we upsert at the bottom, find the ghost (if any), merge its
+  // non-empty fields into the accept target, then delete it so the
+  // accept target becomes the single canonical record.
+  const sourceKind = isAd ? "ad" : "entra";
+  const externalId = String(conflict.proposedDeviceId).toLowerCase();
+  const existingSourceForId = await prisma.assetSource.findUnique({
+    where: { sourceKind_externalId: { sourceKind, externalId } },
+    include: { asset: true },
   });
+  const ghost: any = (existingSourceForId && existingSourceForId.assetId !== existing.id)
+    ? existingSourceForId.asset
+    : null;
   if (ghost) {
     // Absorb any fields from the ghost that the accept target is still missing.
     if (!update.serialNumber && !existing.serialNumber && ghost.serialNumber) update.serialNumber = ghost.serialNumber;
@@ -346,6 +346,15 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
     data: update,
   });
 
+  // Stamp the AssetSource row that ties this asset to the conflict's
+  // entra/ad identity. This replaces the legacy `assetTag = entra:<id>`
+  // marker — discovery's re-discovery uses AssetSource.externalId as the
+  // primary key (see buildEntraSyncIndex / buildAdSyncIndex), so writing
+  // the source row here is what makes the asset findable on the next
+  // sync. The observed blob is built from the conflict's snapshot;
+  // the next discovery run replaces it with a richer canonical version.
+  await upsertConflictAssetSource(existing.id, conflict, proposed, prefix);
+
   const ghostNote = ghost ? ` (absorbed and removed ghost asset ${ghost.id})` : "";
   logEvent({
     action: "conflict.accepted",
@@ -366,22 +375,22 @@ async function rejectAssetConflict(conflict: any, actor?: string) {
   const isAd = prefix === AD_ASSET_TAG_PREFIX;
   const sourceLabel = isAd ? "AD computer" : "Entra device";
 
+  // Phase 4b/4d: cross-integration identity tags (sid:* / ad-guid:*) and
+  // the assetTag identity marker are no longer written here. The new
+  // asset becomes findable on the next discovery run via the
+  // AssetSource row we upsert below.
   const tags: string[] = isAd ? ["activedirectory", "auto-discovered"] : ["entraid", "auto-discovered"];
   if (isAd) {
-    tags.push(`${AD_GUID_TAG_PREFIX}${String(conflict.proposedDeviceId).toLowerCase()}`);
     if (proposed.disabled === true) tags.push("ad-disabled");
-    if (proposed.objectSid) tags.push(`${SID_TAG_PREFIX}${String(proposed.objectSid).toUpperCase()}`);
   } else {
     if (proposed.trustType) tags.push(String(proposed.trustType).toLowerCase());
     if (proposed.complianceState) tags.push(`intune-${String(proposed.complianceState).toLowerCase()}`);
-    if (proposed.onPremisesSecurityIdentifier) tags.push(`${SID_TAG_PREFIX}${String(proposed.onPremisesSecurityIdentifier).toUpperCase()}`);
   }
 
-  // Create a separate asset so the next discovery run finds it by assetTag/tag
-  // and doesn't re-fire the collision.
+  // Create a separate asset so the next discovery run finds it by its
+  // AssetSource row and doesn't re-fire the collision.
   const defaultStatus: "active" | "decommissioned" = isAd && proposed.disabled === true ? "decommissioned" : "active";
   const createData: Record<string, unknown> = {
-    assetTag: `${prefix}${conflict.proposedDeviceId}`,
     hostname: proposed.hostname || null,
     dnsName: proposed.dnsName || null,
     serialNumber: proposed.serialNumber || null,
@@ -404,6 +413,12 @@ async function rejectAssetConflict(conflict: any, actor?: string) {
   clampAcquiredToLastSeen(createData);
   const newAsset = await prisma.asset.create({ data: createData as any });
 
+  // Stamp the AssetSource row that ties the new asset to the rejected
+  // source's identity. Same role the legacy `assetTag = entra:<id>` /
+  // `ad:<guid>` write used to play — it's what makes the next discovery
+  // run match the existing asset instead of re-firing the conflict.
+  await upsertConflictAssetSource(newAsset.id, conflict, proposed, prefix);
+
   logEvent({
     action: "conflict.rejected",
     resourceType: "asset",
@@ -411,6 +426,65 @@ async function rejectAssetConflict(conflict: any, actor?: string) {
     resourceName: newAsset.hostname ?? undefined,
     actor,
     message: `Asset conflict rejected — created separate asset ${newAsset.hostname || newAsset.id} for ${sourceLabel} ${conflict.proposedDeviceId}`,
+  });
+}
+
+// Build and upsert the entra/ad AssetSource row for an asset accepted or
+// created via the conflict-resolution flow. Replaces the legacy
+// `Asset.assetTag = entra:<id> / ad:<guid>` write — discovery's
+// re-discovery uses (sourceKind, externalId) on AssetSource as the
+// primary lookup, so this row is what makes the asset findable on the
+// next sync. The observed blob is built from the conflict's snapshot;
+// the next real discovery run replaces it with the canonical version.
+async function upsertConflictAssetSource(
+  assetId: string,
+  conflict: any,
+  proposed: Record<string, any>,
+  prefix: string,
+): Promise<void> {
+  const isAd = prefix === AD_ASSET_TAG_PREFIX;
+  const externalId = String(conflict.proposedDeviceId).toLowerCase();
+  const sourceKind = isAd ? "ad" : "entra";
+  const observed: Record<string, unknown> = isAd
+    ? {
+        objectGuid: externalId,
+        cn: proposed.hostname ?? null,
+        dnsHostName: proposed.dnsHostName ?? null,
+        operatingSystem: proposed.os ?? null,
+        operatingSystemVersion: proposed.osVersion ?? null,
+        objectSid: proposed.objectSid ?? null,
+        accountDisabled: proposed.disabled === true,
+      }
+    : {
+        deviceId: externalId,
+        displayName: proposed.hostname ?? null,
+        operatingSystem: proposed.os ?? null,
+        operatingSystemVersion: proposed.osVersion ?? null,
+        accountEnabled: proposed.status !== "disabled" && proposed.status !== "decommissioned",
+        trustType: proposed.trustType ?? null,
+        onPremisesSecurityIdentifier: proposed.onPremisesSecurityIdentifier ?? null,
+      };
+  const lastSeen = proposed.lastSeen ? new Date(proposed.lastSeen) : new Date();
+  const now = new Date();
+  await prisma.assetSource.upsert({
+    where: { sourceKind_externalId: { sourceKind, externalId } },
+    create: {
+      assetId,
+      sourceKind,
+      externalId,
+      integrationId: conflict.integrationId ?? null,
+      observed: observed as any,
+      inferred: false,
+      syncedAt: now,
+      firstSeen: lastSeen,
+      lastSeen,
+    },
+    update: {
+      assetId,
+      integrationId: conflict.integrationId ?? null,
+      syncedAt: now,
+      lastSeen,
+    },
   });
 }
 

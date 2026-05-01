@@ -1838,29 +1838,25 @@ router.post("/:id/sources/:sourceId/split", requireAdmin, async (req, res, next)
       { sourceKind: target.sourceKind, inferred: target.inferred, observed: target.observed as Record<string, unknown> | null },
     ]);
 
-    // Asset-tag + assetType per source kind. Mirrors the discovery code's
-    // create-time conventions so the rest of the codebase finds the new
-    // Asset via legacy tag-based lookups during the Phase 4 transition.
-    let assetTag: string | null = null;
+    // assetType per source kind. Phase 4d: assetTag is no longer set here —
+    // the AssetSource row that this split path detaches from the original
+    // asset (and re-binds to the new asset just below) carries the
+    // canonical identity link via (sourceKind, externalId). The legacy
+    // entra:/ad:/fgt: prefixes were back-compat markers that re-discovery
+    // already stopped consulting in Phase 2.
     let assetType: "firewall" | "switch" | "access_point" | "workstation" | "other" = "other";
     const tagSet = new Set<string>(["split-from-asset", "auto-discovered"]);
     if (target.sourceKind === "entra") {
-      assetTag = `entra:${target.externalId}`;
       assetType = "workstation";
       tagSet.add("entraid");
     } else if (target.sourceKind === "intune") {
-      assetTag = `entra:${target.externalId}`; // intune devices share the entra namespace
       assetType = "workstation";
       tagSet.add("entraid");
       tagSet.add("intune");
     } else if (target.sourceKind === "ad") {
-      assetTag = `ad:${target.externalId}`;
       assetType = "workstation";
       tagSet.add("activedirectory");
-      // Phase 4b: ad-guid:<guid> tag is no longer written — externalId on
-      // the new AssetSource row is the canonical lookup key.
     } else if (target.sourceKind === "fortigate-firewall") {
-      assetTag = `fgt:${target.externalId}`;
       assetType = "firewall";
       tagSet.add("fortigate");
     } else if (target.sourceKind === "fortiswitch") {
@@ -1877,7 +1873,6 @@ router.post("/:id/sources/:sourceId/split", requireAdmin, async (req, res, next)
 
     const newAssetData: Record<string, unknown> = {
       hostname: projected.hostname,
-      assetTag,
       assetType,
       status: "active",
       statusChangedAt: new Date(),
