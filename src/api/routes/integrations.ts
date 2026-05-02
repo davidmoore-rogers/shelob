@@ -2121,81 +2121,86 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     try {
       const fgHostname = device.hostname || device.name;
       const topology = { role: "fortigate" as const };
-      if (device.serial) {
-        const existingAsset = assetIdx.findBySerial(device.serial);
-        if (existingAsset) {
-          // Stamp the discovering integration so the Monitoring tab can render
-          // the integration's name as the default probe path. monitorType
-          // defaults to the integration's native type, but is *not* re-stamped
-          // when the operator has explicitly overridden it (e.g. switched a
-          // small-branch FortiGate whose REST sensor endpoint 404s to SNMP).
-          // Detect override by anything other than the two firewall defaults.
-          const integrationDefaultType = integrationType === "fortigate" ? "fortigate" : "fortimanager";
-          const isOperatorOverride =
-            existingAsset.monitorType !== null &&
-            existingAsset.monitorType !== "fortimanager" &&
-            existingAsset.monitorType !== "fortigate";
+      // Match by serial first; fall back to hostname/IP for assets that
+      // pre-date a serial (e.g. the placeholder created by registerFortinetHost
+      // on integration create, which has no serialNumber). Mirrors how the
+      // FortiSwitch and FortiAP discovery paths dedupe.
+      let existingAsset: any = device.serial ? assetIdx.findBySerial(device.serial) : null;
+      if (!existingAsset) {
+        existingAsset = assetIdx.findByEntry(undefined, fgHostname, device.mgmtIp || undefined);
+      }
+      if (existingAsset) {
+        // Stamp the discovering integration so the Monitoring tab can render
+        // the integration's name as the default probe path. monitorType
+        // defaults to the integration's native type, but is *not* re-stamped
+        // when the operator has explicitly overridden it (e.g. switched a
+        // small-branch FortiGate whose REST sensor endpoint 404s to SNMP).
+        // Detect override by anything other than the two firewall defaults.
+        const integrationDefaultType = integrationType === "fortigate" ? "fortigate" : "fortimanager";
+        const isOperatorOverride =
+          existingAsset.monitorType !== null &&
+          existingAsset.monitorType !== "fortimanager" &&
+          existingAsset.monitorType !== "fortigate";
 
-          // Phase 3b.1 cutover: discovery-owned fields come from projection.
-          // Same shape as AD/Entra cutovers — upsert source first, fetch all
-          // sources, project, single Asset.update.
-          if (device.serial) {
-            try {
-              const syncedAt = new Date(now);
-              const observed = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", syncedAt);
-              await upsertFortigateFirewallAssetSource(existingAsset.id, integrationId, device.serial, observed, syncedAt, syncedAt);
-            } catch (err: any) {
-              syncLog("error", `Failed to upsert fortigate-firewall AssetSource for ${device.name}: ${err?.message || "Unknown error"}`);
-            }
+        // Phase 3b.1 cutover: discovery-owned fields come from projection.
+        // Same shape as AD/Entra cutovers — upsert source first, fetch all
+        // sources, project, single Asset.update.
+        if (device.serial) {
+          try {
+            const syncedAt = new Date(now);
+            const observed = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", syncedAt);
+            await upsertFortigateFirewallAssetSource(existingAsset.id, integrationId, device.serial, observed, syncedAt, syncedAt);
+          } catch (err: any) {
+            syncLog("error", `Failed to upsert fortigate-firewall AssetSource for ${device.name}: ${err?.message || "Unknown error"}`);
           }
-          const fwSourceRows = await prisma.assetSource.findMany({
-            where: { assetId: existingAsset.id },
-            select: { sourceKind: true, inferred: true, observed: true },
-          });
-          const { projected: fwProjected } = projectAssetFromSources(
-            fwSourceRows.map((s) => ({
-              sourceKind: s.sourceKind,
-              inferred: s.inferred,
-              observed: s.observed as Record<string, unknown> | null,
-            })),
-          );
-
-          const updateData: Record<string, unknown> = {
-            // learnedLocation for firewalls is the firewall's own hostname
-            // (operator-readable site label). Projection deliberately leaves
-            // this null for firewall sources (the hostname's already on
-            // Asset.hostname). Keep the legacy "set when null" rule.
-            learnedLocation: existingAsset.learnedLocation || fgHostname,
-            lastSeen: new Date(now),
-            fortinetTopology: topology,
-            discoveredByIntegrationId: integrationId,
-            ...(isOperatorOverride ? {} : { monitorType: integrationDefaultType }),
-            ...(existingAsset.status === "decommissioned" ? { status: "active", statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
-          };
-          // Discovery-owned fields from projection.
-          if (fwProjected.hostname !== null) updateData.hostname = fwProjected.hostname;
-          if (fwProjected.model !== null) updateData.model = fwProjected.model;
-          if (fwProjected.osVersion !== null) updateData.osVersion = fwProjected.osVersion;
-          if (fwProjected.manufacturer !== null) updateData.manufacturer = fwProjected.manufacturer;
-          if (fwProjected.serialNumber !== null) updateData.serialNumber = fwProjected.serialNumber;
-          if (fwProjected.ipAddress !== null) {
-            updateData.ipAddress = fwProjected.ipAddress;
-            updateData.ipSource = fgHostname || integrationType;
-          }
-          if (fwProjected.latitude !== null) updateData.latitude = fwProjected.latitude;
-          if (fwProjected.longitude !== null) updateData.longitude = fwProjected.longitude;
-          clampAcquiredToLastSeen(updateData, existingAsset);
-          await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
-          // Update in-memory
-          if (device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
-          if (device.hostname) existingAsset.hostname = device.hostname;
-          if (device.model) existingAsset.model = device.model;
-          if (!existingAsset.learnedLocation) existingAsset.learnedLocation = fgHostname;
-          if (existingAsset.status === "decommissioned") existingAsset.status = "active";
-          assetIdx.reindex(existingAsset);
-          assetNames.push(`${device.name} (updated)`);
-          continue;
         }
+        const fwSourceRows = await prisma.assetSource.findMany({
+          where: { assetId: existingAsset.id },
+          select: { sourceKind: true, inferred: true, observed: true },
+        });
+        const { projected: fwProjected } = projectAssetFromSources(
+          fwSourceRows.map((s) => ({
+            sourceKind: s.sourceKind,
+            inferred: s.inferred,
+            observed: s.observed as Record<string, unknown> | null,
+          })),
+        );
+
+        const updateData: Record<string, unknown> = {
+          // learnedLocation for firewalls is the firewall's own hostname
+          // (operator-readable site label). Projection deliberately leaves
+          // this null for firewall sources (the hostname's already on
+          // Asset.hostname). Keep the legacy "set when null" rule.
+          learnedLocation: existingAsset.learnedLocation || fgHostname,
+          lastSeen: new Date(now),
+          fortinetTopology: topology,
+          discoveredByIntegrationId: integrationId,
+          ...(isOperatorOverride ? {} : { monitorType: integrationDefaultType }),
+          ...(existingAsset.status === "decommissioned" ? { status: "active", statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
+        };
+        // Discovery-owned fields from projection.
+        if (fwProjected.hostname !== null) updateData.hostname = fwProjected.hostname;
+        if (fwProjected.model !== null) updateData.model = fwProjected.model;
+        if (fwProjected.osVersion !== null) updateData.osVersion = fwProjected.osVersion;
+        if (fwProjected.manufacturer !== null) updateData.manufacturer = fwProjected.manufacturer;
+        if (fwProjected.serialNumber !== null) updateData.serialNumber = fwProjected.serialNumber;
+        if (fwProjected.ipAddress !== null) {
+          updateData.ipAddress = fwProjected.ipAddress;
+          updateData.ipSource = fgHostname || integrationType;
+        }
+        if (fwProjected.latitude !== null) updateData.latitude = fwProjected.latitude;
+        if (fwProjected.longitude !== null) updateData.longitude = fwProjected.longitude;
+        clampAcquiredToLastSeen(updateData, existingAsset);
+        await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
+        // Update in-memory
+        if (device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
+        if (device.hostname) existingAsset.hostname = device.hostname;
+        if (device.model) existingAsset.model = device.model;
+        if (!existingAsset.learnedLocation) existingAsset.learnedLocation = fgHostname;
+        if (existingAsset.status === "decommissioned") existingAsset.status = "active";
+        assetIdx.reindex(existingAsset);
+        assetNames.push(`${device.name} (updated)`);
+        continue;
       }
 
       // New FortiGate — set the Device Map tag (fgt:<serial>) so the map endpoint
