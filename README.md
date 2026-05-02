@@ -1,12 +1,12 @@
 # Polaris
 
-A network management tool. Polaris started as IPAM and grew out from there: it tracks IPv4/IPv6 space, runs a network asset inventory, auto-discovers from FortiManager / FortiGate / Windows DHCP / Entra ID / Active Directory, monitors devices over FortiOS REST and SNMP (response time, telemetry, system info, LLDP topology), maps managed FortiGates with their FortiSwitch/FortiAP/LLDP topology, and pushes MAC quarantine to FortiGates from sighted DHCP activity.
+A network management tool built with automation in mind. Auto-discovery from FortiManager / FortiGate / Windows DHCP / Entra ID / Active Directory, to build out IPv4/IPv6 networks, asset inventories and device maps. Made specifically with Fortinet network devices in mind, monitors devices over FortiOS REST and SNMP (response time, telemetry, system info, LLDP topology), maps managed FortiGates with their FortiSwitch/FortiAP/LLDP topology, push DHCP reservations and DHCP lease revocation as well as pushes asset quarantine to FortiGates.
 
 ## Features
 
 ### IP management
 - **Blocks, subnets, reservations** with conflict detection, VLAN tagging, next-available allocation, and per-block / per-subnet utilization.
-- **Bulk site allocation** — save a multi-subnet template (e.g. `RGIHardware /25`, `RGIUsers /25`, `RGIVoice /26`, plus `skip` entries to leave gaps) and stamp it out for each site. Allocations are anchor-aligned (default `/24`, per-user) and all-or-nothing inside one transaction.
+- **Bulk site allocation** — save a multi-subnet template (e.g. `Hardware /25`, `Users /25`, `Voice /26`, plus `skip` entries to leave gaps) and stamp it out for each site. Allocations are anchor-aligned (default `/24`, per-user) and all-or-nothing inside one transaction.
 - **Stale reservation alerts** — DHCP reservations whose target client hasn't actively held the IP within a configurable window surface in a sidebar badge with snooze / permanent-ignore controls.
 - **Global typeahead search** — the header search classifies IP / CIDR / MAC / text and returns blocks, subnets, reservations, assets, and individual IPs in one dropdown.
 
@@ -17,6 +17,7 @@ A network management tool. Polaris started as IPAM and grew out from there: it t
 - **Microsoft Entra ID / Intune** — registered devices via Microsoft Graph, optionally enriched with Intune managed-device data (serial, MAC, manufacturer, model, primary user, compliance).
 - **Active Directory** — on-prem computer objects via LDAP/LDAPS simple bind. Hybrid-joined devices are cross-linked to Entra by SID so the same machine never appears twice.
 - **Conflict resolution** — discovery values that differ from an existing manual record become `Conflict` records for admin review. Asset conflicts cover hostname matches, NetBIOS-truncated matches, MAC collisions, and duplicate Entra/AD registrations; reservation conflicts cover sourceType/owner/notes drift.
+- **Per-source asset view** — every integration that observes a device writes its own `AssetSource` row (Entra, Intune, AD, fortigate-firewall, fortiswitch, fortiap, fortigate-endpoint). The asset details modal has a **Sources** tab that renders each source's raw observation side-by-side, so operators can see what each integration independently said about the device. Admins can **Split** a source onto a freshly-created Asset when matching went wrong — useful when Entra and AD got correlated through a stale SID or a hostname collision auto-resolved badly.
 - **Discovery filters** — wildcard device-name include/exclude on FortiGate inventory, OU include/exclude on AD, name patterns on Entra.
 - **DNS resolution** — per-asset reverse PTR and forward A/AAAA lookups using the configured resolver (system, DoH, or DoT). Results are TTL-cached so repeated discovery doesn't hammer DNS.
 
@@ -32,7 +33,9 @@ Operators can pin specific interfaces, mountpoints, or IPsec tunnels for **sub-m
 The asset details panel renders charts for response time, CPU/memory, temperature per sensor, per-interface throughput + errors, mountpoint usage, and IPsec status timeline + bytes. Admin operators also get an **SNMP Walk** tab for ad-hoc OID exploration on any reachable host.
 
 ### Device Map
-A Leaflet basemap pinned with every FortiGate that has geo coordinates configured on the device. Pin color reflects monitor health (green / amber / red / gray). Clicking a pin opens a Cytoscape topology modal showing the FortiGate, its managed FortiSwitches and FortiAPs, its discovered subnets, and any LLDP-observed neighbors that aren't part of the managed fleet — including ghost nodes for non-Polaris devices. Header search autocompletes hostnames and serials.
+A Leaflet basemap pinned with every FortiGate that has geo coordinates configured on the device. Pin color reflects monitor health (green / amber / red / gray). Clicking a pin opens a Cytoscape topology modal showing the FortiGate, its managed FortiSwitches and FortiAPs, its discovered subnets, and any LLDP-observed neighbors that aren't part of the managed fleet. Header search autocompletes hostnames and serials; site-scoped search inside the modal pulses the matched switch and pivots to endpoint asset details on click.
+
+The graph stitches edges from three independent signals: controller-derived FortiLink/AP→switch edges (authoritative from the FortiGate's own state), inferred edges from FortiOS interface naming conventions for FortiLink-aggregate and operator-named MCLAG pairs (so peer links the controller hierarchy doesn't model still render), and dashed orange LLDP edges for everything else. Cross-site Polaris assets matched via LLDP appear as solid-blue-bordered remote-asset nodes that pivot to the asset details page; LLDP neighbors that don't resolve to a Polaris asset appear as dashed-bordered ghost nodes. Operators can upload custom **device icons** (PNG / JPEG / WebP, 256 KB cap, manufacturer or manufacturer+model scoped) that override the generic node shapes per asset. Node positions are persisted per site so layout edits survive reload.
 
 ### MAC Quarantine
 Polaris records which FortiGate every asset has been sighted on via DHCP. From the asset details panel (or via API token from a SIEM), an operator can quarantine a device — the asset's MACs are pushed as MAC-based address-group entries to every FortiGate that sighted the device within the configured window, after which the device's status flips to `quarantined`.
@@ -154,6 +157,22 @@ powershell -ExecutionPolicy Bypass -File deploy\setup-windows.ps1
 
 After the script finishes the app is live at `http://<server-ip>:3000` — log in with `admin` / `admin` and change the password.
 
+**Docker / Unraid:**
+
+```bash
+docker pull ghcr.io/davidmoore-rogers/polaris:latest
+```
+
+Multi-stage image, ~940 MB, x86_64. PostgreSQL is **not** included — run a `postgres:15` container alongside it (or point at any reachable Postgres). Expose container port `3000` (and `3443` if you enable in-app HTTPS). All persistent state lives under `/app/state`, so a single bind mount is enough:
+
+| Container path | Host path | Notes |
+|---|---|---|
+| `/app/state` | `/mnt/user/appdata/polaris` | `.env`, `.setup-complete`, `data/backups/`, `public/uploads/` |
+
+On first launch the container starts the setup wizard at `http://<host>:3000` (DB host, admin account, session secret). The wizard supports self-signed Postgres TLS via an "Allow self-signed certificate" toggle. After finalize, the container restarts itself into the main app.
+
+Updates: `docker pull` + restart. The in-app updater under Server Settings → Maintenance is for the script-deployed RHEL / Ubuntu / Windows path; image-based deployments update by pulling a new tag. Every commit to `main` builds and publishes `:latest`, the branch name, and `:sha-<short>` to GHCR via GitHub Actions.
+
 ### Updating
 
 The recommended path is **Server Settings → Maintenance → Update**, which runs the same automated flow as the CLI scripts and rolls back on any failure:
@@ -222,7 +241,7 @@ Microsoft Graph via OAuth2 client credentials. Produces **assets only**.
 A domain controller via LDAP / LDAPS simple bind, read-only domain user. Produces **assets only** — computer objects under a configured base DN, mapping hostname, DNS name, OS / OS version, OU path, `whenCreated`, `lastLogonTimestamp`, and description. Disabled accounts can be imported as `decommissioned` or skipped. Wildcard OU include/exclude filters.
 
 ### Hybrid join cross-link
-Active Directory and Entra ID identify the same hybrid-joined device with two unrelated GUIDs. Both services stamp `sid:{SID}` (uppercase) in the asset's tags so subsequent runs match the SID and don't re-create a duplicate row. Entra's `assetTag = entra:{deviceId}` always wins as the primary tag; the AD GUID is preserved as an `ad-guid:{guid}` tag so future AD runs still resolve.
+Active Directory and Entra ID identify the same hybrid-joined device with two unrelated GUIDs (AD `objectGUID` vs Entra `deviceId`). Polaris cross-links them via the on-prem SID — AD's `objectSid` equals Entra's `onPremisesSecurityIdentifier`. Discovery from each integration writes its own `AssetSource` row (`sourceKind` = `ad` / `entra` / `intune`, `externalId` keyed on the source's natural identifier). When a later sync from the other side arrives, Polaris finds the existing asset by SID, attaches its own AssetSource row alongside the others, and merges the discovery-owned Asset fields through a deterministic projection. The same Asset row carries both source rows; nothing is duplicated.
 
 ## Security
 
