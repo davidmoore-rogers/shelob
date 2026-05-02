@@ -31,12 +31,14 @@ const DbConfigSchema = z.object({
 type DbConfig = z.infer<typeof DbConfigSchema>;
 
 function buildPgClientOptions(db: DbConfig, database: string): pg.ClientConfig {
-  const connectionString = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${database}${db.ssl ? "?sslmode=require" : ""}`;
+  // No sslmode in the connection string — pg-connection-string parses it into
+  // its own ssl options that conflict with the explicit `ssl` field below in
+  // a version-dependent way. Carrying TLS settings on the explicit field only
+  // is unambiguous.
+  const connectionString = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${database}`;
   const opts: pg.ClientConfig = { connectionString, connectionTimeoutMillis: 8000 };
-  if (db.ssl && db.sslAllowSelfSigned) {
-    // Explicit ssl option overrides the connection string's sslmode for the
-    // pg client, so we still negotiate TLS but skip cert verification.
-    opts.ssl = { rejectUnauthorized: false };
+  if (db.ssl) {
+    opts.ssl = db.sslAllowSelfSigned ? { rejectUnauthorized: false } : true;
   }
   return opts;
 }
