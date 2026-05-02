@@ -150,41 +150,6 @@ router.get("/sites", async (_req, res, next) => {
   }
 });
 
-// ─── GET /map/search?q=<query> ─────────────────────────────────────────────────
-// Autocomplete endpoint for the map page's search box. Matches the query as a
-// case-insensitive substring of hostname OR serialNumber on firewall assets
-// that have coordinates set — no point suggesting a site we can't pin.
-router.get("/search", async (req, res, next) => {
-  try {
-    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-    if (!q) return res.json([]);
-
-    const matches = await prisma.asset.findMany({
-      where: {
-        assetType: "firewall",
-        latitude: { not: null },
-        longitude: { not: null },
-        OR: [
-          { hostname: { contains: q, mode: "insensitive" } },
-          { serialNumber: { contains: q, mode: "insensitive" } },
-        ],
-      },
-      select: {
-        id: true,
-        hostname: true,
-        serialNumber: true,
-        latitude: true,
-        longitude: true,
-      },
-      orderBy: { hostname: "asc" },
-      take: 12,
-    });
-    res.json(matches);
-  } catch (err) {
-    next(err);
-  }
-});
-
 // ─── GET /map/sites/:id/topology ───────────────────────────────────────────────
 // Graph payload for the click-through modal. Shape:
 //   {

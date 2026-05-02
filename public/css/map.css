@@ -31,67 +31,6 @@
 }
 .map-theme-toggle:focus { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 
-.map-search {
-  position: relative;
-  display: flex;
-  gap: 0.5rem;
-  flex: 1 1 auto;
-  max-width: 640px;
-}
-
-.map-search-input {
-  flex: 1 1 auto;
-  padding: 0.55rem 0.75rem;
-  border: 1px solid var(--color-border);
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
-  border-radius: var(--radius-md);
-  font: inherit;
-  outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.map-search-input:focus {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 20%, transparent);
-}
-
-.map-search-btn { white-space: nowrap; }
-
-.map-search-suggest {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 400;
-  list-style: none;
-  margin: 0;
-  padding: 0.25rem 0;
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-  max-height: 320px;
-  overflow-y: auto;
-}
-.map-search-suggest[hidden] { display: none; }
-.map-search-suggest li {
-  padding: 0.5rem 0.75rem;
-  cursor: pointer;
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  font-size: 0.9rem;
-}
-.map-search-suggest li:hover,
-.map-search-suggest li[aria-selected="true"] {
-  background: var(--color-bg-secondary);
-}
-.map-search-suggest .suggest-sub {
-  color: var(--color-text-tertiary);
-  font-family: "Roboto Mono", monospace;
-  font-size: 0.78rem;
-}
-
 .map-status {
   font-size: 0.85rem;
   color: var(--color-text-tertiary);

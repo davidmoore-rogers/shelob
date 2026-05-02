@@ -14,8 +14,6 @@
   var markersById = Object.create(null); // id → L.Marker
   var cyInstance = null;
   var siteCache = [];                    // last /map/sites payload
-  var suggestState = { open: false, items: [], index: -1 };
-  var searchDebounce = null;
   // Currently-open topology modal state. siteId drives Refresh + position
   // persistence; data is the latest /topology payload (used for endpoint
   // pivots from search results without a re-fetch).
@@ -37,7 +35,6 @@
     renderNav();
 
     initMap();
-    wireSearch();
     wireModal();
 
     try {
@@ -282,142 +279,22 @@
     }
   }
 
-  // ─── Search + autocomplete ────────────────────────────────────────────────
-  function wireSearch() {
-    var form = document.getElementById("map-search-form");
-    var input = document.getElementById("map-search-input");
-    var list = document.getElementById("map-search-suggest");
-
-    input.addEventListener("input", function () {
-      var q = input.value.trim();
-      clearTimeout(searchDebounce);
-      if (!q) {
-        closeSuggest();
-        return;
-      }
-      searchDebounce = setTimeout(function () { runSuggest(q); }, 150);
-    });
-
-    input.addEventListener("keydown", function (e) {
-      if (!suggestState.open || suggestState.items.length === 0) return;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        moveSuggest(1);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        moveSuggest(-1);
-      } else if (e.key === "Escape") {
-        closeSuggest();
-      } else if (e.key === "Enter" && suggestState.index >= 0) {
-        e.preventDefault();
-        var pick = suggestState.items[suggestState.index];
-        if (pick) chooseSite(pick);
-      }
-    });
-
-    input.addEventListener("blur", function () {
-      // Delay so a click on a suggestion can register first
-      setTimeout(closeSuggest, 150);
-    });
-    input.addEventListener("focus", function () {
-      if (input.value.trim()) runSuggest(input.value.trim());
-    });
-
-    form.addEventListener("submit", function (e) {
-      e.preventDefault();
-      var q = input.value.trim();
-      if (!q) return;
-      // If suggestions are open and one is active, take that; otherwise try to
-      // match the query against the cached site list (exact/startsWith first).
-      if (suggestState.open && suggestState.index >= 0) {
-        chooseSite(suggestState.items[suggestState.index]);
-        return;
-      }
-      var match = findBestMatch(q);
-      if (match) {
-        chooseSite(match);
-      } else {
-        setStatus('No FortiGate matches "' + q + '"');
-      }
-    });
-
-    list.addEventListener("mousedown", function (e) {
-      // mousedown beats blur; grab the li without letting the input lose focus early
-      var li = e.target.closest("li[data-id]");
-      if (!li) return;
-      e.preventDefault();
-      var id = li.getAttribute("data-id");
-      var pick = suggestState.items.find(function (s) { return s.id === id; });
-      if (pick) chooseSite(pick);
-    });
-  }
-
-  async function runSuggest(q) {
-    try {
-      var results = await api.map.search(q);
-      suggestState.items = Array.isArray(results) ? results : [];
-      suggestState.index = suggestState.items.length > 0 ? 0 : -1;
-      renderSuggest();
-    } catch (err) {
-      console.error("map search failed", err);
-    }
-  }
-
-  function renderSuggest() {
-    var list = document.getElementById("map-search-suggest");
-    if (suggestState.items.length === 0) {
-      list.innerHTML = "";
-      list.hidden = true;
-      suggestState.open = false;
-      return;
-    }
-    list.innerHTML = suggestState.items.map(function (s, i) {
-      var selected = i === suggestState.index ? ' aria-selected="true"' : "";
-      return (
-        '<li role="option" data-id="' + s.id + '"' + selected + '>' +
-          '<span>' + escapeHtml(s.hostname || "(unnamed)") + '</span>' +
-          (s.serialNumber ? '<span class="suggest-sub">' + escapeHtml(s.serialNumber) + '</span>' : '') +
-        '</li>'
-      );
-    }).join("");
-    list.hidden = false;
-    suggestState.open = true;
-  }
-
-  function moveSuggest(delta) {
-    var n = suggestState.items.length;
-    if (n === 0) return;
-    suggestState.index = ((suggestState.index + delta) % n + n) % n;
-    renderSuggest();
-  }
-
-  function closeSuggest() {
-    var list = document.getElementById("map-search-suggest");
-    list.hidden = true;
-    suggestState.open = false;
-    suggestState.index = -1;
-  }
-
-  function chooseSite(site) {
-    var input = document.getElementById("map-search-input");
-    input.value = site.hostname || "";
-    closeSuggest();
+  // ─── Pan-to hook for the global app-wide search ───────────────────────────
+  // The global search bar in the page header (see app.js _searchTargetFor)
+  // covers FortiGate hostname/serial lookup as part of its asset results.
+  // When the operator picks a FortiGate hit while on the map page, route
+  // through this hook so the marker gets focused instead of leaving the
+  // page to open the asset details modal. Returns true if we panned, false
+  // if the asset isn't on the map (no coords, or not in this site list);
+  // the caller can then fall back to the default asset-details navigation.
+  window.polarisMapPanToAsset = function (assetId) {
+    if (!assetId) return false;
+    var site = siteCache.find(function (s) { return s.id === assetId; });
+    if (!site) return false;
     focusSite(site);
     setStatus('Showing "' + (site.hostname || site.id) + '"');
-  }
-
-  function findBestMatch(q) {
-    var qLower = q.toLowerCase();
-    var exact = siteCache.find(function (s) { return (s.hostname || "").toLowerCase() === qLower; });
-    if (exact) return exact;
-    var starts = siteCache.find(function (s) { return (s.hostname || "").toLowerCase().startsWith(qLower); });
-    if (starts) return starts;
-    return siteCache.find(function (s) {
-      var h = (s.hostname || "").toLowerCase();
-      var sn = (s.serialNumber || "").toLowerCase();
-      return h.indexOf(qLower) !== -1 || sn.indexOf(qLower) !== -1;
-    }) || null;
-  }
+    return true;
+  };
 
   // ─── Topology modal ───────────────────────────────────────────────────────
   function wireModal() {

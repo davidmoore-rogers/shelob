@@ -426,6 +426,26 @@ function openSearchResult(hit) {
 
 function _searchTargetFor(hit) {
   if (hit.type === "asset") {
+    // Map-page intercept: when an operator picks a FortiGate hit while
+    // looking at the Device Map, pan-and-zoom the marker into view
+    // instead of leaving the page to open the asset details modal.
+    // map.js exposes `window.polarisMapPanToAsset` which returns true
+    // when the asset is in the cached site list. Falls through to the
+    // normal /assets.html route if the asset isn't on the map (no
+    // coords, not a firewall, etc.).
+    if (window.location.pathname === "/map.html" &&
+        typeof window.polarisMapPanToAsset === "function") {
+      return {
+        page: "/map.html",
+        hash: "",
+        handler: function () {
+          if (!window.polarisMapPanToAsset(hit.id)) {
+            // Not on the map — fall back to the asset details page.
+            window.location.href = "/assets.html#view=asset:" + encodeURIComponent(hit.id);
+          }
+        },
+      };
+    }
     return {
       page: "/assets.html",
       hash: "#view=asset:" + encodeURIComponent(hit.id),
