@@ -57,6 +57,7 @@ import { AppError } from "../../utils/errors.js";
 import { hasActiveDiscoveries } from "./integrations.js";
 import { logger } from "../../utils/logger.js";
 import { getCapacitySnapshot } from "../../services/capacityService.js";
+import { BACKUP_DIR, UPLOADS_DIR } from "../../utils/paths.js";
 
 const TAG_COLORS = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
 function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]; }
@@ -197,7 +198,6 @@ router.get("/database", async (_req, res, next) => {
 
 // ─── Database Backup ──────────────────────────────────────────────────────
 
-const BACKUP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "data", "backups");
 mkdirSync(BACKUP_DIR, { recursive: true });
 
 router.post("/database/backup", async (req, res, next) => {
@@ -1164,7 +1164,7 @@ router.put("/branding", async (req, res, next) => {
   }
 });
 
-const LOGO_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "public", "uploads");
+const LOGO_DIR = UPLOADS_DIR;
 const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 router.post("/branding/logo", logoUpload.single("file"), async (req, res, next) => {

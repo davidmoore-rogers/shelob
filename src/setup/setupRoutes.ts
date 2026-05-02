@@ -5,13 +5,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import pg from "pg";
 import { markSetupComplete } from "./detectSetup.js";
 import { hashPassword } from "../utils/password.js";
+import { ENV_FILE } from "../utils/paths.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -151,8 +152,8 @@ router.post("/finalize", async (req, res) => {
       "",
     ].join("\n");
 
-    const envPath = resolve(process.cwd(), ".env");
-    writeFileSync(envPath, envContent, "utf-8");
+    mkdirSync(dirname(ENV_FILE), { recursive: true });
+    writeFileSync(ENV_FILE, envContent, "utf-8");
 
     // Step 3: Set DATABASE_URL in current process so Prisma can use it
     process.env.DATABASE_URL = databaseUrl;

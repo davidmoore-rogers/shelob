@@ -3,11 +3,15 @@ set -e
 
 cd /app
 
-touch .env
+STATE_DIR="${POLARIS_STATE_DIR:-/app/state}"
+ENV_FILE="$STATE_DIR/.env"
 
-if [ -s .env ]; then
+mkdir -p "$STATE_DIR/data/backups" "$STATE_DIR/public/uploads"
+touch "$ENV_FILE"
+
+if [ -s "$ENV_FILE" ]; then
   set -a
-  . ./.env
+  . "$ENV_FILE"
   set +a
 fi
 
@@ -20,4 +24,4 @@ else
   echo "[entrypoint] No DATABASE_URL set — first-run setup wizard will start."
 fi
 
-exec node --env-file=.env dist/index.js
+exec node --env-file="$ENV_FILE" dist/index.js

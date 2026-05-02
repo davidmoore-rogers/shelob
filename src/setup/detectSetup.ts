@@ -10,12 +10,13 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { dirname } from "node:path";
+import { SETUP_COMPLETE_MARKER } from "../utils/paths.js";
 
 export type SetupState = "configured" | "needs-setup" | "locked";
 
 function markerPath(): string {
-  return resolve(process.cwd(), ".setup-complete");
+  return SETUP_COMPLETE_MARKER;
 }
 
 export function getSetupState(): SetupState {

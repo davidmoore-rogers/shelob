@@ -21,6 +21,7 @@ import { csrfMiddleware } from "./api/middleware/csrf.js";
 import { logger } from "./utils/logger.js";
 import { initHttps, httpsRedirectMiddleware } from "./httpsManager.js";
 import { getHttpsSettings } from "./services/serverSettingsService.js";
+import { UPLOADS_DIR } from "./utils/paths.js";
 import { isAzureSsoConfiguredAsync, getSsoSettings } from "./services/azureAuthService.js";
 import "./jobs/pruneEvents.js";
 import "./jobs/ouiRefresh.js";
@@ -216,6 +217,12 @@ app.use(async (req, res, next) => {
   return next();
 });
 
+// Serve uploaded logos from the state directory. On legacy installs (no
+// POLARIS_STATE_DIR set) this resolves to <project>/public/uploads — the
+// same files the express.static(public) mount below also serves, so the
+// explicit mount is a redundant no-op. On the Docker image it points at
+// /app/state/public/uploads so logos persist across container rebuilds.
+app.use("/uploads", express.static(UPLOADS_DIR));
 app.use(express.static(path.resolve(__dirname, "..", "public")));
 
 // Health check. Open by default because the first-run setup wizard polls

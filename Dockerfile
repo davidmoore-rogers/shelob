@@ -29,7 +29,8 @@ RUN npm prune --omit=dev
 FROM node:20-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
-    PORT=3000
+    PORT=3000 \
+    POLARIS_STATE_DIR=/app/state
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -50,7 +51,7 @@ COPY public ./public
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
- && mkdir -p /app/data/backups /app/public/uploads
+ && mkdir -p /app/state/data/backups /app/state/public/uploads
 
 EXPOSE 3000
 

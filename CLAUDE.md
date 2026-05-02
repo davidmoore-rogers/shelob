@@ -160,7 +160,8 @@ polaris/
 │       ├── fortinetSerialPattern.ts  # Pure (no I/O) parser for FortiOS interface names that encode a peer device's identity. parseFortinetPeerInterface(name) recognizes two pathways: (1) FortiOS-auto peer-serial aggregates — uppercase alnum 8–30 chars, optional trailing `-N` aggregate index, no internal dashes (e.g. `8FFTV23025884-0` ↔ asset serial `S108FFTV23025884`, `GT61FTK22002079` ↔ `FGT61FTK22002079`); (2) operator-named hostname aggregates — same shape but with internal dashes allowed (e.g. `METROR2-T1024E` for a custom MCLAG to a peer named `METROR2-T1024E`). Trailing `-<digits>` is always stripped as the FortiOS aggregate suffix when the remaining fragment is ≥6 chars. Companion matchers: serialMatchesPeerInterface (case-insensitive endsWith on Asset.serialNumber, defends fragment ≤ serial length) and hostnameMatchesPeerInterface (case-insensitive exact match OR prefix-with-separator on Asset.hostname — `-` or `.` after the fragment, so `METROR2` won't false-match `METROR21`). Rejects: lowercase, mixed-case, names with non-alnum-non-dash chars (port1, wan1, internal, _FlInK1_ICL0_), leading/trailing dashes, length out of [8,30]. Used by interfaceTopologyService.
 │       ├── assetProjection.ts       # Pure (no DB) projectAssetFromSources(): deterministic priority-driven projection of an asset's discovery-owned fields (hostname, serialNumber, manufacturer, model, os, osVersion, learnedLocation, ipAddress, latitude, longitude) from its AssetSource rows. Priority rules tuned from production shadow-drift logs: hostname picks AD's `dnsHostName` first when it's an FQDN (contains a dot) — operators search for the FQDN form; os picks AD when present (verbose Windows edition like "Windows 10 Pro" beats Intune's "Windows"); osVersion picks Intune first (4-part build is more specific); manufacturer is normalized through the alias map so "Dell Inc." → "Dell" matches the canonicalized Asset.manufacturer. Phase 3b.0: shadow-only (drift logged for analysis); Phase 3b.1 will cut Asset writes to use the projection as source of truth.
 │       ├── mfaPending.ts            # Short-lived pending-MFA tokens for two-phase login
-│       └── password.ts              # argon2id hash/verify helpers (with legacy bcrypt detection off)
+│       ├── password.ts              # argon2id hash/verify helpers (with legacy bcrypt detection off)
+│       └── paths.ts                 # Single source of truth for runtime-state file paths (.env, .setup-complete, data/backups, public/uploads). Reads optional POLARIS_STATE_DIR env var; unset → falls back to project root, so RHEL prod and dev installs see no behavior change. Set only by the Docker image (to /app/state) so the container needs one bind mount.
 └── tests/
     ├── unit/
     │   ├── cidr.test.ts
@@ -1168,6 +1169,15 @@ TRUST_PROXY=
 # Health check bearer token — optional. When set, /health requires
 # `Authorization: Bearer <token>`. Leave unset on private deployments.
 HEALTH_TOKEN=
+
+# Persistent-state directory — optional. When set, the four runtime-mutable
+# state items (.env, .setup-complete, data/backups, public/uploads) all live
+# under this single directory. Leaving it unset keeps the legacy layout where
+# each item lives at its historical path under the project root, so RHEL prod
+# and dev installs see no behavior change. Resolved by `src/utils/paths.ts`;
+# the Docker image pins this to /app/state so Unraid can persist state with
+# one bind mount.
+POLARIS_STATE_DIR=
 
 # HTTPS (optional)
 HTTPS_CERT_PATH=
