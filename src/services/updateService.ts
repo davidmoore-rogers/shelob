@@ -21,6 +21,7 @@ import { execSync, spawn } from "node:child_process";
 import { randomBytes, scryptSync, createCipheriv } from "node:crypto";
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
+import { getAppVersion } from "../utils/version.js";
 
 const execAsync = promisify(exec);
 
@@ -74,14 +75,12 @@ function computeVersion(majorMinor: string, commitCount: string | number): strin
   return `${majorMinor}.${commitCount}`;
 }
 
-function readCurrentVersion(): string {
-  try {
-    const count = execSync("git rev-list --count HEAD", { cwd: APP_DIR, encoding: "utf-8" }).trim();
-    return computeVersion(readPackageMinor(), count);
-  } catch {
-    return readPackageMinor() + ".0";
-  }
-}
+// Running-process version is derived once at startup by src/utils/version.ts;
+// re-exporting under the original local name keeps the rest of this file
+// unchanged and keeps the "latest version" computation below (which still
+// uses readPackageMinor + computeVersion against an upstream commit count)
+// independent of the cached running-process value.
+const readCurrentVersion = getAppVersion;
 
 function saveStatus() {
   try {

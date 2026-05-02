@@ -58,6 +58,7 @@ import { hasActiveDiscoveries } from "./integrations.js";
 import { logger } from "../../utils/logger.js";
 import { getCapacitySnapshot } from "../../services/capacityService.js";
 import { BACKUP_DIR, UPLOADS_DIR } from "../../utils/paths.js";
+import { getAppVersion } from "../../utils/version.js";
 
 const TAG_COLORS = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
 function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]; }
@@ -103,25 +104,7 @@ const restoreUpload = multer({
   }),
 });
 
-const APP_VERSION: string = (() => {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    for (const rel of ["../../../package.json", "../../package.json"]) {
-      const p = join(here, rel);
-      if (!existsSync(p)) continue;
-      const pkg = JSON.parse(readFileSync(p, "utf-8"));
-      const [major, minor] = (pkg.version || "0.9.0").split(".");
-      try {
-        // Patch = git commit count, so version always matches the commit
-        const patch = execSync("git rev-list --count HEAD", { encoding: "utf-8" }).trim();
-        return `${major}.${minor}.${patch}`;
-      } catch {
-        return pkg.version || "0.0.0";
-      }
-    }
-    return "0.0.0";
-  } catch { return "0.0.0"; }
-})();
+const APP_VERSION: string = getAppVersion();
 
 // ─── Database ──────────────────────────────────────────────────────────────
 

@@ -48,6 +48,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history needed so `git rev-list --count HEAD` returns the
+          # real commit count for the sidebar version display.
+          fetch-depth: 0
+
+      - name: Compute commit count
+        id: commit-count
+        run: echo "count=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -80,6 +88,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            POLARIS_BUILD_COMMIT_COUNT=${{ steps.commit-count.outputs.count }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

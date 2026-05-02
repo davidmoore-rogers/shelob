@@ -28,9 +28,17 @@ RUN npm prune --omit=dev
 # ─── Runtime ──────────────────────────────────────────────────────────────────
 FROM node:20-bookworm-slim AS runtime
 
+# Commit count from the build host. Baked into the runtime image as the
+# patch number for the sidebar version display, since the runtime has no
+# .git directory for `git rev-list --count HEAD` to inspect. Defaults to
+# "0" so a local `docker build` without --build-arg still produces a
+# usable image (version will read as <minor>.0).
+ARG POLARIS_BUILD_COMMIT_COUNT=0
+
 ENV NODE_ENV=production \
     PORT=3000 \
-    POLARIS_STATE_DIR=/app/state
+    POLARIS_STATE_DIR=/app/state \
+    POLARIS_BUILD_COMMIT_COUNT=${POLARIS_BUILD_COMMIT_COUNT}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
