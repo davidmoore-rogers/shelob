@@ -490,12 +490,14 @@ export async function getSubnetIps(id: string, page: number, pageSize: number) {
   const isIpv6 = detectIpVersion(subnet.cidr) === "v6";
 
   // Push eligibility: only manual per-IP reservations on subnets discovered
-  // by an FMG integration with pushReservations=true are pushed. The frontend
-  // uses this to mark the MAC field required and validate before submitting.
+  // by an FMG or standalone FortiGate integration with pushReservations=true
+  // are pushed. The frontend uses this to mark the MAC field required and
+  // validate before submitting.
   const integrationConfig = (subnet.integration?.config ?? {}) as Record<string, unknown>;
+  const integrationType = subnet.integration?.type;
   const pushEligible =
     !isIpv6 &&
-    subnet.integration?.type === "fortimanager" &&
+    (integrationType === "fortimanager" || integrationType === "fortigate") &&
     integrationConfig.pushReservations === true &&
     !!subnet.fortigateDevice;
 

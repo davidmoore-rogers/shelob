@@ -247,7 +247,10 @@ export interface PushReservationParams {
   // Username of the operator who created the reservation. Stamped into the
   // FortiGate description so the device-side row identifies who pushed it.
   createdBy?: string | null;
-  fmgConfig: FortiManagerConfig;
+  // The integration that owns the originating subnet. Either a FortiManager
+  // (proxy or direct) or a standalone FortiGate — buildTransportForIntegration
+  // dispatches based on `type`.
+  integration: { id: string; type: string; config: unknown };
   deviceName: string;
 }
 
@@ -280,7 +283,7 @@ export async function pushReservation(
     );
   }
 
-  const t = await buildTransport(params.fmgConfig, params.deviceName);
+  const t = await buildTransportForIntegration(params.integration, params.deviceName);
   const { scopeId, serverInterface } = await findScopeIdForCidr(
     t,
     params.subnetCidr,
@@ -360,7 +363,10 @@ export interface UnpushReservationParams {
   reservationId: string;
   scopeId: number;
   entryId: number;
-  fmgConfig: FortiManagerConfig;
+  // The integration that originally pushed (typically the same as the subnet's
+  // integration; we look it up from `reservation.pushedTo`). FMG or standalone
+  // FortiGate — buildTransportForIntegration handles both.
+  integration: { id: string; type: string; config: unknown };
   deviceName: string;
 }
 
@@ -379,7 +385,7 @@ export interface UnpushReservationResult {
 export async function unpushReservation(
   params: UnpushReservationParams,
 ): Promise<UnpushReservationResult> {
-  const t = await buildTransport(params.fmgConfig, params.deviceName);
+  const t = await buildTransportForIntegration(params.integration, params.deviceName);
 
   // Confirm the entry still exists before issuing DELETE — this lets us
   // distinguish "operator deleted it on the device" (alreadyAbsent=true,

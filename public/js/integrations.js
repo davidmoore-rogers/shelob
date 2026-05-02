@@ -139,6 +139,7 @@ async function loadIntegrations() {
           '<div class="detail-row"><span class="detail-label">SSL Verify</span><span class="detail-value">' + (config.verifySsl ? "Yes" : "No") + '</span></div>' +
           '<div class="detail-row"><span class="detail-label">Mgmt Interface</span><span class="detail-value mono">' + escapeHtml(config.mgmtInterface || "-") + '</span></div>' +
           filterRow("DHCP", config.dhcpInclude, config.dhcpExclude) +
+          filterRow("Interface", config.interfaceInclude, config.interfaceExclude) +
           filterRow("Inventory", config.inventoryIncludeInterfaces, config.inventoryExcludeInterfaces);
       } else {
         detailRows =
@@ -1043,12 +1044,11 @@ function getFormConfig() {
   };
 }
 
-function fortiGateFormHTML(defaults) {
+// Standalone FortiGate "General" tab — connection settings + name + auto-
+// discovery scheduling. Mirrors `fortiManagerGeneralHTML`'s split: filters
+// move to a separate tab so the modal layout matches FMG.
+function fortiGateGeneralHTML(defaults) {
   var d = defaults || {};
-  var dhcpMode = (d.dhcpInclude && d.dhcpInclude.length > 0) ? "include" : "exclude";
-  var dhcpIfaces = dhcpMode === "include" ? (d.dhcpInclude || []) : (d.dhcpExclude || []);
-  var invMode = (d.inventoryIncludeInterfaces && d.inventoryIncludeInterfaces.length > 0) ? "include" : "exclude";
-  var invIfaces = invMode === "include" ? (d.inventoryIncludeInterfaces || []) : (d.inventoryExcludeInterfaces || []);
   return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(d.name || "") + '" placeholder="e.g. Branch Office FortiGate"></div>' +
     '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.6rem 0.75rem;margin-bottom:1rem;font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5">This integration connects <strong style="color:var(--color-text-primary)">directly to a standalone FortiGate</strong> (not managed by FortiManager). Requires an API administrator token created under <strong style="color:var(--color-text-primary)">System &gt; Administrators &gt; REST API Admin</strong>.</div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
@@ -1075,19 +1075,44 @@ function fortiGateFormHTML(defaults) {
     '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to automatically query for DHCP updates (1–24 hours)</p></div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate Settings</p>' +
-    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>' +
-    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">DHCP Server Scope</p>' +
-    '<div class="form-group"><label>Interface Filter</label>' +
+    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>';
+}
+
+// Standalone FortiGate "Filters" tab — DHCP server scope, interface IP
+// reservation, and device inventory filters. Mirrors `fortiManagerFiltersHTML`
+// minus the FortiGate device-name filter (single-device integration).
+function fortiGateFiltersHTML(defaults) {
+  var d = defaults || {};
+  var dhcpMode = (d.dhcpInclude && d.dhcpInclude.length > 0) ? "include" : "exclude";
+  var dhcpIfaces = dhcpMode === "include" ? (d.dhcpInclude || []) : (d.dhcpExclude || []);
+  var ifaceMode = (d.interfaceInclude && d.interfaceInclude.length > 0) ? "include" : "exclude";
+  var ifaceList = ifaceMode === "include" ? (d.interfaceInclude || []) : (d.interfaceExclude || []);
+  var invMode = (d.inventoryIncludeInterfaces && d.inventoryIncludeInterfaces.length > 0) ? "include" : "exclude";
+  var invIfaces = invMode === "include" ? (d.inventoryIncludeInterfaces || []) : (d.inventoryExcludeInterfaces || []);
+  return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">DHCP Scope</p>' +
+    '<div class="form-group"><label>DHCP Filter</label>' +
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
         '<select id="f-dhcpMode" style="width:auto">' +
           '<option value="include"' + (dhcpMode === "include" ? " selected" : "") + '>Include</option>' +
           '<option value="exclude"' + (dhcpMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
         '</select>' +
-        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces when querying DHCP servers</span>' +
+        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces from DHCP server scope discovery</span>' +
       '</div>' +
       '<textarea id="f-dhcpInterfaces" rows="2" placeholder="One per line — e.g. port1&#10;internal*&#10;*wan">' + escapeHtml(dhcpIfaces.join("\n")) + '</textarea>' +
-      '<p class="hint">Leave empty to query all interfaces. Wildcards supported: <code>port*</code>, <code>*wan</code>, <code>*mgmt*</code></p>' +
+      '<p class="hint">Leave empty to include all interfaces. Applies to DHCP server scope discovery only. Wildcards supported: <code>port*</code>, <code>*wan</code>, <code>*mgmt*</code></p>' +
+    '</div>' +
+    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface Scope</p>' +
+    '<div class="form-group"><label>Interface Filter</label>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.5rem">' +
+        '<select id="f-ifaceMode" style="width:auto">' +
+          '<option value="include"' + (ifaceMode === "include" ? " selected" : "") + '>Include</option>' +
+          '<option value="exclude"' + (ifaceMode === "exclude" ? " selected" : "") + '>Exclude</option>' +
+        '</select>' +
+        '<span style="font-size:0.85rem;color:var(--color-text-secondary)">these interfaces from interface IP discovery</span>' +
+      '</div>' +
+      '<textarea id="f-ifaceInterfaces" rows="2" placeholder="One per line — e.g. port1&#10;internal*&#10;*wan">' + escapeHtml(ifaceList.join("\n")) + '</textarea>' +
+      '<p class="hint">Leave empty to include all interfaces. Applies to interface IP reservations only. Wildcards supported: <code>port*</code>, <code>*wan</code>, <code>*mgmt*</code></p>' +
     '</div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Device Inventory</p>' +
@@ -1104,10 +1129,19 @@ function fortiGateFormHTML(defaults) {
     '</div>';
 }
 
+// Flat-form fallback for any caller that wants the full FortiGate form in a
+// single string. Add and Edit modals split it into General + Filters tabs and
+// call the two helpers above directly (matches the FMG rendering pattern).
+function fortiGateFormHTML(defaults) {
+  return fortiGateGeneralHTML(defaults) + fortiGateFiltersHTML(defaults);
+}
+
 function getFgtFormConfig() {
   var port = document.getElementById("f-port").value;
   var dhcpMode = document.getElementById("f-dhcpMode").value;
   var dhcpIfaces = linesToArray("f-dhcpInterfaces");
+  var ifaceMode = document.getElementById("f-ifaceMode").value;
+  var ifaceIfaces = linesToArray("f-ifaceInterfaces");
   var invMode = document.getElementById("f-inventoryMode").value;
   var invIfaces = linesToArray("f-inventoryInterfaces");
   return {
@@ -1120,6 +1154,8 @@ function getFgtFormConfig() {
     mgmtInterface: val("f-mgmtInterface") || "",
     dhcpInclude: dhcpMode === "include" ? dhcpIfaces : [],
     dhcpExclude: dhcpMode === "exclude" ? dhcpIfaces : [],
+    interfaceInclude: ifaceMode === "include" ? ifaceIfaces : [],
+    interfaceExclude: ifaceMode === "exclude" ? ifaceIfaces : [],
     inventoryExcludeInterfaces: invMode === "exclude" ? invIfaces : [],
     inventoryIncludeInterfaces: invMode === "include" ? invIfaces : [],
   };
@@ -1420,20 +1456,20 @@ async function openCreateModal(type) {
     var creds = [];
     try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
     try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
-    var generalHtml = isFmg ? fortiManagerGeneralHTML({}) : _formHTMLForType(type, {});
+    var generalHtml = isFmg ? fortiManagerGeneralHTML({}) : fortiGateGeneralHTML({});
+    var filtersHtml = isFmg ? fortiManagerFiltersHTML({}) : fortiGateFiltersHTML({});
     var addTabs = [
       { key: "general", label: "General", html: generalHtml },
+      { key: "filters", label: "Filters", html: filtersHtml },
     ];
-    if (isFmg) {
-      addTabs.push({ key: "filters", label: "Filters", html: fortiManagerFiltersHTML({}) });
-    }
     addTabs.push({ key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, { snmpCredentials: creds, monitorCredentialId: null, integrationId: null }) });
-    // FMG only: tabs for the Reservation Push and Quarantine Push toggles.
-    // Both default to off; useProxy on a fresh integration defaults to true.
-    if (isFmg) {
-      addTabs.push({ key: "push", label: "DHCP Push", html: reservationPushFormHTML(false, true) });
-      addTabs.push({ key: "quarantine-push", label: "Quarantine Push", html: quarantinePushFormHTML(false, true) });
-    }
+    // FMG and standalone FortiGate share the Reservation Push and Quarantine
+    // Push tabs. Both default to off. The "useProxy=true" flag in the form
+    // helpers labels the active mode for FMG; standalone FortiGate ignores it
+    // and always uses direct REST with the integration's own credentials —
+    // pass true so the FMG copy doesn't render an irrelevant "direct" warning.
+    addTabs.push({ key: "push", label: "DHCP Push", html: reservationPushFormHTML(false, true) });
+    addTabs.push({ key: "quarantine-push", label: "Quarantine Push", html: quarantinePushFormHTML(false, true) });
     body = _intRenderTabbedBody("intg-edit", addTabs);
   } else {
     body = _formHTMLForType(type, {});
@@ -1448,6 +1484,11 @@ async function openCreateModal(type) {
     _intWireModalTabs("intg-mon");
     wireAutoMonitorCards(null);
   }
+
+  // Tracks whether the pre-save Test Connection succeeded against the
+  // current form data. Used after Create to inherit the result onto the new
+  // integration so the Discover button isn't gated on a redundant re-test.
+  var _modalTestOk = false;
 
   document.getElementById("btn-test-new").addEventListener("click", async function () {
     var btn = this;
@@ -1468,8 +1509,10 @@ async function openCreateModal(type) {
         name: val("f-name") || "Test",
         config: _formConfigForType(type),
       });
+      _modalTestOk = !!result.ok;
       showToast(result.message, result.ok ? "success" : "error");
     } catch (err) {
+      _modalTestOk = false;
       if (err.name === "AbortError") { showToast("Test aborted", "error"); }
       else { showToast(err.message, "error"); }
     } finally {
@@ -1502,7 +1545,7 @@ async function openCreateModal(type) {
         if (swBlockNew) createConfig.fortiswitchMonitor = swBlockNew;
         if (apBlockNew) createConfig.fortiapMonitor     = apBlockNew;
       }
-      if (isFmg) {
+      if (isFmg || isFgt) {
         var pushToggleNew = _readPushReservationsToggle();
         if (pushToggleNew !== undefined) createConfig.pushReservations = pushToggleNew;
         var quarantinePushToggleNew = _readPushQuarantineToggle();
@@ -1526,6 +1569,14 @@ async function openCreateModal(type) {
       closeModal();
       showToast("Integration created");
       loadIntegrations();
+      // If the user successfully tested the connection in the modal, inherit
+      // that result onto the new integration so the Discover button is
+      // immediately enabled instead of gated on a redundant re-test.
+      if (_modalTestOk && result && result.id) {
+        api.integrations.test(result.id, input.name)
+          .then(function () { loadIntegrations(); })
+          .catch(function () { /* user can retry from the card */ });
+      }
       if (result && result.conflicts && result.conflicts.length) {
         showConflictModal(result.id, result.conflicts);
       }
@@ -1630,6 +1681,8 @@ async function openEditModal(id) {
         mgmtInterface: config.mgmtInterface,
         dhcpInclude: config.dhcpInclude || [],
         dhcpExclude: config.dhcpExclude || [],
+        interfaceInclude: config.interfaceInclude || [],
+        interfaceExclude: config.interfaceExclude || [],
         inventoryIncludeInterfaces: config.inventoryIncludeInterfaces || [],
         inventoryExcludeInterfaces: config.inventoryExcludeInterfaces || [],
       };
@@ -1686,13 +1739,12 @@ async function openEditModal(id) {
       var creds = [];
       try { monSettings = await api.assets.getMonitorSettings(); } catch (e) { /* fall back to defaults */ }
       try { var credResp = await api.credentials.list(); creds = Array.isArray(credResp) ? credResp : []; } catch (e) { /* picker just shows defaults */ }
-      var generalHtml = (intg.type === "fortimanager") ? fortiManagerGeneralHTML(defaults) : body;
+      var generalHtml = (intg.type === "fortimanager") ? fortiManagerGeneralHTML(defaults) : fortiGateGeneralHTML(defaults);
+      var filtersHtml = (intg.type === "fortimanager") ? fortiManagerFiltersHTML(defaults) : fortiGateFiltersHTML(defaults);
       var editTabs = [
         { key: "general",    label: "General",    html: generalHtml },
+        { key: "filters",    label: "Filters",    html: filtersHtml },
       ];
-      if (intg.type === "fortimanager") {
-        editTabs.push({ key: "filters", label: "Filters", html: fortiManagerFiltersHTML(defaults) });
-      }
       editTabs.push(
         { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, {
           snmpCredentials: creds,
@@ -1709,18 +1761,21 @@ async function openEditModal(id) {
           integrationId:      id,
         }) },
       );
-      // FMG only: tabs for Reservation Push and Quarantine Push toggles.
-      // Body uses the integration's current useProxy to label the active mode.
-      if (intg.type === "fortimanager") {
+      // Reservation Push + Quarantine Push tabs render for both FMG and
+      // standalone FortiGate. The `useProxy` flag is meaningful only for FMG;
+      // standalone always goes direct REST so we pass true so the proxy/
+      // direct copy in the form helpers doesn't render an irrelevant warning.
+      {
+        var pushUseProxy = intg.type === "fortimanager" ? (config.useProxy !== false) : true;
         editTabs.push({
           key: "push",
           label: "DHCP Push",
-          html: reservationPushFormHTML(config.pushReservations === true, config.useProxy !== false),
+          html: reservationPushFormHTML(config.pushReservations === true, pushUseProxy),
         });
         editTabs.push({
           key: "quarantine-push",
           label: "Quarantine Push",
-          html: quarantinePushFormHTML(config.pushQuarantine === true, config.useProxy !== false),
+          html: quarantinePushFormHTML(config.pushQuarantine === true, pushUseProxy),
         });
       }
       body = _intRenderTabbedBody("intg-edit", editTabs);
@@ -1806,14 +1861,13 @@ async function openEditModal(id) {
         if (fgBlock) editConfig.fortigateMonitor   = fgBlock;
         if (swBlock) editConfig.fortiswitchMonitor = swBlock;
         if (apBlock) editConfig.fortiapMonitor     = apBlock;
-        // FMG-only push toggles. Readers return undefined when the tabs
-        // didn't render (FortiGate-type integration); leave unchanged.
-        if (intg.type === "fortimanager") {
-          var pushToggle = _readPushReservationsToggle();
-          if (pushToggle !== undefined) editConfig.pushReservations = pushToggle;
-          var quarantinePushToggle = _readPushQuarantineToggle();
-          if (quarantinePushToggle !== undefined) editConfig.pushQuarantine = quarantinePushToggle;
-        }
+        // FMG and standalone FortiGate share the DHCP Push + Quarantine Push
+        // tabs. Readers return undefined when the tabs didn't render (e.g.
+        // future integration type that doesn't expose them); leave unchanged.
+        var pushToggle = _readPushReservationsToggle();
+        if (pushToggle !== undefined) editConfig.pushReservations = pushToggle;
+        var quarantinePushToggle = _readPushQuarantineToggle();
+        if (quarantinePushToggle !== undefined) editConfig.pushQuarantine = quarantinePushToggle;
       }
       var input = {
         name: val("f-name"),

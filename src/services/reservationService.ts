@@ -13,7 +13,6 @@ import {
   normalizeMac,
   type PushReservationResult,
 } from "./reservationPushService.js";
-import type { FortiManagerConfig } from "./fortimanagerService.js";
 import { logEvent } from "../api/routes/events.js";
 
 export interface CreateReservationInput {
@@ -95,29 +94,25 @@ export async function getReservation(id: string) {
 
 /**
  * Push eligibility for a reservation. Only manual per-IP reservations on
- * subnets discovered by an FMG integration with pushReservations=true are
- * pushed. Full-subnet reservations (ipAddress=null) and subnets without a
- * discovering integration are unaffected.
+ * subnets discovered by an FMG or standalone FortiGate integration with
+ * pushReservations=true are pushed. Full-subnet reservations (ipAddress=null)
+ * and subnets without a discovering integration are unaffected.
  */
 function resolvePushEligibility(
   subnet: { discoveredBy: string | null; fortigateDevice: string | null; cidr: string },
-  integration: { type: string; config: unknown } | null,
+  integration: { id: string; type: string; config: unknown } | null,
   ipAddress: string | null,
-): { eligible: boolean; fmgConfig: FortiManagerConfig | null; deviceName: string } {
-  if (!ipAddress) return { eligible: false, fmgConfig: null, deviceName: "" };
-  if (!integration || integration.type !== "fortimanager") {
-    return { eligible: false, fmgConfig: null, deviceName: "" };
+): { eligible: boolean; integration: { id: string; type: string; config: unknown } | null; deviceName: string } {
+  if (!ipAddress) return { eligible: false, integration: null, deviceName: "" };
+  if (!integration || (integration.type !== "fortimanager" && integration.type !== "fortigate")) {
+    return { eligible: false, integration: null, deviceName: "" };
   }
   const cfg = (integration.config ?? {}) as Record<string, unknown>;
   if (cfg.pushReservations !== true) {
-    return { eligible: false, fmgConfig: null, deviceName: "" };
+    return { eligible: false, integration: null, deviceName: "" };
   }
   const deviceName = subnet.fortigateDevice || "";
-  return {
-    eligible: true,
-    fmgConfig: cfg as unknown as FortiManagerConfig,
-    deviceName,
-  };
+  return { eligible: true, integration, deviceName };
 }
 
 export async function createReservation(input: CreateReservationInput) {
@@ -217,7 +212,7 @@ export async function createReservation(input: CreateReservationInput) {
   });
 
   // 5. If push isn't eligible, we're done.
-  if (!push.eligible || !push.fmgConfig || !input.ipAddress || !macClean) {
+  if (!push.eligible || !push.integration || !input.ipAddress || !macClean) {
     return reservation;
   }
 
@@ -234,7 +229,7 @@ export async function createReservation(input: CreateReservationInput) {
       mac: macClean,
       hostname: input.hostname ?? null,
       createdBy: input.createdBy ?? null,
-      fmgConfig: push.fmgConfig,
+      integration: push.integration,
       deviceName: push.deviceName,
     });
 
@@ -349,7 +344,6 @@ export async function releaseReservation(id: string) {
     reservation.pushedScopeId !== null &&
     reservation.pushedEntryId !== null
   ) {
-    const fmgConfig = reservation.pushedTo.config as unknown as FortiManagerConfig;
     const deviceName = reservation.subnet.fortigateDevice || "";
     if (deviceName) {
       try {
@@ -357,7 +351,7 @@ export async function releaseReservation(id: string) {
           reservationId: id,
           scopeId: reservation.pushedScopeId,
           entryId: reservation.pushedEntryId,
-          fmgConfig,
+          integration: reservation.pushedTo,
           deviceName,
         });
         void logEvent({
