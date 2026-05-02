@@ -455,28 +455,57 @@ function _searchSectionForCurrentPage() {
 
 function _searchTargetFor(hit) {
   if (hit.type === "site") {
-    // Site hit — route to the Device Map and pan-to-marker. If the
-    // user is already on the map page, call the in-place pan hook;
-    // otherwise navigate to the map page with a hash that map.js
-    // reads on load to pan.
+    // Site hit — pan to the marker AND open its topology modal, like
+    // clicking the marker would. Same hash convention as below so
+    // navigation from another page reaches the same end state.
     return {
       page: "/map.html",
-      hash: "#site=" + encodeURIComponent(hit.id),
+      hash: "#site=" + encodeURIComponent(hit.id) + "&topology=1",
       handler: function () {
-        if (typeof window.polarisMapPanToAsset === "function") {
-          window.polarisMapPanToAsset(hit.id);
+        if (typeof window.polarisMapOpenSiteTopology === "function") {
+          window.polarisMapOpenSiteTopology(hit.id, null);
         }
       },
     };
   }
   if (hit.type === "asset") {
-    // Map-page intercept: when an operator picks a FortiGate hit while
-    // looking at the Device Map, pan-and-zoom the marker into view
-    // instead of leaving the page to open the asset details modal.
-    // map.js exposes `window.polarisMapPanToAsset` which returns true
-    // when the asset is in the cached site list. Falls through to the
-    // normal /assets.html route if the asset isn't on the map (no
-    // coords, not a firewall, etc.).
+    var ctx = hit.context || {};
+    // If the asset has a known origin FortiGate (DHCP-sighted or
+    // learned-location-matched, AND that FortiGate is pinned on the
+    // map), open the FortiGate's topology modal and surface this
+    // endpoint via the modal's site-scoped search. That gives the
+    // operator the connectivity view they're after — "this workstation
+    // plugs in here" — instead of just the asset-details page.
+    if (ctx.siteId && window.location.pathname === "/map.html" &&
+        typeof window.polarisMapOpenSiteTopology === "function") {
+      var focusQuery = ctx.focusHostname || ctx.focusIpAddress || ctx.focusMacAddress || null;
+      return {
+        page: "/map.html",
+        hash: "",
+        handler: function () { window.polarisMapOpenSiteTopology(ctx.siteId, focusQuery); },
+      };
+    }
+    if (ctx.siteId) {
+      // Same intent, but the operator clicked from another page — go
+      // to the map page with the right hash.
+      var qHashFocus = ctx.focusHostname || ctx.focusIpAddress || ctx.focusMacAddress || "";
+      var hash = "#site=" + encodeURIComponent(ctx.siteId) + "&topology=1" +
+        (qHashFocus ? "&q=" + encodeURIComponent(qHashFocus) : "");
+      return {
+        page: "/map.html",
+        hash: hash,
+        handler: function () {
+          if (typeof window.polarisMapOpenSiteTopology === "function") {
+            window.polarisMapOpenSiteTopology(ctx.siteId, qHashFocus || null);
+          }
+        },
+      };
+    }
+    // Map-page intercept for asset hits without an origin FortiGate:
+    // pan-to if it's a site marker, otherwise fall through to the
+    // asset-details route. Preserves the existing map-page behavior
+    // for FortiGates that somehow weren't classified as sites
+    // (shouldn't happen post-Phase-4, but kept defensively).
     if (window.location.pathname === "/map.html" &&
         typeof window.polarisMapPanToAsset === "function") {
       return {
@@ -484,7 +513,6 @@ function _searchTargetFor(hit) {
         hash: "",
         handler: function () {
           if (!window.polarisMapPanToAsset(hit.id)) {
-            // Not on the map — fall back to the asset details page.
             window.location.href = "/assets.html#view=asset:" + encodeURIComponent(hit.id);
           }
         },

@@ -212,16 +212,29 @@
     }
     setStatus(siteCache.length + " FortiGate" + (siteCache.length === 1 ? "" : "s") + " on the map");
 
-    // If the operator landed here from a global-search "site" hit, the URL
-    // hash carries `#site=<assetId>`. Pan once the marker cache is built.
+    // If the operator landed here from a global-search hit, the URL hash
+    // tells us what to do:
+    //   #site=<assetId>                                — pan to marker
+    //   #site=<assetId>&topology=1                     — pan + open topology
+    //   #site=<assetId>&topology=1&q=<focusQuery>      — pan + open topology
+    //                                                    + auto-search the
+    //                                                    modal to highlight
+    //                                                    a specific endpoint
+    // Defer one frame so fitBounds completes before the override.
     var hash = window.location.hash || "";
-    var m = hash.match(/^#site=([^&]+)/);
-    if (m) {
-      var siteId = decodeURIComponent(m[1]);
-      // Defer one frame so fitBounds completes first; then flyTo overrides.
+    if (hash.startsWith("#site=")) {
+      var params = {};
+      hash.slice(1).split("&").forEach(function (kv) {
+        var idx = kv.indexOf("=");
+        if (idx <= 0) return;
+        params[kv.slice(0, idx)] = decodeURIComponent(kv.slice(idx + 1));
+      });
+      var hashSiteId = params.site;
       requestAnimationFrame(function () {
-        if (typeof window.polarisMapPanToAsset === "function") {
-          window.polarisMapPanToAsset(siteId);
+        if (params.topology === "1" && hashSiteId) {
+          window.polarisMapOpenSiteTopology(hashSiteId, params.q || null);
+        } else if (hashSiteId) {
+          window.polarisMapPanToAsset(hashSiteId);
         }
       });
     }
@@ -293,20 +306,56 @@
     }
   }
 
-  // ─── Pan-to hook for the global app-wide search ───────────────────────────
+  // ─── Hooks for the global app-wide search ─────────────────────────────────
   // The global search bar in the page header (see app.js _searchTargetFor)
-  // covers FortiGate hostname/serial lookup as part of its asset results.
-  // When the operator picks a FortiGate hit while on the map page, route
-  // through this hook so the marker gets focused instead of leaving the
-  // page to open the asset details modal. Returns true if we panned, false
-  // if the asset isn't on the map (no coords, or not in this site list);
-  // the caller can then fall back to the default asset-details navigation.
+  // covers FortiGate hostname/serial lookup AND endpoint discovery hits as
+  // part of its asset results. These hooks let the dropdown drive the map
+  // page in place — pan-to-marker, optionally open the topology modal,
+  // optionally highlight a specific endpoint via the modal's site-scoped
+  // search. All return true on success so the caller can fall back to a
+  // page navigation when the asset isn't on this map.
   window.polarisMapPanToAsset = function (assetId) {
     if (!assetId) return false;
     var site = siteCache.find(function (s) { return s.id === assetId; });
     if (!site) return false;
     focusSite(site);
     setStatus('Showing "' + (site.hostname || site.id) + '"');
+    return true;
+  };
+
+  // Pan to a site, then open its topology modal — like clicking the
+  // marker. When focusQuery is set (asset hostname / IP / MAC), the
+  // topology modal's site-scoped search runs after load to pulse the
+  // matching switch and let the operator see where that endpoint
+  // plugs in.
+  window.polarisMapOpenSiteTopology = function (siteId, focusQuery) {
+    if (!siteId) return false;
+    var site = siteCache.find(function (s) { return s.id === siteId; });
+    if (!site) return false;
+    focusSite(site);
+    setStatus('Showing "' + (site.hostname || site.id) + '"');
+    // Slight delay so the marker pan-and-zoom animation has started
+    // before the modal opens — feels like one continuous gesture.
+    setTimeout(function () {
+      openTopology(site.id, site.hostname || "");
+      if (focusQuery) {
+        // The topology modal builds its search async. Wait for the
+        // input to exist + the topology data to load before populating
+        // it. Bounded retry loop keeps this from hanging.
+        var tries = 0;
+        var iv = setInterval(function () {
+          tries++;
+          var input = document.getElementById("topology-search-input");
+          if (input && topoState.data) {
+            input.value = focusQuery;
+            runTopologySearch(focusQuery);
+            clearInterval(iv);
+          } else if (tries > 40) { // ~4s max
+            clearInterval(iv);
+          }
+        }, 100);
+      }
+    }, 400);
     return true;
   };
 

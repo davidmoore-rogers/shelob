@@ -93,15 +93,115 @@ export async function searchAll(rawQuery: string): Promise<SearchResults> {
   const siteIds = new Set(sites.map((s) => s.id));
   const assetsWithoutSites = assets.filter((a) => !siteIds.has(a.id));
 
+  // Resolve the origin FortiGate (a pinned site on the Device Map)
+  // for each asset hit. When set, the dropdown's map-page handler can
+  // open that FortiGate's topology modal and highlight where the
+  // workstation/endpoint plugs in — instead of opening the asset
+  // details page when the operator clearly wants the connectivity
+  // view. Pinned-only filter ensures we only return FortiGates the
+  // map page can actually navigate to.
+  const originBySrcId = await resolveOriginFortigates(
+    assetsWithoutSites.map((a) => a.id),
+  );
+  const assetHits = assetsWithoutSites.map((a) => {
+    const hit = assetHit(a);
+    const origin = originBySrcId.get(a.id);
+    if (origin) {
+      hit.context = {
+        ...(hit.context ?? {}),
+        siteId: origin.siteId,
+        siteHostname: origin.hostname,
+        // Identifying fields for the topology-modal search to pulse the
+        // matching switch on the graph. Frontend picks whichever is
+        // most discriminating (hostname > IP > MAC).
+        focusHostname: a.hostname ?? null,
+        focusIpAddress: a.ipAddress ?? null,
+        focusMacAddress: a.macAddress ?? null,
+        focusAssetId: a.id,
+      };
+    }
+    return hit;
+  });
+
   return {
     query: q,
     blocks: blocks.map(blockHit),
     subnets: subnets.map(subnetHit),
     reservations: reservations.map(reservationHit),
-    assets: assetsWithoutSites.map(assetHit),
+    assets: assetHits,
     ips: ipHit ? [ipHit] : [],
     sites: sites.map(siteHit),
   };
+}
+
+/**
+ * For each asset id, find the FortiGate that asset was discovered on,
+ * and only return the ones whose FortiGate is pinned on the Device Map
+ * (lat/lng set — otherwise the map page can't navigate to it). Most-
+ * recent DHCP sighting wins; falls back to `Asset.learnedLocation`
+ * when no sighting exists (Entra/AD-discovered hosts that haven't been
+ * seen on a FortiGate yet won't have one — that's fine, they fall
+ * through to the asset-details navigation).
+ */
+async function resolveOriginFortigates(
+  assetIds: string[],
+): Promise<Map<string, { siteId: string; hostname: string }>> {
+  const out = new Map<string, { siteId: string; hostname: string }>();
+  if (assetIds.length === 0) return out;
+
+  const sightings = await prisma.assetFortigateSighting.findMany({
+    where: { assetId: { in: assetIds } },
+    select: { assetId: true, fortigateDevice: true, lastSeen: true },
+    orderBy: { lastSeen: "desc" },
+  });
+  const sightingByAsset = new Map<string, string>();
+  for (const s of sightings) {
+    if (!sightingByAsset.has(s.assetId)) sightingByAsset.set(s.assetId, s.fortigateDevice);
+  }
+
+  // learnedLocation fallback for assets without DHCP sightings (e.g.
+  // Entra/AD-discovered with no FortiGate dance yet).
+  const fallbackAssets = assetIds.filter((id) => !sightingByAsset.has(id));
+  let learnedByAsset = new Map<string, string>();
+  if (fallbackAssets.length > 0) {
+    const rows = await prisma.asset.findMany({
+      where: { id: { in: fallbackAssets }, learnedLocation: { not: null } },
+      select: { id: true, learnedLocation: true },
+    });
+    for (const r of rows) {
+      if (r.learnedLocation) learnedByAsset.set(r.id, r.learnedLocation);
+    }
+  }
+
+  const candidateHostnames = new Set<string>([
+    ...sightingByAsset.values(),
+    ...learnedByAsset.values(),
+  ]);
+  if (candidateHostnames.size === 0) return out;
+
+  const firewalls = await prisma.asset.findMany({
+    where: {
+      assetType: "firewall",
+      hostname: { in: Array.from(candidateHostnames) },
+      latitude: { not: null },
+      longitude: { not: null },
+    },
+    select: { id: true, hostname: true },
+  });
+  const fgByHostname = new Map<string, { siteId: string; hostname: string }>();
+  for (const fg of firewalls) {
+    if (fg.hostname) fgByHostname.set(fg.hostname, { siteId: fg.id, hostname: fg.hostname });
+  }
+
+  for (const [assetId, fgHostname] of sightingByAsset) {
+    const fg = fgByHostname.get(fgHostname);
+    if (fg) out.set(assetId, fg);
+  }
+  for (const [assetId, fgHostname] of learnedByAsset) {
+    const fg = fgByHostname.get(fgHostname);
+    if (fg) out.set(assetId, fg);
+  }
+  return out;
 }
 
 // ─── Query helpers ───────────────────────────────────────────────────────────
