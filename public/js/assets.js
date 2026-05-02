@@ -2326,13 +2326,14 @@ function _renderLldpNeighborsCard(container, si) {
       '<th>Local Port</th><th>Neighbor</th><th>Capabilities</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
-  // Click-through on matched-asset links pivots to that asset's details
-  // page — same pattern the inline interface-table neighbor column uses.
+  // Click-through on matched-asset links opens the matched asset's
+  // details slide-in directly — same in-place pattern the inline
+  // interface-table Neighbor cell uses, no full-page nav.
   container.querySelectorAll(".asset-lldp-link").forEach(function (link) {
     link.addEventListener("click", function (e) {
       e.preventDefault();
       var assetId = link.getAttribute("data-asset-id");
-      if (assetId) window.location.href = "/assets.html#view=asset:" + assetId;
+      if (assetId) openViewModal(assetId);
     });
   });
 }
