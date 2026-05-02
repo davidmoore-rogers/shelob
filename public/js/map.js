@@ -64,8 +64,9 @@
     // Theme-aware basemap. OpenStreetMap for light theme, CartoDB Dark
     // Matter for dark. Both are free and don't require API keys; CartoDB
     // is documented as fair-use friendly. Tile layer is swapped in place
-    // when the document's data-theme attribute changes (the rest of the
-    // app's theme toggle).
+    // when the operator clicks the map-theme toggle, OR when the global
+    // app theme changes AND the user hasn't set a per-user map override
+    // (getMapTheme falls back to the global theme in that case).
     applyBasemapTheme();
     var themeObserver = new MutationObserver(function (muts) {
       for (var i = 0; i < muts.length; i++) {
@@ -73,6 +74,12 @@
       }
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+    // Per-user map theme toggle in the toolbar — separate from the
+    // global app theme. Click flips the saved preference, swaps the
+    // basemap, and re-renders the topology modal if it's open.
+    var mapThemeBtn = document.getElementById("map-theme-toggle");
+    if (mapThemeBtn) mapThemeBtn.addEventListener("click", toggleMapTheme);
 
     markerCluster = L.markerClusterGroup({
       showCoverageOnHover: false,
@@ -85,13 +92,40 @@
     map.addLayer(markerCluster);
   }
 
-  // Active basemap tile layer; swapped in place when the document theme
+  // Active basemap tile layer; swapped in place when the map theme
   // changes. Holding the reference here so the MutationObserver in initMap
   // can remove the previous layer cleanly.
   var basemapLayer = null;
+
+  // Map page has its own theme toggle, separate from the overall app
+  // theme. Persisted per user in localStorage so each operator's
+  // preference survives reload. Falls back to the global app theme
+  // when no preference is set, so users who don't toggle see no change.
+  function _mapThemePrefKey() {
+    var u = (typeof currentUsername === "string" && currentUsername) ? currentUsername : "anon";
+    return "polaris-prefs-map-" + u;
+  }
+  function getMapTheme() {
+    try {
+      var raw = localStorage.getItem(_mapThemePrefKey());
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && (parsed.theme === "dark" || parsed.theme === "light")) {
+          return parsed.theme;
+        }
+      }
+    } catch (e) { /* fall through */ }
+    return (document.documentElement.getAttribute("data-theme") || "dark");
+  }
+  function setMapTheme(theme) {
+    try {
+      localStorage.setItem(_mapThemePrefKey(), JSON.stringify({ theme: theme }));
+    } catch (e) { /* quota / private mode — silently skip */ }
+  }
+
   function applyBasemapTheme() {
     if (!map) return;
-    var isDark = (document.documentElement.getAttribute("data-theme") || "dark") === "dark";
+    var isDark = getMapTheme() === "dark";
     var url = isDark
       ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
       : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -100,6 +134,33 @@
       : "© <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors";
     if (basemapLayer) map.removeLayer(basemapLayer);
     basemapLayer = L.tileLayer(url, { maxZoom: 19, attribution: attribution }).addTo(map);
+    paintMapThemeToggle();
+  }
+
+  // Update the toolbar toggle's icon to reflect the current state.
+  // Sun = "switch to light" (i.e. we're currently dark); moon = "switch
+  // to dark" (i.e. we're currently light). Matches the global theme
+  // toggle's idiom.
+  function paintMapThemeToggle() {
+    var btn = document.getElementById("map-theme-toggle");
+    if (!btn) return;
+    var isDark = getMapTheme() === "dark";
+    btn.innerHTML = isDark
+      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>';
+    btn.title = "Map theme: " + (isDark ? "dark" : "light") + " (click to toggle, saved per user)";
+  }
+  function toggleMapTheme() {
+    var next = getMapTheme() === "dark" ? "light" : "dark";
+    setMapTheme(next);
+    applyBasemapTheme();
+    // If the topology modal is open, re-render so its colors follow
+    // the new map theme too — Cytoscape stylesheet reads the theme at
+    // render time, not reactively.
+    var overlay = document.getElementById("topology-overlay");
+    if (overlay && overlay.classList.contains("open") && topoState.data) {
+      renderTopologyGraph(topoState.data);
+    }
   }
 
   function clusterIcon(cluster) {
@@ -747,7 +808,10 @@
       });
     });
 
-    var theme = document.documentElement.getAttribute("data-theme") || "dark";
+    // Topology graph follows the per-user MAP theme (not the global app
+    // theme) so the toolbar toggle drives both the basemap and the
+    // modal coherently.
+    var theme = getMapTheme();
     var isDark = theme === "dark";
     var textColor = isDark ? "#eef0f4" : "#1a1a1a";
     var edgeColor = isDark ? "#6a7388" : "#9aa2b1";
