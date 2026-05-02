@@ -915,6 +915,49 @@
             "border-opacity": 1,
           },
         },
+        // Selected nodes (shift+drag box-select OR shift+click) — bright
+        // cyan halo + thicker border so the operator can see exactly
+        // which nodes are about to move when they drag the group. The
+        // default Cytoscape selection styling is too subtle on dark.
+        {
+          selector: 'node:selected',
+          style: {
+            "border-color": "#22d3ee",
+            "border-width": 5,
+            "border-opacity": 1,
+            "overlay-color": "#22d3ee",
+            "overlay-opacity": 0.18,
+            "overlay-padding": 6,
+          },
+        },
+        // Selected edges get the same accent so multi-select operations
+        // that include edges (e.g. inspecting a sub-graph) read clearly.
+        {
+          selector: 'edge:selected',
+          style: {
+            "line-color": "#22d3ee",
+            "target-arrow-color": "#22d3ee",
+            width: 3,
+            "overlay-color": "#22d3ee",
+            "overlay-opacity": 0.15,
+            "overlay-padding": 3,
+          },
+        },
+        // Selection rectangle (shift+drag on background). The default
+        // Cytoscape rectangle is a faint gray that disappears against
+        // the dark modal background. Give it the same bright cyan
+        // accent the selected nodes use.
+        {
+          selector: 'core',
+          style: {
+            "selection-box-color":        "#22d3ee",
+            "selection-box-border-color": "#22d3ee",
+            "selection-box-border-width": 1.5,
+            "selection-box-opacity":      0.22,
+            "active-bg-color":            "#22d3ee",
+            "active-bg-opacity":          0.14,
+          },
+        },
       ],
     });
 
