@@ -39,7 +39,8 @@ export interface UpdateStatus {
     | "applying"
     | "complete"
     | "failed"
-    | "restarting";
+    | "restarting"
+    | "disabled";
   step?: string;
   steps?: { name: string; status: "pending" | "running" | "done" | "failed"; message?: string }[];
   error?: string;
@@ -52,10 +53,54 @@ export interface UpdateStatus {
   backupFile?: string;
   startedAt?: string;
   completedAt?: string;
+  // When state === "disabled": human-readable hint on how to update outside the app.
+  method?: string;
 }
 
 let _status: UpdateStatus = { state: "idle" };
 let _applying = false;
+
+// In-app updates rely on a writable git checkout at APP_DIR. Detect deployments
+// where that's missing — most commonly the Docker image, where the runtime
+// stage doesn't ship git or a .git tree — and surface a friendlier "disabled"
+// status instead of letting `git fetch` fail with a generic ENOENT.
+//
+// Computed once at module load — neither signal changes at runtime.
+const _updateEnvironment = (function detectUpdateEnvironment(): {
+  available: boolean;
+  reason?: string;
+  method?: string;
+} {
+  const inDocker = existsSync("/.dockerenv");
+  const hasGitDir = existsSync(join(APP_DIR, ".git"));
+
+  if (!hasGitDir) {
+    if (inDocker) {
+      return {
+        available: false,
+        reason: "In-app updates are disabled in Docker.",
+        method:
+          "To update, pull the latest image and recreate the container. " +
+          "Data and settings persist on the mounted state volume.",
+      };
+    }
+    return {
+      available: false,
+      reason: "In-app updates are disabled — no git checkout at the install path.",
+      method: "Update by reinstalling the application package.",
+    };
+  }
+  return { available: true };
+})();
+
+function disabledStatus(): UpdateStatus {
+  return {
+    state: "disabled",
+    currentVersion: readCurrentVersion(),
+    error: _updateEnvironment.reason,
+    method: _updateEnvironment.method,
+  };
+}
 
 function readPackageMinor(): string {
   try {
@@ -126,7 +171,12 @@ export function initUpdateStatus() {
 }
 
 export function getUpdateStatus(): UpdateStatus {
+  if (!_updateEnvironment.available) return disabledStatus();
   return { ..._status, steps: _status.steps ? [..._status.steps] : undefined };
+}
+
+export function isUpdateMechanismAvailable(): boolean {
+  return _updateEnvironment.available;
 }
 
 export function clearUpdateStatus() {
@@ -171,6 +221,10 @@ export async function getRecentCommits(
  * Check if a newer version is available on the remote.
  */
 export async function checkForUpdates(): Promise<UpdateStatus> {
+  if (!_updateEnvironment.available) {
+    _status = disabledStatus();
+    return _status;
+  }
   _status = { state: "checking", currentVersion: readCurrentVersion() };
 
   try {
@@ -260,6 +314,10 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
  *                 restore flow accepts it.
  */
 export async function applyUpdate(password?: string | null): Promise<void> {
+  if (!_updateEnvironment.available) {
+    _status = disabledStatus();
+    return;
+  }
   if (_applying) return;
   _applying = true;
 

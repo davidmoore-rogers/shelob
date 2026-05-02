@@ -1630,7 +1630,9 @@ function initUpdateControls() {
 
   // Check if there's a pending notification from a background check or previous restart
   api.serverSettings.getUpdateStatus().then(function (status) {
-    if (status.state === "complete") {
+    if (status.state === "disabled") {
+      renderUpdateDisabled(status);
+    } else if (status.state === "complete") {
       renderUpdateComplete(status);
     } else if (status.state === "failed") {
       renderUpdateFailed(status);
@@ -1642,6 +1644,24 @@ function initUpdateControls() {
       startUpdatePolling();
     }
   }).catch(function () {});
+}
+
+function renderUpdateDisabled(status) {
+  var area = document.getElementById("update-status-area");
+  if (!area) return;
+  area.innerHTML =
+    '<div class="db-info-grid" style="margin-bottom:1rem">' +
+      '<div class="db-info-label">Current Version</div>' +
+      '<div class="db-info-value">v' + escapeHtml(status.currentVersion || '?') + '</div>' +
+    '</div>' +
+    '<div style="background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:6px;padding:0.85rem 1rem">' +
+      '<div style="font-weight:600;font-size:0.9rem;margin-bottom:0.35rem">' +
+        escapeHtml(status.error || 'In-app updates are disabled.') +
+      '</div>' +
+      (status.method
+        ? '<div style="font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(status.method) + '</div>'
+        : '') +
+    '</div>';
 }
 
 async function loadUpdateHistory() {
@@ -1677,6 +1697,11 @@ async function checkForUpdatesUI() {
 
   try {
     var result = await api.serverSettings.checkForUpdates();
+
+    if (result.state === "disabled") {
+      renderUpdateDisabled(result);
+      return;
+    }
 
     if (result.state === "up-to-date") {
       statusEl.innerHTML = '<span style="color:var(--color-success)">Up to date (v' + escapeHtml(result.currentVersion) + ')</span>';

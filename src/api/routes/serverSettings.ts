@@ -49,6 +49,7 @@ import {
   getUpdateStatus,
   clearUpdateStatus,
   initUpdateStatus,
+  isUpdateMechanismAvailable,
   getRecentCommits,
 } from "../../services/updateService.js";
 import { applyHttps, isHttpsRunning } from "../../httpsManager.js";
@@ -1040,6 +1041,9 @@ router.get("/updates/status", (_req, res) => {
 
 router.post("/updates/apply", async (req, res, next) => {
   try {
+    if (!isUpdateMechanismAvailable()) {
+      return res.status(409).json({ error: "In-app updates are disabled in this deployment." });
+    }
     const status = getUpdateStatus();
     if (status.state === "applying" || status.state === "restarting") {
       return res.status(409).json({ error: "An update is already in progress" });
