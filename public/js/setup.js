@@ -47,15 +47,23 @@ function updateStepper() {
 // ─── Step 1: Database ─────────────────────────────────────────────
 
 function getDbConfig() {
+  var ssl = document.getElementById("db-ssl").checked;
   return {
     host: document.getElementById("db-host").value.trim(),
     port: parseInt(document.getElementById("db-port").value, 10) || 5432,
     username: document.getElementById("db-username").value.trim(),
     password: document.getElementById("db-password").value,
     database: document.getElementById("db-database").value.trim(),
-    ssl: document.getElementById("db-ssl").checked,
+    ssl: ssl,
+    sslAllowSelfSigned: ssl && document.getElementById("db-ssl-allow-self-signed").checked,
   };
 }
+
+document.getElementById("db-ssl").addEventListener("change", function () {
+  var row = document.getElementById("db-ssl-allow-self-signed-row");
+  row.style.display = this.checked ? "flex" : "none";
+  if (!this.checked) document.getElementById("db-ssl-allow-self-signed").checked = false;
+});
 
 document.getElementById("btn-test-conn").addEventListener("click", async function () {
   var btn = this;
@@ -101,7 +109,7 @@ document.getElementById("btn-test-conn").addEventListener("click", async functio
 });
 
 // Reset test when DB fields change
-["db-host", "db-port", "db-username", "db-password", "db-database", "db-ssl"].forEach(function (id) {
+["db-host", "db-port", "db-username", "db-password", "db-database", "db-ssl", "db-ssl-allow-self-signed"].forEach(function (id) {
   document.getElementById(id).addEventListener("input", function () {
     connectionTested = false;
     document.getElementById("btn-next-1").disabled = true;
@@ -192,7 +200,7 @@ document.getElementById("btn-next-3").addEventListener("click", function () {
     rv("Host", db.host + ":" + db.port) +
     rv("Username", db.username) +
     rv("Database", db.database) +
-    rv("SSL", db.ssl ? "Enabled" : "Disabled");
+    rv("SSL", db.ssl ? (db.sslAllowSelfSigned ? "Enabled (allow self-signed)" : "Enabled") : "Disabled");
 
   document.getElementById("review-admin").innerHTML =
     rv("Username", document.getElementById("admin-username").value.trim()) +

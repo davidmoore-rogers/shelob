@@ -25,7 +25,21 @@ const DbConfigSchema = z.object({
   password: z.string(),
   database: z.string().min(1),
   ssl: z.boolean().default(false),
+  sslAllowSelfSigned: z.boolean().default(false),
 });
+
+type DbConfig = z.infer<typeof DbConfigSchema>;
+
+function buildPgClientOptions(db: DbConfig, database: string): pg.ClientConfig {
+  const connectionString = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/${database}${db.ssl ? "?sslmode=require" : ""}`;
+  const opts: pg.ClientConfig = { connectionString, connectionTimeoutMillis: 8000 };
+  if (db.ssl && db.sslAllowSelfSigned) {
+    // Explicit ssl option overrides the connection string's sslmode for the
+    // pg client, so we still negotiate TLS but skip cert verification.
+    opts.ssl = { rejectUnauthorized: false };
+  }
+  return opts;
+}
 
 const passwordSchema = z.string()
   .min(8, "Password must be at least 8 characters")
@@ -46,10 +60,13 @@ const FinalizeSchema = z.object({
   }),
 });
 
-function buildConnectionString(db: z.infer<typeof DbConfigSchema>): string {
+function buildConnectionString(db: DbConfig): string {
   const encoded = encodeURIComponent(db.password);
   const base = `postgresql://${encodeURIComponent(db.username)}:${encoded}@${db.host}:${db.port}/${db.database}`;
-  return db.ssl ? `${base}?sslmode=require` : base;
+  if (!db.ssl) return base;
+  // sslmode=no-verify keeps TLS but skips cert validation — recognized by
+  // node-postgres (the driver used by @prisma/adapter-pg at runtime).
+  return `${base}?sslmode=${db.sslAllowSelfSigned ? "no-verify" : "require"}`;
 }
 
 // GET /api/setup/status
@@ -68,8 +85,7 @@ router.post("/test-connection", async (req, res) => {
     const db = DbConfigSchema.parse(req.body);
 
     // Connect to the postgres default database to test server connectivity
-    const connStr = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/postgres${db.ssl ? "?sslmode=require" : ""}`;
-    const client = new pg.Client({ connectionString: connStr, connectionTimeoutMillis: 8000 });
+    const client = new pg.Client(buildPgClientOptions(db, "postgres"));
     await client.connect();
 
     // Check PostgreSQL version
@@ -118,8 +134,7 @@ router.post("/finalize", async (req, res) => {
     }
 
     // Step 1: Create database if it doesn't exist
-    const serverConnStr = `postgresql://${encodeURIComponent(db.username)}:${encodeURIComponent(db.password)}@${db.host}:${db.port}/postgres${db.ssl ? "?sslmode=require" : ""}`;
-    const serverClient = new pg.Client({ connectionString: serverConnStr, connectionTimeoutMillis: 8000 });
+    const serverClient = new pg.Client(buildPgClientOptions(db, "postgres"));
     await serverClient.connect();
 
     const dbCheck = await serverClient.query(
@@ -179,7 +194,7 @@ router.post("/finalize", async (req, res) => {
     }
 
     // Step 5: Create admin user via raw pg
-    const appClient = new pg.Client({ connectionString: databaseUrl, connectionTimeoutMillis: 8000 });
+    const appClient = new pg.Client(buildPgClientOptions(db, db.database));
     await appClient.connect();
 
     const passwordHash = await hashPassword(admin.password);
