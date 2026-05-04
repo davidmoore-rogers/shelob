@@ -549,29 +549,38 @@ function computeReasons(
     });
   }
 
-  // ── Watch: pg-boss recommendation ────────────────────────────────────────
-  // Once the monitored fleet crosses ~500 assets and the operator is still
-  // on the cursor queue, advise switching to pg-boss. Below that threshold
-  // cursor (post-Step-4a split-tick fix) keeps up fine; above it the in-
-  // process worker pool starts contending with HTTP request handlers and
-  // the publisher loses headroom for adding workers without restarting.
-  // Skip when pg-boss isn't installed (no actionable advice to give).
-  const PGBOSS_RECOMMEND_ASSETS = 500;
-  if (
-    snap.database.queue.active === "cursor" &&
-    snap.database.queue.pgbossInstalled &&
-    snap.workload.monitoredAssetCount > PGBOSS_RECOMMEND_ASSETS
-  ) {
-    const ctx = getDeploymentContext();
-    const suggestion = !ctx.dbIsLocal
-      ? "Click Enable on next restart to switch. pg-boss creates its own tables in the polaris database — confirm your DB role has CREATE TABLE permission with your DBA before flipping."
-      : "Click Enable on next restart to switch. After the next application restart Polaris will use the pg-boss queue with per-cadence worker pools.";
-    reasons.push({
-      severity: "watch",
-      code: "pgboss_recommended",
-      message: `Monitoring ${snap.workload.monitoredAssetCount} assets on the cursor queue. pg-boss has structural per-cadence isolation that scales further.`,
-      suggestion,
-    });
+  // ── Watch: pg-boss state ─────────────────────────────────────────────────
+  // Two mutually-exclusive states surface a queue-mode signal:
+  //   - "pending": operator already clicked Enable; persisted setting differs
+  //     from the running mode. Show what's pending + a Cancel button so the
+  //     change can be undone before restart if it was a mistake.
+  //   - "recommended": fleet has crossed ~500 monitored assets and the
+  //     operator is still on cursor (no pending change). Suggest switching.
+  // Both run only when pg-boss is installed (no actionable advice otherwise).
+  if (snap.database.queue.pgbossInstalled) {
+    const { active, persisted } = snap.database.queue;
+    if (active !== persisted) {
+      reasons.push({
+        severity: "watch",
+        code: "pgboss_pending",
+        message: `Monitor queue switch to ${persisted} is pending — takes effect on the next application restart.`,
+        suggestion: `If this was clicked by mistake, cancel below to keep using ${active}.`,
+      });
+    } else {
+      const PGBOSS_RECOMMEND_ASSETS = 500;
+      if (active === "cursor" && snap.workload.monitoredAssetCount > PGBOSS_RECOMMEND_ASSETS) {
+        const ctx = getDeploymentContext();
+        const suggestion = !ctx.dbIsLocal
+          ? "Click Enable on next restart to switch. pg-boss creates its own tables in the polaris database — confirm your DB role has CREATE TABLE permission with your DBA before flipping."
+          : "Click Enable on next restart to switch. After the next application restart Polaris will use the pg-boss queue with per-cadence worker pools.";
+        reasons.push({
+          severity: "watch",
+          code: "pgboss_recommended",
+          message: `Monitoring ${snap.workload.monitoredAssetCount} assets on the cursor queue. pg-boss has structural per-cadence isolation that scales further.`,
+          suggestion,
+        });
+      }
+    }
   }
 
   // ── Watch: TimescaleDB recommendation ────────────────────────────────────

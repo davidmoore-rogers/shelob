@@ -1083,13 +1083,17 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
       '<div class="capacity-reasons">' +
         capacity.reasons.map(function (r) {
           var extra = r.code === "pg_tuning_needed" ? pgSettingsRowsHtml : "";
-          // pgboss_recommended carries an action button — clicking it
-          // writes Setting.monitor.queueMode = "pgboss" so the next
-          // application restart picks up the new queue. Confirmation
-          // happens via showConfirm() in the click handler.
-          var action = r.code === "pgboss_recommended"
-            ? '<button class="btn btn-sm btn-primary capacity-action" data-action="enable-pgboss" style="margin-top:0.5rem">Enable on next restart</button>'
-            : "";
+          // pgboss_recommended → Enable button (writes Setting=pgboss)
+          // pgboss_pending     → Cancel button (writes Setting back to active)
+          // Both confirm via showConfirm() in the click handler.
+          var action = "";
+          if (r.code === "pgboss_recommended") {
+            action = '<button class="btn btn-sm btn-primary capacity-action" data-action="enable-pgboss" style="margin-top:0.5rem">Enable on next restart</button>';
+          } else if (r.code === "pgboss_pending") {
+            var queueState = (capacity.database && capacity.database.queue) || {};
+            var revertTo = queueState.active || "cursor";
+            action = '<button class="btn btn-sm btn-secondary capacity-action" data-action="cancel-pgboss" data-revert-to="' + escapeHtml(revertTo) + '" style="margin-top:0.5rem">Cancel — stay on ' + escapeHtml(revertTo) + '</button>';
+          }
           return '<div class="capacity-reason capacity-reason-' + r.severity + '">' +
             '<div class="capacity-reason-head">' +
               '<span class="capacity-pill capacity-pill-' + r.severity + ' capacity-pill-sm">' +
@@ -1386,12 +1390,17 @@ async function warnIfDiscoveryRunning(actionLabel) {
 
 /**
  * Wire click handlers for the action buttons rendered inside capacity
- * reasons (currently just the pgboss recommendation's [Enable on next
- * restart]). Called from loadDatabaseInfo after the card is in the DOM.
+ * reasons. Called from loadDatabaseInfo after the card is in the DOM.
+ *
+ * Two reason codes carry buttons:
+ *   pgboss_recommended → [Enable on next restart] (writes Setting=pgboss)
+ *   pgboss_pending     → [Cancel] (writes Setting back to active mode,
+ *                                  effectively undoing a prior enable click)
  */
 function initCapacityActions() {
   var card = document.getElementById("capacity-card");
   if (!card) return;
+
   card.querySelectorAll('button[data-action="enable-pgboss"]').forEach(function (btn) {
     btn.addEventListener("click", async function () {
       var ok = await showConfirm(
@@ -1409,6 +1418,28 @@ function initCapacityActions() {
         showToast("Could not save: " + (err && err.message ? err.message : "unknown error"), "error");
         btn.disabled = false;
         btn.textContent = "Enable on next restart";
+      }
+    });
+  });
+
+  card.querySelectorAll('button[data-action="cancel-pgboss"]').forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var revertTo = btn.getAttribute("data-revert-to") || "cursor";
+      var ok = await showConfirm(
+        "Cancel the pending queue switch? Polaris will continue using " + revertTo + " after the next restart."
+      );
+      if (!ok) return;
+      btn.disabled = true;
+      btn.textContent = "Cancelling...";
+      try {
+        await api.serverSettings.setQueueMode(revertTo);
+        showToast("Queue switch cancelled — staying on " + revertTo, "success");
+        _dbLoaded = false;
+        loadDatabaseInfo();
+      } catch (err) {
+        showToast("Could not save: " + (err && err.message ? err.message : "unknown error"), "error");
+        btn.disabled = false;
+        btn.textContent = "Cancel — stay on " + revertTo;
       }
     });
   });
