@@ -120,7 +120,7 @@ function renderBlocksPage() {
     return '<tr>' +
       starCellHTML("blocks", b.id) +
       '<td><a href="#" class="block-name-link" data-block-id="' + b.id + '"><strong>' + escapeHtml(b.name) + '</strong></a></td>' +
-      '<td class="mono">' + escapeHtml(b.cidr) + '</td>' +
+      '<td class="mono" title="' + cidrRangeTitle(b.cidr) + '">' + escapeHtml(b.cidr) + '</td>' +
       '<td>' + statusBadge(b.ipVersion) + '</td>' +
       '<td>' + escapeHtml(b.description || "-") + '</td>' +
       '<td>' + (tags || '<span style="color:var(--color-text-tertiary)">-</span>') + '</td>' +
@@ -229,6 +229,78 @@ function formHTML(defaults) {
 }
 
 function val(id) { return document.getElementById(id).value.trim(); }
+
+function cidrRangeTitle(cidr) {
+  try {
+    var range = _cidrToRange(cidr);
+    if (!range) return "";
+    return "Start: " + range.start + "\nEnd:   " + range.end;
+  } catch (_) { return ""; }
+}
+
+function _cidrToRange(cidr) {
+  var slash = cidr.indexOf("/");
+  if (slash === -1) return null;
+  var ip = cidr.slice(0, slash);
+  var prefix = parseInt(cidr.slice(slash + 1), 10);
+  return ip.indexOf(":") === -1 ? _cidr4Range(ip, prefix) : _cidr6Range(ip, prefix);
+}
+
+function _cidr4Range(ip, prefix) {
+  var p = ip.split(".");
+  if (p.length !== 4) return null;
+  var n = ((parseInt(p[0], 10) << 24) | (parseInt(p[1], 10) << 16) | (parseInt(p[2], 10) << 8) | parseInt(p[3], 10)) >>> 0;
+  var mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+  var start = (n & mask) >>> 0;
+  var end = (start | (~mask >>> 0)) >>> 0;
+  function fmt(x) { return [(x >>> 24) & 0xFF, (x >>> 16) & 0xFF, (x >>> 8) & 0xFF, x & 0xFF].join("."); }
+  return { start: fmt(start), end: fmt(end) };
+}
+
+function _cidr6Range(ip, prefix) {
+  var groups = _expandIPv6(ip);
+  if (!groups) return null;
+  var bits = BigInt(0);
+  for (var i = 0; i < 8; i++) bits = (bits << BigInt(16)) | BigInt(groups[i]);
+  var hostBits = BigInt(128 - prefix);
+  var mask = prefix === 0 ? BigInt(0) : ~((BigInt(1) << hostBits) - BigInt(1)) & ((BigInt(1) << BigInt(128)) - BigInt(1));
+  var start = bits & mask;
+  var end = start | ((BigInt(1) << hostBits) - BigInt(1));
+  return { start: _compressIPv6(start), end: _compressIPv6(end) };
+}
+
+function _expandIPv6(ip) {
+  var halves = ip.split("::");
+  var left = halves[0] ? halves[0].split(":") : [];
+  var right = halves.length > 1 ? (halves[1] ? halves[1].split(":") : []) : null;
+  var groups;
+  if (right !== null) {
+    var fill = [];
+    for (var i = 0; i < 8 - left.length - right.length; i++) fill.push("0");
+    groups = left.concat(fill, right);
+  } else {
+    groups = left;
+  }
+  if (groups.length !== 8) return null;
+  return groups.map(function (g) { return parseInt(g || "0", 16); });
+}
+
+function _compressIPv6(bigint) {
+  var groups = [];
+  var rem = bigint;
+  for (var i = 0; i < 8; i++) { groups.unshift(Number(rem & BigInt(0xFFFF))); rem >>= BigInt(16); }
+  var bestStart = -1, bestLen = 0, curStart = -1, curLen = 0;
+  for (var j = 0; j < 8; j++) {
+    if (groups[j] === 0) {
+      if (curStart === -1) { curStart = j; curLen = 1; } else curLen++;
+      if (curLen > bestLen) { bestStart = curStart; bestLen = curLen; }
+    } else { curStart = -1; curLen = 0; }
+  }
+  if (bestLen < 2) return groups.map(function (g) { return g.toString(16); }).join(":");
+  var L = groups.slice(0, bestStart).map(function (g) { return g.toString(16); }).join(":");
+  var R = groups.slice(bestStart + bestLen).map(function (g) { return g.toString(16); }).join(":");
+  return L + "::" + R;
+}
 
 function debounce(fn, ms) {
   var timer;
