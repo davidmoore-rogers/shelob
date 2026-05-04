@@ -108,6 +108,18 @@ export interface CapacitySnapshot {
       extensionInstalled: boolean;
       hypertableTables: string[];
     };
+    /**
+     * Monitor work queue status. `pgbossInstalled` reflects whether the
+     * pg-boss npm package is available at runtime; `active` reflects the
+     * `Setting.monitor.queueMode` value (default "cursor"). Surfaced on
+     * the Maintenance tab Capabilities row alongside TimescaleDB. Phase 4b
+     * wires the actual detection + Setting lookup; until then this is a
+     * frozen "cursor / not installed" view that matches reality.
+     */
+    queue: {
+      pgbossInstalled: boolean;
+      active: "cursor" | "pgboss";
+    };
   };
   workload: {
     monitoredAssetCount: number;
@@ -660,6 +672,10 @@ export async function getCapacitySnapshot(opts: {
       timescale: {
         extensionInstalled: isTimescaleAvailable(),
         hypertableTables: TIMESCALE_SAMPLE_TABLES.filter((t) => isHypertable(t)),
+      },
+      queue: {
+        pgbossInstalled: false, // Step 4b: detect via dynamic import
+        active: "cursor",       // Step 4b: read from Setting.monitor.queueMode
       },
     },
     workload: {

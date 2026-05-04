@@ -1132,6 +1132,28 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
       '</tr>';
   }).join("");
 
+  // TimescaleDB three-state: not installed / installed but no hypertables / enabled
+  var ts = db.timescale || {};
+  var tsLabel = "Not installed";
+  if (ts.extensionInstalled) {
+    var htCount = Array.isArray(ts.hypertableTables) ? ts.hypertableTables.length : 0;
+    tsLabel = htCount > 0 ? ("Enabled (" + htCount + " hypertable" + (htCount === 1 ? "" : "s") + ")") : "Installed, not enabled";
+  }
+
+  // Monitor queue: pg-boss matches the same three-state shape (npm package
+  // detection + Setting.monitor.queueMode active value). Until Step 4b wires
+  // pg-boss in, both flags are static and the UI shows "Cursor (default)" /
+  // "Not installed" — accurate for current runtime state.
+  var q = db.queue || {};
+  var queueLabel;
+  if (!q.pgbossInstalled) {
+    queueLabel = "Cursor (pg-boss not installed)";
+  } else if (q.active === "pgboss") {
+    queueLabel = "pg-boss (active)";
+  } else {
+    queueLabel = "Cursor (pg-boss installed, not active)";
+  }
+
   var dbHtml =
     '<div class="capacity-stat-card">' +
       '<h5>Database</h5>' +
@@ -1139,6 +1161,8 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
         dbInfoRow("Current size", _capacityFormatBytes(db.sizeBytes)) +
         dbInfoRow("Steady-state at current settings", _capacityFormatBytes(work.steadyStateSizeBytes)) +
         (allTables.length ? dbInfoRow("Tables", allTables.length) : "") +
+        dbInfoRow("TimescaleDB", tsLabel) +
+        dbInfoRow("Monitor queue", queueLabel) +
       '</div>' +
       (tablesHtml
         ? '<div style="margin-top:0.75rem;max-height:240px;overflow-y:auto">' +
