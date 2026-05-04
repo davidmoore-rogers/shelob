@@ -304,10 +304,7 @@ function renderAssetsPage() {
   }
   var sfData = _assetsSF ? _assetsSF.apply(_assetsData) : _assetsData;
   if (sfData.length === 0) {
-    var _statusHint = document.getElementById("filter-status").value === "hide-decommissioned"
-      ? '<br><small style="font-weight:normal;opacity:0.75">Decommissioned and disabled assets are hidden by default — try changing Status to “All”.</small>'
-      : '';
-    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No results match the current filters.' + _statusHint + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No results match the current filters.</td></tr>';
     clearPageControls("pagination");
     _assetsUpdateSelectAll();
     return;
@@ -5341,13 +5338,6 @@ async function singleOuiLookup(id, mac) {
     });
   });
 })();
-
-function _hasActiveFilters() {
-  var status = document.getElementById("filter-status").value;
-  var type   = document.getElementById("filter-type").value;
-  var search = document.getElementById("filter-search").value.trim();
-  return !!(type || search || (status && status !== "hide-decommissioned"));
-}
 
 async function handleAssetExport(mode, fmt) {
   var assets, label, ok;
