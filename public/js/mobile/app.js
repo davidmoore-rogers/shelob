@@ -29,7 +29,17 @@
       var res = await fetch("/api/v1/auth/me");
       if (res.ok) {
         var data = await res.json();
-        if (data && data.user) user = data.user;
+        // /auth/me returns { authenticated, username, role, authProvider } —
+        // a flat object, not a nested user. Translate to the shape the rest
+        // of the mobile bundle expects.
+        if (data && data.authenticated) {
+          user = {
+            username:     data.username,
+            role:         data.role,
+            authProvider: data.authProvider,
+            displayName:  data.username,
+          };
+        }
       }
     } catch (_) {}
 

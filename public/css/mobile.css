@@ -593,6 +593,14 @@ input, select, textarea { font-family: inherit; }
   gap: 6px;
   min-height: 100%;
 }
+.login-shell .brand-logo {
+  display: block;
+  max-width: 160px;
+  max-height: 96px;
+  margin: 0 auto 16px;
+  border-radius: var(--shape-md);
+}
+/* Retained for the TOTP step which still uses the icon-tile look. */
 .login-shell .logo-mark {
   width: 64px; height: 64px;
   border-radius: var(--shape-lg);

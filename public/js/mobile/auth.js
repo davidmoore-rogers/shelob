@@ -33,7 +33,7 @@
     app.innerHTML = ''
       + '<div class="app-body">'
       + '  <div class="login-shell">'
-      + '    <div class="logo-mark"><svg viewBox="0 0 24 24"><use href="#i-star"/></svg></div>'
+      + '    <img class="brand-logo" id="brand-logo" src="/logo.png" alt="">'
       + '    <h2 id="brand-name">Polaris</h2>'
       + '    <div class="sub" id="brand-sub">IP management, navigated</div>'
 
@@ -70,6 +70,12 @@
         document.title = b.appName;
       }
       if (b.subtitle) document.getElementById("brand-sub").textContent = b.subtitle;
+      if (b.logoUrl) {
+        var logo = document.getElementById("brand-logo");
+        if (logo) logo.src = b.logoUrl;
+        var fav = document.querySelector('link[rel="icon"]');
+        if (fav) fav.href = b.logoUrl;
+      }
     }).catch(function () {});
 
     // SSO button (Microsoft only for now — matches desktop scope).
