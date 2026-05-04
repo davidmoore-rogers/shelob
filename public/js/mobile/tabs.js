@@ -265,25 +265,13 @@
   };
 
   // ─── Assets ────────────────────────────────────────────────────────────
-  var Assets = {
+  // Real spec lives in /js/mobile/assets-tab.js. Loaded before tabs.js so the
+  // window.PolarisAssetsTab namespace is available here.
+  var Assets = (window.PolarisAssetsTab && window.PolarisAssetsTab.spec) || {
     title: "Assets",
     icon: "#i-list",
-    renderTopbar: function () {
-      return ''
-        + '<div class="m3-topbar">'
-        + '  <div class="leading"></div>'
-        + '  <div class="title">Assets</div>'
-        + '  <div class="trailing">'
-        + '    <button class="icon-btn" aria-label="Search"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></button>'
-        + '  </div>'
-        + '</div>';
-    },
-    render: function (body) {
-      body.innerHTML = placeholder(
-        "Assets coming soon",
-        "Card feed of every asset, filter chips for type/status, tap-through to a System tab with charts."
-      );
-    },
+    renderTopbar: function () { return ''; },
+    render: function (body) { body.innerHTML = placeholder("Assets module not loaded", "PolarisAssetsTab is missing — check script load order."); },
   };
 
   // ─── Alerts ────────────────────────────────────────────────────────────

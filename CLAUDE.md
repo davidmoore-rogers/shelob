@@ -60,7 +60,7 @@ polaris/
 │       ├── ip-panel.js
 │       ├── map.js                   # Device Map: Leaflet markers, autocomplete search, Cytoscape topology modal
 │       ├── table-sf.js
-│       ├── mobile/                  # Mobile SPA bundle (loaded by mobile.html). router.js (hash routing), auth.js (login + TOTP screens), map-tab.js (Device Map tab — lazy-loads Leaflet/markercluster, plots health-coded firewall pins, opens a bottom sheet on tap; backs both #map and #site/<id>), tabs.js (per-tab registry + Search renderer + shared snackbar helper), details.js (detail-route renderers — asset / subnet / block / site; site delegates to map-tab), app.js (orchestrator: bootstraps auth, mounts the tab shell, dispatches tab and detail routes; detail specs may carry a `parentTab` to keep the corresponding navbar item highlighted).
+│       ├── mobile/                  # Mobile SPA bundle (loaded by mobile.html). router.js (hash routing), auth.js (login + TOTP screens), map-tab.js (Device Map tab — lazy-loads Leaflet/markercluster, plots health-coded firewall pins, opens a bottom sheet on tap; backs both #map and #site/<id>), assets-tab.js (Assets tab — paged card feed with type filter chips, tap-through to asset detail), tabs.js (per-tab registry + Search renderer + shared snackbar helper), details.js (detail-route renderers — asset / subnet / block / site; site delegates to map-tab), app.js (orchestrator: bootstraps auth, mounts the tab shell, dispatches tab and detail routes; detail specs may carry a `parentTab` to keep the corresponding navbar item highlighted).
 │       └── vendor/                  # Bundled: jspdf, leaflet/, cytoscape, dagre, cytoscape-dagre
 ├── src/
 │   ├── index.ts                     # Entry point

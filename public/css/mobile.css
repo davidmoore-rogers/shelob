@@ -771,3 +771,71 @@ button, .list-item, .chip { touch-action: manipulation; }
 .status-pill.warn      { background: rgba(255,213,74,.15); color: var(--md-warning); }
 .status-pill.down      { background: var(--md-error-container); color: var(--md-on-error-container); }
 .status-pill.unk       { background: var(--md-surface-cont-highest); color: var(--md-on-surface-variant); }
+
+/* ─── Asset cards ─────────────────────────────────────────────────────── */
+.asset-list {
+  padding: 8px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.asset-card {
+  background: var(--md-surface-cont-low);
+  border-radius: var(--shape-md);
+  padding: 16px;
+  border: none;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.asset-card:hover { background: var(--md-surface-cont); }
+.asset-card .top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.asset-card .top .ico {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 40px;
+}
+.asset-card .top .ico svg { width: 24px; height: 24px; fill: currentColor; }
+.asset-card .top .name {
+  flex: 1 1 auto;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: .15px;
+  color: var(--md-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.asset-card .meta {
+  color: var(--md-on-surface-variant);
+  font-size: 13px;
+  letter-spacing: .25px;
+  padding-left: 52px;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.asset-card .meta .mono { color: var(--md-on-surface); }
+.asset-card .meta span { white-space: nowrap; }
+
+/* Asset-type avatar palettes — same key colors mobile-mockup-material.html
+   used so the same iconography reads identically. Keep the type → class
+   mapping in sync with TYPE_META in /js/mobile/assets-tab.js. */
+.ico-fw   { background: rgba(255,180,80,.18); color: #ffc78a; }
+.ico-sw   { background: rgba(216,188,224,.20); color: var(--md-tertiary); }
+.ico-srv  { background: rgba(163,201,255,.20); color: var(--md-primary); }
+.ico-prn  { background: rgba(94,216,123,.18); color: var(--md-success); }
+.ico-ap   { background: rgba(216,188,224,.20); color: var(--md-tertiary); }
+.ico-rtr  { background: rgba(163,201,255,.20); color: var(--md-primary); }
+.ico-wks  { background: rgba(163,201,255,.20); color: var(--md-primary); }
+.ico-other{ background: var(--md-surface-cont-highest); color: var(--md-on-surface-variant); }
