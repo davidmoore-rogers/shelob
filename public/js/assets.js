@@ -110,8 +110,6 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   var addBtn = document.getElementById("btn-add-asset");
   if (addBtn) addBtn.addEventListener("click", openCreateModal);
-  var ouiBtn = document.getElementById("btn-oui-lookup");
-  if (ouiBtn) ouiBtn.addEventListener("click", bulkOuiLookup);
   // ── Import dropdown wiring ──
   (function () {
     var importMenu = document.getElementById("import-menu");
@@ -1444,14 +1442,18 @@ async function openViewModal(id) {
     if (fetched[1]) _monitorSettingsCache = fetched[1];
     _currentAssetForRefresh = a;
     var generalHTML = '<div class="asset-view-grid">' +
-      viewRow("Hostname", a.hostname, false, false, true) +
+      (a.ipAddress && !a.hostname
+        ? '<div class="detail-row"><span class="detail-label">Hostname</span><span class="detail-value">- <button class="btn btn-sm btn-secondary" onclick="singleDnsLookup(\'' + a.id + '\')" title="Reverse DNS lookup (PTR record)">PTR Lookup</button></span></div>'
+        : viewRow("Hostname", a.hostname, false, false, true)) +
       viewRow("DNS Name", a.dnsName, false, false, true) +
       ipViewRow(a) +
       viewRow("MAC Address", a.macAddress, true, false, true) +
       macAddressesViewHTML(a.macAddresses) +
       viewRow("Asset Tag", a.assetTag) +
       viewRow("Serial Number", a.serialNumber, false, false, true) +
-      viewRow("Manufacturer", a.manufacturer) +
+      (a.macAddress && !a.manufacturer
+        ? '<div class="detail-row"><span class="detail-label">Manufacturer</span><span class="detail-value">- <button class="btn btn-sm btn-secondary" onclick="singleOuiLookup(\'' + a.id + '\')" title="OUI manufacturer lookup from MAC address">OUI Lookup</button></span></div>'
+        : viewRow("Manufacturer", a.manufacturer)) +
       viewRow("Model", a.model) +
       viewRow("Type", ASSET_TYPE_LABELS[a.assetType] || a.assetType) +
       viewRow("Status", a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : "-") +
@@ -5159,8 +5161,11 @@ function _wireHoverTriggersIn(container) {
 function ipViewRow(asset) {
   var ips = Array.isArray(asset.associatedIps) ? asset.associatedIps : [];
   if (!asset.ipAddress && ips.length === 0) {
+    var noIpInner = asset.hostname
+      ? '- <button class="btn btn-sm btn-secondary" onclick="singleForwardLookup(\'' + asset.id + '\')" title="Forward DNS lookup (A/AAAA record)">IP Lookup</button>'
+      : '-';
     return '<div class="detail-row"><span class="detail-label">IP Address</span>' +
-      '<span class="detail-value mono">-</span></div>';
+      '<span class="detail-value mono">' + noIpInner + '</span></div>';
   }
   var src = asset.ipSource
     ? '<span style="font-size:0.75rem;color:var(--color-text-tertiary);margin-left:8px">' + escapeHtml(asset.ipSource) + '</span>'
@@ -5271,6 +5276,7 @@ async function singleDnsLookup(id, name) {
     if (result.ok) {
       showToast(result.message, "success");
       loadAssets();
+      if (_currentAssetForRefresh && _currentAssetForRefresh.id === id) openViewModal(id);
     } else {
       showToast(result.message, "error");
     }
@@ -5285,6 +5291,7 @@ async function singleForwardLookup(id, name) {
     if (result.ok) {
       showToast(result.message, "success");
       loadAssets();
+      if (_currentAssetForRefresh && _currentAssetForRefresh.id === id) openViewModal(id);
     } else {
       showToast(result.message, "error");
     }
@@ -5319,6 +5326,7 @@ async function singleOuiLookup(id, mac) {
     if (result.ok) {
       showToast(result.message, "success");
       loadAssets();
+      if (_currentAssetForRefresh && _currentAssetForRefresh.id === id) openViewModal(id);
     } else {
       showToast(result.message, "error");
     }
