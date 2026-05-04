@@ -32,6 +32,7 @@ import { AppError } from "../../utils/errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { logEvent } from "./events.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
+import { normalizeManufacturer } from "../../utils/manufacturerNormalize.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -92,6 +93,16 @@ router.get("/", async (req, res, next) => {
       }),
       prisma.conflict.count({ where }),
     ]);
+
+    for (const c of conflicts) {
+      if (c.entityType !== "asset") continue;
+      const proposed = c.proposedAssetFields as Record<string, any> | null;
+      const raw = proposed?.manufacturer;
+      if (typeof raw === "string") {
+        const normalized = normalizeManufacturer(raw);
+        if (normalized && normalized !== raw) proposed!.manufacturer = normalized;
+      }
+    }
 
     res.json({ conflicts, total, limit, offset });
   } catch (err) {

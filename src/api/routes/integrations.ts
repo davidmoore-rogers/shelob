@@ -15,6 +15,7 @@ import * as activeDirectory from "../../services/activeDirectoryService.js";
 import { isValidIpAddress, ipInCidr, normalizeCidr, cidrContains, cidrOverlaps } from "../../utils/cidr.js";
 import type { DiscoveredSubnet, DiscoveryResult, DiscoveredDevice, DiscoveredInterfaceIp, DiscoveredDhcpEntry, DiscoveredInventoryDevice, DiscoveredVip, DiscoveryProgressCallback } from "../../services/fortimanagerService.js";
 import { projectAssetFromSources } from "../../utils/assetProjection.js";
+import { normalizeManufacturer } from "../../utils/manufacturerNormalize.js";
 import { logEvent } from "./events.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
@@ -4095,7 +4096,7 @@ async function syncEntraDevices(
       hostname: dev.displayName,
       serialNumber: dev.serialNumber || null,
       macAddress: dev.macAddress || null,
-      manufacturer: dev.manufacturer || null,
+      manufacturer: normalizeManufacturer(dev.manufacturer || null),
       model: dev.model || null,
       os: dev.operatingSystem || null,
       osVersion: dev.operatingSystemVersion || null,
