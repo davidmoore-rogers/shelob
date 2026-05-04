@@ -44,6 +44,11 @@ function _csrfHeaders(extra) {
   return headers;
 }
 
+// One-shot guard so the stale-Secure-cookie alert only fires once per page
+// load — otherwise a page that fires off several mutations on init would
+// stack alerts on top of each other.
+var _staleCookieAlertShown = false;
+
 async function request(method, path, body, signal) {
   const opts = {
     method,
@@ -56,7 +61,20 @@ async function request(method, path, body, signal) {
   var upper = method.toUpperCase();
   if (upper !== "GET" && upper !== "HEAD" && upper !== "OPTIONS") {
     var csrf = _readCookie("polaris_csrf");
-    if (csrf) opts.headers["X-CSRF-Token"] = csrf;
+    if (csrf) {
+      opts.headers["X-CSRF-Token"] = csrf;
+    } else if (window.location.protocol === "http:" && !_staleCookieAlertShown) {
+      // No CSRF cookie readable AND we're on HTTP — almost certainly a
+      // stale Secure-flagged cookie from a prior HTTPS install of Polaris
+      // on this origin. The browser holds it but won't send it over HTTP
+      // and won't let the server overwrite it. Tell the user what to do
+      // before letting the server return its 403.
+      _staleCookieAlertShown = true;
+      window.alert(
+        "Polaris can't read its CSRF cookie. Your browser likely has a stale cookie from a previous HTTPS install on this address.\n\n" +
+        "Click the padlock/info icon in the address bar → Clear cookies and site data → reload this page.",
+      );
+    }
   }
 
   const res = await fetch(API_BASE + path, opts);

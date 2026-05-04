@@ -38,6 +38,17 @@ export function csrfMiddleware(req: Request, res: Response, next: NextFunction) 
     if (!req.session.csrfToken) {
       req.session.csrfToken = randomBytes(32).toString("hex");
     }
+    // Best-effort: if a previous HTTPS deployment left a Secure-flagged
+    // cookie of the same name, modern browsers ("Leave Secure Cookies
+    // Alone" rule) will refuse to overwrite it from a non-secure origin —
+    // and refuse to delete it too. Some browsers (older / Safari) honor
+    // an explicit Max-Age=0 with the Secure attribute even from HTTP, so
+    // emitting it costs nothing and may auto-heal those cases. Firefox
+    // and Chrome ignore it; the cookieless-error branch below is what
+    // actually surfaces the fix to the user there.
+    if (!req.secure) {
+      res.clearCookie(COOKIE_NAME, { path: "/", secure: true, sameSite: "lax" });
+    }
     res.cookie(COOKIE_NAME, req.session.csrfToken, {
       httpOnly: false,       // frontend JS must read this
       sameSite: "lax",
@@ -52,6 +63,20 @@ export function csrfMiddleware(req: Request, res: Response, next: NextFunction) 
   const fromHeader = req.get(HEADER_NAME);
   const fromSession = req.session?.csrfToken;
   if (!fromHeader || !fromSession || fromHeader !== fromSession) {
+    // Distinguish the stale-Secure-cookie case from a regular CSRF mismatch.
+    // When the request comes in over plain HTTP and the browser sent NO
+    // polaris_csrf cookie at all, the most likely cause is a leftover
+    // Secure-flagged cookie from a prior HTTPS install on the same origin:
+    // the browser still has it, won't send it over HTTP, and won't let the
+    // server overwrite it. Tell the operator exactly how to recover.
+    const cookieHeader = req.get("cookie") || "";
+    const cookieMissing = !cookieHeader.includes(`${COOKIE_NAME}=`);
+    if (!req.secure && cookieMissing) {
+      return next(new AppError(
+        403,
+        "CSRF cookie missing — your browser appears to have a stale cookie from a previous HTTPS install of Polaris on this address. Clear cookies for this site (browser site-info menu → Clear cookies and site data) and reload.",
+      ));
+    }
     return next(new AppError(403, "CSRF token missing or invalid"));
   }
   next();
