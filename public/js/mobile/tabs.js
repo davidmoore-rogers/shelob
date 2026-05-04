@@ -275,25 +275,12 @@
   };
 
   // ─── Alerts ────────────────────────────────────────────────────────────
-  var Alerts = {
+  // Real spec lives in /js/mobile/alerts-tab.js.
+  var Alerts = (window.PolarisAlertsTab && window.PolarisAlertsTab.spec) || {
     title: "Alerts",
     icon: "#i-bell",
-    renderTopbar: function () {
-      return ''
-        + '<div class="m3-topbar">'
-        + '  <div class="leading"></div>'
-        + '  <div class="title">Alerts</div>'
-        + '  <div class="trailing">'
-        + '    <button class="icon-btn" aria-label="Refresh"><svg viewBox="0 0 24 24"><use href="#i-refresh"/></svg></button>'
-        + '  </div>'
-        + '</div>';
-    },
-    render: function (body) {
-      body.innerHTML = placeholder(
-        "Alerts coming soon",
-        "Down-now monitored assets at the top, recent warning/error events below — pulls /events at level≥warning."
-      );
-    },
+    renderTopbar: function () { return ''; },
+    render: function (body) { body.innerHTML = placeholder("Alerts module not loaded", "PolarisAlertsTab is missing."); },
   };
 
   // ─── More ──────────────────────────────────────────────────────────────
