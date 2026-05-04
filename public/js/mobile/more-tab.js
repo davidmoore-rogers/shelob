@@ -243,7 +243,7 @@
       + '  <div class="content"><div class="headline">' + escapeHtml(displayName) + '</div><div class="supporting">' + escapeHtml(role) + '</div></div>'
       + '</div>'
       + '<div class="list-divider"></div>'
-      + '<a class="list-item two-line" href="/index.html">'
+      + '<a class="list-item two-line" href="/index.html?desktop=1">'
       + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#i-desktop"/></svg></span>'
       + '  <div class="content"><div class="headline">Desktop view</div><div class="supporting">Open the full app</div></div>'
       + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'

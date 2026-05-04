@@ -41,7 +41,7 @@ polaris/
 │   ├── server-settings.html
 │   ├── logo.png
 │   ├── map.html                     # Device Map page (Leaflet basemap + Cytoscape topology modal)
-│   ├── mobile.html                  # Phone-targeted SPA (Material 3). Single document, hash-routed, reuses /api/v1 + session auth from the desktop app. Loaded directly today; will be the auto-redirect target for phone UAs once Phase 9 ships.
+│   ├── mobile.html                  # Phone-targeted SPA (Material 3). Single document, hash-routed, reuses /api/v1 + session auth from the desktop app. Phone-class user-agents hitting `/` or `/index.html` are auto-redirected here by the UA middleware in `src/app.ts`; the `?desktop=1` query param is the escape hatch the More tab's "Desktop view" link uses to bypass the redirect.
 │   ├── css/
 │   │   ├── styles.css
 │   │   ├── map.css                  # Device Map styles (marker icons, topology modal grid)

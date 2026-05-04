@@ -196,6 +196,29 @@ app.use(async (req, res, next) => {
   next();
 });
 
+// Mobile UA redirect — phone-class user-agents that hit the dashboard root
+// get bounced to /mobile.html, which is the dedicated phone SPA. We only
+// redirect "/" and "/index.html" — every other page (assets, subnets, the
+// SSO callback handler, etc.) stays untouched so phones can still access
+// the desktop UI directly when they need to. The `?desktop=1` query param
+// is the escape hatch the mobile app uses on its "Desktop view" link.
+//
+// `Mobile` covers Chrome/Firefox on phones, `iPhone`/`iPod` covers Safari
+// on iPhone, and the `Android.*Mobile` form catches Android browsers that
+// don't ship the bare token. iPad is intentionally excluded — modern iPad
+// Safari requests desktop layouts by default, and the desktop UI works
+// fine on a tablet-class screen.
+const PHONE_UA_REGEX = /(Mobile|iPhone|iPod|Android.*Mobile)/i;
+app.use((req, res, next) => {
+  if (req.path !== "/" && req.path !== "/index.html") return next();
+  if (req.query.desktop === "1") return next();
+  const ua = req.get("user-agent") || "";
+  if (PHONE_UA_REGEX.test(ua)) {
+    return res.redirect("/mobile.html");
+  }
+  return next();
+});
+
 // Protect dashboard pages — redirect unauthenticated users to login
 const protectedPages = ["/", "/index.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html", "/integrations.html", "/assets.html", "/events.html", "/server-settings.html", "/map.html"];
 const adminOnlyPages = ["/users.html", "/integrations.html", "/server-settings.html"];
