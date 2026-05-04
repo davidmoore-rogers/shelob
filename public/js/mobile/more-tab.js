@@ -1,0 +1,315 @@
+// public/js/mobile/more-tab.js — More tab + its sub-pages.
+//
+// The More tab is two things: a menu of the rest of the app (Blocks /
+// Subnets / Reservations / Events / Profile), and a host for those
+// sub-pages. The router emits `#more/<sub>` and we dispatch on
+// route.parts[0] inside this module so the rest of app.js doesn't have
+// to know about More's sub-routes.
+//
+// Sub-pages are deliberately read-only — networks live on desktop for
+// editing. Reservation creation comes via Phase 8 (Reserve sheet).
+
+(function () {
+  // ─── Sub-pages registry ────────────────────────────────────────────────
+  var SUB_PAGES = {};
+
+  function registerSub(key, spec) { SUB_PAGES[key] = spec; }
+
+  // ─── Helpers ───────────────────────────────────────────────────────────
+  function backTopbar(title) {
+    return ''
+      + '<div class="m3-topbar">'
+      + '  <div class="leading">'
+      + '    <button class="icon-btn" data-back aria-label="Back"><svg viewBox="0 0 24 24"><use href="#i-back"/></svg></button>'
+      + '  </div>'
+      + '  <div class="title">' + escapeHtml(title) + '</div>'
+      + '  <div class="trailing"></div>'
+      + '</div>';
+  }
+  function wireBack() {
+    var btn = document.querySelector("[data-back]");
+    if (!btn) return;
+    btn.addEventListener("click", function () { PolarisRouter.go("more"); });
+  }
+  function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function formatTimeAgo(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    if (sec < 60) return sec + "s ago";
+    if (sec < 3600) return Math.floor(sec / 60) + "m ago";
+    if (sec < 86400) return Math.floor(sec / 3600) + "h ago";
+    return Math.floor(sec / 86400) + "d ago";
+  }
+  function loadingHtml() {
+    return '<div class="loading-screen" style="padding:48px 0;"><div class="spinner"></div></div>';
+  }
+  function errorState(msg) {
+    return ''
+      + '<div class="empty-state" style="padding-top:48px;">'
+      + '  <div class="icon" style="background:var(--md-error-container);color:var(--md-on-error-container);"><svg viewBox="0 0 24 24"><use href="#i-warn"/></svg></div>'
+      + '  <div class="ttl">Couldn’t load</div>'
+      + '  <div class="desc">' + escapeHtml(msg) + '</div>'
+      + '</div>';
+  }
+
+  // ─── Blocks sub-page ───────────────────────────────────────────────────
+  registerSub("blocks", {
+    renderTopbar: function () { return backTopbar("Blocks"); },
+    render: function (body) {
+      body.innerHTML = loadingHtml();
+      api.blocks.list().then(function (blocks) {
+        if (!Array.isArray(blocks) || blocks.length === 0) {
+          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-block"/></svg></div><div class="ttl">No blocks</div><div class="desc">No IP blocks have been created yet.</div></div>';
+          return;
+        }
+        var html = "";
+        blocks.forEach(function (b, i) {
+          html += ''
+            + '<button class="list-item two-line" data-id="' + escapeHtml(b.id) + '">'
+            + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#i-block"/></svg></span>'
+            + '  <div class="content">'
+            + '    <div class="headline">' + escapeHtml(b.name || "(unnamed)") + '</div>'
+            + '    <div class="supporting"><span class="mono">' + escapeHtml(b.cidr || "") + '</span>' + (b.description ? ' · ' + escapeHtml(b.description) : '') + '</div>'
+            + '  </div>'
+            + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
+            + '</button>'
+            + (i < blocks.length - 1 ? '<div class="list-divider"></div>' : '');
+        });
+        body.innerHTML = html;
+        body.querySelectorAll(".list-item").forEach(function (row) {
+          row.addEventListener("click", function () { PolarisRouter.go("block/" + row.dataset.id); });
+        });
+      }).catch(function (err) { body.innerHTML = errorState(err && err.message ? err.message : "error"); });
+
+      wireBack();
+    },
+  });
+
+  // ─── Subnets sub-page ──────────────────────────────────────────────────
+  registerSub("subnets", {
+    renderTopbar: function () { return backTopbar("Subnets"); },
+    render: function (body) {
+      body.innerHTML = loadingHtml();
+      api.subnets.list().then(function (subnets) {
+        if (!Array.isArray(subnets) || subnets.length === 0) {
+          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-subnet"/></svg></div><div class="ttl">No subnets</div><div class="desc">No subnets have been created yet.</div></div>';
+          return;
+        }
+        var html = "";
+        subnets.forEach(function (s, i) {
+          var pieces = [];
+          if (s.purpose) pieces.push(escapeHtml(s.purpose));
+          if (s.vlan) pieces.push('VLAN ' + s.vlan);
+          if (s.fortigateDevice) pieces.push(escapeHtml(s.fortigateDevice));
+          var subtitle = '<span class="mono">' + escapeHtml(s.cidr || "") + '</span>' + (pieces.length ? ' · ' + pieces.join(' · ') : '');
+          html += ''
+            + '<button class="list-item two-line" data-id="' + escapeHtml(s.id) + '">'
+            + '  <span class="leading tonal"><svg viewBox="0 0 24 24"><use href="#i-subnet"/></svg></span>'
+            + '  <div class="content">'
+            + '    <div class="headline">' + escapeHtml(s.name || s.cidr || "(unnamed)") + '</div>'
+            + '    <div class="supporting">' + subtitle + '</div>'
+            + '  </div>'
+            + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
+            + '</button>'
+            + (i < subnets.length - 1 ? '<div class="list-divider"></div>' : '');
+        });
+        body.innerHTML = html;
+        body.querySelectorAll(".list-item").forEach(function (row) {
+          row.addEventListener("click", function () { PolarisRouter.go("subnet/" + row.dataset.id); });
+        });
+      }).catch(function (err) { body.innerHTML = errorState(err && err.message ? err.message : "error"); });
+
+      wireBack();
+    },
+  });
+
+  // ─── Reservations sub-page ─────────────────────────────────────────────
+  registerSub("reservations", {
+    renderTopbar: function () { return backTopbar("Reservations"); },
+    render: function (body) {
+      body.innerHTML = loadingHtml();
+      api.reservations.list({ status: "active" }).then(function (rs) {
+        if (!Array.isArray(rs) || rs.length === 0) {
+          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-bookmark"/></svg></div><div class="ttl">No reservations</div><div class="desc">No active reservations on file.</div></div>';
+          return;
+        }
+        var html = "";
+        rs.forEach(function (r, i) {
+          var headline = r.hostname || r.ipAddress || "reservation";
+          var ipBit = r.ipAddress ? '<span class="mono">' + escapeHtml(r.ipAddress) + '</span>' : '';
+          var ownerBit = r.owner ? escapeHtml(r.owner) : '';
+          var sourceBit = r.sourceType && r.sourceType !== "manual" ? escapeHtml(r.sourceType.replace(/_/g, " ")) : '';
+          var subtitle = [ipBit, ownerBit, sourceBit].filter(Boolean).join(' · ');
+          html += ''
+            + '<button class="list-item two-line" data-subnet="' + escapeHtml(r.subnetId || "") + '">'
+            + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#i-bookmark"/></svg></span>'
+            + '  <div class="content">'
+            + '    <div class="headline">' + escapeHtml(headline) + '</div>'
+            + '    <div class="supporting">' + subtitle + '</div>'
+            + '  </div>'
+            + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
+            + '</button>'
+            + (i < rs.length - 1 ? '<div class="list-divider"></div>' : '');
+        });
+        body.innerHTML = html;
+        body.querySelectorAll(".list-item").forEach(function (row) {
+          row.addEventListener("click", function () {
+            var subnet = row.dataset.subnet;
+            if (subnet) PolarisRouter.go("subnet/" + subnet);
+            else PolarisTabs.showSnackbar("This reservation isn’t tied to a subnet.");
+          });
+        });
+      }).catch(function (err) { body.innerHTML = errorState(err && err.message ? err.message : "error"); });
+
+      wireBack();
+    },
+  });
+
+  // ─── Events sub-page ───────────────────────────────────────────────────
+  registerSub("events", {
+    renderTopbar: function () { return backTopbar("Events"); },
+    render: function (body) {
+      body.innerHTML = loadingHtml();
+      api.events.list({ limit: 100 }).then(function (resp) {
+        var events = (resp && resp.events) || [];
+        if (events.length === 0) {
+          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-event"/></svg></div><div class="ttl">No events</div><div class="desc">No events recorded in the retention window.</div></div>';
+          return;
+        }
+        var html = "";
+        events.forEach(function (e, i) {
+          var leadCls = e.level === "error" ? "error" : (e.level === "warning" ? "warning" : "");
+          var iconHref = e.level === "error" ? "#i-down-arrow" : (e.level === "warning" ? "#i-warn" : "#i-info");
+          html += ''
+            + '<button class="list-item three-line" data-rt="' + escapeHtml(e.resourceType || "") + '" data-rid="' + escapeHtml(e.resourceId || "") + '">'
+            + '  <span class="leading ' + leadCls + '"><svg viewBox="0 0 24 24"><use href="' + iconHref + '"/></svg></span>'
+            + '  <div class="content">'
+            + '    <div class="headline">' + escapeHtml(prettyAction(e.action)) + (e.resourceName ? " · " + escapeHtml(e.resourceName) : "") + '</div>'
+            + '    <div class="supporting" style="white-space:normal;">' + escapeHtml(e.message || "") + '</div>'
+            + '    <div class="supporting mono" style="font-size:12px;color:var(--md-on-surface-variant);margin-top:4px;">' + escapeHtml(formatTimeAgo(e.timestamp)) + (e.actor ? " · " + escapeHtml(e.actor) : "") + '</div>'
+            + '  </div>'
+            + '</button>'
+            + (i < events.length - 1 ? '<div class="list-divider"></div>' : '');
+        });
+        body.innerHTML = html;
+        body.querySelectorAll(".list-item").forEach(function (row) {
+          row.addEventListener("click", function () {
+            var rt = row.dataset.rt, rid = row.dataset.rid;
+            if (!rid) return;
+            if (rt === "asset")  PolarisRouter.go("asset/" + rid);
+            else if (rt === "subnet") PolarisRouter.go("subnet/" + rid);
+            else if (rt === "block")  PolarisRouter.go("block/" + rid);
+            else PolarisTabs.showSnackbar("No mobile view for this event.");
+          });
+        });
+      }).catch(function (err) { body.innerHTML = errorState(err && err.message ? err.message : "error"); });
+
+      wireBack();
+    },
+  });
+  function prettyAction(action) {
+    if (!action) return "Event";
+    var s = action.replace(/\./g, " ").replace(/_/g, " ");
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  // ─── Menu (root More) ──────────────────────────────────────────────────
+  function renderMenu(body, ctx) {
+    var user = ctx.user || {};
+    var displayName = user.displayName || user.username || "user";
+    var role = user.role || "?";
+
+    body.innerHTML = ''
+      + '<div class="section-head">Network</div>'
+      + menuRow("blocks", "i-block",   "Blocks",       "")
+      + '<div class="list-divider"></div>'
+      + menuRow("subnets", "i-subnet", "Subnets",      "")
+      + '<div class="list-divider"></div>'
+      + menuRow("reservations", "i-bookmark", "Reservations", "")
+
+      + '<div class="section-head">Operations</div>'
+      + menuRow("events", "i-event", "Events", "Audit log · last 7 days")
+
+      + '<div class="section-head">Account</div>'
+      + '<div class="list-item two-line">'
+      + '  <span class="leading tertiary"><svg viewBox="0 0 24 24"><use href="#i-person"/></svg></span>'
+      + '  <div class="content"><div class="headline">' + escapeHtml(displayName) + '</div><div class="supporting">' + escapeHtml(role) + '</div></div>'
+      + '</div>'
+      + '<div class="list-divider"></div>'
+      + '<a class="list-item two-line" href="/index.html">'
+      + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#i-desktop"/></svg></span>'
+      + '  <div class="content"><div class="headline">Desktop view</div><div class="supporting">Open the full app</div></div>'
+      + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
+      + '</a>'
+      + '<div class="list-divider"></div>'
+      + '<button class="list-item" id="sign-out-btn">'
+      + '  <span class="leading error"><svg viewBox="0 0 24 24"><use href="#i-logout"/></svg></span>'
+      + '  <div class="content"><div class="headline" style="color:var(--md-error);">Sign out</div></div>'
+      + '</button>'
+      + '<div style="text-align:center;padding:32px 0 24px;color:var(--md-on-surface-variant);font-size:11px;letter-spacing:.5px;" id="version-line">Polaris</div>';
+
+    body.querySelectorAll("[data-sub]").forEach(function (row) {
+      row.addEventListener("click", function () {
+        PolarisRouter.go("more/" + row.dataset.sub);
+      });
+    });
+
+    document.getElementById("sign-out-btn").addEventListener("click", function () {
+      var headers = {};
+      var m = document.cookie.match(/(?:^|; )polaris_csrf=([^;]+)/);
+      if (m) headers["X-CSRF-Token"] = decodeURIComponent(m[1]);
+      fetch("/api/v1/auth/logout", { method: "POST", headers: headers })
+        .finally(function () { window.PolarisMobile.boot(); });
+    });
+
+    fetch("/api/v1/auth/me").then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
+      if (!data || !data.version) return;
+      var v = data.version;
+      var tag = (typeof v === "string") ? v : (v.tag || (v.major + "." + v.minor + "." + v.patch));
+      var el = document.getElementById("version-line");
+      if (el) el.textContent = "Polaris " + tag;
+    }).catch(function () {});
+  }
+
+  function menuRow(sub, iconId, title, supporting) {
+    var supLine = supporting ? '<div class="supporting">' + escapeHtml(supporting) + '</div>' : '';
+    return ''
+      + '<button class="list-item ' + (supporting ? "two-line" : "") + '" data-sub="' + sub + '">'
+      + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#' + iconId + '"/></svg></span>'
+      + '  <div class="content"><div class="headline">' + escapeHtml(title) + '</div>' + supLine + '</div>'
+      + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
+      + '</button>';
+  }
+
+  // ─── Tab spec ──────────────────────────────────────────────────────────
+  var More = {
+    title: "More",
+    icon: "#i-more",
+    renderTopbar: function (ctx) {
+      var sub = ctx.route && ctx.route.parts && ctx.route.parts[0];
+      var subSpec = sub && SUB_PAGES[sub];
+      if (subSpec) return subSpec.renderTopbar(ctx);
+      return ''
+        + '<div class="m3-topbar">'
+        + '  <div class="leading"></div>'
+        + '  <div class="title">More</div>'
+        + '  <div class="trailing"></div>'
+        + '</div>';
+    },
+    render: function (body, ctx) {
+      var sub = ctx.route && ctx.route.parts && ctx.route.parts[0];
+      var subSpec = sub && SUB_PAGES[sub];
+      if (subSpec) return subSpec.render(body, ctx);
+      return renderMenu(body, ctx);
+    },
+  };
+
+  window.PolarisMoreTab = { spec: More };
+})();

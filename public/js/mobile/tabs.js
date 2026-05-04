@@ -284,56 +284,12 @@
   };
 
   // ─── More ──────────────────────────────────────────────────────────────
-  var More = {
+  // Real spec lives in /js/mobile/more-tab.js.
+  var More = (window.PolarisMoreTab && window.PolarisMoreTab.spec) || {
     title: "More",
     icon: "#i-more",
-    renderTopbar: function () {
-      return ''
-        + '<div class="m3-topbar">'
-        + '  <div class="leading"></div>'
-        + '  <div class="title">More</div>'
-        + '  <div class="trailing"></div>'
-        + '</div>';
-    },
-    render: function (body, ctx) {
-      var user = ctx.user || {};
-      var role = user.role || "?";
-      var displayName = user.displayName || user.username || "user";
-
-      // Phase 1 stub: just the profile card and sign-out, so the auth flow
-      // is exercisable end-to-end. Sub-pages come in Phase 7.
-      body.innerHTML = ''
-        + '<div class="section-head">Account</div>'
-        + '<div class="list-item two-line">'
-        + '  <span class="leading tertiary"><svg viewBox="0 0 24 24"><use href="#i-person"/></svg></span>'
-        + '  <div class="content"><div class="headline">' + escapeHtml(displayName) + '</div><div class="supporting">' + escapeHtml(role) + '</div></div>'
-        + '</div>'
-        + '<div class="list-divider"></div>'
-        + '<a class="list-item two-line" href="/index.html">'
-        + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#i-desktop"/></svg></span>'
-        + '  <div class="content"><div class="headline">Desktop view</div><div class="supporting">Open the full app</div></div>'
-        + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
-        + '</a>'
-        + '<div class="list-divider"></div>'
-        + '<button class="list-item" id="sign-out-btn">'
-        + '  <span class="leading error"><svg viewBox="0 0 24 24"><use href="#i-logout"/></svg></span>'
-        + '  <div class="content"><div class="headline" style="color:var(--md-error);">Sign out</div></div>'
-        + '</button>'
-        + '<div style="text-align:center;padding:32px 0 24px;color:var(--md-on-surface-variant);font-size:11px;letter-spacing:.5px;" id="version-line">Polaris</div>';
-
-      document.getElementById("sign-out-btn").addEventListener("click", function () {
-        fetch("/api/v1/auth/logout", { method: "POST", headers: csrfHeaders() })
-          .finally(function () { window.PolarisMobile.boot(); });
-      });
-
-      // Pull version into the footer (best-effort).
-      fetch("/api/v1/auth/me").then(function (r) { return r.ok ? r.json() : null; }).then(function (data) {
-        if (!data || !data.version) return;
-        var v = data.version;
-        var tag = (typeof v === "string") ? v : (v.tag || (v.major + "." + v.minor + "." + v.patch));
-        document.getElementById("version-line").textContent = "Polaris " + tag;
-      }).catch(function () {});
-    },
+    renderTopbar: function () { return ''; },
+    render: function (body) { body.innerHTML = placeholder("More module not loaded", "PolarisMoreTab is missing."); },
   };
 
   // ─── Tab registry ──────────────────────────────────────────────────────
@@ -353,13 +309,6 @@
     return String(s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-
-  function csrfHeaders() {
-    var headers = {};
-    var m = document.cookie.match(/(?:^|; )polaris_csrf=([^;]+)/);
-    if (m) headers["X-CSRF-Token"] = decodeURIComponent(m[1]);
-    return headers;
   }
 
   window.PolarisTabs = {
