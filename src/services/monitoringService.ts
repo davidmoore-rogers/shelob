@@ -2566,8 +2566,14 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     if (Array.isArray(d.lldpNeighbors)) {
       await persistLldpNeighbors(assetId, d.lldpNeighbors, now, d.lldpSource ?? "fortios");
     }
+    // Only bump lastSystemInfoAt on a successful pass. The /system-info GET
+    // endpoint anchors its interface query to this timestamp so it can render
+    // every interface (including unpinned ones the fast cadence doesn't
+    // touch) — bumping it on a transport failure where no rows were inserted
+    // would point the query at a moment with zero samples and silently empty
+    // the Interfaces table on the System tab while the device is offline.
+    await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
   }
-  await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
 }
 
 /**
@@ -2878,10 +2884,20 @@ interface RunStats {
 }
 
 /**
- * One iteration of the monitor job. Picks assets due for any of the three
- * cadences (response-time probe, telemetry, system info) and runs the due
- * work in parallel. Each cadence has its own due check + per-asset interval
- * override (`monitorIntervalSec`, `telemetryIntervalSec`, `systemInfoIntervalSec`).
+ * One iteration of the monitor job. Picks assets due for any of the four
+ * cadences (response-time probe, telemetry, system info, fast-cadence pinned
+ * scrape) and runs the due work in parallel. Each cadence has its own due
+ * check + per-asset interval override (`monitorIntervalSec`,
+ * `telemetryIntervalSec`, `systemInfoIntervalSec`).
+ *
+ * Each cadence is its own queue item — workers pull single-cadence items
+ * rather than the full per-asset pipeline. A 30s SNMP-walk timeout on one
+ * host's systemInfo no longer holds up the cheap probe of the next asset:
+ * any free worker can pick up that probe immediately. Probes are queued
+ * first so when the worker pool is saturated, the lightweight cadence
+ * drains before the heavy ones, keeping per-asset response-time polling
+ * close to its configured interval even when systemInfo is wedged across
+ * a fleet of dead targets.
  */
 export async function runMonitorPass(opts?: { concurrency?: number }): Promise<RunStats> {
   const settings = await getMonitorSettings();
@@ -2893,6 +2909,7 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
     select: {
       id: true,
       assetType: true, manufacturer: true,
+      monitorStatus: true,
       lastMonitorAt: true, monitorIntervalSec: true,
       lastTelemetryAt: true, telemetryIntervalSec: true,
       lastSystemInfoAt: true, systemInfoIntervalSec: true,
@@ -2909,33 +2926,53 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
     return now.getTime() - last.getTime() >= intervalSec * 1000;
   }
 
-  type Work = {
-    id: string;
-    probe:        boolean;
-    telemetry:    boolean;
-    systemInfo:   boolean;
-    fastFiltered: boolean;
-  };
-  const work: Work[] = candidates.map((a) => {
+  type WorkKind = "probe" | "telemetry" | "systemInfo" | "fastFiltered";
+  type Work = { id: string; kind: WorkKind };
+  const probes: Work[]       = [];
+  const fastFiltereds: Work[] = [];
+  const telemetries: Work[]  = [];
+  const systemInfos: Work[]  = [];
+  for (const a of candidates) {
     // Per-class default resolution: Fortinet switches/APs may carry their own
     // interval/retention overrides; everything else uses the top-level values.
     const cls = pickMonitorClass(settings, { assetType: a.assetType, manufacturer: a.manufacturer }) ?? settings;
-    const probe = isDue(a.lastMonitorAt, a.monitorIntervalSec, cls.intervalSeconds);
+    const probe      = isDue(a.lastMonitorAt,    a.monitorIntervalSec,    cls.intervalSeconds);
+    const telemetry  = isDue(a.lastTelemetryAt,  a.telemetryIntervalSec,  cls.telemetryIntervalSeconds);
+    const systemInfo = isDue(a.lastSystemInfoAt, a.systemInfoIntervalSec, cls.systemInfoIntervalSeconds);
     const hasFastPin =
       (Array.isArray(a.monitoredInterfaces)   && a.monitoredInterfaces.length   > 0) ||
       (Array.isArray(a.monitoredStorage)      && a.monitoredStorage.length      > 0) ||
       (Array.isArray(a.monitoredIpsecTunnels) && a.monitoredIpsecTunnels.length > 0);
-    return {
-      id: a.id,
-      probe,
-      telemetry:    isDue(a.lastTelemetryAt,  a.telemetryIntervalSec,  cls.telemetryIntervalSeconds),
-      systemInfo:   isDue(a.lastSystemInfoAt, a.systemInfoIntervalSec, cls.systemInfoIntervalSeconds),
-      // Pinned interfaces / storage / tunnels ride the response-time cadence —
-      // intervalSeconds defaults to 60s. The full systemInfo pass at ~10 min
-      // still covers everything, so this only adds work for the pinned subset.
-      fastFiltered: probe && hasFastPin,
-    };
-  }).filter((w) => w.probe || w.telemetry || w.systemInfo || w.fastFiltered);
+    // While an asset is confirmed down (consecutiveFailures past threshold),
+    // suppress everything except the response-time probe. Assets stay offline
+    // for weeks or months in normal operation; doing full SNMP walks against
+    // each one every pass burns worker time on a host that's just going to
+    // time out three more times. The probe alone is cheap and is the only
+    // signal we need to detect recovery — the moment one probe succeeds,
+    // recordProbeResult flips status back to "up" and the next pass picks
+    // up the heavy cadences again. lastSystemInfoAt didn't advance during
+    // the outage (only bumps on success), so systemInfo will be due
+    // immediately on recovery and the System tab refreshes naturally.
+    // "unknown" is treated like "up" — a never-probed asset still deserves
+    // a full first-attempt pass.
+    const isDown = a.monitorStatus === "down";
+    if (probe)                                 probes.push({ id: a.id, kind: "probe" });
+    if (telemetry  && !isDown)                 telemetries.push({ id: a.id, kind: "telemetry" });
+    if (systemInfo && !isDown)                 systemInfos.push({ id: a.id, kind: "systemInfo" });
+    // Fast-cadence pinned scrape rides the response-time cadence (default 60s).
+    // Skip it when the full systemInfo pass is also due this tick — they'd
+    // hit the same OIDs twice and the full pass already covers the pinned
+    // subset. Gating at enqueue time keeps the queue items independent so
+    // workers don't need cross-item coordination.
+    if (probe && hasFastPin && !systemInfo && !isDown) fastFiltereds.push({ id: a.id, kind: "fastFiltered" });
+  }
+  // Order matters: probes first so a saturated worker pool drains the cheap
+  // cadence ahead of the heavy walks. Fast-filtered scrapes ride the same
+  // 60s cadence as probes and are still small relative to a full systemInfo
+  // pass, so they queue right behind probes. Telemetry and systemInfo bring
+  // up the rear — those are what actually time out on dead hosts, and they
+  // shouldn't get to block per-minute polling for the rest of the fleet.
+  const work: Work[] = [...probes, ...fastFiltereds, ...telemetries, ...systemInfos];
 
   const stats: RunStats = {
     probed: 0, succeeded: 0, failed: 0,
@@ -2950,59 +2987,62 @@ export async function runMonitorPass(opts?: { concurrency?: number }): Promise<R
     while (cursor < work.length) {
       const idx = cursor++;
       const w = work[idx];
-      if (w.probe) {
-        try {
-          const result = await probeAsset(w.id);
-          await recordProbeResult(w.id, result);
-          stats.probed++;
-          if (result.success) stats.succeeded++;
-          else stats.failed++;
-        } catch (err) {
-          logger.error({ err, assetId: w.id }, "Monitor probe crashed");
-          stats.probed++;
-          stats.failed++;
-        }
-      }
-      if (w.telemetry) {
-        try {
-          const tr = await collectTelemetry(w.id);
-          await recordTelemetryResult(w.id, tr);
-          if (tr.supported) {
-            if (tr.data) stats.telemetry.collected++;
-            else stats.telemetry.failed++;
+      switch (w.kind) {
+        case "probe": {
+          try {
+            const result = await probeAsset(w.id);
+            await recordProbeResult(w.id, result);
+            stats.probed++;
+            if (result.success) stats.succeeded++;
+            else stats.failed++;
+          } catch (err) {
+            logger.error({ err, assetId: w.id }, "Monitor probe crashed");
+            stats.probed++;
+            stats.failed++;
           }
-        } catch (err) {
-          logger.error({ err, assetId: w.id }, "Telemetry collection crashed");
-          stats.telemetry.failed++;
+          break;
         }
-      }
-      if (w.systemInfo) {
-        try {
-          const sr = await collectSystemInfo(w.id);
-          await recordSystemInfoResult(w.id, sr);
-          if (sr.supported) {
-            if (sr.data) stats.systemInfo.collected++;
-            else stats.systemInfo.failed++;
+        case "telemetry": {
+          try {
+            const tr = await collectTelemetry(w.id);
+            await recordTelemetryResult(w.id, tr);
+            if (tr.supported) {
+              if (tr.data) stats.telemetry.collected++;
+              else stats.telemetry.failed++;
+            }
+          } catch (err) {
+            logger.error({ err, assetId: w.id }, "Telemetry collection crashed");
+            stats.telemetry.failed++;
           }
-        } catch (err) {
-          logger.error({ err, assetId: w.id }, "System info collection crashed");
-          stats.systemInfo.failed++;
+          break;
         }
-      }
-      // Skip the fast scrape when the full one already ran this tick — they'd
-      // hit the same endpoint twice. The full scrape already wrote rows for
-      // every interface / mountpoint / tunnel, including the pinned ones.
-      if (w.fastFiltered && !w.systemInfo) {
-        try {
-          const fr = await collectFastFiltered(w.id);
-          await recordFastFilteredResult(w.id, fr);
-          if (fr.supported) {
-            if (fr.data) stats.fastFiltered.collected++;
-            else stats.fastFiltered.failed++;
+        case "systemInfo": {
+          try {
+            const sr = await collectSystemInfo(w.id);
+            await recordSystemInfoResult(w.id, sr);
+            if (sr.supported) {
+              if (sr.data) stats.systemInfo.collected++;
+              else stats.systemInfo.failed++;
+            }
+          } catch (err) {
+            logger.error({ err, assetId: w.id }, "System info collection crashed");
+            stats.systemInfo.failed++;
           }
-        } catch (err) {
-          logger.error({ err, assetId: w.id }, "Fast-cadence scrape crashed");
-          stats.fastFiltered.failed++;
+          break;
+        }
+        case "fastFiltered": {
+          try {
+            const fr = await collectFastFiltered(w.id);
+            await recordFastFilteredResult(w.id, fr);
+            if (fr.supported) {
+              if (fr.data) stats.fastFiltered.collected++;
+              else stats.fastFiltered.failed++;
+            }
+          } catch (err) {
+            logger.error({ err, assetId: w.id }, "Fast-cadence scrape crashed");
+            stats.fastFiltered.failed++;
+          }
+          break;
         }
       }
     }
