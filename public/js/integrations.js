@@ -3,6 +3,9 @@
  */
 
 document.addEventListener("DOMContentLoaded", function () {
+  // Guard: this file is also loaded on assets.html for its monitoring form
+  // helpers; only run the integrations-page init when the list element exists.
+  if (!document.getElementById("integrations-list")) return;
   loadIntegrations();
   document.getElementById("btn-add-integration").addEventListener("click", showTypePicker);
 });

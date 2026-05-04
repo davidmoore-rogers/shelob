@@ -76,6 +76,8 @@ document.addEventListener("DOMContentLoaded", async function () {
   });
   var settingsBtn = document.getElementById("btn-asset-settings");
   if (settingsBtn) settingsBtn.addEventListener("click", openAssetSettingsModal);
+  var globalMonBtn = document.getElementById("btn-global-monitoring");
+  if (globalMonBtn) globalMonBtn.addEventListener("click", openGlobalMonitoringModal);
   await userReady;
   _restoreAssetsPrefs();
   loadAssets();
@@ -2582,6 +2584,7 @@ function _renderSensorChart(container, samples, opts) {
       labels + ticks + xTicks +
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       '<polyline points="' + pts + '" fill="none" stroke="var(--color-accent)" stroke-width="1.5"/>' +
+      samples.map(function (s) { return '<circle cx="' + xFor(s.timestamp) + '" cy="' + yFor(s.celsius) + '" r="1.5" fill="var(--color-accent)"/>'; }).join("") +
       hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -3230,6 +3233,8 @@ function _renderSystemChart(container, data) {
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       (cpuPts ? '<polyline points="' + cpuPts + '" fill="none" stroke="' + cpuColor + '" stroke-width="1.5"/>' : '') +
       (memPts ? '<polyline points="' + memPts + '" fill="none" stroke="' + memColor + '" stroke-width="1.5"/>' : '') +
+      cpuValues.map(function (e) { return '<circle cx="' + xFor(e.s.timestamp) + '" cy="' + yFor(e.v) + '" r="1.5" fill="' + cpuColor + '"/>'; }).join("") +
+      memValues.map(function (e) { return '<circle cx="' + xFor(e.s.timestamp) + '" cy="' + yFor(e.v) + '" r="1.5" fill="' + memColor + '"/>'; }).join("") +
       legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -4104,6 +4109,8 @@ function _renderIfaceThroughputChart(container, derived, opts) {
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       (inPts  ? '<polyline points="' + inPts  + '" fill="none" stroke="' + inColor  + '" stroke-width="1.5"/>' : '') +
       (outPts ? '<polyline points="' + outPts + '" fill="none" stroke="' + outColor + '" stroke-width="1.5"/>' : '') +
+      inSeries .map(function (d) { return '<circle cx="' + xFor(d.timestamp) + '" cy="' + yFor(d.inBps)  + '" r="1.5" fill="' + inColor  + '"/>'; }).join("") +
+      outSeries.map(function (d) { return '<circle cx="' + xFor(d.timestamp) + '" cy="' + yFor(d.outBps) + '" r="1.5" fill="' + outColor + '"/>'; }).join("") +
       legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -4193,6 +4200,8 @@ function _renderIfaceErrorChart(container, derived, opts) {
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       (inPts  ? '<polyline points="' + inPts  + '" fill="none" stroke="#d32f2f" stroke-width="1.5"/>' : '') +
       (outPts ? '<polyline points="' + outPts + '" fill="none" stroke="#9b5de5" stroke-width="1.5"/>' : '') +
+      inSeries .map(function (d) { return '<circle cx="' + xFor(d.timestamp) + '" cy="' + yFor(d.inErr)  + '" r="1.5" fill="#d32f2f"/>'; }).join("") +
+      outSeries.map(function (d) { return '<circle cx="' + xFor(d.timestamp) + '" cy="' + yFor(d.outErr) + '" r="1.5" fill="#9b5de5"/>'; }).join("") +
       legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -4529,6 +4538,7 @@ function _renderIpsecBpsChart(container, derived, side, opts) {
       ticks + xTicks +
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>' +
+      values.map(function (e) { return '<circle cx="' + xFor(e.ts) + '" cy="' + yFor(e.v) + '" r="1.5" fill="' + color + '"/>'; }).join("") +
       hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -4757,6 +4767,8 @@ function _renderStorageBytesChart(container, samples, opts) {
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       (totalPts ? '<polyline points="' + totalPts + '" fill="none" stroke="#9b5de5" stroke-width="1.5" stroke-dasharray="4 3"/>' : '') +
       (usedPts  ? '<polyline points="' + usedPts  + '" fill="none" stroke="var(--color-accent)" stroke-width="1.5"/>' : '') +
+      total.map(function (e) { return '<circle cx="' + xFor(e.ts) + '" cy="' + yFor(e.v) + '" r="1.5" fill="#9b5de5"/>'; }).join("") +
+      used .map(function (e) { return '<circle cx="' + xFor(e.ts) + '" cy="' + yFor(e.v) + '" r="1.5" fill="var(--color-accent)"/>'; }).join("") +
       legend + hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -4825,6 +4837,7 @@ function _renderStoragePctChart(container, samples, opts) {
       ticks + xTicks +
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
       '<polyline points="' + pts + '" fill="none" stroke="var(--color-accent)" stroke-width="1.5"/>' +
+      values.map(function (e) { return '<circle cx="' + xFor(e.ts) + '" cy="' + yFor(e.v) + '" r="1.5" fill="var(--color-accent)"/>'; }).join("") +
       hits +
     '</svg>' + CHART_TOOLTIP_HTML;
   container.style.position = "relative";
@@ -6411,6 +6424,276 @@ function _credentialOptionsFor(type, selectedId) {
       opts += '<option value="' + escapeHtml(c.id) + '"' + (selectedId === c.id ? " selected" : "") + '>' + escapeHtml(c.name) + '</option>';
     });
   return opts;
+}
+
+// ─── Global Monitoring Modal ─────────────────────────────────────────────────
+// Opened from the "Monitoring" button in the page header. Shows the same
+// FortiGates / FortiSwitches / FortiAPs subtabs as the Monitoring tab inside
+// the integration edit modal on the Integrations page. Saves to the same
+// Integration.config via PUT /api/v1/integrations/:id, so both UIs stay in
+// sync. Global monitor timer settings (polling intervals, retention days) are
+// also saved via PUT /api/v1/assets/monitor-settings.
+//
+// Functions from integrations.js are used here:
+//   monitorSettingsFormHTML, _intRenderTabbedBody, _intWireModalTabs,
+//   wireAutoMonitorCards, _readMonitorCredentialId,
+//   _readMonitorTransportSources, _readFortigateMonitorBlock,
+//   _readClassMonitorBlock, getMonitorSettingsFromForm,
+//   AUTO_MONITOR_INTERFACE_WARN_THRESHOLD
+
+var _gMonIntegrations = [];  // all FMG/FGT integrations loaded on modal open
+var _gMonCurrentId    = null; // ID of the currently-visible integration tab
+var _gMonFormCache    = {};   // intgId → { credId, transports, fgBlock, swBlock, apBlock }
+var _gMonTimers       = {};   // global timer values (shared; may be edited before switching tabs)
+var _gMonCreds        = [];   // credential list, fetched once on modal open
+
+async function openGlobalMonitoringModal() {
+  var results = await Promise.all([
+    api.integrations.list().catch(function () { return []; }),
+    api.assets.getMonitorSettings().catch(function () { return {}; }),
+    api.credentials.list().catch(function () { return []; }),
+  ]);
+  var intgResp = results[0];
+  var monSettings = results[1] || {};
+  var credResp = results[2];
+
+  var allIntgs = intgResp.integrations || intgResp || [];
+  _gMonIntegrations = allIntgs.filter(function (i) {
+    return i.type === "fortimanager" || i.type === "fortigate";
+  });
+  _gMonTimers    = monSettings;
+  _gMonCreds     = Array.isArray(credResp) ? credResp : [];
+  _gMonFormCache = {};
+  _gMonCurrentId = null;
+
+  if (_gMonIntegrations.length === 0) {
+    openModal(
+      "Integration Monitoring Settings",
+      '<div class="empty-state" style="padding:2rem 0">No FortiManager or FortiGate integrations configured. Add one under <a href="/integrations.html">Integrations</a> first.</div>',
+      '<button class="btn btn-secondary" onclick="closeModal()">Close</button>'
+    );
+    return;
+  }
+
+  // Outer tab bar — one button per FMG / FGT integration.
+  var tabBar = '<div class="page-tabs" id="g-mon-intg-tabs" style="margin-bottom:1rem">' +
+    _gMonIntegrations.map(function (intg, i) {
+      var badge = intg.type === "fortigate" ? "FGT" : "FMG";
+      return '<button type="button" class="page-tab' + (i === 0 ? " active" : "") +
+        '" data-intg-id="' + intg.id + '">' +
+        escapeHtml(intg.name) +
+        ' <span style="font-size:0.7rem;opacity:0.65;margin-left:4px">[' + badge + ']</span>' +
+      '</button>';
+    }).join("") +
+  '</div>';
+
+  var body = tabBar + '<div id="g-mon-content"></div>';
+  var footer =
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" id="btn-g-mon-save">Save Changes</button>';
+
+  openModal("Integration Monitoring Settings", body, footer, { wide: true });
+
+  // Wire outer integration tabs: cache current state then re-render.
+  document.querySelectorAll("#g-mon-intg-tabs .page-tab").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      _gMonCacheCurrentState();
+      document.querySelectorAll("#g-mon-intg-tabs .page-tab").forEach(function (b) {
+        b.classList.remove("active");
+      });
+      btn.classList.add("active");
+      _gMonCurrentId = btn.getAttribute("data-intg-id");
+      _gMonRenderContent(_gMonCurrentId);
+    });
+  });
+
+  document.getElementById("btn-g-mon-save").addEventListener("click", _gMonSave);
+
+  // Render the first integration's monitoring form.
+  _gMonCurrentId = _gMonIntegrations[0].id;
+  _gMonRenderContent(_gMonCurrentId);
+}
+
+// Snapshot the currently-displayed form state into the cache.
+// Also refreshes the timer cache in case the operator edited timer fields.
+function _gMonCacheCurrentState() {
+  if (!_gMonCurrentId) return;
+  try {
+    var t = getMonitorSettingsFromForm();
+    if (t) _gMonTimers = t;
+  } catch (_) {}
+  _gMonFormCache[_gMonCurrentId] = {
+    credId:     _readMonitorCredentialId(),
+    transports: _readMonitorTransportSources(),
+    fgBlock:    _readFortigateMonitorBlock("f-mon-fortigate-"),
+    swBlock:    _readClassMonitorBlock("f-mon-fortiswitch-"),
+    apBlock:    _readClassMonitorBlock("f-mon-fortiap-"),
+  };
+}
+
+// Render the monitoring form for `intgId` into #g-mon-content.
+// Uses the form cache when the tab was previously visited so unsaved edits
+// survive switching between integration tabs.
+function _gMonRenderContent(intgId) {
+  var intg = _gMonIntegrations.find(function (i) { return i.id === intgId; });
+  if (!intg) return;
+  var config  = intg.config || {};
+  var cached  = _gMonFormCache[intgId];
+
+  // Integration-specific opts: prefer cached (unsaved) state over stored config.
+  var opts = {
+    snmpCredentials:    _gMonCreds,
+    monitorCredentialId: cached ? (cached.credId || null) : (config.monitorCredentialId || null),
+    transportSources: (cached && cached.transports) ? {
+      responseTime: cached.transports.monitorResponseTimeSource === "snmp" ? "snmp" : "rest",
+      telemetry:    cached.transports.monitorTelemetrySource    === "snmp" ? "snmp" : "rest",
+      interfaces:   cached.transports.monitorInterfacesSource   === "snmp" ? "snmp" : "rest",
+      lldp:         cached.transports.monitorLldpSource         === "snmp" ? "snmp" : "rest",
+    } : {
+      responseTime: config.monitorResponseTimeSource || "rest",
+      telemetry:    config.monitorTelemetrySource    || "rest",
+      interfaces:   config.monitorInterfacesSource   || "rest",
+      lldp:         config.monitorLldpSource         || "rest",
+    },
+    fortigateMonitor:   cached ? (cached.fgBlock || null) : (config.fortigateMonitor   || null),
+    fortiswitchMonitor: cached ? (cached.swBlock || null) : (config.fortiswitchMonitor || null),
+    fortiapMonitor:     cached ? (cached.apBlock || null) : (config.fortiapMonitor     || null),
+    integrationId: intgId,
+  };
+
+  var contentEl = document.getElementById("g-mon-content");
+  if (!contentEl) return;
+  contentEl.innerHTML = monitorSettingsFormHTML(_gMonTimers, opts);
+
+  // Wire the inner FortiGates / FortiSwitches / FortiAPs sub-tabs.
+  _intWireModalTabs("intg-mon");
+  wireAutoMonitorCards(intgId);
+}
+
+// Save all integrations that have cached form state (at minimum the current
+// one, which is cached first). Also saves global monitor timer settings.
+async function _gMonSave() {
+  var btn = document.getElementById("btn-g-mon-save");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  try {
+    // Cache the currently-displayed form so we don't miss the active tab.
+    _gMonCacheCurrentState();
+
+    // Save global monitor timer settings.
+    try {
+      await api.assets.updateMonitorSettings(_gMonTimers);
+    } catch (e) {
+      showToast("Monitor timers couldn't be saved: " + (e.message || "unknown error"), "error");
+    }
+
+    // Collect integrations whose form state was visited (cache entry exists).
+    var toSave = _gMonIntegrations.filter(function (intg) {
+      return !!_gMonFormCache[intg.id];
+    });
+
+    if (toSave.length === 0) {
+      closeModal();
+      showToast("Monitoring settings saved");
+      return;
+    }
+
+    var errors     = [];
+    var needsApply = [];
+
+    for (var s = 0; s < toSave.length; s++) {
+      var intg   = toSave[s];
+      var cached = _gMonFormCache[intg.id];
+
+      // Build the full config patch, preserving all non-monitoring fields.
+      var patch = Object.assign({}, intg.config || {});
+      if (cached.credId !== undefined) patch.monitorCredentialId = cached.credId || null;
+      if (cached.transports) {
+        patch.monitorResponseTimeSource = cached.transports.monitorResponseTimeSource;
+        patch.monitorTelemetrySource    = cached.transports.monitorTelemetrySource;
+        patch.monitorInterfacesSource   = cached.transports.monitorInterfacesSource;
+        patch.monitorLldpSource         = cached.transports.monitorLldpSource;
+      }
+      if (cached.fgBlock) patch.fortigateMonitor   = cached.fgBlock;
+      if (cached.swBlock) patch.fortiswitchMonitor = cached.swBlock;
+      if (cached.apBlock) patch.fortiapMonitor     = cached.apBlock;
+
+      try {
+        await api.integrations.update(intg.id, {
+          name:         intg.name,
+          config:       patch,
+          enabled:      intg.enabled,
+          autoDiscover: intg.autoDiscover !== false,
+          pollInterval: intg.pollInterval,
+        });
+        intg.config = patch; // keep local copy current for re-visits
+
+        // Collect auto-monitor apply candidates (any class with a selection).
+        if ((cached.fgBlock && cached.fgBlock.autoMonitorInterfaces) ||
+            (cached.swBlock && cached.swBlock.autoMonitorInterfaces) ||
+            (cached.apBlock && cached.apBlock.autoMonitorInterfaces)) {
+          needsApply.push({ intg: intg, cached: cached });
+        }
+      } catch (err) {
+        errors.push(intg.name + ": " + (err.message || "error"));
+      }
+    }
+
+    // Auto-monitor apply pass (mirrors integration edit modal behaviour).
+    if (needsApply.length > 0) {
+      var totalEstimate = 0;
+      ["f-mon-fortigate-amon-", "f-mon-fortiswitch-amon-", "f-mon-fortiap-amon-"].forEach(function (p) {
+        var el = document.getElementById(p + "preview");
+        var n = el && el.dataset && parseInt(el.dataset.interfaceCount || "0", 10);
+        if (Number.isFinite(n)) totalEstimate += n;
+      });
+      var proceed = true;
+      if (totalEstimate > AUTO_MONITOR_INTERFACE_WARN_THRESHOLD) {
+        proceed = window.confirm(
+          "Auto-Monitor will pin approximately " + totalEstimate + " interfaces.\n\n" +
+          "Each pin is scraped on the response-time cadence (default 60 s). Large pin counts " +
+          "add load to the database and to the monitored devices.\n\nContinue applying now?"
+        );
+      }
+      if (proceed) {
+        btn.textContent = "Applying...";
+        for (var a = 0; a < needsApply.length; a++) {
+          var entry = needsApply[a];
+          var classes = [
+            ["fortigate",   entry.cached.fgBlock],
+            ["fortiswitch", entry.cached.swBlock],
+            ["fortiap",     entry.cached.apBlock],
+          ];
+          for (var c = 0; c < classes.length; c++) {
+            var klass = classes[c][0];
+            var block = classes[c][1];
+            if (!block || !block.autoMonitorInterfaces) continue;
+            try {
+              await api.integrations.interfaceAggregateApply(entry.intg.id, klass);
+            } catch (err) {
+              errors.push(entry.intg.name + " auto-monitor (" + klass + "): " + (err.message || "error"));
+            }
+          }
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      showToast("Saved with errors: " + errors.join("; "), "error");
+    } else {
+      closeModal();
+      showToast("Monitoring settings saved");
+    }
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Save Changes";
+    }
+  }
 }
 
 // One-click bulk monitoring toggle. The backend now applies the requested
