@@ -320,7 +320,11 @@ async function getSampleTableStats(): Promise<CapacitySampleTable[]> {
     const dead = r ? Number(r.n_dead_tup) : 0;
     const bytes = r ? Number(r.bytes) : 0;
     const total = live + dead;
-    const avgBytesPerRow = live > 0 ? Math.round(bytes / live) : DEFAULT_BYTES_PER_ROW[t.name] ?? 300;
+    // Divide by (live + dead) so a bloated table — tiny live count, large dead
+    // count from a recent aggressive prune — doesn't produce an absurd per-row
+    // estimate. bytes / 8 live rows on a 180 MB table → 22 MB/row; bytes /
+    // (8 + 80k dead) → ~2 kB/row, which is realistic.
+    const avgBytesPerRow = total > 0 ? Math.round(bytes / total) : DEFAULT_BYTES_PER_ROW[t.name] ?? 300;
     return {
       name: t.name,
       rows: live,
