@@ -62,7 +62,10 @@ async function request(method, path, body, signal) {
   const res = await fetch(API_BASE + path, opts);
 
   if (res.status === 204) return null;
-  if (res.status === 401) { window.location.href = "/login.html"; return; }
+  if (res.status === 401) {
+    if (typeof window.__polarisOn401 === "function") return window.__polarisOn401();
+    window.location.href = "/login.html"; return;
+  }
 
   const data = await res.json();
   if (!res.ok) {

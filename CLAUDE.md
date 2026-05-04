@@ -41,12 +41,14 @@ polaris/
 │   ├── server-settings.html
 │   ├── logo.png
 │   ├── map.html                     # Device Map page (Leaflet basemap + Cytoscape topology modal)
+│   ├── mobile.html                  # Phone-targeted SPA (Material 3). Single document, hash-routed, reuses /api/v1 + session auth from the desktop app. Loaded directly today; will be the auto-redirect target for phone UAs once Phase 9 ships.
 │   ├── css/
 │   │   ├── styles.css
 │   │   ├── map.css                  # Device Map styles (marker icons, topology modal grid)
+│   │   ├── mobile.css               # Material 3 component library for mobile.html (tonal surfaces, navigation bar, list items, chips, sheets)
 │   │   └── vendor/leaflet/          # Leaflet + markercluster CSS + marker PNGs (bundled; CSP blocks external CDN)
 │   └── js/
-│       ├── api.js                   # HTTP client with auth/error handling
+│       ├── api.js                   # HTTP client with auth/error handling. 401 redirect goes to /login.html unless `window.__polarisOn401` is set (mobile app sets this to route back to its in-app login).
 │       ├── app.js                   # Navigation, layout, theme switching
 │       ├── dashboard.js
 │       ├── blocks.js
@@ -58,6 +60,7 @@ polaris/
 │       ├── ip-panel.js
 │       ├── map.js                   # Device Map: Leaflet markers, autocomplete search, Cytoscape topology modal
 │       ├── table-sf.js
+│       ├── mobile/                  # Mobile SPA bundle (loaded by mobile.html). router.js (hash routing), auth.js (login + TOTP screens), tabs.js (per-tab renderers), app.js (orchestrator: bootstraps auth, mounts the tab shell, dispatches routes).
 │       └── vendor/                  # Bundled: jspdf, leaflet/, cytoscape, dagre, cytoscape-dagre
 ├── src/
 │   ├── index.ts                     # Entry point
