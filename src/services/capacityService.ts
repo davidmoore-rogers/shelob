@@ -443,6 +443,25 @@ function computeReasons(
     });
   }
 
+  // Steady-state projection exceeds available disk on the DB volume. At current
+  // settings the DB will fill the disk before reaching steady-state — the
+  // per-volume disk-free thresholds above won't fire until it's already too late.
+  if (dbVolume && snap.workload.steadyStateSizeBytes > dbVolume.freeBytes) {
+    reasons.push({
+      severity: "red",
+      code: "projected_exceeds_disk",
+      message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
+      suggestion: "Reduce sample retention or monitored asset count, or expand the database volume.",
+    });
+  } else if (dbVolume && snap.workload.steadyStateSizeBytes > dbVolume.freeBytes * 0.75) {
+    reasons.push({
+      severity: "amber",
+      code: "projected_exceeds_disk",
+      message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) will consume more than 75% of free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
+      suggestion: "Consider reducing sample retention or expanding the database volume before it fills.",
+    });
+  }
+
   // Stale autovacuum on a populated sample table — bloat will keep growing.
   // Collapsed into a single reason listing every affected table so an install
   // with several bloated sample tables doesn't render the same advice 3-5
