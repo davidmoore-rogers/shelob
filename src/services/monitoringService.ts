@@ -48,6 +48,7 @@ import {
   setMonitoredAssets,
   setQueueDepth,
 } from "../metrics.js";
+import { dropChunks } from "./timescaleService.js";
 
 export type MonitorType =
   | "fortimanager"
@@ -3182,11 +3183,30 @@ async function pruneOneTable(
   fn: SamplePruneFn,
   retentionDays: { default: number; fortiswitch: number; fortiap: number },
   classIds: { swIds: string[]; apIds: string[] },
+  hypertableName?: string,
 ): Promise<number> {
   const nowMs = Date.now();
   const fortinetClassIds = [...classIds.swIds, ...classIds.apIds];
+
+  // Phase 1 (hypertable fast path). When this table is a Timescale hypertable,
+  // drop whole chunks older than the LONGEST configured retention. drop_chunks
+  // is chunk-granular and constant-time per chunk — no seq-scan, no row lock
+  // contention with normal writes — so we use it to peel off everything
+  // beyond every class's retention window in O(1). Per-class trimming inside
+  // the retention window then runs as a deleteMany on the residue.
+  //
+  // No-op when the table is plain Postgres (`dropChunks` returns immediately).
+  if (hypertableName) {
+    const longest = Math.max(retentionDays.default, retentionDays.fortiswitch, retentionDays.fortiap);
+    if (longest > 0) {
+      await dropChunks(hypertableName, new Date(nowMs - longest * 24 * 3600 * 1000));
+    }
+  }
+
   let total = 0;
-  // Default bucket: every asset NOT in the Fortinet switch/AP classes.
+  // Phase 2 (per-class deleteMany). On hypertables this only touches chunks
+  // already inside the retention window — no point hitting the dropped-chunk
+  // bytes again. On plain tables this is the only deletion path.
   if (retentionDays.default > 0) {
     const cutoff = new Date(nowMs - retentionDays.default * 24 * 3600 * 1000);
     const where: Record<string, unknown> = { timestamp: { lt: cutoff } };
@@ -3222,6 +3242,7 @@ export async function pruneMonitorSamples(): Promise<number> {
       fortiap:     settings.fortiap.sampleRetentionDays,
     },
     ids,
+    "asset_monitor_samples",
   );
 }
 
@@ -3240,8 +3261,8 @@ export async function pruneTelemetrySamples(): Promise<number> {
     fortiap:     settings.fortiap.telemetryRetentionDays,
   };
   const [tel, temps] = await Promise.all([
-    pruneOneTable((where) => prisma.assetTelemetrySample.deleteMany({   where: where as any }), r, ids),
-    pruneOneTable((where) => prisma.assetTemperatureSample.deleteMany({ where: where as any }), r, ids),
+    pruneOneTable((where) => prisma.assetTelemetrySample.deleteMany({   where: where as any }), r, ids, "asset_telemetry_samples"),
+    pruneOneTable((where) => prisma.assetTemperatureSample.deleteMany({ where: where as any }), r, ids, "asset_temperature_samples"),
   ]);
   return tel + temps;
 }
@@ -3264,9 +3285,9 @@ export async function pruneSystemInfoSamples(): Promise<number> {
     fortiap:     settings.fortiap.systemInfoRetentionDays,
   };
   const [ifaces, storage, ipsec, lldp] = await Promise.all([
-    pruneOneTable((where) => prisma.assetInterfaceSample.deleteMany({    where: where as any }), r, ids),
-    pruneOneTable((where) => prisma.assetStorageSample.deleteMany({      where: where as any }), r, ids),
-    pruneOneTable((where) => prisma.assetIpsecTunnelSample.deleteMany({  where: where as any }), r, ids),
+    pruneOneTable((where) => prisma.assetInterfaceSample.deleteMany({    where: where as any }), r, ids, "asset_interface_samples"),
+    pruneOneTable((where) => prisma.assetStorageSample.deleteMany({      where: where as any }), r, ids, "asset_storage_samples"),
+    pruneOneTable((where) => prisma.assetIpsecTunnelSample.deleteMany({  where: where as any }), r, ids, "asset_ipsec_tunnel_samples"),
     pruneLldpNeighbors(r, ids),
   ]);
   return ifaces + storage + ipsec + lldp;

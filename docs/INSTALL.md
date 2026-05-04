@@ -294,6 +294,102 @@ Browse to `http://<host>:3000` to run the setup wizard.
 
 ---
 
+## Recommended: TimescaleDB
+
+Polaris's monitoring sample tables (`asset_monitor_samples`, `asset_telemetry_samples`, `asset_temperature_samples`, `asset_interface_samples`, `asset_storage_samples`, `asset_ipsec_tunnel_samples`) are append-only time-series. Plain Postgres handles them fine at small scale, but once the combined size crosses ~1 GB the daily retention prune starts seq-scanning hundreds of millions of rows, contending with normal write load. **TimescaleDB** (an official Postgres extension) converts these tables to hypertables with chunk-based partitioning and native compression:
+
+- Daily prune becomes `DROP CHUNK` (instant, no seq-scan, no lock contention)
+- Compressed chunks (default: anything older than 7 days) take ~10–30× less disk
+- Read queries are unchanged — Polaris uses ordinary SQL, Timescale handles transparency
+
+Polaris **detects the extension at boot**. If present, the boot-time migration converts the six sample tables to hypertables on the next startup and adds the compression policy. If absent, Polaris stays on plain-Postgres prune and surfaces a `timescale_recommended` alert in the Maintenance tab once sample tables grow past 1 GB.
+
+If you're standing up a new install on RHEL/Rocky/AlmaLinux 9, Ubuntu/Debian, or Docker, install Timescale **before** the first run so all sample tables become hypertables from the start with no conversion downtime.
+
+### RHEL / Rocky / AlmaLinux 9
+
+```bash
+sudo tee /etc/yum.repos.d/timescale_timescaledb.repo <<'EOF'
+[timescale_timescaledb]
+name=timescale_timescaledb
+baseurl=https://packagecloud.io/timescale/timescaledb/el/9/$basearch
+repo_gpgcheck=1
+gpgcheck=0
+enabled=1
+gpgkey=https://packagecloud.io/timescale/timescaledb/gpgkey
+sslverify=1
+sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+metadata_expire=300
+EOF
+
+sudo dnf install -y timescaledb-2-postgresql-15
+sudo timescaledb-tune --pg-config=/usr/pgsql-15/bin/pg_config --quiet --yes
+sudo systemctl restart postgresql-15
+sudo -u postgres psql -d polaris -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+```
+
+`timescaledb-tune` updates `shared_preload_libraries` in `postgresql.conf` along with a few memory parameters. The Postgres restart picks the change up. Re-running it is safe.
+
+### Ubuntu / Debian
+
+```bash
+sudo apt install -y postgresql-common
+sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -c -s) main" \
+  | sudo tee /etc/apt/sources.list.d/timescaledb.list
+wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | sudo apt-key add -
+sudo apt update
+sudo apt install -y timescaledb-2-postgresql-15
+sudo timescaledb-tune --quiet --yes
+sudo systemctl restart postgresql
+sudo -u postgres psql -d polaris -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+```
+
+### Docker / docker-compose
+
+Use the official Timescale image instead of vanilla Postgres in your compose file:
+
+```yaml
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15   # was: postgres:15
+    volumes:
+      - polaris-pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: polaris
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: polaris
+```
+
+Existing data on the named volume is preserved across the image swap. After bringing the new container up, enable the extension once:
+
+```bash
+docker exec -it <postgres-container> psql -U polaris -d polaris \
+  -c "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+```
+
+### Windows Server
+
+The official Timescale Windows installer is bundled with the EnterpriseDB Postgres installer. Run the EDB installer with the timescaledb extension checked, or download `timescaledb_x.y.z_pg15_windows_amd64.zip` from packagecloud, copy `timescaledb*.dll` into `C:\Program Files\PostgreSQL\15\lib`, copy `timescaledb*.sql` and the control file into `C:\Program Files\PostgreSQL\15\share\extension`, then add `timescaledb` to `shared_preload_libraries` in `postgresql.conf`, restart the Windows service, and run `CREATE EXTENSION timescaledb` against the polaris database.
+
+### Managed / remote Postgres
+
+If your Postgres is on a hosted service (RDS, Aurora, Cloud SQL, Azure Postgres, Crunchy, etc.), TimescaleDB availability varies:
+
+| Service | TimescaleDB |
+|---|---|
+| AWS RDS for Postgres | **No** |
+| AWS Aurora | **No** |
+| Azure Postgres Flexible Server | Yes (opt-in) |
+| Google Cloud SQL | **No** |
+| Crunchy Bridge | Yes |
+| Timescale Cloud | Yes (native) |
+| Self-managed cloud (EC2 / Compute Engine / etc.) | Yes — install via the OS-native steps above |
+
+If your service doesn't support TimescaleDB, Polaris stays on plain-Postgres prune and the Maintenance tab will continue to surface the recommendation as the sample tables grow. At that point, the right answers are: tighten retention, reduce monitored asset count, or migrate to a Postgres host that supports the extension.
+
+---
+
 ## What the runtime does to keep this working
 
 After install, Polaris monitors disk space on every filesystem it (and PostgreSQL, when co-located) writes to:

@@ -42,6 +42,7 @@ import "./jobs/resolveStaleReservationConflicts.js";
 import "./jobs/scrubLegacySidGuidTags.js";
 import "./jobs/backfillFortigateEndpointSources.js";
 import { ensureRegistryLoaded } from "./services/oidRegistry.js";
+import { detectTimescale } from "./services/timescaleService.js";
 import { runStartupDiskCheck } from "./utils/startupDiskCheck.js";
 
 // Warm the symbolic-OID registry once at startup so the first monitor tick
@@ -49,6 +50,13 @@ import { runStartupDiskCheck } from "./utils/startupDiskCheck.js";
 // are non-fatal — the registry will lazily reload on the next resolve() call.
 ensureRegistryLoaded().catch((err) => {
   logger.warn({ err: err?.message }, "OID registry warm-up failed");
+});
+
+// Detect TimescaleDB once at startup so the prune layer + capacity service
+// can dispatch on hypertable status without paying a probe on every call.
+// Non-fatal — falls back to "extension not available" + plain-table prune.
+detectTimescale().catch((err) => {
+  logger.warn({ err: err?.message }, "TimescaleDB detection failed");
 });
 
 // Boot-time disk diagnostic. Logs a clear "X volume has Y MB free" line for

@@ -39,6 +39,8 @@ import { fileURLToPath } from "node:url";
 
 import { prisma } from "../db.js";
 import { getMonitorSettings, type MonitorSettings } from "./monitoringService.js";
+import { isTimescaleAvailable, isHypertable, SAMPLE_TABLES as TIMESCALE_SAMPLE_TABLES } from "./timescaleService.js";
+import { getDeploymentContext } from "../utils/deploymentContext.js";
 import { BACKUP_DIR, STATE_DIR } from "../utils/paths.js";
 import { logger } from "../utils/logger.js";
 
@@ -96,6 +98,16 @@ export interface CapacitySnapshot {
      * (path is meaningless on this host) or when the SHOW failed.
      */
     dataDirectory: string | null;
+    /**
+     * TimescaleDB extension + per-table hypertable status. Drives the
+     * `timescale_recommended` reason and is surfaced on the Maintenance tab
+     * so operators can see at a glance whether their sample tables are on
+     * the fast path (hypertable + chunk-drop prune + compression).
+     */
+    timescale: {
+      extensionInstalled: boolean;
+      hypertableTables: string[];
+    };
   };
   workload: {
     monitoredAssetCount: number;
@@ -522,6 +534,31 @@ function computeReasons(
     });
   }
 
+  // ── Watch: TimescaleDB recommendation ────────────────────────────────────
+  // Once the sample tables together cross ~1 GB and the extension isn't
+  // installed, advise the operator. Below the threshold it's not worth
+  // bothering them — plain Postgres prune handles small sample tables fine.
+  // Above it, partition-drop prune and compression are step-change wins
+  // (10-30× storage reduction, instant chunk drops vs. seq-scan deleteMany).
+  // The suggestion adapts to deployment context so the install hint matches
+  // the operator's actual environment.
+  const TIMESCALE_RECOMMEND_BYTES = 1024 * 1024 * 1024; // 1 GB
+  const sampleTableBytes = snap.database.sampleTables.reduce((sum, t) => sum + t.bytes, 0);
+  if (!snap.database.timescale.extensionInstalled && sampleTableBytes > TIMESCALE_RECOMMEND_BYTES) {
+    const ctx = getDeploymentContext();
+    const suggestion = !ctx.dbIsLocal
+      ? "Ask your database administrator to install the timescaledb extension on the polaris database. Some managed services (RDS for Postgres) don't support it; Timescale Cloud and Azure Postgres Flexible Server do."
+      : ctx.runtimeIsContainer
+        ? "Switch your Postgres container to the timescale/timescaledb:latest-pg15 image. Existing data is preserved on the volume."
+        : "Install TimescaleDB on this server. See docs/INSTALL.md → Recommended: TimescaleDB.";
+    reasons.push({
+      severity: "watch",
+      code: "timescale_recommended",
+      message: `Sample tables are ${formatBytes(sampleTableBytes)}. Installing TimescaleDB would compress them by ~10× and make daily prune instant.`,
+      suggestion,
+    });
+  }
+
   // Carry forward the legacy RAM-insufficient and PG-tuning signals as amber.
   if (ramInsufficient) {
     reasons.push({
@@ -620,6 +657,10 @@ export async function getCapacitySnapshot(opts: {
       sizeBytes: dbSizeBytes,
       sampleTables,
       dataDirectory,
+      timescale: {
+        extensionInstalled: isTimescaleAvailable(),
+        hypertableTables: TIMESCALE_SAMPLE_TABLES.filter((t) => isHypertable(t)),
+      },
     },
     workload: {
       monitoredAssetCount: monitoredCount,
