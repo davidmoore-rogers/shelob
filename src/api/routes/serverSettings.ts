@@ -896,6 +896,22 @@ function getMinRecommendedRamBytes(dbSizeBytes: number): number {
   return Math.pow(2, Math.ceil(Math.log2(target / GB))) * GB;
 }
 
+// Server RAM ships in standard sizes (commonly powers of 2: 4/8/16/32/64 GiB),
+// but the kernel reserves a few percent for firmware/iGPU/etc., so totalmem()
+// reports less than the installed amount — a 16 GiB box typically shows up as
+// ~15.4–15.7 GiB. Snap to the nearest power-of-2 GiB when within 10%, so the
+// displayed size matches what the operator put in the slot and the comparison
+// against a power-of-2 recommendation doesn't trip on rounding alone. Falls
+// back to nearest-integer GiB for non-pow2 sizes (12 / 24 / 48 GiB).
+function detectInstalledRamGb(rawBytes: number): number {
+  const GB = 1024 * 1024 * 1024;
+  const rawGb = rawBytes / GB;
+  if (rawGb < 1) return Math.max(1, Math.round(rawGb));
+  const nextPow2 = Math.pow(2, Math.ceil(Math.log2(rawGb)));
+  if (rawGb / nextPow2 >= 0.90) return nextPow2;
+  return Math.round(rawGb);
+}
+
 function parsePgBytes(val: string): number {
   const s = val.trim();
   // PostgreSQL reports in 8kB pages for shared_buffers, or kB/MB/GB suffixes
@@ -948,7 +964,7 @@ router.get("/pg-tuning", async (_req, res, next) => {
     const minRam = getMinRecommendedRamBytes(dbSizeBytes);
     const currentRam = totalmem();
     const GB = 1024 * 1024 * 1024;
-    const currentRamGb    = Math.round(currentRam / GB);
+    const currentRamGb    = detectInstalledRamGb(currentRam);
     const recommendedRamGb = minRam / GB;
     // Compare in whole GBs so a server displaying "8 GB" is never flagged against an "8 GB" target
     const ramInsufficient = currentRamGb < recommendedRamGb;
