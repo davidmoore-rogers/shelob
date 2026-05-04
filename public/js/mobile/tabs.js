@@ -255,23 +255,13 @@
   };
 
   // ─── Map ───────────────────────────────────────────────────────────────
-  var Map = {
+  // Real spec lives in /js/mobile/map-tab.js. Loaded before tabs.js so the
+  // window.PolarisMapTab namespace is available here.
+  var Map = (window.PolarisMapTab && window.PolarisMapTab.spec) || {
     title: "Device Map",
     icon: "#i-map",
-    renderTopbar: function () {
-      return ''
-        + '<div class="m3-topbar">'
-        + '  <div class="leading"></div>'
-        + '  <div class="title">Device Map</div>'
-        + '  <div class="trailing"></div>'
-        + '</div>';
-    },
-    render: function (body) {
-      body.innerHTML = placeholder(
-        "Device Map coming soon",
-        "Leaflet basemap + clustered pins for every FortiGate site, color-coded by monitor health."
-      );
-    },
+    renderTopbar: function () { return ''; },
+    render: function (body) { body.innerHTML = placeholder("Map module not loaded", "PolarisMapTab is missing — check script load order."); },
   };
 
   // ─── Assets ────────────────────────────────────────────────────────────

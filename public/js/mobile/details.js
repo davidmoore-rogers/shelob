@@ -60,8 +60,14 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
+  // Each detail spec carries an optional `parentTab` so app.js can keep
+  // the corresponding nav-bar item visually active while the operator is
+  // inside the detail. Specs without a parentTab leave the navbar
+  // unhighlighted (e.g. block detail isn't part of any mobile tab).
+
   // ─── Asset detail (placeholder until Phase 5) ──────────────────────────
   var Asset = {
+    parentTab: "assets",
     renderTopbar: function (ctx) {
       return backTopbar("Asset");
     },
@@ -78,6 +84,7 @@
 
   // ─── Subnet detail (placeholder until Phase 8) ─────────────────────────
   var Subnet = {
+    parentTab: null,
     renderTopbar: function () {
       return backTopbar("Subnet");
     },
@@ -94,6 +101,7 @@
 
   // ─── Block detail (desktop-only) ───────────────────────────────────────
   var Block = {
+    parentTab: null,
     renderTopbar: function () {
       return backTopbar("Block");
     },
@@ -108,19 +116,24 @@
     },
   };
 
-  // ─── Map site (placeholder until Phase 3) ──────────────────────────────
+  // ─── Map site ──────────────────────────────────────────────────────────
+  // Delegates to PolarisMapTab.renderForSite — same map UI as the Map tab,
+  // but pre-opens the bottom sheet for the named site so deep-links from
+  // search land where the operator expected. No top app bar (the floating
+  // searchbar plays that role).
   var Site = {
-    renderTopbar: function () {
-      return backTopbar("Site");
-    },
+    parentTab: "map",
+    renderTopbar: function () { return ""; },
     render: function (body, ctx) {
-      var id = ctx.route.parts[0] || "";
-      body.innerHTML = placeholderBody(
-        "Device Map coming soon",
-        "Phase 3 wires the Leaflet map up. Tapping a site from search will pan to that pin and open its topology. Site id: " + id,
-        "/map.html#site=" + id
-      );
-      wireBack("map");
+      if (!window.PolarisMapTab) {
+        body.innerHTML = placeholderBody(
+          "Map module not loaded",
+          "PolarisMapTab is missing — check script load order in mobile.html.",
+          ""
+        );
+        return;
+      }
+      window.PolarisMapTab.renderForSite(body, ctx);
     },
   };
 

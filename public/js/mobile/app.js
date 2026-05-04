@@ -120,12 +120,16 @@
     var details = window.PolarisDetails || {};
     var detailSpec = details[route.name];
     if (detailSpec) {
-      // Detail screens leave the navbar visible but unselected so the user
-      // can hop straight to another tab. Set data-tab to the route name so
-      // the navbar shows but no item is active.
-      app.dataset.tab = route.name;
+      // Detail specs may declare a parentTab — when set, the corresponding
+      // navbar item stays highlighted so the user understands which tab
+      // they're conceptually inside. Without a parentTab the navbar is
+      // visible but no item is active (e.g. block detail).
+      var parentTab = detailSpec.parentTab || "";
+      app.dataset.tab = parentTab || route.name;
       var nav = document.getElementById("navbar");
-      if (nav) nav.querySelectorAll(".nav-item").forEach(function (b) { b.classList.remove("active"); });
+      if (nav) nav.querySelectorAll(".nav-item").forEach(function (b) {
+        b.classList.toggle("active", parentTab !== "" && b.dataset.tab === parentTab);
+      });
 
       topbar.innerHTML = detailSpec.renderTopbar
         ? detailSpec.renderTopbar({ user: currentUser, route: route }) : '';

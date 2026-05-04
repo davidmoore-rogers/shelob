@@ -677,3 +677,97 @@ input, select, textarea { font-family: inherit; }
 
 /* Avoid double tap zoom on buttons / interactive cards */
 button, .list-item, .chip { touch-action: manipulation; }
+
+/* ─── Map ─────────────────────────────────────────────────────────────── */
+.map-screen {
+  position: relative;
+  height: 100%;
+}
+.map-screen #map-container {
+  position: absolute;
+  inset: 0;
+}
+.map-screen .map-search-float {
+  position: absolute;
+  top: 12px; left: 12px; right: 12px;
+  height: 56px;
+  background: var(--md-surface-cont-high);
+  border-radius: var(--shape-full);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 12px;
+  box-shadow: var(--elev-2);
+  z-index: 600;
+  cursor: pointer;
+}
+.map-screen .map-search-float .placeholder {
+  flex: 1;
+  color: var(--md-on-surface-variant);
+  font-size: 16px;
+  letter-spacing: .5px;
+}
+.map-screen .map-search-float svg {
+  width: 24px; height: 24px; fill: var(--md-on-surface-variant);
+}
+.map-screen .map-fab-pos {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 600;
+}
+
+/* FortiGate map markers (Leaflet divIcons). Mirrors the desktop palette but
+   uses the MD3 success/warning/error tones so colors match the rest of
+   the mobile UI. */
+.fg-marker {
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  border: 2px solid rgba(255,255,255,.85);
+  box-shadow: 0 2px 6px rgba(0,0,0,.6);
+  letter-spacing: .5px;
+}
+.fg-marker.monitor-unmonitored { background: #757575; }
+.fg-marker.monitor-unknown     { background: #9e9e9e; }
+.fg-marker.monitor-up          { background: #2e7d32; }
+.fg-marker.monitor-degraded    { background: #f9a825; color: #222; }
+.fg-marker.monitor-down        { background: #c62828; }
+.fg-cluster {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  border: 3px solid rgba(255,255,255,.9);
+  box-shadow: 0 2px 8px rgba(0,0,0,.55);
+}
+.fg-cluster.monitor-unmonitored { background: #757575; }
+.fg-cluster.monitor-unknown     { background: #9e9e9e; }
+.fg-cluster.monitor-up          { background: #2e7d32; }
+.fg-cluster.monitor-degraded    { background: #f9a825; color: #222; }
+.fg-cluster.monitor-down        { background: #c62828; }
+
+/* Monitor status pills (used in Map sheet + later phases) */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: var(--shape-full);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .25px;
+}
+.status-pill.up        { background: rgba(94,216,123,.15); color: var(--md-success); }
+.status-pill.warn      { background: rgba(255,213,74,.15); color: var(--md-warning); }
+.status-pill.down      { background: var(--md-error-container); color: var(--md-on-error-container); }
+.status-pill.unk       { background: var(--md-surface-cont-highest); color: var(--md-on-surface-variant); }
