@@ -192,11 +192,11 @@ model Integration {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  subnets             Subnet[]
-  discoveredAssets    Asset[] // Assets stamped with this integration's id (back-relation)
-  pushedReservations  Reservation[]            @relation("ReservationPushedTo")
-  fortigateSightings  AssetFortigateSighting[] // Back-relation: sightings recorded against this integration's discovered FortiGates
-  assetSources        AssetSource[] // Back-relation: per-source asset rows attributed to this integration
+  subnets            Subnet[]
+  discoveredAssets   Asset[] // Assets stamped with this integration's id (back-relation)
+  pushedReservations Reservation[]            @relation("ReservationPushedTo")
+  fortigateSightings AssetFortigateSighting[] // Back-relation: sightings recorded against this integration's discovered FortiGates
+  assetSources       AssetSource[] // Back-relation: per-source asset rows attributed to this integration
 
   @@index([type])
   @@index([enabled])
@@ -379,10 +379,10 @@ model Asset {
   // nothing). Release best-efforts an unpush from each target before flipping
   // status back; per-target failure does not block the release.
   statusBeforeQuarantine AssetStatus?
-  quarantineReason       String?     @db.Text
+  quarantineReason       String?      @db.Text
   quarantinedAt          DateTime?
   quarantinedBy          String?
-  quarantineTargets      Json        @default("[]")
+  quarantineTargets      Json         @default("[]")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -428,7 +428,7 @@ model Asset {
 // Rolling time-series of monitoring probe results. One row per probe;
 // `responseTimeMs` is null on failure (used as the "packet loss" signal).
 model AssetMonitorSample {
-  id             String   @id @default(uuid())
+  id             String   @default(uuid())
   assetId        String
   asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp      DateTime @default(now())
@@ -436,6 +436,10 @@ model AssetMonitorSample {
   responseTimeMs Int?
   error          String?  @db.Text
 
+  // Composite PK (id, timestamp) — required by TimescaleDB hypertables to
+  // include the partitioning column. Works fine on plain Postgres too;
+  // queries don't change.
+  @@id([id, timestamp])
   @@index([assetId, timestamp])
   @@map("asset_monitor_samples")
 }
@@ -446,7 +450,7 @@ model AssetMonitorSample {
 // `cpuPct` is a 0-100 percentage; memory is bytes (BigInt to avoid overflow on
 // large servers).
 model AssetTelemetrySample {
-  id            String   @id @default(uuid())
+  id            String   @default(uuid())
   assetId       String
   asset         Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp     DateTime @default(now())
@@ -459,6 +463,7 @@ model AssetTelemetrySample {
   memUsedBytes  BigInt?
   memTotalBytes BigInt?
 
+  @@id([id, timestamp])
   @@index([assetId, timestamp])
   @@map("asset_telemetry_samples")
 }
@@ -468,7 +473,7 @@ model AssetTelemetrySample {
 // outOctets are cumulative SNMP/FortiOS counters; subtracting consecutive
 // samples gives throughput for charting.
 model AssetInterfaceSample {
-  id          String   @id @default(uuid())
+  id          String   @default(uuid())
   assetId     String
   asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp   DateTime @default(now())
@@ -498,6 +503,7 @@ model AssetInterfaceSample {
   // FortiOS CMDB `description`; SNMP has no equivalent and leaves this null.
   description String?
 
+  @@id([id, timestamp])
   @@index([assetId, timestamp])
   @@index([assetId, ifName, timestamp])
   @@map("asset_interface_samples")
@@ -528,13 +534,14 @@ model AssetInterfaceOverride {
 // SNMP via ENTITY-SENSOR-MIB (entPhySensorType=8/celsius). Hosts that don't
 // publish either get no rows; the System tab simply hides the section.
 model AssetTemperatureSample {
-  id         String   @id @default(uuid())
+  id         String   @default(uuid())
   assetId    String
   asset      Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp  DateTime @default(now())
   sensorName String
   celsius    Float?
 
+  @@id([id, timestamp])
   @@index([assetId, timestamp])
   @@index([assetId, sensorName, timestamp])
   @@map("asset_temperature_samples")
@@ -545,7 +552,7 @@ model AssetTemperatureSample {
 // rolls phase-2 selectors up to "up" / "down" / "partial". Bytes are
 // cumulative — subtracting consecutive samples gives tunnel throughput.
 model AssetIpsecTunnelSample {
-  id              String   @id @default(uuid())
+  id              String   @default(uuid())
   assetId         String
   asset           Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp       DateTime @default(now())
@@ -566,6 +573,7 @@ model AssetIpsecTunnelSample {
   outgoingBytes   BigInt?
   proxyIdCount    Int?
 
+  @@id([id, timestamp])
   @@index([assetId, timestamp])
   @@index([assetId, tunnelName, timestamp])
   @@map("asset_ipsec_tunnel_samples")
@@ -620,7 +628,7 @@ model AssetLldpNeighbor {
 
 // Per-mountpoint storage snapshot, written alongside interface samples.
 model AssetStorageSample {
-  id         String   @id @default(uuid())
+  id         String   @default(uuid())
   assetId    String
   asset      Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
   timestamp  DateTime @default(now())
@@ -628,6 +636,7 @@ model AssetStorageSample {
   totalBytes BigInt?
   usedBytes  BigInt?
 
+  @@id([id, timestamp])
   @@index([assetId, timestamp])
   @@index([assetId, mountPath, timestamp])
   @@map("asset_storage_samples")
@@ -821,24 +830,24 @@ model AssetFortigateSighting {
 // (preferred over hard-delete so audit history points at a real id even
 // after revocation). Optional expiresAt enforces server-side expiry.
 model ApiToken {
-  id          String    @id @default(uuid())
-  name        String    @unique
-  tokenHash   String // argon2id hash of the raw token
-  tokenPrefix String // first 8 chars of the raw token for UI display
-  scopes      String[]  @default([]) // e.g. ["assets:quarantine", "assets:read"]
+  id             String    @id @default(uuid())
+  name           String    @unique
+  tokenHash      String // argon2id hash of the raw token
+  tokenPrefix    String // first 8 chars of the raw token for UI display
+  scopes         String[]  @default([]) // e.g. ["assets:quarantine", "assets:read"]
   // Integration ids this token may operate against. Required + non-empty for
   // tokens with `assets:quarantine`; ignored for read-only scopes. Tokens
   // with this set will only quarantine/release/verify against sightings whose
   // originating integration id is in this list — so a token minted for "Site
   // A FortiGate" can never accidentally push to Site B's gateway.
-  integrationIds String[] @default([])
-  createdBy   String // username of the admin who minted the token
-  createdAt   DateTime  @default(now())
-  expiresAt   DateTime?
-  lastUsedAt  DateTime?
-  lastUsedIp  String?
-  revokedAt   DateTime?
-  revokedBy   String?
+  integrationIds String[]  @default([])
+  createdBy      String // username of the admin who minted the token
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  lastUsedIp     String?
+  revokedAt      DateTime?
+  revokedBy      String?
 
   @@index([revokedAt])
   @@index([expiresAt])
@@ -861,12 +870,12 @@ model ApiToken {
 // ad.objectGUID, fortigate-firewall.serial. Manual sources use the Asset.id
 // itself as externalId so they don't collide.
 model AssetSource {
-  id            String       @id @default(uuid())
-  assetId       String
-  asset         Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  id      String @id @default(uuid())
+  assetId String
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
-  sourceKind    String
-  externalId    String
+  sourceKind String
+  externalId String
 
   // Originating integration. Null for "manual" rows and for phase-1 inferred
   // rows (e.g. an AD source recovered from an "ad-guid:" tag where the AD
@@ -877,22 +886,22 @@ model AssetSource {
   // Source-shaped raw observation blob — see CLAUDE.md "Per-source observed
   // shapes." Stays as the source said it; the Asset row is the merged
   // projection across all sources.
-  observed      Json         @default("{}")
+  observed Json @default("{}")
 
   // True when synthesized by the phase-1 backfill from legacy assetTag /
   // "sid:" / "ad-guid:" tags rather than discovered fresh. Cleared when the
   // next real discovery run replaces the row with truth.
-  inferred      Boolean      @default(false)
+  inferred Boolean @default(false)
 
   // syncedAt  = last successful refresh from this source (drives staleness)
   // lastSeen  = last time this source reported the device as active
   // firstSeen = when Polaris first recorded this source
-  syncedAt      DateTime?
-  firstSeen     DateTime     @default(now())
-  lastSeen      DateTime     @default(now())
+  syncedAt  DateTime?
+  firstSeen DateTime  @default(now())
+  lastSeen  DateTime  @default(now())
 
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([sourceKind, externalId])
   @@index([assetId])
