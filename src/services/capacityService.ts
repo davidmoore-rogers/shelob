@@ -173,7 +173,19 @@ async function getSampleTableStats(): Promise<CapacitySampleTable[]> {
     const dead = r ? Number(r.n_dead_tup) : 0;
     const bytes = r ? Number(r.bytes) : 0;
     const total = live + dead;
-    const avgBytesPerRow = live > 0 ? Math.round(bytes / live) : DEFAULT_BYTES_PER_ROW[t.name] ?? 300;
+    const defaultBpr = DEFAULT_BYTES_PER_ROW[t.name] ?? 300;
+    // bytes here is pg_total_relation_size (heap + all indexes + TOAST), so on
+    // a table with few live rows it's dominated by per-relation overhead and
+    // any leftover bloat from prior data — dividing by `live` overstates the
+    // per-row cost wildly. Use the default until enough rows have accumulated
+    // for the average to be meaningful, and cap it at 4× the default
+    // afterwards to keep pathological bloat from blowing up the projection.
+    let avgBytesPerRow: number;
+    if (live < 1000) {
+      avgBytesPerRow = defaultBpr;
+    } else {
+      avgBytesPerRow = Math.min(Math.round(bytes / live), defaultBpr * 4);
+    }
     return {
       name: t.name,
       rows: live,
