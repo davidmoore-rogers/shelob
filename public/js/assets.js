@@ -1615,6 +1615,32 @@ async function _populateAssetMonitorTierBadges(asset) {
   }
   setBadge("f-monitorInterval-tier", "intervalSeconds", " s");
   setBadge("f-probeTimeoutMs-tier",  "probeTimeoutMs",  " ms");
+
+  // Update each polling dropdown's "Inherit" option to show the actual resolved
+  // method and which tier it comes from, instead of the hardcoded source default.
+  // Only applies when the asset has no per-asset override (provenance != "asset");
+  // when the asset has its own override we don't know the next-tier fallback.
+  function updatePollingInheritLabel(selectId, fieldKey) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    var prov = eff.provenance[fieldKey];
+    if (!prov || prov === "asset") return;
+    var resolved = eff.resolved[fieldKey];
+    var inheritOpt = sel.querySelector('option[value=""]');
+    if (!inheritOpt) return;
+    if (!resolved) {
+      // No explicit method set at any tier — source default applies at runtime.
+      // Leave the hardcoded "Source default: X" label the HTML was built with.
+      return;
+    }
+    var methodLabel = _POLLING_LABELS[resolved] || resolved;
+    var tierStr = { "class": "class override", "integration": "integration tier", "manual": "manual tier" }[prov] || prov;
+    inheritOpt.textContent = "Inherit (" + tierStr + ": " + methodLabel + ")";
+  }
+  updatePollingInheritLabel("f-responseTimePolling", "responseTimePolling");
+  updatePollingInheritLabel("f-telemetryPolling",    "telemetryPolling");
+  updatePollingInheritLabel("f-interfacesPolling",   "interfacesPolling");
+  updatePollingInheritLabel("f-lldpPolling",         "lldpPolling");
 }
 
 /**
