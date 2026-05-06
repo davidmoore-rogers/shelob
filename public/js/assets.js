@@ -2793,12 +2793,12 @@ function _renderLldpNeighborsCard(container, si, asset) {
   var neighbors = (si && si.lldpNeighbors) || [];
   if (neighbors.length === 0) {
     container.innerHTML = _isRestApiManagedNetworkDevice(asset)
-      ? ‘<div style="padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)">&#9888; LLDP neighbor data is not available for FortiSwitches and FortiAPs via the integration\’s REST API. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration\’s Monitoring settings to enable collection.</div>’
-      : ‘<p class="empty-state">’ +
+      ? "<div style=\"padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; LLDP neighbor data is not available for FortiSwitches and FortiAPs via the integration’s REST API. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration’s Monitoring settings to enable collection.</div>"
+      : "<p class=\"empty-state\">" +
           "No LLDP neighbors collected. Either the device isn’t advertising LLDP, " +
           "the monitoring transport doesn’t support it, or the FortiOS REST endpoint " +
           "returned 404 — try flipping the integration’s LLDP transport to SNMP." +
-        ‘</p>’;
+        "</p>";
     return;
   }
   // Stable presentation: sort by local port, then chassis id.
