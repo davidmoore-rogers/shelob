@@ -1634,7 +1634,10 @@ async function _populateAssetMonitorTierBadges(asset) {
       return;
     }
     var methodLabel = _POLLING_LABELS[resolved] || resolved;
-    var tierStr = { "class": "class override", "integration": "integration tier", "manual": "manual tier" }[prov] || prov;
+    var integName = asset && asset.discoveredByIntegration && asset.discoveredByIntegration.name;
+    var tierStr = prov === "integration" && integName
+      ? integName
+      : { "class": "class override", "integration": "integration tier", "manual": "manual tier" }[prov] || prov;
     inheritOpt.textContent = "Inherit (" + tierStr + ": " + methodLabel + ")";
   }
   updatePollingInheritLabel("f-responseTimePolling", "responseTimePolling");
