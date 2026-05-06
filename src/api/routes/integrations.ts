@@ -1101,6 +1101,16 @@ function fmtSec(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
+async function runPreflightTest(integration: { type: string; config: unknown }): Promise<{ ok: boolean; message: string }> {
+  const config = integration.config as Record<string, unknown>;
+  if (integration.type === "fortimanager") return fortimanager.testConnection(config as any);
+  if (integration.type === "fortigate") return fortigate.testConnection(config as any);
+  if (integration.type === "windowsserver") return windowsServer.testConnection(config as any);
+  if (integration.type === "entraid") return entraId.testConnection(config as any);
+  if (integration.type === "activedirectory") return activeDirectory.testConnection(config as any);
+  return { ok: false, message: `Unknown integration type: ${integration.type}` };
+}
+
 /**
  * Validates the integration, registers it in activeDiscovery, and fires the
  * discovery pipeline detached (returns before it completes). Throws AppError
@@ -1111,7 +1121,6 @@ function fmtSec(ms: number): string {
 export async function triggerDiscovery(integrationId: string, actor: string): Promise<void> {
   const integration = await prisma.integration.findUnique({ where: { id: integrationId } });
   if (!integration) throw new AppError(404, "Integration not found");
-  if (!integration.lastTestOk) throw new AppError(400, "Run a successful connection test before discovering");
 
   const config = integration.config as Record<string, unknown>;
   if (integration.type === "entraid") {
@@ -1128,6 +1137,29 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       if (!config.bindPassword) throw new AppError(400, "Integration has no bind password configured");
       if (!config.baseDn) throw new AppError(400, "Integration has no base DN configured");
     }
+  }
+
+  // Live credential test before committing to a discovery run. Updates
+  // lastTestAt/lastTestOk so the integration list reflects the current state.
+  // Runs before activeDiscovery.set so a failed preflight never shows as
+  // in-flight on the Integrations page.
+  const preflightLabel = actor === "auto-discovery" ? "Scheduled" : "Manual";
+  const preflight = await runPreflightTest(integration);
+  await prisma.integration.update({
+    where: { id: integrationId },
+    data: { lastTestAt: new Date(), lastTestOk: preflight.ok },
+  });
+  if (!preflight.ok) {
+    logEvent({
+      action: "integration.discover.preflight_failed",
+      level: "warning",
+      resourceType: "integration",
+      resourceId: integrationId,
+      resourceName: integration.name,
+      actor,
+      message: `${preflightLabel} discovery blocked for "${integration.name}" — credential test failed: ${preflight.message}`,
+    });
+    throw new AppError(503, `Credential test failed: ${preflight.message}`);
   }
 
   activeDiscovery.get(integrationId)?.controller.abort();
