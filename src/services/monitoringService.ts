@@ -369,11 +369,13 @@ function readPollingFromJson(v: Record<string, unknown> | undefined, key: string
 
 function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTierSettings {
   const o = v ?? {};
-  // Per-stream polling lives in a nested `polling: { responseTime, telemetry,
-  // interfaces, lldp }` block on the tier-3 JSON. Each stream is optional;
-  // a missing or non-PollingMethod value reads as null and the resolver
-  // falls back to the source default.
+  // Per-stream polling may be stored in one of two shapes depending on which
+  // code path wrote it:
+  //   nested (original design): { polling: { responseTime, telemetry, interfaces, lldp } }
+  //   flat   (route writes):    { responseTimePolling, telemetryPolling, ... }
+  // Try nested first; fall back to the flat key so both formats work.
   const pollingBlock = (o.polling as Record<string, unknown> | undefined) ?? undefined;
+  const flat = o as Record<string, unknown>;
   return {
     intervalSeconds:           toPositiveInt(o.intervalSeconds,           HARDCODED_FLOOR.intervalSeconds),
     failureThreshold:          toPositiveInt(o.failureThreshold,          HARDCODED_FLOOR.failureThreshold),
@@ -383,10 +385,10 @@ function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTie
     sampleRetentionDays:       toPositiveInt(o.sampleRetentionDays,       HARDCODED_FLOOR.sampleRetentionDays),
     telemetryRetentionDays:    toPositiveInt(o.telemetryRetentionDays,    HARDCODED_FLOOR.telemetryRetentionDays),
     systemInfoRetentionDays:   toPositiveInt(o.systemInfoRetentionDays,   HARDCODED_FLOOR.systemInfoRetentionDays),
-    responseTimePolling:       readPollingFromJson(pollingBlock, "responseTime"),
-    telemetryPolling:          readPollingFromJson(pollingBlock, "telemetry"),
-    interfacesPolling:         readPollingFromJson(pollingBlock, "interfaces"),
-    lldpPolling:               readPollingFromJson(pollingBlock, "lldp"),
+    responseTimePolling:       readPollingFromJson(pollingBlock, "responseTime") ?? readPollingFromJson(flat, "responseTimePolling"),
+    telemetryPolling:          readPollingFromJson(pollingBlock, "telemetry")    ?? readPollingFromJson(flat, "telemetryPolling"),
+    interfacesPolling:         readPollingFromJson(pollingBlock, "interfaces")   ?? readPollingFromJson(flat, "interfacesPolling"),
+    lldpPolling:               readPollingFromJson(pollingBlock, "lldp")         ?? readPollingFromJson(flat, "lldpPolling"),
   };
 }
 
