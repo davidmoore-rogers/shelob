@@ -13,6 +13,7 @@
 import { Netmask } from "netmask";
 import { AppError } from "../utils/errors.js";
 import { extractApLldpAndMesh } from "../utils/fortiapLldp.js";
+import { trackCallStart, trackCallEnd } from "../utils/apiCallTracker.js";
 import type {
   DiscoveredSubnet,
   DiscoveredDevice,
@@ -117,6 +118,7 @@ export async function fgRequest<T>(
   opts.signal?.addEventListener("abort", onExternalAbort, { once: true });
 
   const prevTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  trackCallStart();
   try {
     if (config.verifySsl === false) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -154,6 +156,7 @@ export async function fgRequest<T>(
 
     return (body?.results ?? body) as T;
   } finally {
+    trackCallEnd();
     if (config.verifySsl === false) {
       if (prevTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
       else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;

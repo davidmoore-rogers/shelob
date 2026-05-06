@@ -61,6 +61,7 @@ import {
   isPollingMethodCompatible,
   assetSourceKindFromIntegrationType,
 } from "../utils/pollingCompatibility.js";
+import { withIntegrationCtx } from "../utils/apiCallTracker.js";
 
 export interface ProbeResult {
   success: boolean;
@@ -4150,8 +4151,8 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       // Joined for the resolver — picks the source-default polling method
       // (rest_api for fortinet, icmp for everything else). Without this the
       // resolver maps every candidate to "manual" and the cadence calculation
-      // silently drifts.
-      discoveredByIntegration: { select: { type: true } },
+      // silently drifts. id + name feed withIntegrationCtx for API call tracking.
+      discoveredByIntegration: { select: { type: true, id: true, name: true } },
       monitorStatus: true, consecutiveFailures: true,
       lastMonitorAt: true, monitorIntervalSec: true,
       lastTelemetryAt: true, telemetryIntervalSec: true,
@@ -4201,7 +4202,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
   }
 
   type WorkKind = "probe" | "telemetry" | "systemInfo" | "fastFiltered";
-  type Work = { id: string; kind: WorkKind };
+  type Work = { id: string; kind: WorkKind; integrationId?: string; integrationName?: string };
   const probes: Work[]       = [];
   const fastFiltereds: Work[] = [];
   const telemetries: Work[]  = [];
@@ -4267,9 +4268,11 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // The cheap probe keeps firing in every state so recovery can be
     // detected within one tick of the resolved cadence.
     const isUp = a.monitorStatus === "up";
-    if (probe      && enabled.has("probe"))                                      probes.push({ id: a.id, kind: "probe" });
-    if (telemetry  && canTelemetry  && enabled.has("telemetry")  && isUp)        telemetries.push({ id: a.id, kind: "telemetry" });
-    if (systemInfo && canSystemInfo && enabled.has("systemInfo") && isUp)        systemInfos.push({ id: a.id, kind: "systemInfo" });
+    const integrationId   = a.discoveredByIntegration?.id   ?? undefined;
+    const integrationName = a.discoveredByIntegration?.name ?? undefined;
+    if (probe      && enabled.has("probe"))                                      probes.push({ id: a.id, kind: "probe", integrationId, integrationName });
+    if (telemetry  && canTelemetry  && enabled.has("telemetry")  && isUp)        telemetries.push({ id: a.id, kind: "telemetry", integrationId, integrationName });
+    if (systemInfo && canSystemInfo && enabled.has("systemInfo") && isUp)        systemInfos.push({ id: a.id, kind: "systemInfo", integrationId, integrationName });
     // Fast-cadence pinned scrape rides the response-time cadence (default 60s).
     // Skip it when the full systemInfo pass is also due — they'd hit the same
     // OIDs twice and the full pass already covers the pinned subset. The
@@ -4280,7 +4283,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // every following light tick until systemInfo runs successfully and
     // bumps lastSystemInfoAt.
     if (probe && hasFastPin && canSystemInfo && !systemInfo && isUp && enabled.has("fastFiltered")) {
-      fastFiltereds.push({ id: a.id, kind: "fastFiltered" });
+      fastFiltereds.push({ id: a.id, kind: "fastFiltered", integrationId, integrationName });
     }
   }
   // Order matters: probes first so a saturated worker pool drains the cheap
@@ -4314,32 +4317,39 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     while (cursor < work.length) {
       const idx = cursor++;
       const w = work[idx];
-      switch (w.kind) {
-        case "probe": {
-          const transport = transportById.get(w.id) ?? "unknown";
-          const outcome = await runProbeFor(w.id, transport);
-          stats.probed++;
-          if (outcome === "success") stats.succeeded++; else stats.failed++;
-          break;
+      const runWork = async () => {
+        switch (w.kind) {
+          case "probe": {
+            const transport = transportById.get(w.id) ?? "unknown";
+            const outcome = await runProbeFor(w.id, transport);
+            stats.probed++;
+            if (outcome === "success") stats.succeeded++; else stats.failed++;
+            break;
+          }
+          case "telemetry": {
+            const outcome = await runTelemetryFor(w.id);
+            if (outcome === "success") stats.telemetry.collected++;
+            else stats.telemetry.failed++;
+            break;
+          }
+          case "systemInfo": {
+            const outcome = await runSystemInfoFor(w.id);
+            if (outcome === "success") stats.systemInfo.collected++;
+            else stats.systemInfo.failed++;
+            break;
+          }
+          case "fastFiltered": {
+            const outcome = await runFastFilteredFor(w.id);
+            if (outcome === "success") stats.fastFiltered.collected++;
+            else stats.fastFiltered.failed++;
+            break;
+          }
         }
-        case "telemetry": {
-          const outcome = await runTelemetryFor(w.id);
-          if (outcome === "success") stats.telemetry.collected++;
-          else stats.telemetry.failed++;
-          break;
-        }
-        case "systemInfo": {
-          const outcome = await runSystemInfoFor(w.id);
-          if (outcome === "success") stats.systemInfo.collected++;
-          else stats.systemInfo.failed++;
-          break;
-        }
-        case "fastFiltered": {
-          const outcome = await runFastFilteredFor(w.id);
-          if (outcome === "success") stats.fastFiltered.collected++;
-          else stats.fastFiltered.failed++;
-          break;
-        }
+      };
+      if (w.integrationId && w.integrationName) {
+        await withIntegrationCtx(w.integrationId, w.integrationName, runWork);
+      } else {
+        await runWork();
       }
     }
   }

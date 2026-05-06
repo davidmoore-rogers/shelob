@@ -66,6 +66,11 @@ import {
 } from "../../services/queueService.js";
 import { BACKUP_DIR, UPLOADS_DIR } from "../../utils/paths.js";
 import { getAppVersion } from "../../utils/version.js";
+import {
+  setTrackerEnabled,
+  isTrackerEnabled,
+  getTrackerData,
+} from "../../utils/apiCallTracker.js";
 
 const TAG_COLORS = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
 function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]; }
@@ -1295,6 +1300,22 @@ router.delete("/branding/logo", async (_req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// ─── API call tracking ───────────────────────────────────────────────────────
+
+router.get("/api-call-tracking", (_req, res) => {
+  res.json({ enabled: isTrackerEnabled() });
+});
+
+router.put("/api-call-tracking", (req, res) => {
+  const { enabled } = req.body as { enabled?: boolean };
+  setTrackerEnabled(enabled === true);
+  res.json({ enabled: isTrackerEnabled() });
+});
+
+router.get("/api-call-history", (_req, res) => {
+  res.json(getTrackerData());
 });
 
 export default router;

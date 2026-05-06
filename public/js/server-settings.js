@@ -1247,6 +1247,22 @@ async function loadDatabaseInfo() {
 
     container.innerHTML =
       renderCapacityCard(capacity, db, pgTuning) +
+      // ── Outbound API Calls card ──
+      '<div class="settings-card" id="api-call-chart-card">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem">' +
+          '<h4 style="margin:0">Outbound API Calls</h4>' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:0.85rem">' +
+            '<input type="checkbox" id="api-tracking-toggle" style="width:15px;height:15px;flex-shrink:0">' +
+            '<span>Enable tracking</span>' +
+          '</label>' +
+        '</div>' +
+        '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.75rem">' +
+          'Concurrent outbound API calls per integration (FortiManager and FortiGate) sampled every 5 seconds over the last hour.' +
+        '</p>' +
+        '<div id="api-call-chart-area">' +
+          '<p class="empty-state" style="padding:1.5rem 0">Enable tracking to start collecting data.</p>' +
+        '</div>' +
+      '</div>' +
       // ── Application Updates card ──
       '<div class="settings-card" id="update-card">' +
         '<h4>Application Updates</h4>' +
@@ -1360,6 +1376,7 @@ async function loadDatabaseInfo() {
     loadBackupHistory();
     initUpdateControls();
     initCapacityActions();
+    initApiCallChart();
   } catch (err) {
     container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
   }
@@ -1443,6 +1460,155 @@ function initCapacityActions() {
       }
     });
   });
+}
+
+// ─── API Call Chart ──────────────────────────────────────────────────────────
+
+var _apiChartTimer = null;
+var _apiChartColors = [
+  "#4fc3f7", "#ef5350", "#66bb6a", "#ffa726", "#ab47bc",
+  "#26c6da", "#d4e157", "#ff7043", "#42a5f5", "#ec407a",
+];
+
+function _renderApiCallSvg(data) {
+  var W = 640, H = 180, padL = 44, padR = 12, padT = 12, padB = 32;
+  var innerW = W - padL - padR;
+  var innerH = H - padT - padB;
+
+  var samples = data.samples || [];
+  var names   = data.names   || {};
+
+  if (samples.length === 0) {
+    return '<p class="empty-state" style="padding:1.5rem 0">No samples yet — tracking is on, waiting for the first 5-second tick.</p>';
+  }
+
+  // Collect all integration ids that appear in any sample
+  var idSet = {};
+  samples.forEach(function (s) {
+    Object.keys(s.counts).forEach(function (id) { idSet[id] = true; });
+  });
+  var ids = Object.keys(idSet);
+
+  // Compute x domain (last 720 samples = 1 h; show whatever is available)
+  var tsMin = samples[0].ts;
+  var tsMax = samples[samples.length - 1].ts;
+  var tsRange = Math.max(tsMax - tsMin, 1);
+
+  // Compute y max
+  var yMax = 1;
+  samples.forEach(function (s) {
+    ids.forEach(function (id) {
+      var v = s.counts[id] || 0;
+      if (v > yMax) yMax = v;
+    });
+  });
+  yMax = Math.ceil(yMax * 1.15); // 15% headroom
+
+  function xPos(ts) { return padL + ((ts - tsMin) / tsRange) * innerW; }
+  function yPos(v)  { return padT + innerH - (v / yMax) * innerH; }
+
+  // Grid lines + Y labels
+  var grid = "";
+  var yTicks = 4;
+  for (var yi = 0; yi <= yTicks; yi++) {
+    var yVal = Math.round((yMax / yTicks) * yi);
+    var yPx  = yPos(yVal);
+    grid += '<line x1="' + padL + '" y1="' + yPx.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + yPx.toFixed(1) + '" stroke="var(--color-border)" stroke-width="1" stroke-dasharray="3,3"/>';
+    grid += '<text x="' + (padL - 6) + '" y="' + (yPx + 4).toFixed(1) + '" font-size="10" fill="var(--color-text-secondary)" text-anchor="end">' + yVal + '</text>';
+  }
+
+  // Y axis label (rotated)
+  var yAxisLabel = '<text transform="rotate(-90,' + (padL - 32) + ',' + (padT + innerH / 2) + ')" x="' + (padL - 32) + '" y="' + (padT + innerH / 2) + '" font-size="10" fill="var(--color-text-secondary)" text-anchor="middle">Active calls</text>';
+
+  // X axis labels — show at most 6 evenly spaced timestamps
+  var xLabels = "";
+  var xTicks = Math.min(6, samples.length);
+  for (var xi = 0; xi < xTicks; xi++) {
+    var idx = Math.round((xi / (xTicks - 1 || 1)) * (samples.length - 1));
+    var ts  = samples[idx].ts;
+    var d   = new Date(ts);
+    var hh  = d.getHours().toString().padStart(2, "0");
+    var mm  = d.getMinutes().toString().padStart(2, "0");
+    var ss  = d.getSeconds().toString().padStart(2, "0");
+    var xPx = xPos(ts);
+    xLabels += '<text x="' + xPx.toFixed(1) + '" y="' + (H - 6) + '" font-size="9" fill="var(--color-text-secondary)" text-anchor="middle">' + hh + ':' + mm + ':' + ss + '</text>';
+  }
+
+  // X axis title
+  var xAxisLabel = '<text x="' + (padL + innerW / 2) + '" y="' + (H + 4) + '" font-size="10" fill="var(--color-text-secondary)" text-anchor="middle">Time</text>';
+
+  // Polylines per integration
+  var lines = "";
+  ids.forEach(function (id, i) {
+    var color = _apiChartColors[i % _apiChartColors.length];
+    var pts = samples.map(function (s) {
+      return xPos(s.ts).toFixed(1) + "," + yPos(s.counts[id] || 0).toFixed(1);
+    }).join(" ");
+    lines += '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>';
+  });
+
+  // Legend
+  var legend = '<div style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:0.5rem;font-size:0.8rem">';
+  ids.forEach(function (id, i) {
+    var color = _apiChartColors[i % _apiChartColors.length];
+    var label = names[id] || id.slice(0, 8);
+    legend += '<span style="display:flex;align-items:center;gap:4px">' +
+      '<span style="display:inline-block;width:20px;height:2px;background:' + color + ';flex-shrink:0"></span>' +
+      escapeHtml(label) + '</span>';
+  });
+  legend += '</div>';
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:' + H + 'px;overflow:visible">' +
+    grid + yAxisLabel + xLabels + xAxisLabel + lines +
+    '</svg>' + legend;
+}
+
+function _refreshApiChart() {
+  var area = document.getElementById("api-call-chart-area");
+  if (!area) return;
+  api.serverSettings.getApiCallHistory().then(function (data) {
+    if (!document.getElementById("api-call-chart-area")) return; // tab switched
+    if (!data.enabled) {
+      area.innerHTML = '<p class="empty-state" style="padding:1.5rem 0">Enable tracking to start collecting data.</p>';
+      return;
+    }
+    area.innerHTML = _renderApiCallSvg(data);
+  }).catch(function () {});
+}
+
+function initApiCallChart() {
+  var toggle = document.getElementById("api-tracking-toggle");
+  var area   = document.getElementById("api-call-chart-area");
+  if (!toggle || !area) return;
+
+  // Load initial state
+  api.serverSettings.getApiCallTracking().then(function (data) {
+    toggle.checked = !!data.enabled;
+    if (data.enabled) _refreshApiChart();
+    startOrStopApiChartTimer(data.enabled);
+  }).catch(function () {});
+
+  toggle.addEventListener("change", async function () {
+    var on = toggle.checked;
+    try {
+      await api.serverSettings.setApiCallTracking(on);
+      if (on) {
+        _refreshApiChart();
+      } else {
+        if (_apiChartTimer) { clearInterval(_apiChartTimer); _apiChartTimer = null; }
+        area.innerHTML = '<p class="empty-state" style="padding:1.5rem 0">Enable tracking to start collecting data.</p>';
+      }
+      startOrStopApiChartTimer(on);
+    } catch (err) {
+      showToast("Could not update tracking: " + (err && err.message ? err.message : "error"), "error");
+      toggle.checked = !on; // revert
+    }
+  });
+}
+
+function startOrStopApiChartTimer(on) {
+  if (_apiChartTimer) { clearInterval(_apiChartTimer); _apiChartTimer = null; }
+  if (on) _apiChartTimer = setInterval(_refreshApiChart, 5000);
 }
 
 function initBackupControls() {

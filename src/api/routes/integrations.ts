@@ -32,6 +32,7 @@ import {
   buildMacRowsForCreate,
   type MacJsonEntry,
 } from "../../utils/macAddresses.js";
+import { withIntegrationCtx } from "../../utils/apiCallTracker.js";
 
 const router = Router();
 
@@ -1220,6 +1221,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
 
   (async () => {
     try {
+      await withIntegrationCtx(integrationId, integrationName, async () => {
       let discoveryResult: DiscoveryResult;
 
       // Accumulate per-device sync totals for the completion log
@@ -1307,6 +1309,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         // the rolling average used to compute the "slow" threshold.
         recordSample(integrationId, Date.now() - runStartedAt).catch(() => {});
       }
+      }); // end withIntegrationCtx
     } catch (err: any) {
       if (err.name !== "AbortError") {
         logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `${label} ${kindLabel} failed for "${integrationName}": ${err.message || "Unknown error"}` });

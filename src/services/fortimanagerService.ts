@@ -7,6 +7,7 @@
 import { Netmask } from "netmask";
 import { AppError } from "../utils/errors.js";
 import { extractApLldpAndMesh } from "../utils/fortiapLldp.js";
+import { trackCallStart, trackCallEnd } from "../utils/apiCallTracker.js";
 import {
   discoverDhcpSubnets as discoverViaFortigate,
   testConnection as fgTestConnection,
@@ -311,6 +312,7 @@ async function rpc(
   externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
 
   const prevTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  trackCallStart();
   try {
     if (verifySsl === false) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -337,6 +339,7 @@ async function rpc(
 
     return (await res.json()) as JsonRpcResponse;
   } finally {
+    trackCallEnd();
     if (verifySsl === false) {
       if (prevTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
       else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prevTls;
