@@ -1340,8 +1340,10 @@ function getAssetFormData() {
   var mon = document.getElementById("f-monitored");
   if (mon) {
     data.monitored = mon.checked;
-    var credSel = document.getElementById("f-monitorCredential");
-    if (credSel) data.monitorCredentialId = credSel.value || null;
+    // Default Credential field removed — per-stream credential pickers on each
+    // polling-method row are the right place for credentials. Clear any stale
+    // monitorCredentialId that may have been set before this change.
+    data.monitorCredentialId = null;
     var ivEl = document.getElementById("f-monitorInterval");
     if (ivEl) {
       var iv = parseInt(ivEl.value, 10);
@@ -1379,7 +1381,6 @@ function getAssetFormData() {
 // ─── Tabbed asset modal scaffolding ────────────────────────────────────────
 
 function assetMonitoringFormHTML(asset) {
-  var credId = asset && asset.monitorCredentialId ? asset.monitorCredentialId : "";
   var interval = asset && asset.monitorIntervalSec != null ? asset.monitorIntervalSec : "";
   var probeTimeout = asset && asset.probeTimeoutMs != null ? asset.probeTimeoutMs : "";
   var monitored = asset && asset.monitored ? " checked" : "";
@@ -1441,13 +1442,6 @@ function assetMonitoringFormHTML(asset) {
       '</label>' +
       '<p class="hint">A successful probe means the credential authenticated. Probes write a sample row each cycle; failed probes count as packet loss.</p>' +
     '</div>' +
-    '<div class="form-group" id="f-monitorCredential-wrap">' +
-      '<label>Default Credential</label>' +
-      '<select id="f-monitorCredential" data-current-id="' + escapeHtml(credId) + '">' +
-        '<option value="">— none —</option>' +
-      '</select>' +
-      '<p class="hint">Fallback credential for streams that don\'t have their own per-stream override below. FMG/FortiGate-discovered firewalls fall back further to the integration\'s API token when no credential is set here. Add credentials in <a href="/server-settings.html?tab=credentials">Server Settings → Credentials</a>.</p>' +
-    '</div>' +
     '<div class="form-group">' +
       '<label>Poll Interval Override (seconds) <span class="tier-badge" id="f-monitorInterval-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
       '<input type="number" id="f-monitorInterval" min="5" max="86400" value="' + escapeHtml(String(interval)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
@@ -1494,8 +1488,6 @@ function _credentialOptionsForStream(selectedId, credType) {
 async function _wireMonitorEditTab(asset) {
   await _ensureCredentials();
   var monChk = document.getElementById("f-monitored");
-  var credWrap = document.getElementById("f-monitorCredential-wrap");
-  var credSel = document.getElementById("f-monitorCredential");
   var intervalEl = document.getElementById("f-monitorInterval");
   var probeTimeoutEl = document.getElementById("f-probeTimeoutMs");
   var probeTimeoutWarn = document.getElementById("f-probeTimeoutMs-warn");
@@ -1530,14 +1522,6 @@ async function _wireMonitorEditTab(asset) {
     var enabled = !!(monChk && monChk.checked);
     if (intervalEl) intervalEl.disabled = !enabled;
     if (probeTimeoutEl) probeTimeoutEl.disabled = !enabled;
-    if (credWrap) credWrap.style.display = enabled ? "block" : "none";
-    if (credSel) {
-      credSel.disabled = !enabled;
-      if (enabled) {
-        var current = credSel.getAttribute("data-current-id") || "";
-        credSel.innerHTML = _credentialOptionsForAny(current);
-      }
-    }
     if (transportWrap) {
       transportWrap.style.display = enabled ? "block" : "none";
     }
