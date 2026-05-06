@@ -4193,6 +4193,34 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       (Array.isArray(a.monitoredInterfaces)   && a.monitoredInterfaces.length   > 0) ||
       (Array.isArray(a.monitoredStorage)      && a.monitoredStorage.length      > 0) ||
       (Array.isArray(a.monitoredIpsecTunnels) && a.monitoredIpsecTunnels.length > 0);
+
+    // Pre-queue eligibility. collectTelemetry / collectSystemInfo return
+    // {supported:false} immediately for these cases, which means
+    // lastTelemetryAt / lastSystemInfoAt never advance and the asset sits in
+    // the work queue on EVERY heavy tick — permanently inflating pass duration
+    // and degrading the effective cadence for assets that DO produce data.
+    //
+    // Managed FortiSwitches / FortiAPs aren't directly REST-able: their
+    // telemetry and system-info endpoints live on the parent FortiGate, not on
+    // the asset's own IP. Operators who want telemetry on these devices flip
+    // the integration's FortiSwitches/APs subtab to direct SNMP (which changes
+    // the resolved telemetryPolling / interfacesPolling to "snmp").
+    //
+    // icmp / winrm / ssh don't deliver telemetry yet (collectTelemetry returns
+    // {supported:false} for those methods regardless of assetType).
+    const isManagedSwitchOrAp = a.assetType === "switch" || a.assetType === "access_point";
+    const canTelemetry =
+      eff.telemetryPolling !== null &&
+      eff.telemetryPolling !== "icmp"  &&
+      eff.telemetryPolling !== "winrm" &&
+      eff.telemetryPolling !== "ssh"   &&
+      !(eff.telemetryPolling === "rest_api" && isManagedSwitchOrAp);
+    // systemInfo is supported for winrm/ssh paths; only exclude the REST API
+    // + managed-switch/AP combination that has no direct endpoint.
+    const canSystemInfo =
+      eff.interfacesPolling !== null &&
+      !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
+
     // Heavy-cadence suppression. Telemetry / systemInfo / fastFiltered run
     // ONLY while the asset is confirmed up — every other state (warning /
     // pending / down / unknown) suppresses them. Rationale:
@@ -4207,9 +4235,9 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // The cheap probe keeps firing in every state so recovery can be
     // detected within one tick of the resolved cadence.
     const isUp = a.monitorStatus === "up";
-    if (probe      && enabled.has("probe"))                probes.push({ id: a.id, kind: "probe" });
-    if (telemetry  && enabled.has("telemetry")  && isUp)   telemetries.push({ id: a.id, kind: "telemetry" });
-    if (systemInfo && enabled.has("systemInfo") && isUp)   systemInfos.push({ id: a.id, kind: "systemInfo" });
+    if (probe      && enabled.has("probe"))                                      probes.push({ id: a.id, kind: "probe" });
+    if (telemetry  && canTelemetry  && enabled.has("telemetry")  && isUp)        telemetries.push({ id: a.id, kind: "telemetry" });
+    if (systemInfo && canSystemInfo && enabled.has("systemInfo") && isUp)        systemInfos.push({ id: a.id, kind: "systemInfo" });
     // Fast-cadence pinned scrape rides the response-time cadence (default 60s).
     // Skip it when the full systemInfo pass is also due — they'd hit the same
     // OIDs twice and the full pass already covers the pinned subset. The
@@ -4219,7 +4247,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // loops: when systemInfo is due, fast-filtered is skipped on this and
     // every following light tick until systemInfo runs successfully and
     // bumps lastSystemInfoAt.
-    if (probe && hasFastPin && !systemInfo && isUp && enabled.has("fastFiltered")) {
+    if (probe && hasFastPin && canSystemInfo && !systemInfo && isUp && enabled.has("fastFiltered")) {
       fastFiltereds.push({ id: a.id, kind: "fastFiltered" });
     }
   }

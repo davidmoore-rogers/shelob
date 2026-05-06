@@ -141,6 +141,23 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       (Array.isArray(a.monitoredInterfaces)   && a.monitoredInterfaces.length   > 0) ||
       (Array.isArray(a.monitoredStorage)      && a.monitoredStorage.length      > 0) ||
       (Array.isArray(a.monitoredIpsecTunnels) && a.monitoredIpsecTunnels.length > 0);
+
+    // Pre-queue eligibility — mirrors the same checks in monitoringService
+    // runMonitorPass. Assets that can never produce telemetry/systemInfo data
+    // (managed switches/APs on REST API, methods with no telemetry delivery)
+    // must be excluded here too, otherwise their timestamps never advance and
+    // they permanently inflate the pg-boss queue on every tick.
+    const isManagedSwitchOrAp = a.assetType === "switch" || a.assetType === "access_point";
+    const canTelemetry =
+      eff.telemetryPolling !== null &&
+      eff.telemetryPolling !== "icmp"  &&
+      eff.telemetryPolling !== "winrm" &&
+      eff.telemetryPolling !== "ssh"   &&
+      !(eff.telemetryPolling === "rest_api" && isManagedSwitchOrAp);
+    const canSystemInfo =
+      eff.interfacesPolling !== null &&
+      !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
+
     // Heavy-cadence suppression: only "up" runs telemetry / systemInfo /
     // fastFiltered. See the matching comment in monitoringService.runMonitorPass.
     const isUp = a.monitorStatus === "up";
@@ -152,13 +169,13 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       const transport = eff.responseTimePolling || "unknown";
       await publishMonitorJob("probe", a.id, transport);
     }
-    if (telemetry && isUp && enabled.has("telemetry")) {
+    if (telemetry && canTelemetry && isUp && enabled.has("telemetry")) {
       await publishMonitorJob("telemetry", a.id);
     }
-    if (systemInfo && isUp && enabled.has("systemInfo")) {
+    if (systemInfo && canSystemInfo && isUp && enabled.has("systemInfo")) {
       await publishMonitorJob("systemInfo", a.id);
     }
-    if (probe && hasFastPin && !systemInfo && isUp && enabled.has("fastFiltered")) {
+    if (probe && hasFastPin && canSystemInfo && !systemInfo && isUp && enabled.has("fastFiltered")) {
       await publishMonitorJob("fastFiltered", a.id);
     }
   }
