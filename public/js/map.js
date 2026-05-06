@@ -678,6 +678,7 @@
           id: s.id,
           label: s.hostname || "FortiSwitch",
           role: "fortiswitch",
+          nodeColor: fortigateNodeColor(s),
           iconUrl: s.iconUrl || null,
           hasIcon: s.iconUrl ? 1 : 0,
         },
@@ -689,6 +690,7 @@
           id: a.id,
           label: a.hostname || "FortiAP",
           role: "fortiap",
+          nodeColor: fortigateNodeColor(a),
           iconUrl: a.iconUrl || null,
           hasIcon: a.iconUrl ? 1 : 0,
         },
@@ -810,14 +812,13 @@
             "border-opacity": 0.85,
           },
         },
-        // FortiGate node color is driven by its monitor health (computed
-        // server-side from the last 10 AssetMonitorSample rows).
+        // Node colors are driven by monitor health for all Fortinet devices.
+        // FortiSwitches and FortiAPs are probed via their parent FortiGate
+        // controller (probeFortinetController path), so their monitorStatus
+        // is maintained by the same five-state machine as the FortiGate.
         { selector: 'node[role="fortigate"]',   style: { "background-color": "data(nodeColor)", width: 64, height: 64, "font-weight": 700 } },
-        // FortiSwitches and FortiAPs always render as dark gray: they sit
-        // behind the FortiGate, so Polaris can't independently verify their
-        // reachability — coloring them green/red would be misleading.
-        { selector: 'node[role="fortiswitch"]', style: { "background-color": "#37474f" } },
-        { selector: 'node[role="fortiap"]',     style: { "background-color": "#37474f", width: 36, height: 36 } },
+        { selector: 'node[role="fortiswitch"]', style: { "background-color": "data(nodeColor)" } },
+        { selector: 'node[role="fortiap"]',     style: { "background-color": "data(nodeColor)", width: 36, height: 36 } },
         // LLDP-discovered ghost neighbor (non-Polaris device, e.g. an upstream
         // ISP router or a third-party access switch). Orange + dashed border
         // signals "we know it's there because LLDP told us, but Polaris isn't

@@ -65,6 +65,18 @@ function computeMonitorHealth(samples: { success: boolean }[]): MonitorHealth {
   return "degraded";
 }
 
+// Translate Asset.monitorStatus (five-state machine) to the three-state
+// MonitorHealth used by the topology graph color function.
+function monitorStatusToHealth(status: string | null): MonitorHealth {
+  switch (status) {
+    case "up":         return "up";
+    case "warning":
+    case "recovering": return "degraded";
+    case "down":       return "down";
+    default:           return "unknown";
+  }
+}
+
 // Fetch last-10 samples per asset and return a Map keyed by assetId. Issued
 // in parallel — N round-trips, but N is the FortiGate count and the endpoint
 // is rarely hit (one call per map page load).
@@ -221,6 +233,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
             fortinetTopology: true,
             learnedLocation: true,
             lastSeen: true,
+            monitored: true,
+            monitorStatus: true,
           },
         })
       : [];
@@ -248,6 +262,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
           status: s.status,
           lastSeen: s.lastSeen,
           uplinkInterface: t.uplinkInterface ?? null,
+          monitored: s.monitored,
+          monitorHealth: s.monitored ? monitorStatusToHealth(s.monitorStatus) : null,
           iconUrl: resolveIconUrl({ manufacturer: s.manufacturer, model: s.model, assetType: "switch" }, iconCache),
           endpointCount: 0,
           endpoints: [] as EndpointSummary[],
@@ -348,6 +364,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
           // via the FortiSwitch MAC-table fallback. Drives the
           // edge-tooltip wording on the topology graph.
           peerSource: (t as any).peerSource ?? null,
+          monitored: s.monitored,
+          monitorHealth: s.monitored ? monitorStatusToHealth(s.monitorStatus) : null,
           iconUrl: resolveIconUrl({ manufacturer: s.manufacturer, model: s.model, assetType: "access_point" }, iconCache),
         };
       });
