@@ -2265,6 +2265,23 @@ function _renderSystemSummary(container, tel, si) {
   container.innerHTML = parts.join("") || '<span>No telemetry samples yet.</span>';
 }
 
+// Returns true when the asset is a managed FortiSwitch or FortiAP whose
+// resolved interfaces/telemetry polling method is REST API. These devices
+// aren't directly REST-able — the relevant endpoints live on the parent
+// FortiGate, not on the device's own IP — so REST API delivers no telemetry,
+// no temperature, and no interface-refresh data for them.
+function _isRestApiManagedNetworkDevice(asset) {
+  if (!asset) return false;
+  var t = asset.assetType;
+  if (t !== "switch" && t !== "access_point") return false;
+  var ifPoll = asset.interfacesPolling;
+  if (!ifPoll) {
+    var sk = (asset.discoveredByIntegration && asset.discoveredByIntegration.type) || "manual";
+    ifPoll = (sk === "fortimanager" || sk === "fortigate") ? "rest_api" : null;
+  }
+  return ifPoll === "rest_api";
+}
+
 function _renderInterfacesTable(container, si, asset) {
   if (!container) return;
   var rows = (si && si.interfaces) || [];
@@ -2274,6 +2291,9 @@ function _renderInterfacesTable(container, si, asset) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
   }
+  var staleBanner = _isRestApiManagedNetworkDevice(asset)
+    ? '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)">&#9888; The integration\'s REST API does not refresh interface data for FortiSwitches and FortiAPs — the information shown may be stale. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration\'s Monitoring settings to enable live collection.</div>'
+    : '';
   var monitored        = new Set(((si && si.monitoredInterfaces)   || (asset && asset.monitoredInterfaces)   || []));
   var monitoredTunnels = new Set(((si && si.monitoredIpsecTunnels) || (asset && asset.monitoredIpsecTunnels) || []));
   var canEdit = canManageAssets();
@@ -3899,7 +3919,7 @@ function assetMonitoringViewHTML(a) {
       // asynchronously by _renderIntermittencyBar(). Hidden on unmonitored
       // assets.
       (a.monitored
-        ? '<div class="detail-row"><span class="detail-label">Last hour</span>' +
+        ? '<div class="detail-row"><span class="detail-label">Last 30 min</span>' +
             '<span class="detail-value" id="asset-intermittency-bar" data-asset-id="' + escapeHtml(a.id) + '" style="flex:1">' +
               '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">Loading…</span>' +
             '</span></div>'
@@ -3936,9 +3956,9 @@ function assetMonitoringViewHTML(a) {
 async function _renderIntermittencyBar(assetId) {
   var slot = document.getElementById("asset-intermittency-bar");
   if (!slot || slot.getAttribute("data-asset-id") !== assetId) return;
-  // Fetch in parallel: 1h sample stream + the resolved threshold for the
-  // state-machine replay. Both are best-effort; if either fails we fall
-  // back to a sensible default so the bar still renders something useful.
+  // Fetch in parallel: 1h sample stream (trimmed to last 30) + the resolved
+  // threshold for the state-machine replay. Both are best-effort; if either
+  // fails we fall back to a sensible default so the bar still renders.
   var samples = [];
   var threshold = 3;
   try {
@@ -3946,14 +3966,15 @@ async function _renderIntermittencyBar(assetId) {
       api.assets.monitorHistory(assetId, "1h").catch(function () { return null; }),
       api.assets.effectiveMonitorSettings(assetId).catch(function () { return null; }),
     ]);
-    samples = (results[0] && Array.isArray(results[0].samples)) ? results[0].samples : [];
+    var raw = (results[0] && Array.isArray(results[0].samples)) ? results[0].samples : [];
+    samples = raw.slice(-30);
     if (results[1] && results[1].resolved && Number.isFinite(results[1].resolved.failureThreshold)) {
       threshold = results[1].resolved.failureThreshold;
     }
   } catch (_) { /* fall through with defaults */ }
 
   if (samples.length === 0) {
-    slot.innerHTML = '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">No samples in the last hour</span>';
+    slot.innerHTML = '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">No samples in the last 30 minutes</span>';
     return;
   }
   // Replay the state machine forward across samples to label each one with
@@ -4007,7 +4028,7 @@ async function _renderIntermittencyBar(assetId) {
       cellHTML +
     '</div>' +
     '<div style="display:flex;justify-content:space-between;font-size:0.7rem;color:var(--color-text-tertiary);margin-top:2px">' +
-      '<span>1h ago</span>' +
+      '<span>30m ago</span>' +
       '<span>' + samples.length + ' sample' + (samples.length === 1 ? '' : 's') + '</span>' +
       '<span>now</span>' +
     '</div>';
