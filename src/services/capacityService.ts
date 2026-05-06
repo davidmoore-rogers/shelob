@@ -147,14 +147,30 @@ export interface CapacitySnapshot {
   };
 }
 
-// Tables we project. Each maps to which retention setting governs it.
-const SAMPLE_TABLES: Array<{ name: string; retention: keyof MonitorSettings }> = [
-  { name: "asset_monitor_samples",       retention: "sampleRetentionDays"     },
-  { name: "asset_telemetry_samples",     retention: "telemetryRetentionDays"  },
-  { name: "asset_temperature_samples",   retention: "telemetryRetentionDays"  },
-  { name: "asset_interface_samples",     retention: "systemInfoRetentionDays" },
-  { name: "asset_storage_samples",       retention: "systemInfoRetentionDays" },
-  { name: "asset_ipsec_tunnel_samples",  retention: "systemInfoRetentionDays" },
+// Tables we project. Each maps to which retention setting governs it AND
+// which asset-count bucket populates it.
+//
+//   "all"        — every monitored asset (response-time probe fires for all,
+//                  including managed switches/APs via the controller path)
+//   "telemetry"  — assets whose resolved telemetry method can actually deliver
+//                  CPU/memory data. Managed FortiSwitches/FortiAPs on REST API
+//                  are excluded: the endpoint lives on the parent FortiGate,
+//                  not the device's IP, so collectTelemetry returns
+//                  {supported:false} and lastTelemetryAt never advances.
+//   "systemInfo" — same exclusion for interface/storage/IPsec/LLDP tables.
+//                  WinRM and SSH *do* support system-info in principle so they
+//                  are not excluded here (only the REST API + switch/AP combo).
+const SAMPLE_TABLES: Array<{
+  name: string;
+  retention: keyof MonitorSettings;
+  countKey: "all" | "telemetry" | "systemInfo";
+}> = [
+  { name: "asset_monitor_samples",       retention: "sampleRetentionDays",     countKey: "all"        },
+  { name: "asset_telemetry_samples",     retention: "telemetryRetentionDays",  countKey: "telemetry"  },
+  { name: "asset_temperature_samples",   retention: "telemetryRetentionDays",  countKey: "telemetry"  },
+  { name: "asset_interface_samples",     retention: "systemInfoRetentionDays", countKey: "systemInfo" },
+  { name: "asset_storage_samples",       retention: "systemInfoRetentionDays", countKey: "systemInfo" },
+  { name: "asset_ipsec_tunnel_samples",  retention: "systemInfoRetentionDays", countKey: "systemInfo" },
 ];
 
 // Default rows-per-asset-per-day when we have no samples yet to learn from.
@@ -367,9 +383,15 @@ function projectSteadyStateSize(args: {
   currentDbBytes: number;
   sampleTables: CapacitySampleTable[];
   monitoredCount: number;
+  /** Monitored assets that can actually produce telemetry (CPU/memory/temps).
+   *  Excludes managed FortiSwitches/FortiAPs whose resolved polling is REST API. */
+  telemetryEligibleCount: number;
+  /** Monitored assets that can actually produce system-info (interfaces/storage/IPsec).
+   *  Same exclusion as telemetryEligibleCount; WinRM/SSH are kept in. */
+  systemInfoEligibleCount: number;
   monitor: MonitorSettings;
 }): number {
-  const { currentDbBytes, sampleTables, monitoredCount, monitor } = args;
+  const { currentDbBytes, sampleTables, monitoredCount, telemetryEligibleCount, systemInfoEligibleCount, monitor } = args;
 
   // Subtract current sample-table bytes so we don't double-count when adding
   // the projected sample-table bytes back in.
@@ -385,10 +407,13 @@ function projectSteadyStateSize(args: {
     const t = sampleTables.find((s) => s.name === def.name);
     if (!t) continue;
 
+    const count =
+      def.countKey === "telemetry"  ? telemetryEligibleCount  :
+      def.countKey === "systemInfo" ? systemInfoEligibleCount :
+      monitoredCount;
     const rowsPerAssetPerDay = DEFAULT_ROWS_PER_ASSET_PER_DAY[def.name](monitor);
     const retentionDays = monitor[def.retention] as number;
-    projectedSampleBytes +=
-      monitoredCount * rowsPerAssetPerDay * retentionDays * t.avgBytesPerRow;
+    projectedSampleBytes += count * rowsPerAssetPerDay * retentionDays * t.avgBytesPerRow;
   }
 
   return baseBytes + projectedSampleBytes;
@@ -647,9 +672,40 @@ export async function getCapacitySnapshot(opts: {
 }): Promise<CapacitySnapshot> {
   const dataDirectory = await resolveDbDataDirectory();
 
+  // An asset is telemetry/systemInfo-eligible when it is NOT a managed
+  // FortiSwitch/FortiAP whose resolved polling method is REST API. The full
+  // four-tier hierarchy resolver isn't practical for an aggregate count, so we
+  // approximate: exclude assets where assetType is switch/access_point AND
+  // the per-asset polling column is null (= inherits REST API from the FMG/FG
+  // integration source default) or explicitly set to rest_api. Switches/APs
+  // with an explicit snmp override are correctly kept in.
+  // Count helper: assets that will actually produce telemetry/systemInfo rows.
+  // Managed FortiSwitches/APs on REST API never do (the endpoints live on the
+  // parent FortiGate, not the device's IP), so the full monitored count would
+  // inflate those table projections. We approximate by excluding assets where
+  // assetType is switch/access_point AND the per-asset polling column is null
+  // (= inherits REST API from the integration source default) or explicitly
+  // set to rest_api. Assets with an explicit snmp override are kept in.
+  const telemetryEligibleSQL = `
+    SELECT COUNT(*)::bigint AS count FROM assets
+    WHERE monitored = true
+      AND NOT (
+        asset_type IN ('switch', 'access_point')
+        AND (telemetry_polling IS NULL OR telemetry_polling = 'rest_api')
+      )`;
+  const systemInfoEligibleSQL = `
+    SELECT COUNT(*)::bigint AS count FROM assets
+    WHERE monitored = true
+      AND NOT (
+        asset_type IN ('switch', 'access_point')
+        AND (interfaces_polling IS NULL OR interfaces_polling = 'rest_api')
+      )`;
+
   const [
     monitor,
     monitoredCount,
+    telemetryEligibleRow,
+    systemInfoEligibleRow,
     monitoredInterfaceRow,
     volumes,
     dbSizeRow,
@@ -657,6 +713,8 @@ export async function getCapacitySnapshot(opts: {
   ] = await Promise.all([
     getMonitorSettings(),
     prisma.asset.count({ where: { monitored: true } }),
+    prisma.$queryRawUnsafe<{ count: bigint }[]>(telemetryEligibleSQL),
+    prisma.$queryRawUnsafe<{ count: bigint }[]>(systemInfoEligibleSQL),
     prisma.$queryRawUnsafe<{ count: bigint }[]>(
       `SELECT COALESCE(SUM(COALESCE(array_length("monitoredInterfaces", 1), 0)), 0)::bigint AS count
          FROM "assets"
@@ -668,6 +726,8 @@ export async function getCapacitySnapshot(opts: {
     ),
     getSampleTableStats(),
   ]);
+  const telemetryEligibleCount  = Number(telemetryEligibleRow[0]?.count  ?? monitoredCount);
+  const systemInfoEligibleCount = Number(systemInfoEligibleRow[0]?.count ?? monitoredCount);
 
   const monitoredInterfaceCount = Number(monitoredInterfaceRow[0]?.count ?? 0);
   const dbSizeBytes = Number(dbSizeRow[0]?.size ?? 0);
@@ -687,6 +747,8 @@ export async function getCapacitySnapshot(opts: {
     currentDbBytes: dbSizeBytes,
     sampleTables,
     monitoredCount,
+    telemetryEligibleCount,
+    systemInfoEligibleCount,
     monitor,
   });
 
