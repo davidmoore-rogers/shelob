@@ -1036,15 +1036,30 @@ async function resolveControllerMgmtIp(
 
   // Primary: look up the FortiGate's already-discovered Asset.ipAddress.
   // This is the same IP that discovery resolved via resolveDeviceMgmtIpViaFmg
-  // and stamped on the asset — no need to hit FMG again.
-  const fgAsset = await prisma.asset.findFirst({
+  // and stamped on the asset — no need to hit FMG again. Use case-insensitive
+  // hostname matching because FortiOS device names can be stored in different
+  // case than what ends up in the topology blob's controllerFortigate field.
+  // Try with the integration filter first for precision; fall back without it
+  // in case the FortiGate's discoveredByIntegrationId was cleared (integration
+  // delete+recreate) — hostname + assetType=firewall is specific enough.
+  let fgAsset = await prisma.asset.findFirst({
     where: {
-      hostname: deviceName,
+      hostname: { equals: deviceName, mode: "insensitive" },
       assetType: "firewall",
       discoveredByIntegrationId: integrationId,
     },
     select: { ipAddress: true },
   });
+  if (!fgAsset?.ipAddress) {
+    fgAsset = await prisma.asset.findFirst({
+      where: {
+        hostname: { equals: deviceName, mode: "insensitive" },
+        assetType: "firewall",
+        ipAddress: { not: null },
+      },
+      select: { ipAddress: true },
+    });
+  }
   if (fgAsset?.ipAddress) {
     controllerMgmtIpCache.set(cacheKey, { ip: fgAsset.ipAddress, cachedAt: Date.now() });
     return fgAsset.ipAddress;
