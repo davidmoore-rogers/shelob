@@ -2877,7 +2877,10 @@ function _renderTemperatures(container, si, asset) {
       '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
-  container.innerHTML =
+  var tempStaleBanner = _isRestApiManagedNetworkDevice(asset)
+    ? "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; The integration's REST API does not refresh temperature data for FortiSwitches and FortiAPs — the information shown may be stale. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration's Monitoring settings to enable live collection.</div>"
+    : "";
+  container.innerHTML = tempStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
@@ -2937,7 +2940,10 @@ function _renderLldpNeighborsCard(container, si, asset) {
       '<td style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(caps) + '</td>' +
     '</tr>';
   }).join("");
-  container.innerHTML =
+  var lldpStaleBanner = _isRestApiManagedNetworkDevice(asset)
+    ? "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; The integration's REST API does not refresh LLDP neighbor data for FortiSwitches and FortiAPs — the information shown may be stale. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration's Monitoring settings to enable live collection.</div>"
+    : "";
+  container.innerHTML = lldpStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Local Port</th><th>Neighbor</th><th>Capabilities</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
