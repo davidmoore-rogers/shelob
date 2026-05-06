@@ -2150,8 +2150,8 @@ function assetSystemViewHTML(a) {
     '<div id="asset-system-temps"><span class="empty-state">Loading…</span></div>' +
     sectionHeader("Interfaces", interfacesBadge, false) +
     '<div id="asset-system-interfaces"><span class="empty-state">Loading…</span></div>' +
-    sectionHeader("Storage", interfacesBadge, false) +
-    '<div id="asset-system-storage"><span class="empty-state">Loading…</span></div>' +
+    (_isRestApiManagedNetworkDevice(a) ? '' : sectionHeader("Storage", interfacesBadge, false) +
+    '<div id="asset-system-storage"><span class="empty-state">Loading…</span></div>') +
     sectionHeader("LLDP Neighbors", _streamSourceBadgeHTML(a, "lldp"), false) +
     '<div id="asset-system-lldp"><span class="empty-state">Loading…</span></div>'
   );
@@ -2214,7 +2214,7 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
     _renderInterfacesTable(ifaces, si, asset);
     _renderStorageTable(storage, si, asset);
     _renderTemperatures(temps, si, asset);
-    _renderLldpNeighborsCard(lldp, si);
+    _renderLldpNeighborsCard(lldp, si, asset);
   } catch (err) {
     if (!silent) {
       chart.textContent = "Error: " + (err.message || "failed to load");
@@ -2742,9 +2742,20 @@ function _renderTemperatures(container, si, asset) {
   if (!container) return;
   var latest = (si && si.temperatures) || [];
   if (latest.length === 0) {
-    container.innerHTML = _isRestApiManagedNetworkDevice(asset)
-      ? '<p class="empty-state" style="color:var(--color-warning)">&#9888; Temperature data is not available via the integration\'s REST API for FortiSwitches and FortiAPs.</p>'
-      : '<p class="empty-state">No temperature sensors reported by this device.</p>';
+    if (_isRestApiManagedNetworkDevice(asset)) {
+      container.innerHTML = '<div style="padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)">&#9888; Temperature data is not available for FortiSwitches and FortiAPs via the integration\'s REST API.</div>';
+    } else {
+      var isFortinetRestFirewall = asset && asset.assetType === "firewall" && (function () {
+        var tp = asset.telemetryPolling;
+        if (tp === "rest_api") return true;
+        if (tp) return false;
+        var sk = (asset.discoveredByIntegration && asset.discoveredByIntegration.type) || "manual";
+        return sk === "fortimanager" || sk === "fortigate";
+      }());
+      container.innerHTML = isFortinetRestFirewall
+        ? '<p class="empty-state">No temperature sensors reported. Lower-end FortiGate models (60F/61F/91G class) may not support the sensor-info endpoint on FortiOS 7.4.x — upgrading FortiOS or switching the telemetry stream to <strong>SNMP</strong> enables collection on affected models.</p>'
+        : '<p class="empty-state">No temperature sensors reported by this device.</p>';
+    }
     return;
   }
   var rows = latest.map(function (t) {
@@ -2777,15 +2788,17 @@ function _renderTemperatures(container, si, asset) {
 // shows the local port, the neighbor's chassis/system identity, and a
 // click-through to the matched Polaris asset (if the LLDP collector
 // resolved one) or a plain label for non-Polaris ghost neighbors.
-function _renderLldpNeighborsCard(container, si) {
+function _renderLldpNeighborsCard(container, si, asset) {
   if (!container) return;
   var neighbors = (si && si.lldpNeighbors) || [];
   if (neighbors.length === 0) {
-    container.innerHTML = '<p class="empty-state">' +
-      'No LLDP neighbors collected. Either the device isn’t advertising LLDP, ' +
-      'the monitoring transport doesn’t support it, or the FortiOS REST endpoint ' +
-      'returned 404 — try flipping the integration’s LLDP transport to SNMP.' +
-      '</p>';
+    container.innerHTML = _isRestApiManagedNetworkDevice(asset)
+      ? ‘<div style="padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)">&#9888; LLDP neighbor data is not available for FortiSwitches and FortiAPs via the integration\’s REST API. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration\’s Monitoring settings to enable collection.</div>’
+      : ‘<p class="empty-state">’ +
+          "No LLDP neighbors collected. Either the device isn’t advertising LLDP, " +
+          "the monitoring transport doesn’t support it, or the FortiOS REST endpoint " +
+          "returned 404 — try flipping the integration’s LLDP transport to SNMP." +
+        ‘</p>’;
     return;
   }
   // Stable presentation: sort by local port, then chassis id.
