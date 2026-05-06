@@ -2382,6 +2382,32 @@ function _isRestApiManagedNetworkDevice(asset) {
   return ifPoll === "rest_api";
 }
 
+// Amber stale-data banner. Returns the banner HTML only when `lastAt` is older
+// than `intervalSec * 3` (3 = the default failureThreshold). Returns "" when
+// data is fresh so callers can unconditionally prepend the return value.
+function _staleBannerHTML(lastAt, intervalSec) {
+  if (!lastAt) return "";
+  var ageMs = Date.now() - new Date(lastAt).getTime();
+  var thresholdMs = (intervalSec || 600) * 3 * 1000;
+  if (ageMs <= thresholdMs) return "";
+  return "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; " + escapeHtml("Information last updated " + timeAgo(lastAt)) + " — try a different polling method.</div>";
+}
+
+// Centred "not available" empty-state for a section whose polling method
+// cannot deliver this data stream. `label` is the data-type name (e.g.
+// "Telemetry"). `pollingMethod` is the human-readable label (e.g. "REST API").
+// Optional `description` overrides the default body text (raw HTML — caller is
+// responsible for safety; use when a device-specific note is needed).
+function _notAvailableViaPollingHTML(label, pollingMethod, description) {
+  var desc = (description !== undefined && description !== null)
+    ? description
+    : "This data is not collected for this device with the current polling method. Try a different polling method on the Monitoring tab.";
+  return "<div style=\"text-align:center\">" +
+    "<div style=\"color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem\">&#9888; " + escapeHtml(label) + " not available via " + escapeHtml(pollingMethod || "current polling method") + "</div>" +
+    "<div style=\"font-size:0.8rem\">" + desc + "</div>" +
+  "</div>";
+}
+
 function _renderInterfacesTable(container, si, asset) {
   if (!container) return;
   var rows = (si && si.interfaces) || [];
@@ -2391,9 +2417,7 @@ function _renderInterfacesTable(container, si, asset) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
   }
-  var staleBanner = _isRestApiManagedNetworkDevice(asset)
-    ? '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)">&#9888; The integration\'s REST API does not refresh interface data for FortiSwitches and FortiAPs — the information shown may be stale. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration\'s Monitoring settings to enable live collection.</div>'
-    : '';
+  var staleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, (asset && asset.systemInfoIntervalSec) || 600);
   var monitored        = new Set(((si && si.monitoredInterfaces)   || (asset && asset.monitoredInterfaces)   || []));
   var monitoredTunnels = new Set(((si && si.monitoredIpsecTunnels) || (asset && asset.monitoredIpsecTunnels) || []));
   var canEdit = canManageAssets();
@@ -2843,12 +2867,8 @@ function _renderTemperatures(container, si, asset) {
   var latest = (si && si.temperatures) || [];
   if (latest.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
-      container.innerHTML =
-        "<div style=\"text-align:center\">" +
-          "<div style=\"color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem\">&#9888; Temperature not available via REST API</div>" +
-          "<div style=\"font-size:0.8rem\">Temperature data is not collected for managed FortiSwitches and FortiAPs via the integration's REST API.<br>" +
-          "Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration's Monitoring settings to enable collection.</div>" +
-        "</div>";
+      var tempPolling = _assetMonitorStreamSource(asset, "telemetry").polling || "REST API";
+      container.innerHTML = _notAvailableViaPollingHTML("Temperature", tempPolling);
     } else {
       var isFortinetRestFirewall = asset && asset.assetType === "firewall" && (function () {
         var tp = asset.telemetryPolling;
@@ -2857,13 +2877,14 @@ function _renderTemperatures(container, si, asset) {
         var sk = (asset.discoveredByIntegration && asset.discoveredByIntegration.type) || "manual";
         return sk === "fortimanager" || sk === "fortigate";
       }());
-      container.innerHTML = isFortinetRestFirewall
-        ? "<div style=\"text-align:center\">" +
-            "<div style=\"color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem\">&#9888; Temperature not available via REST API</div>" +
-            "<div style=\"font-size:0.8rem\">Lower-end FortiGate models (60F/61F/91G class) do not support the sensor-info endpoint via REST API.<br>" +
-            "Upgrade FortiOS or switch the telemetry stream to <strong>SNMP</strong> to enable collection on affected models.</div>" +
-          "</div>"
-        : '<p class="empty-state">No temperature sensors reported by this device.</p>';
+      if (isFortinetRestFirewall) {
+        var fgTempPolling = _assetMonitorStreamSource(asset, "telemetry").polling || "REST API";
+        var fgTempDesc = "Lower-end FortiGate models (60F/61F/91G class) do not support the sensor-info endpoint via REST API. " +
+          "Upgrade FortiOS or switch the telemetry stream to <strong>SNMP</strong> to enable collection on affected models.";
+        container.innerHTML = _notAvailableViaPollingHTML("Temperature", fgTempPolling, fgTempDesc);
+      } else {
+        container.innerHTML = '<p class="empty-state">No temperature sensors reported by this device.</p>';
+      }
     }
     return;
   }
@@ -2877,9 +2898,7 @@ function _renderTemperatures(container, si, asset) {
       '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
-  var tempStaleBanner = _isRestApiManagedNetworkDevice(asset)
-    ? "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; The integration's REST API does not refresh temperature data for FortiSwitches and FortiAPs — the information shown may be stale. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration's Monitoring settings to enable live collection.</div>"
-    : "";
+  var tempStaleBanner = _staleBannerHTML(si && si.lastTelemetryAt, (asset && asset.telemetryIntervalSec) || 60);
   container.innerHTML = tempStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
@@ -2904,13 +2923,16 @@ function _renderLldpNeighborsCard(container, si, asset) {
   if (!container) return;
   var neighbors = (si && si.lldpNeighbors) || [];
   if (neighbors.length === 0) {
-    container.innerHTML = _isRestApiManagedNetworkDevice(asset)
-      ? "<div style=\"padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; LLDP neighbor data is not available for FortiSwitches and FortiAPs via the integration’s REST API. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration’s Monitoring settings to enable collection.</div>"
-      : "<p class=\"empty-state\">" +
-          "No LLDP neighbors collected. Either the device isn’t advertising LLDP, " +
-          "the monitoring transport doesn’t support it, or the FortiOS REST endpoint " +
-          "returned 404 — try flipping the integration’s LLDP transport to SNMP." +
-        "</p>";
+    if (_isRestApiManagedNetworkDevice(asset)) {
+      var lldpPolling = _assetMonitorStreamSource(asset, "lldp").polling || "REST API";
+      container.innerHTML = _notAvailableViaPollingHTML("LLDP Neighbors", lldpPolling);
+    } else {
+      container.innerHTML = "<p class=\"empty-state\">" +
+        "No LLDP neighbors collected. Either the device isn’t advertising LLDP, " +
+        "the monitoring transport doesn’t support it, or the FortiOS REST endpoint " +
+        "returned 404 — try flipping the integration’s LLDP transport to SNMP." +
+      "</p>";
+    }
     return;
   }
   // Stable presentation: sort by local port, then chassis id.
@@ -2940,9 +2962,7 @@ function _renderLldpNeighborsCard(container, si, asset) {
       '<td style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(caps) + '</td>' +
     '</tr>';
   }).join("");
-  var lldpStaleBanner = _isRestApiManagedNetworkDevice(asset)
-    ? "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; The integration's REST API does not refresh LLDP neighbor data for FortiSwitches and FortiAPs — the information shown may be stale. Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration's Monitoring settings to enable live collection.</div>"
-    : "";
+  var lldpStaleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, (asset && asset.systemInfoIntervalSec) || 600);
   container.innerHTML = lldpStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Local Port</th><th>Neighbor</th><th>Capabilities</th>' +
@@ -3759,12 +3779,8 @@ function _renderSystemChart(container, data, asset) {
   var samples = (data && data.samples) || [];
   if (samples.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
-      container.innerHTML =
-        '<div style="text-align:center">' +
-          '<div style="color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem">&#9888; Telemetry not available via REST API</div>' +
-          '<div style="font-size:0.8rem">CPU &amp; Memory data is not collected for managed FortiSwitches and FortiAPs via the integration\'s REST API.<br>' +
-          'Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration\'s Monitoring settings to enable collection.</div>' +
-        '</div>';
+      var telPolling = _assetMonitorStreamSource(asset, "telemetry").polling || "REST API";
+      container.innerHTML = _notAvailableViaPollingHTML("Telemetry", telPolling);
     } else {
       container.textContent = "No telemetry samples in this range yet.";
     }
