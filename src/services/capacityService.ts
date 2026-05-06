@@ -687,18 +687,18 @@ export async function getCapacitySnapshot(opts: {
   // (= inherits REST API from the integration source default) or explicitly
   // set to rest_api. Assets with an explicit snmp override are kept in.
   const telemetryEligibleSQL = `
-    SELECT COUNT(*)::bigint AS count FROM assets
+    SELECT COUNT(*)::bigint AS count FROM "assets"
     WHERE monitored = true
       AND NOT (
-        asset_type IN ('switch', 'access_point')
-        AND (telemetry_polling IS NULL OR telemetry_polling = 'rest_api')
+        "assetType" IN ('switch', 'access_point')
+        AND ("telemetryPolling" IS NULL OR "telemetryPolling" = 'rest_api')
       )`;
   const systemInfoEligibleSQL = `
-    SELECT COUNT(*)::bigint AS count FROM assets
+    SELECT COUNT(*)::bigint AS count FROM "assets"
     WHERE monitored = true
       AND NOT (
-        asset_type IN ('switch', 'access_point')
-        AND (interfaces_polling IS NULL OR interfaces_polling = 'rest_api')
+        "assetType" IN ('switch', 'access_point')
+        AND ("interfacesPolling" IS NULL OR "interfacesPolling" = 'rest_api')
       )`;
 
   const [
