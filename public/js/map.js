@@ -372,6 +372,19 @@
     if (fullscreenBtn) fullscreenBtn.addEventListener("click", toggleFullscreenTopology);
     if (refreshBtn) refreshBtn.addEventListener("click", refreshTopology);
     if (searchInput) wireTopologySearch(searchInput);
+    // Intercept clicks on asset links in the topology right-bar so they open
+    // the asset details slide-over instead of navigating away to assets.html.
+    var infoPanel = document.getElementById("topology-info");
+    if (infoPanel) {
+      infoPanel.addEventListener("click", function (e) {
+        var link = e.target.closest("a[href]");
+        if (!link) return;
+        var id = _assetIdFromTopoHref(link.getAttribute("href"));
+        if (!id) return;
+        e.preventDefault();
+        openMapAssetPanel(id);
+      });
+    }
     overlay.addEventListener("click", function (e) {
       if (e.target === overlay) {
         closeBtn.classList.add("flash");
@@ -609,8 +622,8 @@
         setTimeout(function () { try { node.removeClass("topology-pulse"); } catch (e) {} }, 1500);
       }
     }
-    // Pivot to the endpoint's asset details page.
-    if (item.id) window.location.href = "/assets.html#view=asset:" + item.id;
+    // Open the endpoint's asset details in the slide-over panel.
+    if (item.id) openMapAssetPanel(item.id);
   }
 
   function closeTopologySearchResults() {
@@ -994,14 +1007,12 @@
       }, 250);
     });
 
-    // Click-through on cross-site Polaris asset nodes — navigate to that
-    // asset's details page on the Assets tab. Other node kinds (firewall,
-    // switch, AP, ghost-LLDP) don't have a navigation target so we skip.
+    // Click-through on cross-site Polaris asset nodes — open the asset details
+    // slide-over. Other node kinds (firewall, switch, AP, ghost-LLDP) don't
+    // have a navigation target so we skip.
     cyInstance.on("tap", 'node[role="remote-asset"]', function (evt) {
       var assetId = evt.target.data("assetId");
-      if (assetId) {
-        window.location.href = "/assets.html#view=asset:" + assetId;
-      }
+      if (assetId) openMapAssetPanel(assetId);
     });
 
     // Hover tooltip on edges — explains the rule + evidence behind each
@@ -1187,6 +1198,124 @@
     }
 
     document.getElementById("topology-info").innerHTML = parts.join("");
+  }
+
+  // ─── Map asset panel ─────────────────────────────────────────────────────
+  // Slide-over that shows an asset's key details without navigating away from
+  // the Device Map. Opened by clicking any asset link in the topology
+  // right-bar, a topology search result, or a cross-site graph node.
+
+  function _ensureMapAssetPanelDOM() {
+    if (document.getElementById("map-asset-panel-overlay")) return;
+    var overlay = document.createElement("div");
+    overlay.id = "map-asset-panel-overlay";
+    overlay.className = "slideover-overlay";
+    overlay.innerHTML =
+      '<div class="slideover" id="map-asset-panel">' +
+        '<div class="slideover-resize-handle"></div>' +
+        '<div class="slideover-header">' +
+          '<div class="slideover-header-top">' +
+            '<h3 id="map-asset-panel-title">Asset Details</h3>' +
+            '<button class="btn-icon" id="map-asset-panel-close" title="Close">&times;</button>' +
+          '</div>' +
+          '<div class="slideover-meta" id="map-asset-panel-meta"></div>' +
+        '</div>' +
+        '<div class="slideover-body" id="map-asset-panel-body"><p class="empty-state">Loading…</p></div>' +
+        '<div class="slideover-footer" id="map-asset-panel-footer"></div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", function (e) {
+      if (e.target === overlay) closeMapAssetPanel();
+    });
+    document.getElementById("map-asset-panel-close").addEventListener("click", closeMapAssetPanel);
+    if (typeof initSlideoverResize === "function") {
+      initSlideoverResize(document.getElementById("map-asset-panel"), "polaris.panel.width.asset");
+    }
+  }
+
+  function closeMapAssetPanel() {
+    var overlay = document.getElementById("map-asset-panel-overlay");
+    if (overlay) overlay.classList.remove("open");
+  }
+
+  async function openMapAssetPanel(id) {
+    _ensureMapAssetPanelDOM();
+    var titleEl  = document.getElementById("map-asset-panel-title");
+    var metaEl   = document.getElementById("map-asset-panel-meta");
+    var bodyEl   = document.getElementById("map-asset-panel-body");
+    var footerEl = document.getElementById("map-asset-panel-footer");
+    titleEl.textContent = "Asset Details";
+    metaEl.innerHTML = "";
+    bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading…</p>';
+    footerEl.innerHTML = "";
+    requestAnimationFrame(function () {
+      document.getElementById("map-asset-panel-overlay").classList.add("open");
+    });
+
+    try {
+      var a = await api.assets.get(id);
+
+      var TYPE_LABELS = {
+        server: "Server", switch: "Switch", router: "Router", firewall: "Firewall",
+        workstation: "Workstation", printer: "Printer", access_point: "Access Point", other: "Other",
+      };
+
+      function _row(label, value) {
+        if (value == null || value === "") return "";
+        return "<div class=\"detail-row\"><span class=\"detail-label\">" + escapeHtml(label) + "</span>" +
+               "<span class=\"detail-value\">" + escapeHtml(String(value)) + "</span></div>";
+      }
+      function _monoRow(label, value) {
+        if (value == null || value === "") return "";
+        return "<div class=\"detail-row\"><span class=\"detail-label\">" + escapeHtml(label) + "</span>" +
+               "<span class=\"detail-value\"><code>" + escapeHtml(String(value)) + "</code></span></div>";
+      }
+
+      var parts = ["<div class=\"asset-view-grid\">"];
+      parts.push(_row("Hostname", a.hostname));
+      parts.push(_row("DNS Name", a.dnsName));
+      parts.push(_monoRow("IP Address", a.ipAddress));
+      parts.push(_monoRow("MAC Address", a.macAddress));
+      parts.push(_monoRow("Serial Number", a.serialNumber));
+      parts.push(_row("Manufacturer", a.manufacturer));
+      parts.push(_row("Model", a.model));
+      parts.push(_row("Type", TYPE_LABELS[a.assetType] || a.assetType));
+      parts.push(_row("Status", a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : null));
+      parts.push(_row("OS / Firmware", a.osVersion || a.os));
+      parts.push(_row("Location", a.location));
+      parts.push(_row("Learned Location", a.learnedLocation));
+      parts.push(_row("Department", a.department));
+      parts.push(_row("Assigned To", a.assignedTo));
+      if (a.lastSeen) parts.push(_row("Last Seen", new Date(a.lastSeen).toLocaleString()));
+      if (a.acquiredAt || a.createdAt) parts.push(_row("Acquired", new Date(a.acquiredAt || a.createdAt).toLocaleString()));
+      if (a.warrantyExpiry) parts.push(_row("Warranty Expires", new Date(a.warrantyExpiry).toLocaleString()));
+      parts.push(_row("Purchase Order", a.purchaseOrder));
+      if (a.tags && a.tags.length) parts.push(_row("Tags", a.tags.join(", ")));
+      parts.push(_row("Notes", a.notes));
+      parts.push("</div>");
+
+      titleEl.innerHTML = "Asset Details" + (a.hostname
+        ? " <span style=\"color:var(--color-text-secondary);font-weight:400;margin-left:6px\">— " + escapeHtml(a.hostname) + "</span>"
+        : "");
+      metaEl.innerHTML = "<span class=\"badge\">" + escapeHtml(TYPE_LABELS[a.assetType] || a.assetType || "other") + "</span>";
+
+      bodyEl.innerHTML = parts.join("");
+      footerEl.innerHTML =
+        "<a class=\"btn btn-sm btn-secondary\" href=\"/assets.html#view=asset:" + encodeURIComponent(id) +
+        "\" target=\"_blank\" rel=\"noopener\">Full details</a>" +
+        "<span style=\"flex:1\"></span>" +
+        "<button class=\"btn btn-sm btn-secondary\" id=\"map-asset-panel-close-btn\">Close</button>";
+      document.getElementById("map-asset-panel-close-btn").addEventListener("click", closeMapAssetPanel);
+    } catch (err) {
+      bodyEl.innerHTML = "<p class=\"empty-state\" style=\"padding:1rem 1.25rem\">Failed to load asset: " +
+        escapeHtml(err && err.message ? err.message : String(err)) + "</p>";
+    }
+  }
+
+  function _assetIdFromTopoHref(href) {
+    if (!href) return null;
+    var m = href.match(/\/assets\.html#(?:asset=|view=asset:)([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
