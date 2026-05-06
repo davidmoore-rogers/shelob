@@ -152,12 +152,58 @@ interface MonitorJobPayload {
 let bossInstance: PgBossType | null = null;
 let metricsRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
+// ─── Stalled-worker watchdog ─────────────────────────────────────────────────
+//
+// pg-boss workers stop consuming when the internal polling timer crashes on a
+// DB connection error — the "error" event fires and is logged, but the timer
+// doesn't restart automatically. The symptom: many jobs in "created" state,
+// 0 active for > 1 minute. The fix is a full stop→start cycle.
+//
+// Safety rails: at most 3 auto-recoveries per rolling hour; each attempt is
+// logged so operators can see what happened in journalctl. After the cap is
+// hit, a plain error is logged every minute so the alert remains visible.
+
+const STALL_CREATED_THRESHOLD  = 50;   // > 50 queued jobs with 0 active = suspicious
+const STALL_CONSECUTIVE_LIMIT   = 4;   // 4 × 15 s = 1 min before we act
+const STALL_MAX_RECOVERIES      = 3;
+const STALL_RECOVERY_WINDOW_MS  = 60 * 60 * 1000; // 1 h rolling window
+
+let stalledReadings  = 0;
+let recoveryAttempts: number[] = []; // timestamps of recent auto-recoveries
+let recovering       = false;
+
+async function attemptWorkerRecovery(): Promise<void> {
+  if (recovering) return;
+  recovering = true;
+  try {
+    logger.warn("pg-boss workers stalled; attempting auto-recovery (stop → start)");
+    // Clear the metrics interval so startPgbossWorkers won't create a duplicate.
+    if (metricsRefreshInterval !== null) {
+      clearInterval(metricsRefreshInterval);
+      metricsRefreshInterval = null;
+    }
+    if (bossInstance) {
+      try { await bossInstance.stop({ graceful: false, timeout: 10_000 }); } catch { /* best-effort */ }
+      bossInstance = null;
+    }
+    await startPgbossWorkers();
+    logger.info("pg-boss worker auto-recovery completed");
+  } catch (err) {
+    logger.error({ err }, "pg-boss worker auto-recovery failed — restart polaris to recover monitoring");
+  } finally {
+    recovering = false;
+  }
+}
+
 /**
  * Refresh pg-boss queue-depth metrics by querying pgboss.job directly.
  * Runs every 15s while pg-boss is active. Zero-fills all queue×state
  * combinations first so gauges don't linger when a queue drains.
+ * Also runs the stalled-worker watchdog on each tick.
  */
 async function refreshPgbossMetrics(): Promise<void> {
+  let totalCreated = 0;
+  let totalActive  = 0;
   try {
     const queueNames = Object.values(QUEUE_NAMES);
     const rows = await prisma.$queryRaw<Array<{ name: string; state: string; count: number }>>`
@@ -174,9 +220,35 @@ async function refreshPgbossMetrics(): Promise<void> {
     }
     for (const row of rows) {
       setPgbossQueueJobs(row.name, row.state, Number(row.count));
+      if (row.state === "created") totalCreated += Number(row.count);
+      if (row.state === "active")  totalActive  += Number(row.count);
     }
   } catch (err) {
     logger.debug({ err }, "pg-boss metrics refresh failed");
+    return;
+  }
+
+  // Stalled-worker watchdog: if jobs are piling up with no active workers,
+  // attempt an auto-recovery after STALL_CONSECUTIVE_LIMIT readings.
+  if (totalCreated > STALL_CREATED_THRESHOLD && totalActive === 0) {
+    stalledReadings++;
+    if (stalledReadings >= STALL_CONSECUTIVE_LIMIT) {
+      const now = Date.now();
+      recoveryAttempts = recoveryAttempts.filter(t => now - t < STALL_RECOVERY_WINDOW_MS);
+      if (recoveryAttempts.length < STALL_MAX_RECOVERIES) {
+        recoveryAttempts.push(now);
+        stalledReadings = 0;
+        void attemptWorkerRecovery();
+      } else if (stalledReadings % STALL_CONSECUTIVE_LIMIT === 0) {
+        // Recovery cap hit — keep logging so the operator sees it
+        logger.error(
+          { totalCreated, recoveryAttempts: recoveryAttempts.length },
+          "pg-boss workers stalled and auto-recovery cap reached — run: systemctl restart polaris",
+        );
+      }
+    }
+  } else {
+    stalledReadings = 0;
   }
 }
 
