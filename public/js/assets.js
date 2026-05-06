@@ -5067,8 +5067,9 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
   document.getElementById("btn-ipsec-panel-close-btn").addEventListener("click", closeIpsecPanel);
 
   var rangeBtns = _chartRangeBtnsHTML("ipsec-range-btn", [
+    { value: "1h",  label: "1h"  },
     { value: "24h", label: "24h" },
-    { value: "7d",  label: "7d" },
+    { value: "7d",  label: "7d"  },
     { value: "30d", label: "30d" },
   ], "assetIpsec", "24h");
 
