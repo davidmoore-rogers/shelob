@@ -2124,6 +2124,10 @@ function assetSystemViewHTML(a) {
   // own stream. Storage and LLDP ride the same stream as Interfaces.
   var telemetryBadge   = _streamSourceBadgeHTML(a, "telemetry");
   var interfacesBadge  = _streamSourceBadgeHTML(a, "interfaces");
+  var sysInfoUpdatedAt = a.lastSystemInfoAt
+    ? ('<span style="font-size:0.72rem;color:var(--color-text-tertiary)" title="' + escapeHtml(new Date(a.lastSystemInfoAt).toLocaleString()) + '">updated ' + timeAgo(a.lastSystemInfoAt) + '</span>')
+    : '';
+  var interfacesBadgeFull = interfacesBadge + (interfacesBadge && sysInfoUpdatedAt ? " " : "") + sysInfoUpdatedAt;
   function sectionHeader(title, badgeHTML, withRangeButtons) {
     return '<div style="display:flex;align-items:center;justify-content:space-between;margin:1.25rem 0 0.5rem">' +
       '<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap">' +
@@ -2148,11 +2152,11 @@ function assetSystemViewHTML(a) {
     '</div>' +
     sectionHeader("Temperatures", telemetryBadge, false) +
     '<div id="asset-system-temps"><span class="empty-state">Loading…</span></div>' +
-    sectionHeader("Interfaces", interfacesBadge, false) +
+    sectionHeader("Interfaces", interfacesBadgeFull, false) +
     '<div id="asset-system-interfaces"><span class="empty-state">Loading…</span></div>' +
-    (_isRestApiManagedNetworkDevice(a) ? '' : sectionHeader("Storage", interfacesBadge, false) +
+    (_isRestApiManagedNetworkDevice(a) ? '' : sectionHeader("Storage", interfacesBadgeFull, false) +
     '<div id="asset-system-storage"><span class="empty-state">Loading…</span></div>') +
-    sectionHeader("LLDP Neighbors", _streamSourceBadgeHTML(a, "lldp"), false) +
+    sectionHeader("LLDP Neighbors", interfacesBadgeFull, false) +
     '<div id="asset-system-lldp"><span class="empty-state">Loading…</span></div>'
   );
 }
