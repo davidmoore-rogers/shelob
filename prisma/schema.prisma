@@ -223,7 +223,11 @@ model Credential {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  assets Asset[] // Back-relation: assets using this credential for monitoring
+  assets           Asset[] @relation("AssetMonitorCred")    // default credential back-relation
+  rtAssets         Asset[] @relation("AssetRTCred")
+  telemetryAssets  Asset[] @relation("AssetTelemetryCred")
+  interfacesAssets Asset[] @relation("AssetInterfacesCred")
+  lldpAssets       Asset[] @relation("AssetLldpCred")
 
   @@index([type])
   @@map("credentials")
@@ -377,7 +381,15 @@ model Asset {
   // not flip it.
   monitoredOperatorSet Boolean    @default(false)
   monitorCredentialId String?
-  monitorCredential   Credential? @relation(fields: [monitorCredentialId], references: [id], onDelete: SetNull)
+  monitorCredential         Credential? @relation("AssetMonitorCred",     fields: [monitorCredentialId],         references: [id], onDelete: SetNull)
+  responseTimeCredentialId  String?
+  responseTimeCredential    Credential? @relation("AssetRTCred",          fields: [responseTimeCredentialId],   references: [id], onDelete: SetNull)
+  telemetryCredentialId     String?
+  telemetryCredential       Credential? @relation("AssetTelemetryCred",   fields: [telemetryCredentialId],      references: [id], onDelete: SetNull)
+  interfacesCredentialId    String?
+  interfacesCredential      Credential? @relation("AssetInterfacesCred",  fields: [interfacesCredentialId],     references: [id], onDelete: SetNull)
+  lldpCredentialId          String?
+  lldpCredential            Credential? @relation("AssetLldpCred",        fields: [lldpCredentialId],           references: [id], onDelete: SetNull)
   monitorIntervalSec  Int? // Per-asset override for response-time probes; falls back to the resolved tier-3 setting
   // Per-asset override for the probe TCP/UDP/HTTP timeout in milliseconds.
   // Range 100..60000; null = inherit from the resolved tier-3 setting (default 5000ms).

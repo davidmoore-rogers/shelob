@@ -331,7 +331,17 @@ export async function updateCredential(id: string, input: UpdateCredentialInput)
 }
 
 export async function deleteCredential(id: string): Promise<void> {
-  const inUse = await prisma.asset.count({ where: { monitorCredentialId: id } });
+  const inUse = await prisma.asset.count({
+    where: {
+      OR: [
+        { monitorCredentialId:      id },
+        { responseTimeCredentialId: id },
+        { telemetryCredentialId:    id },
+        { interfacesCredentialId:   id },
+        { lldpCredentialId:         id },
+      ],
+    },
+  });
   if (inUse > 0) {
     throw new AppError(
       409,

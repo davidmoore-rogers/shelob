@@ -1363,6 +1363,15 @@ function getAssetFormData() {
       data.interfacesPolling   = polling.interfacesPolling;
       data.lldpPolling         = polling.lldpPolling;
     }
+    // Per-stream credential overrides. Empty string → null (source default).
+    var rtCredEl  = document.getElementById("f-responseTimeCredential");
+    var telCredEl = document.getElementById("f-telemetryCredential");
+    var ifCredEl  = document.getElementById("f-interfacesCredential");
+    var lldpCredEl= document.getElementById("f-lldpCredential");
+    data.responseTimeCredentialId = rtCredEl   ? (rtCredEl.value   || null) : undefined;
+    data.telemetryCredentialId    = telCredEl  ? (telCredEl.value  || null) : undefined;
+    data.interfacesCredentialId   = ifCredEl   ? (ifCredEl.value   || null) : undefined;
+    data.lldpCredentialId         = lldpCredEl ? (lldpCredEl.value || null) : undefined;
   }
   return data;
 }
@@ -1392,10 +1401,36 @@ function assetMonitoringFormHTML(asset) {
     interfacesPolling:   asset && asset.interfacesPolling,
     lldpPolling:         asset && asset.lldpPolling,
   };
+  // Per-stream credential IDs (null = use source default at runtime).
+  var rtCredId   = (asset && asset.responseTimeCredentialId)  || "";
+  var telCredId  = (asset && asset.telemetryCredentialId)     || "";
+  var ifCredId   = (asset && asset.interfacesCredentialId)    || "";
+  var lldpCredId = (asset && asset.lldpCredentialId)          || "";
+
+  // Build each stream row: [label | polling dropdown] then a credential
+  // sub-row. The sub-row is hidden by default and shown/hidden by JS in
+  // _wireMonitorEditTab whenever the polling method changes.
+  function streamRow(label, streamName, pollingId, credSelectId, currentPoll, currentCredId) {
+    var needsCred = currentPoll && currentPoll !== "icmp";
+    var credDisplay = needsCred ? "flex" : "none";
+    return '<label style="margin:0">' + label + '</label>' +
+      _polarisPollingDropdownHTML(pollingId, assetSourceKind, streamName, currentPoll) +
+      '<div id="' + pollingId + '-cred-wrap" style="display:' + credDisplay + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
+        '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">Credential</label>' +
+        '<select id="' + credSelectId + '" data-current-id="' + escapeHtml(currentCredId) + '" style="flex:1"></select>' +
+      '</div>';
+  }
+
   var transportBlockHtml =
     '<div id="f-transport-wrap" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border)">' +
-      _polarisPollingFourStreamHTML("f-", assetSourceKind, pollingCurrent) +
-      '<p class="hint" style="margin-top:0.25rem">Per-asset overrides win over class / integration / source-default tiers. Methods that need a credential (SNMP / WinRM / SSH / REST API) use this asset\'s credential when set; FMG/FortiGate-discovered firewalls fall back to the integration\'s API token (REST API) or shared SNMP credential.</p>' +
+      '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.5rem 0 0.5rem 0">Polling Methods</p>' +
+      '<div style="display:grid;grid-template-columns:200px 1fr;gap:0.5rem 1rem;align-items:center;margin-bottom:0.75rem">' +
+        streamRow("Response time",  "responseTime", "f-responseTimePolling", "f-responseTimeCredential", pollingCurrent.responseTimePolling, rtCredId) +
+        streamRow("Telemetry",      "telemetry",    "f-telemetryPolling",    "f-telemetryCredential",    pollingCurrent.telemetryPolling,    telCredId) +
+        streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   pollingCurrent.interfacesPolling,   ifCredId) +
+        streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         pollingCurrent.lldpPolling,         lldpCredId) +
+      '</div>' +
+      '<p class="hint" style="margin-top:0.25rem">Per-asset overrides win over class / integration / source-default tiers. When a method needs a credential, "Source default" lets the asset inherit the integration\'s configured credential at runtime (useful when the integration credential rotates).</p>' +
     '</div>';
 
   return (
@@ -1407,11 +1442,11 @@ function assetMonitoringFormHTML(asset) {
       '<p class="hint">A successful probe means the credential authenticated. Probes write a sample row each cycle; failed probes count as packet loss.</p>' +
     '</div>' +
     '<div class="form-group" id="f-monitorCredential-wrap">' +
-      '<label>Credential</label>' +
+      '<label>Default Credential</label>' +
       '<select id="f-monitorCredential" data-current-id="' + escapeHtml(credId) + '">' +
         '<option value="">— none —</option>' +
       '</select>' +
-      '<p class="hint">Used by polling methods that need authentication (SNMP / WinRM / SSH / REST API). FMG/FortiGate-discovered firewalls fall back to the integration\'s API token when no asset credential is set. Add credentials in <a href="/server-settings.html?tab=credentials">Server Settings → Credentials</a>.</p>' +
+      '<p class="hint">Fallback credential for streams that don\'t have their own per-stream override below. FMG/FortiGate-discovered firewalls fall back further to the integration\'s API token when no credential is set here. Add credentials in <a href="/server-settings.html?tab=credentials">Server Settings → Credentials</a>.</p>' +
     '</div>' +
     '<div class="form-group">' +
       '<label>Poll Interval Override (seconds) <span class="tier-badge" id="f-monitorInterval-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
@@ -1432,6 +1467,30 @@ function assetMonitoringFormHTML(asset) {
   );
 }
 
+// Map polling method → which credential type it needs (null = no credential).
+function _credTypeForPolling(method) {
+  if (method === "snmp")     return "snmp";
+  if (method === "winrm")    return "winrm";
+  if (method === "ssh")      return "ssh";
+  if (method === "rest_api") return "restapi";
+  return null;
+}
+
+// Options for a per-stream credential picker: "Source default" first (value=""),
+// then credentials matching credType. When credType is null, just the default.
+function _credentialOptionsForStream(selectedId, credType) {
+  var opts = '<option value="">— Source default —</option>';
+  if (!credType) return opts;
+  _credentialCache.list.forEach(function (c) {
+    if (c.type !== credType) return;
+    opts += '<option value="' + escapeHtml(c.id) + '"' +
+      (selectedId === c.id ? " selected" : "") + '>' +
+      escapeHtml(c.name) +
+      '</option>';
+  });
+  return opts;
+}
+
 async function _wireMonitorEditTab(asset) {
   await _ensureCredentials();
   var monChk = document.getElementById("f-monitored");
@@ -1442,6 +1501,31 @@ async function _wireMonitorEditTab(asset) {
   var probeTimeoutWarn = document.getElementById("f-probeTimeoutMs-warn");
 
   var transportWrap = document.getElementById("f-transport-wrap");
+
+  // Per-stream selects and their corresponding polling selects.
+  var streamDefs = [
+    { pollId: "f-responseTimePolling", credId: "f-responseTimeCredential" },
+    { pollId: "f-telemetryPolling",    credId: "f-telemetryCredential"    },
+    { pollId: "f-interfacesPolling",   credId: "f-interfacesCredential"   },
+    { pollId: "f-lldpPolling",         credId: "f-lldpCredential"         },
+  ];
+
+  function refreshStreamCred(streamDef) {
+    var pollEl = document.getElementById(streamDef.pollId);
+    var credEl = document.getElementById(streamDef.credId);
+    var wrapEl = document.getElementById(streamDef.pollId + "-cred-wrap");
+    if (!pollEl || !credEl || !wrapEl) return;
+    var method = pollEl.value || null;
+    var credType = _credTypeForPolling(method);
+    if (credType) {
+      var current = credEl.getAttribute("data-current-id") || "";
+      credEl.innerHTML = _credentialOptionsForStream(current, credType);
+      wrapEl.style.display = "flex";
+    } else {
+      wrapEl.style.display = "none";
+    }
+  }
+
   function refresh() {
     var enabled = !!(monChk && monChk.checked);
     if (intervalEl) intervalEl.disabled = !enabled;
@@ -1449,11 +1533,6 @@ async function _wireMonitorEditTab(asset) {
     if (credWrap) credWrap.style.display = enabled ? "block" : "none";
     if (credSel) {
       credSel.disabled = !enabled;
-      // Populate with every credential type — operator picks the one that
-      // matches the polling method they've chosen below. The picker stays
-      // visible whenever monitoring is enabled because a single asset
-      // could have polling=snmp + a stored SNMP credential, or
-      // polling=winrm + a WinRM credential, etc.
       if (enabled) {
         var current = credSel.getAttribute("data-current-id") || "";
         credSel.innerHTML = _credentialOptionsForAny(current);
@@ -1462,8 +1541,25 @@ async function _wireMonitorEditTab(asset) {
     if (transportWrap) {
       transportWrap.style.display = enabled ? "block" : "none";
     }
+    // Populate / show-hide per-stream credential pickers.
+    streamDefs.forEach(refreshStreamCred);
   }
   if (monChk) monChk.addEventListener("change", refresh);
+
+  // Wire per-stream polling dropdowns so the credential sub-row updates on change.
+  streamDefs.forEach(function (sd) {
+    var pollEl = document.getElementById(sd.pollId);
+    if (pollEl) {
+      pollEl.addEventListener("change", function () {
+        // Clear the stored "current" so switching methods doesn't carry over
+        // a credential from a different type.
+        var credEl = document.getElementById(sd.credId);
+        if (credEl) credEl.setAttribute("data-current-id", "");
+        refreshStreamCred(sd);
+      });
+    }
+  });
+
   refresh();
 
   // Soft warning when probe timeout drops below 500 ms — Zod still allows

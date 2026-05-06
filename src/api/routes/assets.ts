@@ -130,8 +130,12 @@ const PollingMethodEnum = z.enum(["rest_api", "snmp", "winrm", "ssh", "icmp"]);
 
 const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   monitored:             z.boolean().optional(),
-  monitorCredentialId:   z.string().uuid().nullable().optional(),
-  monitorIntervalSec:    z.number().int().min(5).max(86400).nullable().optional(),
+  monitorCredentialId:          z.string().uuid().nullable().optional(),
+  responseTimeCredentialId:     z.string().uuid().nullable().optional(),
+  telemetryCredentialId:        z.string().uuid().nullable().optional(),
+  interfacesCredentialId:       z.string().uuid().nullable().optional(),
+  lldpCredentialId:             z.string().uuid().nullable().optional(),
+  monitorIntervalSec:           z.number().int().min(5).max(86400).nullable().optional(),
   // Per-asset probe timeout override. 100..60000 ms; null inherits from the
   // resolved tier-3 setting. The frontend renders a soft warning at <500 ms.
   probeTimeoutMs:        z.number().int().min(100).max(60000).nullable().optional(),
@@ -427,10 +431,14 @@ router.get("/:id", async (req, res, next) => {
     const asset = await prisma.asset.findUnique({
       where: { id: req.params.id as string },
       include: {
-        discoveredByIntegration: { select: { id: true, name: true, type: true, config: true } },
-        monitorCredential:       { select: { id: true, name: true, type: true } },
-        associatedIpRows:        { select: ASSOCIATED_IP_SELECT },
-        macAddressRows:          { select: MAC_ROW_SELECT },
+        discoveredByIntegration:  { select: { id: true, name: true, type: true, config: true } },
+        monitorCredential:        { select: { id: true, name: true, type: true } },
+        responseTimeCredential:   { select: { id: true, name: true, type: true } },
+        telemetryCredential:      { select: { id: true, name: true, type: true } },
+        interfacesCredential:     { select: { id: true, name: true, type: true } },
+        lldpCredential:           { select: { id: true, name: true, type: true } },
+        associatedIpRows:         { select: ASSOCIATED_IP_SELECT },
+        macAddressRows:           { select: MAC_ROW_SELECT },
       },
     });
     if (!asset) throw new AppError(404, "Asset not found");

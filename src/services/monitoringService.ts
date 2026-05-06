@@ -743,17 +743,18 @@ export async function resolveMonitorSettingsWithProvenance(
 
 /**
  * Resolve the SNMP credential config to use when an FMG/FortiGate-typed asset
- * has a transport toggle flipped to "snmp". Asset's own monitorCredential wins
- * if it's an SNMP credential; otherwise we fall back to the integration's
- * `monitorCredentialId`. Throws on missing/wrong-type credentials so the
- * caller can surface the reason in the System tab error toast.
+ * has a transport toggle flipped to "snmp". The `effectiveCred` is already the
+ * resolved per-stream credential (stream-specific wins, then asset default);
+ * here we only need to fall back to the integration's `monitorCredentialId`
+ * when neither is an SNMP credential. Throws on missing/wrong-type credentials
+ * so the caller can surface the reason in the System tab error toast.
  */
 async function loadSnmpCredentialConfigForFortinetAsset(
-  asset: { monitorCredential?: { type: string; config: unknown } | null },
+  effectiveCred: { type: string; config: unknown } | null | undefined,
   integration: { config?: unknown } | null | undefined,
 ): Promise<Record<string, unknown>> {
-  if (asset.monitorCredential && asset.monitorCredential.type === "snmp") {
-    return (asset.monitorCredential.config as Record<string, unknown>) || {};
+  if (effectiveCred && effectiveCred.type === "snmp") {
+    return (effectiveCred.config as Record<string, unknown>) || {};
   }
   const intCfg = (integration?.config && typeof integration.config === "object")
     ? (integration.config as Record<string, unknown>)
@@ -797,10 +798,11 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
   try {
     const asset = await prisma.asset.findUnique({
       where: { id: assetId },
-      include: { monitorCredential: true, discoveredByIntegration: true },
+      include: { monitorCredential: true, responseTimeCredential: true, discoveredByIntegration: true },
     });
     if (!asset) return finish(start, false, "Asset not found");
     if (!asset.monitored) return finish(start, false, "Monitoring disabled");
+    const effectiveRTCred = asset.responseTimeCredential ?? asset.monitorCredential;
 
     // Resolve effective settings (probeTimeoutMs + responseTimePolling) through
     // the four-tier hierarchy. The resolver's source-default fallback always
@@ -867,22 +869,19 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
         }
         return result;
       }
-      if (asset.monitorCredential?.type === "restapi") {
-        return await probeRestApiCredential(asset.monitorCredential.config as Record<string, unknown>, start, timeoutMs);
+      if (effectiveRTCred?.type === "restapi") {
+        return await probeRestApiCredential(effectiveRTCred.config as Record<string, unknown>, start, timeoutMs);
       }
       return finish(start, false, "REST API polling requires either a Fortinet integration or a REST API credential");
     }
     if (polling === "snmp") {
-      // Asset's own SNMP credential wins. Fortinet-discovered firewalls fall
-      // back to the integration's monitorCredentialId so an operator who set
-      // the integration tier to SNMP doesn't need to attach a credential to
-      // every firewall.
-      if (asset.monitorCredential?.type === "snmp") {
-        return await probeSnmp(targetIp, asset.monitorCredential.config as Record<string, unknown>, start, timeoutMs);
+      // Per-stream credential wins, then asset default, then integration fallback.
+      if (effectiveRTCred?.type === "snmp") {
+        return await probeSnmp(targetIp, effectiveRTCred.config as Record<string, unknown>, start, timeoutMs);
       }
       if (isFortinetSrc && integration) {
         try {
-          const credConfig = await loadSnmpCredentialConfigForFortinetAsset(asset, integration);
+          const credConfig = await loadSnmpCredentialConfigForFortinetAsset(effectiveRTCred, integration);
           return await probeSnmp(targetIp, credConfig, start, timeoutMs);
         } catch (err: any) {
           return finish(start, false, err?.message || "SNMP credential lookup failed");
@@ -891,10 +890,9 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
       return finish(start, false, "No SNMP credential selected");
     }
     if (polling === "winrm") {
-      // Asset's own WinRM credential wins. AD-discovered hosts fall back to
-      // the integration's bind credentials over HTTPS/5986.
-      if (asset.monitorCredential?.type === "winrm") {
-        return await probeWinRm(targetIp, asset.monitorCredential.config as Record<string, unknown>, start, timeoutMs);
+      // Per-stream credential wins, then asset default, then AD bind fallback.
+      if (effectiveRTCred?.type === "winrm") {
+        return await probeWinRm(targetIp, effectiveRTCred.config as Record<string, unknown>, start, timeoutMs);
       }
       if (isAdSrc && integration) {
         const cfg      = (integration.config as Record<string, unknown>) || {};
@@ -906,9 +904,9 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
       return finish(start, false, "No WinRM credential selected");
     }
     if (polling === "ssh") {
-      // Same shape as WinRM — asset credential first, AD bind fallback second.
-      if (asset.monitorCredential?.type === "ssh") {
-        return await probeSsh(targetIp, asset.monitorCredential.config as Record<string, unknown>, start, timeoutMs);
+      // Per-stream credential wins, then asset default, then AD bind fallback.
+      if (effectiveRTCred?.type === "ssh") {
+        return await probeSsh(targetIp, effectiveRTCred.config as Record<string, unknown>, start, timeoutMs);
       }
       if (isAdSrc && integration) {
         const cfg      = (integration.config as Record<string, unknown>) || {};
@@ -1691,7 +1689,7 @@ const SNMP_WALK_MAX = 1000;
 export async function collectTelemetry(assetId: string): Promise<CollectionResult<TelemetrySample>> {
   const asset = await prisma.asset.findUnique({
     where: { id: assetId },
-    include: { monitorCredential: true, discoveredByIntegration: true },
+    include: { monitorCredential: true, telemetryCredential: true, discoveredByIntegration: true },
   });
   if (!asset)            return { supported: false, error: "Asset not found" };
   if (!asset.monitored)  return { supported: false };
@@ -1736,14 +1734,13 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
       return { supported: true, data };
     }
     if (polling === "snmp") {
-      // Asset's own SNMP credential wins; Fortinet-discovered firewalls fall
-      // back to the integration's monitorCredentialId (matches probe and
-      // collectSystemInfo).
+      // Per-stream credential wins, then asset default, then integration fallback.
+      const effectiveTelemetryCred = asset.telemetryCredential ?? asset.monitorCredential;
       let snmpCfg: Record<string, unknown>;
-      if (asset.monitorCredential?.type === "snmp") {
-        snmpCfg = asset.monitorCredential.config as Record<string, unknown>;
+      if (effectiveTelemetryCred?.type === "snmp") {
+        snmpCfg = effectiveTelemetryCred.config as Record<string, unknown>;
       } else if (isFortinetSrc && integration) {
-        snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(asset, integration);
+        snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveTelemetryCred, integration);
       } else {
         return { supported: true, error: "No SNMP credential selected" };
       }
@@ -1771,7 +1768,7 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
 export async function collectFastFiltered(assetId: string): Promise<CollectionResult<SystemInfoSample>> {
   const asset = await prisma.asset.findUnique({
     where: { id: assetId },
-    include: { monitorCredential: true, discoveredByIntegration: true },
+    include: { monitorCredential: true, interfacesCredential: true, discoveredByIntegration: true },
   });
   if (!asset)            return { supported: false, error: "Asset not found" };
   if (!asset.monitored)  return { supported: false };
@@ -1818,11 +1815,12 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
         includeLldp:  false,
       });
     } else if (polling === "snmp") {
+      const effectiveIfacesCred = asset.interfacesCredential ?? asset.monitorCredential;
       let snmpCfg: Record<string, unknown>;
-      if (asset.monitorCredential?.type === "snmp") {
-        snmpCfg = asset.monitorCredential.config as Record<string, unknown>;
+      if (effectiveIfacesCred?.type === "snmp") {
+        snmpCfg = effectiveIfacesCred.config as Record<string, unknown>;
       } else if (isFortinetSrc && integration) {
-        snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(asset, integration);
+        snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveIfacesCred, integration);
       } else {
         return { supported: true, error: "No SNMP credential selected" };
       }
@@ -1917,7 +1915,7 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
 export async function collectSystemInfo(assetId: string): Promise<CollectionResult<SystemInfoSample>> {
   const asset = await prisma.asset.findUnique({
     where: { id: assetId },
-    include: { monitorCredential: true, discoveredByIntegration: true },
+    include: { monitorCredential: true, interfacesCredential: true, lldpCredential: true, discoveredByIntegration: true },
   });
   if (!asset)            return { supported: false, error: "Asset not found" };
   if (!asset.monitored)  return { supported: false };
@@ -1945,17 +1943,33 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
   try {
     if (interfacesPolling === "rest_api" || interfacesPolling === "snmp") {
       // Mixed-transport branch: interfaces and LLDP can independently be
-      // REST or SNMP. Pre-load the SNMP credential only if at least one
-      // stream needs it.
-      let snmpCfg: Record<string, unknown> | null = null;
-      const needSnmp = interfacesPolling === "snmp" || lldpPolling === "snmp";
-      if (needSnmp) {
-        if (asset.monitorCredential?.type === "snmp") {
-          snmpCfg = asset.monitorCredential.config as Record<string, unknown>;
+      // REST or SNMP. Per-stream credential wins, then asset default, then
+      // integration fallback. Pre-load credentials for whichever streams need SNMP.
+      const effectiveIfacesCred = asset.interfacesCredential ?? asset.monitorCredential;
+      const effectiveLldpCred   = asset.lldpCredential        ?? asset.monitorCredential;
+      let snmpCfg: Record<string, unknown> | null = null;     // for the shared session (interfaces SNMP path)
+      let lldpSnmpCfg: Record<string, unknown> | null = null; // for LLDP-only cross-transport overlay
+      if (interfacesPolling === "snmp") {
+        if (effectiveIfacesCred?.type === "snmp") {
+          snmpCfg = effectiveIfacesCred.config as Record<string, unknown>;
         } else if (isFortinetSrc && integration) {
-          snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(asset, integration);
+          snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveIfacesCred, integration);
         } else {
           return { supported: true, error: "No SNMP credential selected" };
+        }
+      }
+      if (lldpPolling === "snmp") {
+        if (interfacesPolling === "snmp") {
+          // Same SNMP session covers LLDP; lldpSnmpCfg stays null (snmpCfg is used).
+        } else {
+          // Cross-transport: LLDP needs its own session with the LLDP credential.
+          if (effectiveLldpCred?.type === "snmp") {
+            lldpSnmpCfg = effectiveLldpCred.config as Record<string, unknown>;
+          } else if (isFortinetSrc && integration) {
+            lldpSnmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveLldpCred, integration);
+          } else {
+            return { supported: true, error: "No SNMP credential selected for LLDP stream" };
+          }
         }
       }
       // REST API for interfaces requires a Fortinet integration.
@@ -1991,8 +2005,8 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
       }
       // Cross-transport LLDP overlay: when the chosen LLDP source differs
       // from the interfaces source we already used above.
-      if (lldpPolling === "snmp" && interfacesPolling === "rest_api" && snmpCfg) {
-        const neighbors = await collectLldpOnlySnmp(targetIp, snmpCfg).catch(() => undefined);
+      if (lldpPolling === "snmp" && interfacesPolling === "rest_api" && lldpSnmpCfg) {
+        const neighbors = await collectLldpOnlySnmp(targetIp, lldpSnmpCfg).catch(() => undefined);
         if (neighbors !== undefined) {
           data.lldpNeighbors = neighbors;
           data.lldpSource    = "snmp";
