@@ -2209,7 +2209,7 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
     var tel    = results[0];
     var si     = results[1];
 
-    _renderSystemChart(chart, tel);
+    _renderSystemChart(chart, tel, asset);
     _renderSystemSummary(summary, tel, si);
     _renderInterfacesTable(ifaces, si, asset);
     _renderStorageTable(storage, si, asset);
@@ -2553,7 +2553,7 @@ function _renderInterfacesTable(container, si, asset) {
     orphanTunnels.forEach(function (tn) { html += buildTunnelRow(tn, { depth: 0 }); });
   }
 
-  container.innerHTML =
+  container.innerHTML = staleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th title="Pin this interface for fast-cadence polling" style="width:32px"></th>' +
       '<th>Interface</th><th>Status</th><th>Speed</th><th>IP</th><th>MAC</th><th>In</th><th>Out</th><th>Errors (in/out)</th>' +
@@ -2742,7 +2742,9 @@ function _renderTemperatures(container, si, asset) {
   if (!container) return;
   var latest = (si && si.temperatures) || [];
   if (latest.length === 0) {
-    container.innerHTML = '<p class="empty-state">No temperature sensors reported by this device.</p>';
+    container.innerHTML = _isRestApiManagedNetworkDevice(asset)
+      ? '<p class="empty-state" style="color:var(--color-warning)">&#9888; Temperature data is not available via the integration\'s REST API for FortiSwitches and FortiAPs.</p>'
+      : '<p class="empty-state">No temperature sensors reported by this device.</p>';
     return;
   }
   var rows = latest.map(function (t) {
@@ -3625,10 +3627,19 @@ function _composeInterfaceScreenshot(parts) {
 // at 0–100 so spikes remain meaningful; memory plots over the same axis as
 // a percentage (computed from bytes when only bytes were sampled). One hit
 // target per timestamp drives a unified tooltip naming both values.
-function _renderSystemChart(container, data) {
+function _renderSystemChart(container, data, asset) {
   var samples = (data && data.samples) || [];
   if (samples.length === 0) {
-    container.textContent = "No telemetry samples in this range yet.";
+    if (_isRestApiManagedNetworkDevice(asset)) {
+      container.innerHTML =
+        '<div style="text-align:center">' +
+          '<div style="color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem">&#9888; Telemetry not available via REST API</div>' +
+          '<div style="font-size:0.8rem">CPU &amp; Memory data is not collected for managed FortiSwitches and FortiAPs via the integration\'s REST API.<br>' +
+          'Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration\'s Monitoring settings to enable collection.</div>' +
+        '</div>';
+    } else {
+      container.textContent = "No telemetry samples in this range yet.";
+    }
     return;
   }
 
@@ -3758,7 +3769,7 @@ function _renderSystemChart(container, data) {
       memLine;
   });
   _addChartScreenshotButton(container, "CPU & Memory", { yAxis: "Utilization (%)" });
-  _observeChartResize(container, function (c) { _renderSystemChart(c, data); });
+  _observeChartResize(container, function (c) { _renderSystemChart(c, data, asset); });
 }
 
 // Human-readable label for the polling method behind the response-time
