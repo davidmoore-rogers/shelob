@@ -924,6 +924,7 @@ router.get("/:id/system-info", async (req, res, next) => {
     res.json({
       monitored: asset.monitored,
       lastTelemetryAt: asset.lastTelemetryAt,
+      lastTemperatureAt: latestTempMeta?.timestamp ?? null,
       lastSystemInfoAt: asset.lastSystemInfoAt,
       telemetry: latestTelemetry ? {
         timestamp:     latestTelemetry.timestamp,

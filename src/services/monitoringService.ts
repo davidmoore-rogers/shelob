@@ -2066,7 +2066,10 @@ async function collectTelemetryFortinet(host: string, integration: { type: strin
   const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/resource/usage", { query: { scope: "global" } });
   const cpuPct = pickFortinetUsage(res?.cpu);
   const memPct = pickFortinetUsage(res?.mem ?? res?.memory);
-  const temperatures = await collectTemperaturesFortinet(fg).catch(() => [] as TemperatureSample[]);
+  const temperatures = await collectTemperaturesFortinet(fg).catch((err: unknown) => {
+    logger.debug({ err, host }, "Temperature collection failed (sensor-info unavailable or timed out)");
+    return [] as TemperatureSample[];
+  });
   return { cpuPct, memPct, memUsedBytes: null, memTotalBytes: null, temperatures };
 }
 

@@ -2912,7 +2912,7 @@ function _renderTemperatures(container, si, asset) {
       '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
-  var tempStaleBanner = _staleBannerHTML(si && si.lastTelemetryAt, (asset && asset.telemetryIntervalSec) || 60);
+  var tempStaleBanner = _staleBannerHTML(si && (si.lastTemperatureAt || si.lastTelemetryAt), (asset && asset.telemetryIntervalSec) || 60);
   container.innerHTML = tempStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
