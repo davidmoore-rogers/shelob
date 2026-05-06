@@ -784,9 +784,9 @@
       wheelSensitivity: 0.5,
       layout: {
         name: "dagre",
-        rankDir: "TB",
+        rankDir: "LR",
         nodeSep: 55,
-        rankSep: 90,
+        rankSep: 120,
         fit: true,
         padding: 30,
       },
