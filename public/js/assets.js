@@ -2743,7 +2743,12 @@ function _renderTemperatures(container, si, asset) {
   var latest = (si && si.temperatures) || [];
   if (latest.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
-      container.innerHTML = '<div style="padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)">&#9888; Temperature data is not available for FortiSwitches and FortiAPs via the integration\'s REST API.</div>';
+      container.innerHTML =
+        "<div style=\"text-align:center\">" +
+          "<div style=\"color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem\">&#9888; Temperature not available via REST API</div>" +
+          "<div style=\"font-size:0.8rem\">Temperature data is not collected for managed FortiSwitches and FortiAPs via the integration's REST API.<br>" +
+          "Switch to <strong>SNMP</strong> on the FortiSwitches/FortiAPs subtab in the integration's Monitoring settings to enable collection.</div>" +
+        "</div>";
     } else {
       var isFortinetRestFirewall = asset && asset.assetType === "firewall" && (function () {
         var tp = asset.telemetryPolling;
