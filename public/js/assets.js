@@ -2762,7 +2762,11 @@ function _renderTemperatures(container, si, asset) {
         return sk === "fortimanager" || sk === "fortigate";
       }());
       container.innerHTML = isFortinetRestFirewall
-        ? '<p class="empty-state">No temperature sensors reported. Lower-end FortiGate models (60F/61F/91G class) may not support the sensor-info endpoint on FortiOS 7.4.x — upgrading FortiOS or switching the telemetry stream to <strong>SNMP</strong> enables collection on affected models.</p>'
+        ? "<div style=\"text-align:center\">" +
+            "<div style=\"color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem\">&#9888; Temperature not available via REST API</div>" +
+            "<div style=\"font-size:0.8rem\">Lower-end FortiGate models (60F/61F/91G class) do not support the sensor-info endpoint via REST API.<br>" +
+            "Upgrade FortiOS or switch the telemetry stream to <strong>SNMP</strong> to enable collection on affected models.</div>" +
+          "</div>"
         : '<p class="empty-state">No temperature sensors reported by this device.</p>';
     }
     return;
