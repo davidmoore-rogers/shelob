@@ -45,6 +45,7 @@ import {
   type MonitorCadence,
 } from "../services/monitoringService.js";
 import { getBootTimeMode, publishMonitorJob } from "../services/queueService.js";
+import { setMonitoredAssets } from "../metrics.js";
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 
@@ -179,6 +180,11 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       await publishMonitorJob("fastFiltered", a.id);
     }
   }
+
+  const total = candidates.length;
+  const up    = candidates.filter(a => a.monitorStatus === "up").length;
+  const down  = candidates.filter(a => a.monitorStatus === "down").length;
+  setMonitoredAssets(total, { up, down, unknown: total - up - down });
 }
 
 async function probeTick(): Promise<void> {

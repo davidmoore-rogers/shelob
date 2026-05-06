@@ -1440,11 +1440,13 @@ npm run lint
   - `polaris_monitor_pass_duration_seconds` (histogram) — wall-clock of one `runMonitorPass`. Watch this rise toward the configured cadence as a saturation signal.
   - `polaris_monitor_work_duration_seconds{cadence}` (histogram) — per-work-item wall-clock; `cadence` is `probe | telemetry | systemInfo | fastFiltered`.
   - `polaris_monitor_work_total{cadence,outcome}` (counter) — `outcome` is `success | failure | crash`.
-  - `polaris_monitor_queue_depth{cadence}` (gauge) — queued items at start of pass.
+  - `polaris_monitor_queue_depth{cadence}` (gauge) — cursor mode only; queued items at the start of each `runMonitorPass` call. Frozen at the last probe-now value in pg-boss mode — use `polaris_pgboss_queue_jobs` instead for pg-boss deployments.
   - `polaris_probe_duration_seconds{transport}` (histogram) — per-probe RTT; `transport` is the resolved `responseTimePolling` for the asset (`rest_api` / `snmp` / `winrm` / `ssh` / `icmp`), with the source default substituted when the asset has no per-asset override.
   - `polaris_probe_total{transport,outcome}` (counter) — `outcome` is `success | failure`.
-  - `polaris_monitored_assets` (gauge) — total assets with `monitored=true`.
-  - `polaris_monitored_assets_by_status{status}` (gauge) — `status` is `up | down | unknown`.
+  - `polaris_monitored_assets` (gauge) — total assets with `monitored=true`. Updated by `setMonitoredAssets()`: in cursor mode fires inside `runMonitorPass`; in pg-boss mode fires inside `publishDueWork` at the end of every probe/heavy tick (~every 5–30s).
+  - `polaris_monitored_assets_by_status{status}` (gauge) — `status` is `up | down | unknown`. `unknown` rolls up `null`, `"unknown"`, `"warning"`, and `"recovering"` states. Same update cadence as `polaris_monitored_assets`.
+  - `polaris_monitor_queue_mode{mode}` (gauge) — always 1 for the queue mode captured at boot (`cursor` or `pgboss`). Set once by `initializeQueue()`. Use this to select which queue-depth metric family is authoritative on a given instance.
+  - `polaris_pgboss_queue_jobs{queue,state}` (gauge) — pg-boss mode only. Refreshed every 15s from `pgboss.job` by `refreshPgbossMetrics()` in `queueService.ts`. `queue` is one of the four `polaris-monitor-*` queue names; `state` is `created` (queued), `active` (being processed), or `failed`. Zero-filled per queue×state on each refresh so stale values don't linger when a queue drains.
 
   These mirror the structure that pg-boss / TimescaleDB / discovery instrumentation will plug into in later phases.
 

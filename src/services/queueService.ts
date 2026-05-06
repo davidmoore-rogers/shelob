@@ -33,6 +33,7 @@ import type { PgBoss as PgBossType, Job as PgBossJob } from "pg-boss";
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
+import { setPgbossQueueJobs, recordQueueMode } from "../metrics.js";
 import {
   runProbeFor,
   runTelemetryFor,
@@ -125,6 +126,7 @@ export function getBootTimeMode(): QueueMode {
 export async function initializeQueue(): Promise<void> {
   await detectPgboss();
   bootTimeMode = await getQueueMode();
+  recordQueueMode(bootTimeMode);
 }
 
 // ─── pg-boss runtime ───────────────────────────────────────────────────────
@@ -148,6 +150,35 @@ interface MonitorJobPayload {
 }
 
 let bossInstance: PgBossType | null = null;
+let metricsRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Refresh pg-boss queue-depth metrics by querying pgboss.job directly.
+ * Runs every 15s while pg-boss is active. Zero-fills all queue×state
+ * combinations first so gauges don't linger when a queue drains.
+ */
+async function refreshPgbossMetrics(): Promise<void> {
+  try {
+    const queueNames = Object.values(QUEUE_NAMES);
+    const rows = await prisma.$queryRaw<Array<{ name: string; state: string; count: number }>>`
+      SELECT name, state, count(*)::int AS count
+      FROM pgboss.job
+      WHERE name = ANY(${queueNames}::text[])
+      AND state IN ('created', 'active', 'failed')
+      GROUP BY name, state
+    `;
+    for (const name of queueNames) {
+      setPgbossQueueJobs(name, "created", 0);
+      setPgbossQueueJobs(name, "active", 0);
+      setPgbossQueueJobs(name, "failed", 0);
+    }
+    for (const row of rows) {
+      setPgbossQueueJobs(row.name, row.state, Number(row.count));
+    }
+  } catch (err) {
+    logger.debug({ err }, "pg-boss metrics refresh failed");
+  }
+}
 
 function resolveEnvInt(envName: string, fallback: number): number {
   const raw = process.env[envName];
@@ -268,6 +299,8 @@ export async function startPgbossWorkers(): Promise<void> {
   });
 
   bossInstance = boss;
+  void refreshPgbossMetrics();
+  metricsRefreshInterval = setInterval(() => { void refreshPgbossMetrics(); }, 15_000);
   logger.info(
     { probeWorkers, fastWorkers, heavyWorkers },
     "pg-boss queue workers started",
@@ -311,6 +344,10 @@ export async function publishMonitorJob(
  */
 export async function stopPgbossWorkers(): Promise<void> {
   if (!bossInstance) return;
+  if (metricsRefreshInterval !== null) {
+    clearInterval(metricsRefreshInterval);
+    metricsRefreshInterval = null;
+  }
   try {
     await bossInstance.stop({ graceful: true, timeout: 30_000 });
   } catch (err) {
