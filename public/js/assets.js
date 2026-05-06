@@ -2220,10 +2220,24 @@ function assetSystemViewHTML(a) {
   // own stream. Storage and LLDP ride the same stream as Interfaces.
   var telemetryBadge   = _streamSourceBadgeHTML(a, "telemetry");
   var interfacesBadge  = _streamSourceBadgeHTML(a, "interfaces");
+  var telUpdatedAt = a.lastTelemetryAt
+    ? ('<span style="font-size:0.72rem;color:var(--color-text-tertiary)" title="' + escapeHtml(new Date(a.lastTelemetryAt).toLocaleString()) + '">updated ' + timeAgo(a.lastTelemetryAt) + '</span>')
+    : '';
   var sysInfoUpdatedAt = a.lastSystemInfoAt
     ? ('<span style="font-size:0.72rem;color:var(--color-text-tertiary)" title="' + escapeHtml(new Date(a.lastSystemInfoAt).toLocaleString()) + '">updated ' + timeAgo(a.lastSystemInfoAt) + '</span>')
     : '';
+  var telemetryBadgeFull  = telemetryBadge  + (telemetryBadge  && telUpdatedAt     ? " " : "") + telUpdatedAt;
   var interfacesBadgeFull = interfacesBadge + (interfacesBadge && sysInfoUpdatedAt ? " " : "") + sysInfoUpdatedAt;
+  // FortiOS REST API never exposes storage — hide Storage for any asset on the
+  // REST API interfaces stream (firewalls as well as managed switches/APs).
+  var isRestApiInterfaces = (function () {
+    var p = a.interfacesPolling;
+    if (!p) {
+      var sk = (a.discoveredByIntegration && a.discoveredByIntegration.type) || "manual";
+      return sk === "fortimanager" || sk === "fortigate";
+    }
+    return p === "rest_api";
+  }());
   function sectionHeader(title, badgeHTML, withRangeButtons) {
     return '<div style="display:flex;align-items:center;justify-content:space-between;margin:1.25rem 0 0.5rem">' +
       '<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap">' +
@@ -2234,7 +2248,7 @@ function assetSystemViewHTML(a) {
     '</div>';
   }
   return (
-    sectionHeader("CPU &amp; Memory", telemetryBadge, true) +
+    sectionHeader("CPU &amp; Memory", telemetryBadgeFull, true) +
     '<div id="asset-system-custom-panel" style="display:none;align-items:center;gap:6px;margin:0.5rem 0;padding:0.5rem;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;font-size:0.85rem">' +
       '<label style="display:flex;align-items:center;gap:4px">From <input type="datetime-local" id="asset-system-from" class="form-input" style="padding:2px 6px"></label>' +
       '<label style="display:flex;align-items:center;gap:4px">To <input type="datetime-local" id="asset-system-to" class="form-input" style="padding:2px 6px"></label>' +
@@ -2246,11 +2260,11 @@ function assetSystemViewHTML(a) {
     '<div id="asset-system-chart" style="background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:0.5rem;min-height:200px;display:flex;align-items:center;justify-content:center;color:var(--color-text-secondary);font-size:0.85rem">' +
       'Loading samples…' +
     '</div>' +
-    sectionHeader("Temperatures", telemetryBadge, false) +
+    sectionHeader("Temperatures", telemetryBadgeFull, false) +
     '<div id="asset-system-temps"><span class="empty-state">Loading…</span></div>' +
     sectionHeader("Interfaces", interfacesBadgeFull, false) +
     '<div id="asset-system-interfaces"><span class="empty-state">Loading…</span></div>' +
-    (_isRestApiManagedNetworkDevice(a) ? '' : sectionHeader("Storage", interfacesBadgeFull, false) +
+    (isRestApiInterfaces ? '' : sectionHeader("Storage", interfacesBadgeFull, false) +
     '<div id="asset-system-storage"><span class="empty-state">Loading…</span></div>') +
     sectionHeader("LLDP Neighbors", interfacesBadgeFull, false) +
     '<div id="asset-system-lldp"><span class="empty-state">Loading…</span></div>'
@@ -2309,7 +2323,7 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
     var tel    = results[0];
     var si     = results[1];
 
-    _renderSystemChart(chart, tel, asset);
+    _renderSystemChart(chart, tel, asset, si);
     _renderSystemSummary(summary, tel, si);
     _renderInterfacesTable(ifaces, si, asset);
     _renderStorageTable(storage, si, asset);
@@ -3775,7 +3789,7 @@ function _composeInterfaceScreenshot(parts) {
 // at 0–100 so spikes remain meaningful; memory plots over the same axis as
 // a percentage (computed from bytes when only bytes were sampled). One hit
 // target per timestamp drives a unified tooltip naming both values.
-function _renderSystemChart(container, data, asset) {
+function _renderSystemChart(container, data, asset, si) {
   var samples = (data && data.samples) || [];
   if (samples.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
@@ -3882,7 +3896,9 @@ function _renderSystemChart(container, data, asset) {
       '<text x="' + (padL + 74) + '" y="11">Memory</text>' +
     '</g>';
 
+  var chartStaleBanner = _staleBannerHTML(si && si.lastTelemetryAt, (asset && asset.telemetryIntervalSec) || 60);
   container.innerHTML =
+    chartStaleBanner +
     '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
       ticks + xTicks +
       _dateChangeMarkers(t0, t1, padL, padT, innerW, innerH) +
@@ -3913,7 +3929,7 @@ function _renderSystemChart(container, data, asset) {
       memLine;
   });
   _addChartScreenshotButton(container, "CPU & Memory", { yAxis: "Utilization (%)" });
-  _observeChartResize(container, function (c) { _renderSystemChart(c, data, asset); });
+  _observeChartResize(container, function (c) { _renderSystemChart(c, data, asset, si); });
 }
 
 // Human-readable label for the polling method behind the response-time
