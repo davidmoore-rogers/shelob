@@ -2404,7 +2404,7 @@ function _notAvailableViaPollingHTML(label, pollingMethod, description) {
     : "This data is not collected for this device with the current polling method. Try a different polling method on the Monitoring tab.";
   return "<div style=\"text-align:center\">" +
     "<div style=\"color:var(--color-warning);font-size:0.9rem;margin-bottom:0.4rem\">&#9888; " + escapeHtml(label) + " not available via " + escapeHtml(pollingMethod || "current polling method") + "</div>" +
-    "<div style=\"font-size:0.8rem\">" + desc + "</div>" +
+    "<div style=\"font-size:0.8rem;color:var(--color-text-secondary)\">" + desc + "</div>" +
   "</div>";
 }
 
