@@ -204,6 +204,8 @@ async function attemptWorkerRecovery(): Promise<void> {
 async function refreshPgbossMetrics(): Promise<void> {
   let totalCreated = 0;
   let totalActive  = 0;
+  let heavyCreated = 0;
+  let heavyActive  = 0;
   try {
     const queueNames = Object.values(QUEUE_NAMES);
     const rows = await prisma.$queryRaw<Array<{ name: string; state: string; count: number }>>`
@@ -218,19 +220,34 @@ async function refreshPgbossMetrics(): Promise<void> {
       setPgbossQueueJobs(name, "active", 0);
       setPgbossQueueJobs(name, "failed", 0);
     }
+    const heavyQueues = new Set([QUEUE_NAMES.telemetry, QUEUE_NAMES.systemInfo]);
     for (const row of rows) {
       setPgbossQueueJobs(row.name, row.state, Number(row.count));
-      if (row.state === "created") totalCreated += Number(row.count);
-      if (row.state === "active")  totalActive  += Number(row.count);
+      if (row.state === "created") {
+        totalCreated += Number(row.count);
+        if (heavyQueues.has(row.name)) heavyCreated += Number(row.count);
+      }
+      if (row.state === "active") {
+        totalActive += Number(row.count);
+        if (heavyQueues.has(row.name)) heavyActive += Number(row.count);
+      }
     }
   } catch (err) {
     logger.debug({ err }, "pg-boss metrics refresh failed");
     return;
   }
 
-  // Stalled-worker watchdog: if jobs are piling up with no active workers,
-  // attempt an auto-recovery after STALL_CONSECUTIVE_LIMIT readings.
-  if (totalCreated > STALL_CREATED_THRESHOLD && totalActive === 0) {
+  // Stalled-worker watchdog. Two independent stall conditions:
+  //   (a) all queues — probe workers also stalled (totalActive === 0)
+  //   (b) heavy queues only — telemetry/systemInfo stalled while probe runs fine
+  // Check (b) catches the partial-stall case where probe workers are active
+  // but heavy workers have stopped, which makes totalActive > 0 so (a) never
+  // fires despite the backlog.
+  const isStalled =
+    (totalCreated > STALL_CREATED_THRESHOLD && totalActive === 0) ||
+    (heavyCreated > STALL_CREATED_THRESHOLD && heavyActive === 0);
+
+  if (isStalled) {
     stalledReadings++;
     if (stalledReadings >= STALL_CONSECUTIVE_LIMIT) {
       const now = Date.now();
@@ -242,7 +259,7 @@ async function refreshPgbossMetrics(): Promise<void> {
       } else if (stalledReadings % STALL_CONSECUTIVE_LIMIT === 0) {
         // Recovery cap hit — keep logging so the operator sees it
         logger.error(
-          { totalCreated, recoveryAttempts: recoveryAttempts.length },
+          { totalCreated, heavyCreated, heavyActive, recoveryAttempts: recoveryAttempts.length },
           "pg-boss workers stalled and auto-recovery cap reached — run: systemctl restart polaris",
         );
       }
