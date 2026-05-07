@@ -84,6 +84,43 @@ function _chartRangeBtnsHTML(barClass, entries, prefKey, fallback) {
   }).join("");
 }
 
+// Renders a stats line into the given container using the canonical
+// Response Time format (see primaries.md): leading "<count> samples"
+// span (count bolded), then one "<Label>: <value>" span per metric.
+// Flex gap on the container handles visual separation. Also writes a
+// plaintext summary to container.dataset.summary for screenshot
+// composers and tooltips. Pass count = 0 to render the empty-state
+// message and clear the summary.
+//
+// parts: [{label: "Avg", value: "83 ms"}, ...] — entries with null/empty
+// value are skipped so callers don't have to filter.
+function _renderChartStats(container, count, parts) {
+  if (!container) return;
+  // Apply the canonical layout styles directly so any stats container
+  // looks identical regardless of how it was declared in markup.
+  container.style.display = "flex";
+  container.style.gap = "1.25rem";
+  container.style.flexWrap = "wrap";
+  if (!count) {
+    container.textContent = "No samples in this range yet.";
+    delete container.dataset.summary;
+    return;
+  }
+  parts = Array.isArray(parts) ? parts : [];
+  var html = '<span><strong>' + count + '</strong> samples</span>';
+  var summary = count + " samples";
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    if (!p || p.value == null || p.value === "") continue;
+    var label = String(p.label);
+    var value = String(p.value);
+    html += '<span><strong>' + escapeHtml(label) + ':</strong> ' + escapeHtml(value) + '</span>';
+    summary += " · " + label.toLowerCase() + " " + value;
+  }
+  container.innerHTML = html;
+  container.dataset.summary = summary;
+}
+
 document.addEventListener("DOMContentLoaded", async function () {
   _assetsSF = new TableSF("assets-tbody", function () { _assetsPage = 1; renderAssetsPage(); _saveAssetsPrefs(); });
   var assetsTable = document.querySelector("#assets-tbody").closest("table");
@@ -2372,25 +2409,47 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
   _scheduleAssetSystemRefresh(assetId, refAsset, ms);
 }
 
+// Renders the CPU & Memory current + window summary. "Current" readings
+// (Last CPU, Last Memory, Last Telemetry Poll) go to the Status block
+// rows up-top, mirroring how Last Response Time / Last Poll are placed
+// for the response-time stream. The window stats container below the
+// chart gets the canonical "<count> samples · <Label>: <value> · ..."
+// shape via _renderChartStats.
 function _renderSystemSummary(container, tel, si) {
-  if (!container) return;
-  var parts = [];
   var latest = (si && si.telemetry) || null;
-  if (latest) {
-    if (typeof latest.cpuPct === "number") parts.push('<span><strong>CPU:</strong> ' + latest.cpuPct.toFixed(1) + '%</span>');
-    if (typeof latest.memPct === "number") parts.push('<span><strong>Memory:</strong> ' + latest.memPct.toFixed(1) + '%</span>');
-    if (typeof latest.memUsedBytes === "number" && typeof latest.memTotalBytes === "number" && latest.memTotalBytes > 0) {
-      parts.push('<span>(' + _fmtBytes(latest.memUsedBytes) + ' / ' + _fmtBytes(latest.memTotalBytes) + ')</span>');
+  var cpuRow = document.getElementById("asset-status-last-cpu");
+  var memRow = document.getElementById("asset-status-last-memory");
+  var pollRow = document.getElementById("asset-status-last-telemetry-poll");
+  if (cpuRow) {
+    cpuRow.textContent = (latest && typeof latest.cpuPct === "number") ? (latest.cpuPct.toFixed(1) + "%") : "—";
+  }
+  if (memRow) {
+    if (latest && typeof latest.memPct === "number") {
+      var memText = latest.memPct.toFixed(1) + "%";
+      if (typeof latest.memUsedBytes === "number" && typeof latest.memTotalBytes === "number" && latest.memTotalBytes > 0) {
+        memText += " (" + _fmtBytes(latest.memUsedBytes) + " / " + _fmtBytes(latest.memTotalBytes) + ")";
+      }
+      memRow.textContent = memText;
+    } else {
+      memRow.textContent = "—";
     }
-    if (latest.timestamp) parts.push('<span style="opacity:0.7">as of ' + escapeHtml(formatDate(latest.timestamp)) + '</span>');
   }
-  if (tel && tel.stats) {
-    var s = tel.stats;
-    var cpu = s.avgCpuPct != null ? ('avg ' + s.avgCpuPct.toFixed(1) + '%, max ' + s.maxCpuPct.toFixed(1) + '%') : '—';
-    var mem = s.avgMemPct != null ? ('avg ' + s.avgMemPct.toFixed(1) + '%, max ' + s.maxMemPct.toFixed(1) + '%') : '—';
-    parts.push('<span style="opacity:0.7">window: CPU ' + cpu + ' · Mem ' + mem + ' (' + s.total + ' samples)</span>');
+  if (pollRow) {
+    pollRow.textContent = (latest && latest.timestamp) ? formatDate(latest.timestamp) : "—";
   }
-  container.innerHTML = parts.join("") || '<span>No telemetry samples yet.</span>';
+  if (!container) return;
+  if (!tel || !tel.stats || !tel.stats.total) {
+    container.textContent = "No telemetry samples in this range yet.";
+    delete container.dataset.summary;
+    return;
+  }
+  var s = tel.stats;
+  _renderChartStats(container, s.total, [
+    { label: "CPU avg", value: s.avgCpuPct != null ? s.avgCpuPct.toFixed(1) + "%" : "—" },
+    { label: "CPU max", value: s.maxCpuPct != null ? s.maxCpuPct.toFixed(1) + "%" : "—" },
+    { label: "Mem avg", value: s.avgMemPct != null ? s.avgMemPct.toFixed(1) + "%" : "—" },
+    { label: "Mem max", value: s.maxMemPct != null ? s.maxMemPct.toFixed(1) + "%" : "—" },
+  ]);
 }
 
 // Returns true when the asset is a managed FortiSwitch or FortiAP whose
@@ -3163,15 +3222,12 @@ async function _loadSensorHistoryFor(assetId, sensorName, range) {
     var data = await api.assets.temperatureHistory(assetId, { sensorName: sensorName, range: range || "24h" });
     var samples = (data.samples || []).filter(function (s) { return typeof s.celsius === "number"; });
     if (stats) {
-      if (samples.length === 0) {
-        stats.textContent = "No samples in this range yet.";
-      } else {
-        var st = data.stats || {};
-        var avg = (typeof st.avgCelsius === "number") ? st.avgCelsius.toFixed(1) : "—";
-        var mn  = (typeof st.minCelsius === "number") ? st.minCelsius.toFixed(1) : "—";
-        var mx  = (typeof st.maxCelsius === "number") ? st.maxCelsius.toFixed(1) : "—";
-        stats.textContent = samples.length + " samples · avg " + avg + " °C · min " + mn + " °C · max " + mx + " °C";
-      }
+      var st = data.stats || {};
+      _renderChartStats(stats, samples.length, [
+        { label: "Avg", value: typeof st.avgCelsius === "number" ? st.avgCelsius.toFixed(1) + " °C" : "—" },
+        { label: "Min", value: typeof st.minCelsius === "number" ? st.minCelsius.toFixed(1) + " °C" : "—" },
+        { label: "Max", value: typeof st.maxCelsius === "number" ? st.maxCelsius.toFixed(1) + " °C" : "—" },
+      ]);
     }
     _renderSensorChart(chartEl, samples, {
       since:   data.since,
@@ -3649,9 +3705,21 @@ function _screenshotInterfacePanel(asset, ifName) {
   var titleEl = document.getElementById("iface-panel-title");
   var titleText = titleEl ? titleEl.textContent : ("Interface — " + ifName);
   var assetName = asset ? (asset.hostname || asset.dnsName || asset.ipAddress || asset.id || "") : "";
-  var statsEl = document.getElementById("iface-stats");
-  var statsText = statsEl ? (statsEl.textContent || "").trim() : "";
-  if (statsText === "Loading…") statsText = "";
+  // Concatenate the throughput + error stats lines so the screenshot
+  // captures both. Prefer the dataset.summary plaintext form (set by
+  // _renderChartStats) so the screenshot composer doesn't have to parse
+  // bold spans out of textContent.
+  var tputStatsEl = document.getElementById("iface-tput-stats");
+  var errStatsEl  = document.getElementById("iface-err-stats");
+  function _ifaceStatsText(el) {
+    if (!el) return "";
+    var s = (el.dataset && el.dataset.summary) || el.textContent || "";
+    s = s.trim();
+    return s === "Loading…" ? "" : s;
+  }
+  var tputStatsText = _ifaceStatsText(tputStatsEl);
+  var errStatsText  = _ifaceStatsText(errStatsEl);
+  var statsText = [tputStatsText, errStatsText].filter(Boolean).join(" · ");
 
   // Resolved comment: textarea value if non-empty (covers in-progress edits and
   // saved overrides), else the discovered FortiOS CMDB description.
@@ -4091,14 +4159,47 @@ function _streamCredential(asset, stream, resolvedPolling) {
   return null;
 }
 
-// Builds the badge label "<polling>[ (<details>)] · <tier>" used next to
-// each chart header. <details> bundles the transport descriptor and the
-// credential name together in one parenthetical, comma-separated.
-// `provenanceTier` is one of asset|class|integration|manual; pass null to
-// fall back to a coarse sync guess (per-asset field set → asset override;
-// integration present → integration tier; otherwise → manual tier). The
-// async path passes the real provenance.
-function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier) {
+// Maps a stream name to the per-asset interval-override column. The
+// per-asset tier exposes only three columns; interfaces/lldp share the
+// system-info column since both ride the system-info pass.
+function _streamIntervalAssetField(stream) {
+  if (stream === "responseTime") return "monitorIntervalSec";
+  if (stream === "telemetry")    return "telemetryIntervalSec";
+  if (stream === "interfaces" || stream === "lldp") return "systemInfoIntervalSec";
+  return null;
+}
+
+// Maps a stream name to the resolved-settings interval field returned by
+// /effective-monitor-settings. interfaces/lldp share the system-info
+// cadence — same rationale as the per-asset mapping above.
+function _streamIntervalEffectiveField(stream) {
+  if (stream === "responseTime") return "intervalSeconds";
+  if (stream === "telemetry")    return "telemetryIntervalSeconds";
+  if (stream === "interfaces" || stream === "lldp") return "systemInfoIntervalSeconds";
+  return null;
+}
+
+// Humane "every Ns / Nm / Nh" rendering for a polling interval. Returns ""
+// when the input isn't a positive finite number so the caller can drop the
+// slot from the badge entirely instead of rendering "every NaNs".
+function _formatPollingInterval(seconds) {
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds <= 0) return "";
+  if (seconds < 60) return seconds + "s";
+  if (seconds % 3600 === 0) return (seconds / 3600) + "h";
+  if (seconds % 60 === 0)   return (seconds / 60) + "m";
+  return seconds + "s";
+}
+
+// Builds the badge label "<polling>[ (<details>)][ · every <interval>] · <tier>"
+// used next to each chart header. <details> bundles the transport
+// descriptor and the credential name together in one parenthetical,
+// comma-separated. `provenanceTier` is one of asset|class|integration|
+// manual; pass null to fall back to a coarse sync guess (per-asset field
+// set → asset override; integration present → integration tier; otherwise
+// → manual tier). The async path passes the real provenance.
+// `intervalSeconds` is the resolved cadence for this stream (response-time
+// /telemetry/system-info); pass null to omit the slot entirely.
+function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSeconds) {
   var pollingLabel = _POLLING_LABELS[resolvedRaw] || resolvedRaw;
   var transport = _streamTransportLabel(asset, resolvedRaw);
   var credential = _streamCredential(asset, stream, resolvedRaw);
@@ -4106,6 +4207,8 @@ function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier) {
   if (transport)  details.push(transport);
   if (credential) details.push(credential.name);
   var detailsStr = details.length ? " (" + details.join(", ") + ")" : "";
+  var intervalLabel = _formatPollingInterval(intervalSeconds);
+  var intervalStr = intervalLabel ? " · every " + intervalLabel : "";
   var tier;
   if (provenanceTier && _TIER_LABELS[provenanceTier]) {
     tier = _TIER_LABELS[provenanceTier];
@@ -4115,7 +4218,7 @@ function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier) {
     else if (asset.discoveredByIntegration) tier = _TIER_LABELS.integration;
     else tier = _TIER_LABELS.manual;
   }
-  return pollingLabel + detailsStr + " · " + tier;
+  return pollingLabel + detailsStr + intervalStr + " · " + tier;
 }
 
 // Renders the badge content used next to each chart header. Returns ""
@@ -4132,7 +4235,12 @@ function _streamSourceBadgeHTML(asset, stream) {
   var assetField  = stream + "Polling";
   var resolvedRaw = asset[assetField] || _polarisSourceDefaultPolling(sourceKind, stream);
   if (!resolvedRaw) return "";
-  var label = _streamBadgeText(asset, stream, resolvedRaw, null);
+  // Coarse interval guess for the sync render: per-asset override only.
+  // The async path overwrites with the authoritative resolved value from
+  // /effective-monitor-settings (covers class/integration/manual tiers).
+  var intervalAssetField = _streamIntervalAssetField(stream);
+  var intervalSeconds = (intervalAssetField && asset[intervalAssetField] != null) ? asset[intervalAssetField] : null;
+  var label = _streamBadgeText(asset, stream, resolvedRaw, null, intervalSeconds);
   var titleLabel = "Polling method · Where this setting comes from";
   return '<span class="asset-stream-source-badge" data-asset-id="' + escapeHtml(asset.id) + '" data-stream="' + escapeHtml(stream) + '" title="' + escapeHtml(titleLabel) + '" style="font-size:0.75rem;padding:2px 6px;border-radius:10px;background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-secondary);white-space:nowrap">' +
     escapeHtml(label) +
@@ -4160,7 +4268,9 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
     var resolved = eff.resolved[stream + "Polling"];
     if (!resolved) return;
     var prov = eff.provenance && eff.provenance[stream + "Polling"];
-    span.textContent = _streamBadgeText(asset, stream, resolved, prov);
+    var intervalField = _streamIntervalEffectiveField(stream);
+    var intervalSeconds = intervalField ? eff.resolved[intervalField] : null;
+    span.textContent = _streamBadgeText(asset, stream, resolved, prov, intervalSeconds);
   });
 }
 
@@ -4187,6 +4297,19 @@ function assetMonitoringViewHTML(a) {
   var lastRtt = (typeof a.lastResponseTimeMs === "number") ? (a.lastResponseTimeMs + " ms") : "—";
   var lastPoll = a.lastMonitorAt ? formatDate(a.lastMonitorAt) : "—";
   var consec = a.consecutiveFailures || 0;
+  // Telemetry "current readings" rows — only rendered when the asset's
+  // resolved telemetry stream actually delivers (REST API or SNMP); ICMP /
+  // SSH / WinRM don't carry CPU/memory data. _renderSystemSummary fills in
+  // the values once the telemetry pull lands.
+  var telemetryDelivered = !!(_assetMonitorStreamSource(a, "telemetry").polling);
+  var telemetryRows = telemetryDelivered
+    ? '<div class="detail-row"><span class="detail-label">Last CPU</span>' +
+        '<span class="detail-value" id="asset-status-last-cpu">—</span></div>' +
+      '<div class="detail-row"><span class="detail-label">Last Memory</span>' +
+        '<span class="detail-value" id="asset-status-last-memory">—</span></div>' +
+      '<div class="detail-row"><span class="detail-label">Last Telemetry Poll</span>' +
+        '<span class="detail-value" id="asset-status-last-telemetry-poll">—</span></div>'
+    : '';
   var probeBtn = isUserOrAbove()
     ? '<button class="btn btn-sm btn-primary" id="btn-asset-probe-now" style="margin-right:6px" title="Run a response-time probe and pull fresh telemetry + interface data">Refresh</button>'
     : '';
@@ -4227,6 +4350,7 @@ function assetMonitoringViewHTML(a) {
       viewRow("Last Response Time", lastRtt) +
       viewRow("Last Poll", lastPoll) +
       viewRow("Consecutive Failures", String(consec)) +
+      telemetryRows +
     '</div>' +
     '<div style="display:flex;align-items:center;justify-content:space-between;margin:1.5rem 0 0.5rem">' +
       '<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap">' +
@@ -4425,17 +4549,12 @@ async function _loadMonitorHistoryFor(assetId, selection, callOpts) {
     _renderMonitorChart(chart, data, transitions);
     if (stats && data.stats) {
       var s = data.stats;
-      var loss = s.packetLossRate != null ? (s.packetLossRate * 100).toFixed(1) + "%" : "—";
-      var avg  = s.avgMs != null ? s.avgMs + " ms" : "—";
-      var min  = s.minMs != null ? s.minMs + " ms" : "—";
-      var max  = s.maxMs != null ? s.maxMs + " ms" : "—";
-      stats.innerHTML =
-        '<span><strong>' + s.total + '</strong> samples</span>' +
-        '<span><strong>Avg:</strong> ' + avg + '</span>' +
-        '<span><strong>Min:</strong> ' + min + '</span>' +
-        '<span><strong>Max:</strong> ' + max + '</span>' +
-        '<span><strong>Packet loss:</strong> ' + loss + '</span>';
-      stats.dataset.summary = s.total + " samples · avg " + avg + " · min " + min + " · max " + max + " · packet loss " + loss;
+      _renderChartStats(stats, s.total, [
+        { label: "Avg",         value: s.avgMs != null ? s.avgMs + " ms" : "—" },
+        { label: "Min",         value: s.minMs != null ? s.minMs + " ms" : "—" },
+        { label: "Max",         value: s.maxMs != null ? s.maxMs + " ms" : "—" },
+        { label: "Packet loss", value: s.packetLossRate != null ? (s.packetLossRate * 100).toFixed(1) + "%" : "—" },
+      ]);
     }
   } catch (err) {
     if (!silent) chart.textContent = "Error: " + (err.message || "failed to load history");
@@ -4786,10 +4905,11 @@ async function openInterfaceDetailPanel(asset, ifName) {
         '<h4 style="margin:0">Throughput &amp; errors</h4>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
-      '<div id="iface-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Throughput (bps)</h5>' +
+      '<div id="iface-tput-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="iface-tput-chart" class="iface-chart-box"></div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Errors per interval (in / out)</h5>' +
+      '<div id="iface-err-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="iface-err-chart" class="iface-chart-box"></div>' +
     '</div>';
   document.querySelectorAll(".iface-chart-box").forEach(function (el) {
@@ -4823,18 +4943,21 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   var silent = !!(callOpts && callOpts.silent);
   var tputEl = document.getElementById("iface-tput-chart");
   var errEl = document.getElementById("iface-err-chart");
-  var stats = document.getElementById("iface-stats");
+  var tputStats = document.getElementById("iface-tput-stats");
+  var errStats  = document.getElementById("iface-err-stats");
   if (!tputEl) return;
   if (!silent) {
     tputEl.textContent = errEl.textContent = "Loading samples…";
-    if (stats) stats.textContent = "Loading…";
+    if (tputStats) tputStats.textContent = "Loading…";
+    if (errStats)  errStats.textContent  = "Loading…";
   }
   var panelBody = silent ? document.getElementById("iface-panel-body") : null;
   var savedScroll = panelBody ? panelBody.scrollTop : 0;
   try {
     var data = await api.assets.interfaceHistory(assetId, ifName, range || "1h");
     var derived = _derivePerIntervalSeries(data.samples || []);
-    if (stats) stats.textContent = _ifaceStatsLabel(data.samples || [], derived);
+    _renderIfaceThroughputStats(tputStats, data.samples || [], derived);
+    _renderIfaceErrorStats(errStats, data.samples || [], derived);
     // Refine the title now that we know the alias; show the operator comment
     // when present.
     var titleEl = document.getElementById("iface-panel-title");
@@ -4849,7 +4972,8 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   } catch (err) {
     if (!silent) {
       tputEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
-      if (stats) stats.textContent = "";
+      if (tputStats) tputStats.textContent = "";
+      if (errStats)  errStats.textContent  = "";
     }
     // Silent ticks leave stale content in place on transient errors.
   }
@@ -5029,20 +5153,33 @@ function _derivePerIntervalSeries(samples) {
   return out;
 }
 
-function _ifaceStatsLabel(rawSamples, derived) {
-  if (rawSamples.length === 0) return "No samples in this range yet.";
-  var inMax = 0, outMax = 0, inSum = 0, outSum = 0, inN = 0, outN = 0, errIn = 0, errOut = 0;
+function _renderIfaceThroughputStats(container, rawSamples, derived) {
+  if (!container) return;
+  var inMax = 0, outMax = 0, inSum = 0, outSum = 0, inN = 0, outN = 0;
   derived.forEach(function (d) {
     if (typeof d.inBps  === "number") { inSum  += d.inBps;  inN++;  if (d.inBps  > inMax)  inMax  = d.inBps; }
     if (typeof d.outBps === "number") { outSum += d.outBps; outN++; if (d.outBps > outMax) outMax = d.outBps; }
+  });
+  _renderChartStats(container, rawSamples.length, [
+    { label: "In avg",   value: _fmtBitsPerSec(inN  ? inSum  / inN  : 0) },
+    { label: "In peak",  value: _fmtBitsPerSec(inMax) },
+    { label: "Out avg",  value: _fmtBitsPerSec(outN ? outSum / outN : 0) },
+    { label: "Out peak", value: _fmtBitsPerSec(outMax) },
+  ]);
+}
+
+function _renderIfaceErrorStats(container, rawSamples, derived) {
+  if (!container) return;
+  var errIn = 0, errOut = 0;
+  derived.forEach(function (d) {
     if (typeof d.inErr  === "number") errIn  += d.inErr;
     if (typeof d.outErr === "number") errOut += d.outErr;
   });
-  return rawSamples.length + " samples · in avg " + _fmtBitsPerSec(inN ? inSum / inN : 0) +
-    " · in peak " + _fmtBitsPerSec(inMax) +
-    " · out avg " + _fmtBitsPerSec(outN ? outSum / outN : 0) +
-    " · out peak " + _fmtBitsPerSec(outMax) +
-    " · errors " + errIn + " in / " + errOut + " out";
+  _renderChartStats(container, rawSamples.length, [
+    { label: "In errors",  value: String(errIn) },
+    { label: "Out errors", value: String(errOut) },
+    { label: "Total",      value: String(errIn + errOut) },
+  ]);
 }
 
 // Render the LLDP neighbor card inside the interface slide-over. Empty when
@@ -5412,7 +5549,7 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range) {
     var data = await api.assets.ipsecHistory(assetId, tunnelName, range || "24h");
     var samples = data.samples || [];
     var derived = _deriveIpsecThroughput(samples);
-    if (stats) stats.textContent = _ipsecStatsLabel(samples, derived);
+    _renderIpsecStats(stats, samples, derived);
     var ipsecOpts = { since: data.since, until: data.until, subject: tunnelName };
     _renderIpsecStatusChart(statusEl, samples, ipsecOpts);
     _renderIpsecBpsChart(inEl,  derived, "in",  ipsecOpts);
@@ -5450,8 +5587,8 @@ function _deriveIpsecThroughput(samples) {
   return out;
 }
 
-function _ipsecStatsLabel(samples, derived) {
-  if (samples.length === 0) return "No samples in this range yet.";
+function _renderIpsecStats(container, samples, derived) {
+  if (!container) return;
   var up = 0, down = 0, partial = 0, dynamic = 0;
   samples.forEach(function (s) {
     if (s.status === "up") up++;
@@ -5465,22 +5602,22 @@ function _ipsecStatsLabel(samples, derived) {
     if (typeof d.outBps === "number") { outSum += d.outBps; outN++; if (d.outBps > outMax) outMax = d.outBps; }
   });
   // Dial-up server template — phase-2 children appear as separate `parent`-
-  // bearing tunnels that we filter out, so the rollup is meaningless. Skip
-  // up/partial/down counts and label the throughput line only.
+  // bearing tunnels that we filter out, so the up/partial/down rollup is
+  // meaningless. Status reads "dial-up server"; throughput lines stay.
+  var statusValue;
   if (dynamic > 0 && up === 0 && down === 0 && partial === 0) {
-    return samples.length + " samples · dial-up server (dynamic) · " +
-      "in avg " + _fmtBitsPerSec(inN ? inSum / inN : 0) +
-      " · in peak " + _fmtBitsPerSec(inMax) +
-      " · out avg " + _fmtBitsPerSec(outN ? outSum / outN : 0) +
-      " · out peak " + _fmtBitsPerSec(outMax);
+    statusValue = "dial-up server";
+  } else {
+    statusValue = up + " up / " + partial + " partial / " + down + " down";
+    if (dynamic > 0) statusValue += " / " + dynamic + " dynamic";
   }
-  var counts = up + " up / " + partial + " partial / " + down + " down";
-  if (dynamic > 0) counts += " / " + dynamic + " dynamic";
-  return samples.length + " samples · " + counts + " · " +
-    "in avg " + _fmtBitsPerSec(inN ? inSum / inN : 0) +
-    " · in peak " + _fmtBitsPerSec(inMax) +
-    " · out avg " + _fmtBitsPerSec(outN ? outSum / outN : 0) +
-    " · out peak " + _fmtBitsPerSec(outMax);
+  _renderChartStats(container, samples.length, [
+    { label: "Status",   value: statusValue },
+    { label: "In avg",   value: _fmtBitsPerSec(inN  ? inSum  / inN  : 0) },
+    { label: "In peak",  value: _fmtBitsPerSec(inMax) },
+    { label: "Out avg",  value: _fmtBitsPerSec(outN ? outSum / outN : 0) },
+    { label: "Out peak", value: _fmtBitsPerSec(outMax) },
+  ]);
 }
 
 function _renderIpsecStatusChart(container, samples, opts) {
@@ -5703,10 +5840,11 @@ async function openStorageDetailPanel(asset, mountPath) {
         '<h4 style="margin:0">Usage history</h4>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
-      '<div id="storage-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Used vs total (bytes)</h5>' +
+      '<div id="storage-bytes-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="storage-bytes-chart" class="storage-chart-box"></div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Used %</h5>' +
+      '<div id="storage-pct-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="storage-pct-chart" class="storage-chart-box"></div>' +
     '</div>';
   document.querySelectorAll(".storage-chart-box").forEach(function (el) {
@@ -5737,27 +5875,42 @@ async function openStorageDetailPanel(asset, mountPath) {
 async function _loadStorageHistoryFor(assetId, mountPath, range) {
   var bytesEl = document.getElementById("storage-bytes-chart");
   var pctEl   = document.getElementById("storage-pct-chart");
-  var stats   = document.getElementById("storage-stats");
+  var bytesStats = document.getElementById("storage-bytes-stats");
+  var pctStats   = document.getElementById("storage-pct-stats");
   if (!bytesEl) return;
   bytesEl.textContent = pctEl.textContent = "Loading samples…";
-  if (stats) stats.textContent = "Loading…";
+  if (bytesStats) bytesStats.textContent = "Loading…";
+  if (pctStats)   pctStats.textContent   = "Loading…";
   try {
     var data = await api.assets.storageHistory(assetId, mountPath, range || "1h");
     var samples = (data && data.samples) || [];
-    if (stats) stats.textContent = _storageStatsLabel(samples);
+    _renderStorageBytesStats(bytesStats, samples);
+    _renderStoragePctStats(pctStats, samples);
     var opts = { since: data.since, until: data.until, subject: mountPath };
     _renderStorageBytesChart(bytesEl, samples, opts);
     _renderStoragePctChart(pctEl, samples, opts);
   } catch (err) {
     bytesEl.textContent = pctEl.textContent = "Error: " + (err.message || "failed to load");
-    if (stats) stats.textContent = "";
+    if (bytesStats) bytesStats.textContent = "";
+    if (pctStats)   pctStats.textContent   = "";
   }
 }
 
-function _storageStatsLabel(samples) {
-  if (!samples.length) return "No samples in this range yet.";
+function _renderStorageBytesStats(container, samples) {
+  if (!container) return;
+  var latest = samples.length ? samples[samples.length - 1] : null;
+  _renderChartStats(container, samples.length, [
+    { label: "Latest used", value: latest && typeof latest.usedBytes  === "number" ? _fmtBytes(latest.usedBytes)  : "—" },
+    { label: "Total",       value: latest && typeof latest.totalBytes === "number" ? _fmtBytes(latest.totalBytes) : "—" },
+    { label: "Free",        value: (latest && typeof latest.totalBytes === "number" && typeof latest.usedBytes === "number")
+                                   ? _fmtBytes(Math.max(0, latest.totalBytes - latest.usedBytes))
+                                   : "—" },
+  ]);
+}
+
+function _renderStoragePctStats(container, samples) {
+  if (!container) return;
   var pcts = [];
-  var latest = samples[samples.length - 1];
   samples.forEach(function (s) {
     if (s.totalBytes && s.usedBytes != null && s.totalBytes > 0) {
       pcts.push((s.usedBytes / s.totalBytes) * 100);
@@ -5766,17 +5919,16 @@ function _storageStatsLabel(samples) {
   var minP = pcts.length ? Math.min.apply(null, pcts) : null;
   var maxP = pcts.length ? Math.max.apply(null, pcts) : null;
   var avgP = pcts.length ? pcts.reduce(function (a, b) { return a + b; }, 0) / pcts.length : null;
+  var latest = samples.length ? samples[samples.length - 1] : null;
   var latestPct = (latest && latest.totalBytes && latest.usedBytes != null && latest.totalBytes > 0)
     ? ((latest.usedBytes / latest.totalBytes) * 100)
     : null;
-  return samples.length + " samples · latest " +
-    (latestPct != null ? latestPct.toFixed(1) + "%" : "—") +
-    (latest && latest.usedBytes != null && latest.totalBytes != null
-      ? " (" + _fmtBytes(latest.usedBytes) + " / " + _fmtBytes(latest.totalBytes) + ")"
-      : "") +
-    " · avg " + (avgP != null ? avgP.toFixed(1) + "%" : "—") +
-    " · min " + (minP != null ? minP.toFixed(1) + "%" : "—") +
-    " · max " + (maxP != null ? maxP.toFixed(1) + "%" : "—");
+  _renderChartStats(container, samples.length, [
+    { label: "Latest", value: latestPct != null ? latestPct.toFixed(1) + "%" : "—" },
+    { label: "Avg",    value: avgP      != null ? avgP.toFixed(1)      + "%" : "—" },
+    { label: "Min",    value: minP      != null ? minP.toFixed(1)      + "%" : "—" },
+    { label: "Max",    value: maxP      != null ? maxP.toFixed(1)      + "%" : "—" },
+  ]);
 }
 
 function _renderStorageBytesChart(container, samples, opts) {

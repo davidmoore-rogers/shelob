@@ -39,22 +39,27 @@ Per-pattern sections:
 - Range buttons: `_chartRangeButtons()` in `public/js/assets.js:78` — produces the `1h / 24h / 7d / 30d / Custom` toolbar.
 - Persistence: `_getChartRangePref(key, fallback)` / `_setChartRangePref(key, range)` in `public/js/assets.js:56-65` — per-user `localStorage.polaris-prefs-charts-<username>` JSON map keyed by chart id (`assetMonitor`, `assetSystem`, `assetSensor`, `assetInterface`, `assetIpsec`, `assetStorage`).
 - Tooltip: `_wireChartTooltip(container, formatHTML)` in `public/js/assets.js:3325` — single shared hover handler all charts use.
-- Resize: `_observeChartResize(container, rerender)` in `public/js/assets.js:3358` — re-renders on container resize via ResizeObserver.
+- Resize: `_observeChartResize(container, rerender)` — re-renders on container resize via ResizeObserver.
+- Stats line: `_renderChartStats(container, count, parts)` — single helper every chart calls; produces the canonical `<count> samples · <Label>: <value> · …` shape and writes a plaintext fallback to `container.dataset.summary` for screenshots/tooltips.
+- Polling-method badge: `_streamSourceBadgeHTML(asset, stream)` (sync first paint) + `_updateStreamSourceBadgesFromEffective(assetId, asset)` (async overwrite from `/effective-monitor-settings`). Renders `<method> (<details>) · every <interval> · <tier>`.
 
 **Key conventions:**
 - API returns `{ range, since, until, samples[], stats }`. Custom ranges return `range: "custom"`.
 - Loader writes the active selection onto the SVG container's `dataset.range` (or `dataset.from` + `dataset.to`) so probe-now / silent ticks can refetch the same view.
-- Stats strip lives in a sibling `<div>` and is rebuilt from `data.stats` on each load.
 - "Custom" ranges do **not** auto-refresh; preset ranges do, on the resolved monitor interval (`_refreshIntervalMs`).
 - Silent refresh ticks capture/restore `panelBody.scrollTop` around the swap so the slide-over doesn't jump.
 - Range selection is persisted; "Custom" from/to inputs intentionally are not.
+- **Stats line:** call `_renderChartStats(container, count, [{label, value}, …])`. Leading `<strong>{count}</strong> samples` span, then one `<span><strong>{Label}:</strong> {value}</span>` per metric, joined by flex gap. **No** "current/as-of" prose inside the stats line — current readings go in the Status block above the charts, modeled on `Last Response Time` / `Last Poll`. **Each chart owns its own stats line** (don't share one stats container across two charts — see Interface throughput vs errors).
+- **Polling-method badge:** every chart's section header carries one. Sync render uses the per-asset override only as a coarse first guess; the async path overwrites with the authoritative resolved value (covers class / integration / manual tiers). Cadence in the badge comes from the same resolved settings as the polling method, NOT a separate lookup.
 
 **When adding a new instance:**
 - Pick a unique chart id and add it to the prefs key list above.
 - Reuse `_chartRangeButtons` for the toolbar — don't roll your own.
 - Wire `_wireChartTooltip` and `_observeChartResize` — every existing chart does, and skipping breaks behavior parity.
 - Attach the loader's persisted range to the container dataset so silent refresh and probe-now refetch the same window.
-- Stats summary (if shown) must be rebuilt from `data.stats` server-side, not derived in JS.
+- Use `_renderChartStats` for the stats line. If your chart has additional "current" readings worth showing, put them in the Status block (or a sibling section that mirrors Status), not inline in the stats line.
+- Stats values must come from `data.stats` server-side or be derived once from the same samples the chart renders — don't duplicate aggregation logic.
+- Add a polling-method badge to the section header via `_streamSourceBadgeHTML` whenever the chart's data is delivered by a configurable polling stream (response-time / telemetry / interfaces / lldp).
 - If the data is unsupported on some monitor transports (e.g. ICMP/SSH), render an empty-state message — don't show an empty chart.
 
 ---
