@@ -2002,10 +2002,11 @@ async function openViewModal(id) {
     _currentAssetForRefresh = a;
     // Dependency tree block (General tab) — populated asynchronously after
     // openViewModal awaits api.assets.getDependencies(id) below. Rendered
-    // inline at the top of the General tab so it's visible without scrolling.
+    // beneath the details table so the at-a-glance facts (hostname / IP /
+    // status) come first.
     var dependencyTreeMountHTML = '<div id="asset-dep-tree-mount-' + escapeHtml(a.id) + '"></div>';
 
-    var generalHTML = dependencyTreeMountHTML + '<div class="asset-view-grid">' +
+    var generalHTML = '<div class="asset-view-grid">' +
       (a.ipAddress && !a.hostname
         ? '<div class="detail-row"><span class="detail-label">Hostname</span><span class="detail-value">- <button class="btn btn-sm btn-secondary" onclick="singleDnsLookup(\'' + a.id + '\')" title="Reverse DNS lookup (PTR record)">PTR Lookup</button></span></div>'
         : viewRow("Hostname", a.hostname, false, false, true)) +
@@ -2041,7 +2042,7 @@ async function openViewModal(id) {
       viewRow("Notes", a.notes, false, true) +
       viewRow("Created", formatDate(a.createdAt)) +
       viewRow("Updated", formatDate(a.updatedAt)) +
-    '</div>';
+    '</div>' + dependencyTreeMountHTML;
 
     var monitoringHTML = assetMonitoringViewHTML(a);
     var systemHTML     = a.monitored
