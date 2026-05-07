@@ -1988,11 +1988,18 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
  * down, now succeeding; below the recovery threshold) and the never-probed
  * unknown / null state (rendered as "Pending" in the pill, same color). */
 .badge-monitor-recovering { background: rgba(79,195,247,0.12); color: var(--color-accent);     border: 1px solid rgba(79,195,247,0.25); }
+/* Slate-blue "Dep. Down" treatment — distinct from the bright red of a true
+ * confirmed-down probe and the amber Warning of in-flux state. Used when an
+ * upstream parent (FortiGate / chained switch) is confirmed-down and this
+ * asset's heavy cadences are paused while the response-time probe continues
+ * at 2× the resolved interval. See Asset.dependencySuppressed. */
+.badge-monitor-dep-down { background: rgba(96,125,139,0.18);  color: #b0bec5;                 border: 1px solid rgba(96,125,139,0.32); }
 [data-theme="light"] .badge-monitored        { background: rgba(46,125,50,0.10); border-color: rgba(46,125,50,0.30); }
 [data-theme="light"] .badge-unmonitored      { background: rgba(117,117,117,0.10); border-color: rgba(117,117,117,0.30); }
 [data-theme="light"] .badge-monitor-down     { background: rgba(211,47,47,0.10); color: #c62828; border-color: rgba(211,47,47,0.30); }
 [data-theme="light"] .badge-monitor-warning  { background: rgba(245,127,23,0.10); color: #f57f17; border-color: rgba(245,127,23,0.30); }
 [data-theme="light"] .badge-monitor-recovering { background: rgba(79,195,247,0.10); border-color: rgba(79,195,247,0.30); }
+[data-theme="light"] .badge-monitor-dep-down   { background: rgba(96,125,139,0.10); color: #455a64; border-color: rgba(96,125,139,0.30); }
 
 /* Event level badges */
 .badge-level-info    { background: rgba(79,195,247,0.12); color: var(--color-accent); border: 1px solid rgba(79,195,247,0.25); font-size: 0.7rem; letter-spacing: 0.5px; }

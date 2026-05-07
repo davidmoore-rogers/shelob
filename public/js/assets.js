@@ -1192,8 +1192,21 @@ function assetMonitorBadge(asset) {
   if (typeof asset.lastResponseTimeMs === "number") bits.push("Last RTT: " + asset.lastResponseTimeMs + " ms");
   if (asset.lastMonitorAt) bits.push("Last poll: " + new Date(asset.lastMonitorAt).toLocaleString());
   if (canToggle) bits.push("Click to disable monitoring");
-  var title = bits.length ? ' title="' + escapeHtml(bits.join("\n")) + '"' : "";
   var clickCls = canToggle ? " badge-clickable" : "";
+  // Dependency-suppressed takes precedence over the five-state machine
+  // label. The asset's own probe may still be succeeding (redundant L3
+  // path / out-of-band management) — that's why monitorStatus AND
+  // dependencySuppressed are separate columns. Down + suppressed shows
+  // "Down" since the probe proves it; otherwise "Dep. Down" with the
+  // layer in the tooltip.
+  if (asset.dependencySuppressed && s !== "down") {
+    var depBits = bits.slice();
+    if (asset.dependencyLayer != null) depBits.unshift("Layer " + asset.dependencyLayer + " — upstream parent is down");
+    else                                depBits.unshift("Upstream dependency is down");
+    var depTitle = ' title="' + escapeHtml(depBits.join("\n")) + '"';
+    return '<span class="badge badge-monitor-dep-down' + clickCls + '"' + depTitle + toggleAttrs + '>Dep. Down</span>';
+  }
+  var title = bits.length ? ' title="' + escapeHtml(bits.join("\n")) + '"' : "";
   if (s === "up")         return '<span class="badge badge-monitored'        + clickCls + '"' + title + toggleAttrs + '>Up</span>';
   if (s === "warning")    return '<span class="badge badge-monitor-warning'  + clickCls + '"' + title + toggleAttrs + '>Warning</span>';
   if (s === "down")       return '<span class="badge badge-monitor-down'     + clickCls + '"' + title + toggleAttrs + '>Down</span>';

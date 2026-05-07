@@ -78,6 +78,11 @@
 .fg-marker.monitor-up          { background: #2e7d32; }
 .fg-marker.monitor-degraded    { background: #f9a825; color: #222; }
 .fg-marker.monitor-down        { background: #c62828; }
+/* Dependency-suppressed: an upstream parent is confirmed-down. Slate-blue
+ * — distinct from the bright red of a confirmed-down probe and the amber
+ * of a degraded probe. The probe itself is still firing (at 2× cadence)
+ * in case the asset is reachable via a redundant path. */
+.fg-marker.monitor-dep-down    { background: #607d8b; }
 
 /* Cluster bubble — color is the worst monitor health among contained markers,
    not the child count. Default markercluster CSS buckets by count, which is
@@ -100,6 +105,7 @@
 .fg-cluster.monitor-up          { background: #2e7d32; }
 .fg-cluster.monitor-degraded    { background: #f9a825; color: #222; }
 .fg-cluster.monitor-down        { background: #c62828; }
+.fg-cluster.monitor-dep-down    { background: #607d8b; }
 
 /* ─── Topology modal layout ─────────────────────────────────────────────────── */
 .topology-layout {

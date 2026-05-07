@@ -265,9 +265,12 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **Readers** (files that consume it):
 - `src/services/monitoringService.ts:runMonitorPass()` — Cadence dispatch: heavy cadences gated on `monitorStatus==="up" && !dependencySuppressed`; probe interval doubles when dependencySuppressed AND responseTimePolling !== "disabled".
 - `src/jobs/monitorAssets.ts:publishDueWork()` — Same gate, mirrored for the pg-boss publisher path.
-- (planned) `public/js/assets.js` — Status pill 6th label "Dep. Down" reads dependencySuppressed.
-- (planned) `src/api/routes/map.ts` — Topology endpoint will read AssetDependencyParent for FG→switch / switch→AP edges instead of per-request BFS.
-- (planned) `src/api/routes/assets.ts` — Three new endpoints: GET /assets/:id/dependencies, PUT /:id/dependencies/override, DELETE /:id/dependencies/override.
+- `public/js/assets.js:assetMonitorBadge()` — Status pill renders slate-blue "Dep. Down" when `dependencySuppressed && monitorStatus !== "down"` (probe-down wins over the suppressed flag — the probe is the proof).
+- `public/js/map.js:monitorClass()` / `clusterIcon()` / `fortigateNodeColor()` — Pin/cluster/topology-node colors render slate-blue (`monitor-dep-down`) under the same priority rule. Cluster aggregation rolls up to dep-down only when no child has a worse probe-direct status.
+- `public/js/mobile/asset-detail.js:renderMonitorPill()` / `monitorDotCls()` — Same priority + slate-blue treatment on the mobile asset-detail surface.
+- `src/api/routes/assets.ts` — Three endpoints: `GET /assets/:id/dependencies`, `PUT /:id/dependencies/override` (admin, with cycle validation), `DELETE /:id/dependencies/override` (admin).
+- `src/api/routes/assets.ts:GET /` and `GET /:id` — Stamps `dependencyLayer` + `dependencySuppressed` on every asset returned so the pill renderer doesn't need a second fetch.
+- `src/api/routes/map.ts:GET /sites` and `GET /sites/:id/topology` — Stamps the same fields on each pin / topology node. (The topology endpoint still computes edges via per-request BFS through `interfaceTopologyService` — full DAG-as-source-of-truth refactor is a follow-up; current state is "DAG drives suppression, BFS still drives graph rendering.")
 
 **Invariants:**
 - Suppression follows the **confirmed-down** edge only. monitor.status_changed Event fires solely on up↔down transitions, and propagateAfterStatusChange() is called only from that same emission point. Warning / recovering flapping does NOT propagate.

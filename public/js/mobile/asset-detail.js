@@ -366,6 +366,7 @@
   // ─── helpers ───────────────────────────────────────────────────────────
   function monitorDotCls(asset) {
     if (!asset.monitored) return "";
+    if (asset.dependencySuppressed && asset.monitorStatus !== "down") return "dep-down";
     switch (asset.monitorStatus) {
       case "up": return "up";
       case "down": return "down";
@@ -376,6 +377,10 @@
 
   function renderMonitorPill(asset) {
     if (!asset.monitored) return '<span class="status-pill unk">Unmonitored</span>';
+    if (asset.dependencySuppressed && asset.monitorStatus !== "down") {
+      var layerBit = (asset.dependencyLayer != null) ? " (Layer " + asset.dependencyLayer + ")" : "";
+      return '<span class="status-pill dep-down"><span class="dot dep-down"></span>Dep. Down' + layerBit + '</span>';
+    }
     var rttBit = (asset.lastResponseTimeMs != null) ? " · " + asset.lastResponseTimeMs + " ms" : "";
     switch (asset.monitorStatus) {
       case "up":      return '<span class="status-pill up"><span class="dot up"></span>Up' + rttBit + '</span>';
@@ -388,6 +393,7 @@
   function monitorPillSubtext(asset) {
     if (!asset.monitored) return "";
     var bits = [];
+    if (asset.dependencySuppressed && asset.monitorStatus !== "down") bits.push("upstream parent down");
     if (asset.responseTimePolling) bits.push(asset.responseTimePolling);
     if (asset.lastMonitorAt) bits.push("last poll " + formatTimeAgo(asset.lastMonitorAt));
     return bits.join(" · ");

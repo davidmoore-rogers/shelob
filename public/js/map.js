@@ -163,6 +163,7 @@
   function clusterIcon(cluster) {
     var children = cluster.getAllChildMarkers();
     var sawMonitored = false;
+    var sawDepDown = false;
     var worst = "up"; // up < degraded < down
     for (var i = 0; i < children.length; i++) {
       var s = children[i]._site;
@@ -170,8 +171,16 @@
       sawMonitored = true;
       if (s.monitorHealth === "down") { worst = "down"; break; }
       if (s.monitorHealth === "degraded" && worst !== "down") worst = "degraded";
+      if (s.dependencySuppressed && s.monitorHealth !== "down") sawDepDown = true;
     }
-    var cls = sawMonitored ? "monitor-" + worst : "monitor-unmonitored";
+    // Probe-down/degraded wins over dep-down — those are real failures we
+    // observed directly. A cluster where every monitored child is healthy
+    // but some are dep-down rolls up to dep-down.
+    var cls;
+    if (!sawMonitored)               cls = "monitor-unmonitored";
+    else if (worst !== "up")         cls = "monitor-" + worst;
+    else if (sawDepDown)             cls = "monitor-dep-down";
+    else                             cls = "monitor-up";
     var count = cluster.getChildCount();
     return L.divIcon({
       html: '<div class="fg-cluster ' + cls + '"><span>' + count + "</span></div>",
@@ -242,6 +251,12 @@
 
   function monitorClass(site) {
     if (!site.monitored) return "monitor-unmonitored";
+    // Dependency suppression takes precedence over the probe-derived health
+    // when the asset's own probe is succeeding through a redundant path
+    // (suppressed but health still "up"). When the probe itself shows
+    // "down", that's the real state and we render red — see assetMonitorBadge
+    // for the matching priority on the assets list.
+    if (site.dependencySuppressed && site.monitorHealth !== "down") return "monitor-dep-down";
     switch (site.monitorHealth) {
       case "up":       return "monitor-up";
       case "degraded": return "monitor-degraded";
@@ -254,6 +269,10 @@
     if (!site.monitored) return "Unmonitored";
     var samples = site.monitorRecentSamples || 0;
     var failures = site.monitorRecentFailures || 0;
+    if (site.dependencySuppressed && site.monitorHealth !== "down") {
+      var layerHint = (site.dependencyLayer != null) ? " (Layer " + site.dependencyLayer + ")" : "";
+      return "Dependency down — upstream parent is offline" + layerHint;
+    }
     switch (site.monitorHealth) {
       case "up":       return "Up — last " + samples + " samples ok";
       case "degraded": return "Packet loss — " + failures + "/" + samples + " recent samples failed";
@@ -664,6 +683,10 @@
 
   function fortigateNodeColor(fg) {
     if (!fg.monitored) return "#757575"; // gray — unmonitored
+    // Same priority as the Status pill in the assets list: a confirmed-down
+    // probe wins over the suppressed flag (the probe is the proof). When the
+    // probe is healthy but a parent is down, render slate-blue.
+    if (fg.dependencySuppressed && fg.monitorHealth !== "down") return "#607d8b"; // slate — Dep. Down
     switch (fg.monitorHealth) {
       case "up":       return "#2e7d32"; // green
       case "degraded": return "#f9a825"; // amber

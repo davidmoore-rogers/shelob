@@ -128,6 +128,7 @@ input, select, textarea { font-family: inherit; }
 .dot.warn { background: var(--md-warning); }
 .dot.down { background: var(--md-error); }
 .dot.unk  { background: var(--md-outline); }
+.dot.dep-down { background: #607d8b; }
 
 /* ─── Top app bar ─────────────────────────────────────────────────────── */
 .m3-topbar {
@@ -779,6 +780,7 @@ button, .list-item, .chip { touch-action: manipulation; }
 .status-pill.warn      { background: rgba(255,213,74,.15); color: var(--md-warning); }
 .status-pill.down      { background: var(--md-error-container); color: var(--md-on-error-container); }
 .status-pill.unk       { background: var(--md-surface-cont-highest); color: var(--md-on-surface-variant); }
+.status-pill.dep-down  { background: rgba(96,125,139,.18); color: #b0bec5; }
 
 /* ─── Asset cards ─────────────────────────────────────────────────────── */
 .asset-list {

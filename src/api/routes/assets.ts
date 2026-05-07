@@ -308,6 +308,8 @@ router.get("/", async (req, res, next) => {
           lastMonitorAt: true,
           lastResponseTimeMs: true,
           discoveredByIntegrationId: true,
+          dependencyLayer: true,
+          dependencySuppressed: true,
         },
       }),
       prisma.asset.count({ where }),
@@ -2070,6 +2072,249 @@ router.post("/:id/sources/:sourceId/split", requireAdmin, async (req, res, next)
       movedSourceId: target.id,
       newAsset: result.newAsset,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Dependency-aware monitoring suppression ────────────────────────────────
+//
+// Three endpoints over `AssetDependencyParent`:
+//   GET    /:id/dependencies                — read effective + computed
+//                                             parents, layer, suppressed flag
+//   PUT    /:id/dependencies/override       — admin: replace source="override"
+//                                             rows; empty array = explicit
+//                                             "no parents" pin
+//   DELETE /:id/dependencies/override       — admin: clear all overrides;
+//                                             computed set takes effect
+//
+// Effective-parents resolution: if any source="override" rows exist for an
+// asset, the override set is its effective parents and the computed set is
+// ignored. Empty override set is a deliberate pin (asset opts out of
+// suppression entirely) and is distinct from "no override at all" — we
+// represent it by writing zero override rows but stamping a marker. To keep
+// the data model simple we don't use a separate marker column; instead the
+// override endpoint is the SOLE way to write "0 overrides" without computed
+// fallback. So the resolution rule is "if the operator most recently called
+// PUT /override, the override set wins (even if empty)". The DELETE endpoint
+// reverts to computed.
+//
+// Cycles are rejected at write time: walking back through every proposed
+// parent's existing parents must never reach the asset itself.
+
+const dependencyOverrideBodySchema = z.object({
+  parentAssetIds: z.array(z.string().min(1)).max(20),
+});
+
+router.get("/:id/dependencies", async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        hostname: true,
+        assetType: true,
+        dependencyLayer: true,
+        dependencySuppressed: true,
+        dependencySuppressedAt: true,
+      },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    const rows = await prisma.assetDependencyParent.findMany({
+      where: { assetId: id },
+      include: {
+        parent: {
+          select: {
+            id: true,
+            hostname: true,
+            assetType: true,
+            dependencyLayer: true,
+            monitorStatus: true,
+            monitored: true,
+          },
+        },
+      },
+      orderBy: [{ source: "asc" }, { createdAt: "asc" }],
+    });
+
+    function shape(r: (typeof rows)[number]) {
+      return {
+        id: r.id,
+        parent: r.parent
+          ? {
+              id:               r.parent.id,
+              hostname:         r.parent.hostname,
+              assetType:        r.parent.assetType,
+              dependencyLayer:  r.parent.dependencyLayer,
+              monitorStatus:    r.parent.monitorStatus,
+              monitored:        r.parent.monitored,
+            }
+          : null,
+        source:      r.source,
+        detectedVia: r.detectedVia,
+      };
+    }
+
+    const computedParents = rows.filter(r => r.source === "computed").map(shape);
+    const overrideParents = rows.filter(r => r.source === "override").map(shape);
+    // When at least one override row exists, the override set is the effective
+    // set (even if it ends up filtering down to the same parents as computed).
+    const hasOverride = overrideParents.length > 0;
+    const effectiveParents = hasOverride ? overrideParents : computedParents;
+
+    res.json({
+      asset: {
+        id:                     asset.id,
+        hostname:               asset.hostname,
+        assetType:              asset.assetType,
+        dependencyLayer:        asset.dependencyLayer,
+        dependencySuppressed:   asset.dependencySuppressed,
+        dependencySuppressedAt: asset.dependencySuppressedAt,
+      },
+      effectiveParents,
+      computedParents,
+      overrideParents,
+      hasOverride,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/:id/dependencies/override", requireAdmin, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const body = dependencyOverrideBodySchema.parse(req.body);
+
+    const asset = await prisma.asset.findUnique({ where: { id }, select: { id: true, hostname: true } });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    const proposedParentIds = [...new Set(body.parentAssetIds)];
+
+    // Reject self-reference up front.
+    if (proposedParentIds.includes(id)) {
+      throw new AppError(400, "An asset cannot be its own dependency parent");
+    }
+
+    // Validate every proposed parent exists and is a Fortinet infra asset
+    // (firewall / switch / access_point) — anything else doesn't belong in the
+    // dependency tree.
+    if (proposedParentIds.length > 0) {
+      const proposed = await prisma.asset.findMany({
+        where: { id: { in: proposedParentIds } },
+        select: { id: true, assetType: true, hostname: true },
+      });
+      if (proposed.length !== proposedParentIds.length) {
+        throw new AppError(400, "One or more proposed parent assets not found");
+      }
+      const wrongType = proposed.filter(p => !["firewall", "switch", "access_point"].includes(p.assetType));
+      if (wrongType.length > 0) {
+        throw new AppError(
+          400,
+          `Dependency parents must be firewall/switch/access_point: ${wrongType.map(p => p.hostname || p.id).join(", ")}`,
+        );
+      }
+
+      // Cycle check: from each proposed parent, walk UP through that parent's
+      // existing effective parents. If we ever reach `id`, the override would
+      // form a cycle.
+      const allEdges = await prisma.assetDependencyParent.findMany({
+        select: { assetId: true, parentAssetId: true, source: true },
+      });
+      // Bucket override vs computed; the asset whose parents we walk uses its
+      // own override set when present, otherwise the computed set — same as
+      // the runtime resolver.
+      const overrideByChild = new Map<string, string[]>();
+      const computedByChild = new Map<string, string[]>();
+      for (const e of allEdges) {
+        const m = e.source === "override" ? overrideByChild : computedByChild;
+        const cur = m.get(e.assetId);
+        if (cur) cur.push(e.parentAssetId);
+        else m.set(e.assetId, [e.parentAssetId]);
+      }
+      function effectiveParentsOf(child: string): string[] {
+        const o = overrideByChild.get(child);
+        if (o) return o;
+        return computedByChild.get(child) ?? [];
+      }
+      const visited = new Set<string>();
+      const queue = [...proposedParentIds];
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        if (cur === id) {
+          throw new AppError(400, "Proposed override would form a dependency cycle");
+        }
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        // Climb. NOTE: we walk current effective parents, treating this asset's
+        // proposed override as not-yet-applied; since cur cannot equal `id`
+        // (we just checked), we never need the proposed set itself in the walk.
+        const climb = effectiveParentsOf(cur);
+        for (const p of climb) queue.push(p);
+      }
+    }
+
+    // Atomic replace: delete current override rows for this child, then insert
+    // the new set. createMany skipDuplicates handles the case where one of the
+    // proposed parents already shows up in the computed set.
+    await prisma.$transaction(async (tx) => {
+      await tx.assetDependencyParent.deleteMany({
+        where: { assetId: id, source: "override" },
+      });
+      if (proposedParentIds.length > 0) {
+        await tx.assetDependencyParent.createMany({
+          data: proposedParentIds.map(parentId => ({
+            assetId:       id,
+            parentAssetId: parentId,
+            source:        "override",
+            detectedVia:   "manual",
+          })),
+          skipDuplicates: true,
+        });
+      }
+    });
+
+    logEvent({
+      action:       "asset.dependency.override_set",
+      resourceType: "asset",
+      resourceId:   id,
+      resourceName: asset.hostname || undefined,
+      level:        "info",
+      message:      `Dependency override set on ${asset.hostname || id} (${proposedParentIds.length} parent${proposedParentIds.length === 1 ? "" : "s"})`,
+      details:      { parentAssetIds: proposedParentIds },
+    });
+
+    res.json({ ok: true, parentAssetIds: proposedParentIds });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/:id/dependencies/override", requireAdmin, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const asset = await prisma.asset.findUnique({ where: { id }, select: { id: true, hostname: true } });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    const result = await prisma.assetDependencyParent.deleteMany({
+      where: { assetId: id, source: "override" },
+    });
+
+    if (result.count > 0) {
+      logEvent({
+        action:       "asset.dependency.override_cleared",
+        resourceType: "asset",
+        resourceId:   id,
+        resourceName: asset.hostname || undefined,
+        level:        "info",
+        message:      `Dependency override cleared on ${asset.hostname || id} — computed parents now apply`,
+        details:      { removed: result.count },
+      });
+    }
+
+    res.json({ ok: true, removed: result.count });
   } catch (err) {
     next(err);
   }

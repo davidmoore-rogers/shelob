@@ -121,6 +121,8 @@ router.get("/sites", async (_req, res, next) => {
         lastSeen: true,
         learnedLocation: true,
         monitored: true,
+        dependencyLayer: true,
+        dependencySuppressed: true,
       },
       orderBy: { hostname: "asc" },
     });
@@ -195,6 +197,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
         assetType: true,
         fortinetTopology: true,
         monitored: true,
+        dependencyLayer: true,
+        dependencySuppressed: true,
       },
     });
     if (!fg || fg.assetType !== "firewall") {
@@ -235,6 +239,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
             lastSeen: true,
             monitored: true,
             monitorStatus: true,
+            dependencyLayer: true,
+            dependencySuppressed: true,
           },
         })
       : [];
@@ -264,6 +270,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
           uplinkInterface: t.uplinkInterface ?? null,
           monitored: s.monitored,
           monitorHealth: s.monitored ? monitorStatusToHealth(s.monitorStatus) : null,
+          dependencyLayer: s.dependencyLayer,
+          dependencySuppressed: s.dependencySuppressed,
           iconUrl: resolveIconUrl({ manufacturer: s.manufacturer, model: s.model, assetType: "switch" }, iconCache),
           endpointCount: 0,
           endpoints: [] as EndpointSummary[],
@@ -366,6 +374,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
           peerSource: (t as any).peerSource ?? null,
           monitored: s.monitored,
           monitorHealth: s.monitored ? monitorStatusToHealth(s.monitorStatus) : null,
+          dependencyLayer: s.dependencyLayer,
+          dependencySuppressed: s.dependencySuppressed,
           iconUrl: resolveIconUrl({ manufacturer: s.manufacturer, model: s.model, assetType: "access_point" }, iconCache),
         };
       });
@@ -784,6 +794,8 @@ router.get("/sites/:id/topology", async (req, res, next) => {
         monitorHealth: fg.monitored ? fgMonitorStats?.health ?? "unknown" : null,
         monitorRecentSamples: fgMonitorStats?.samples ?? 0,
         monitorRecentFailures: fgMonitorStats?.failures ?? 0,
+        dependencyLayer: fg.dependencyLayer,
+        dependencySuppressed: fg.dependencySuppressed,
         iconUrl: resolveIconUrl({ manufacturer: fg.manufacturer, model: fg.model, assetType: "firewall" }, iconCache),
       },
       switches,
