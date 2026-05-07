@@ -1127,7 +1127,13 @@ model AssetDependencyParent {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([assetId, parentAssetId])
+  // Same (child, parent) pair may exist in BOTH "computed" and "override"
+  // form simultaneously — a deliberate override that pins the same parent the
+  // recompute would have picked anyway should still register on the
+  // override-takes-precedence rule. Including source in the unique key lets
+  // both rows coexist; the read-time resolver in dependencyTreeService groups
+  // by source and applies override-wins.
+  @@unique([assetId, parentAssetId, source])
   @@index([assetId])
   @@index([parentAssetId])
   @@index([source])

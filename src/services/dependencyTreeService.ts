@@ -555,13 +555,18 @@ export async function reconcileDependencySuppression(): Promise<{
   });
 
   // Events fire AFTER the DB write so anyone reading on the back of the
-  // event sees the new state. Only emit for monitored assets.
+  // event sees the new state. Only emit for monitored assets. We `await`
+  // each call (vs. the fire-and-forget pattern used elsewhere) so that
+  // when the reconciler returns its caller can rely on the audit row
+  // being durable — the 60s tick cadence makes the per-event latency
+  // negligible, and tests reading the Event table immediately after
+  // would otherwise race with in-flight writes.
   for (const t of transitions) {
     const asset = assets.find(a => a.id === t.id);
     if (!asset || !asset.monitored) continue;
     const parentHostnames = t.parentIds.map(id => hostnameById.get(id) ?? id);
     if (t.to) {
-      logEvent({
+      await logEvent({
         action:       "monitor.dependency_suppressed",
         resourceType: "asset",
         resourceId:   t.id,
@@ -575,7 +580,7 @@ export async function reconcileDependencySuppression(): Promise<{
         },
       });
     } else {
-      logEvent({
+      await logEvent({
         action:       "monitor.dependency_resumed",
         resourceType: "asset",
         resourceId:   t.id,
