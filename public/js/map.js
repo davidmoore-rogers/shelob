@@ -17,7 +17,7 @@
   // Currently-open topology modal state. siteId drives Refresh + position
   // persistence; data is the latest /topology payload (used for endpoint
   // pivots from search results without a re-fetch).
-  var topoState = { siteId: null, hostname: null, data: null };
+  var topoState = { siteId: null, hostname: null, data: null, pathOverlay: null };
   var topoSearchDebounce = null;
   var topoSuggestState  = { open: false, items: [], index: -1 };
   var POSITION_STORAGE_PREFIX = "polaris.topology.positions:";
@@ -387,12 +387,14 @@
     var fullscreenBtn = document.getElementById("topology-fullscreen");
     var refreshBtn = document.getElementById("topology-refresh");
     var resetBtn = document.getElementById("topology-reset-layout");
+    var showFullBtn = document.getElementById("topology-show-full");
     var searchInput = document.getElementById("topology-search-input");
     closeBtn.addEventListener("click", closeTopology);
     if (screenshotBtn) screenshotBtn.addEventListener("click", screenshotTopology);
     if (fullscreenBtn) fullscreenBtn.addEventListener("click", toggleFullscreenTopology);
     if (refreshBtn) refreshBtn.addEventListener("click", refreshTopology);
     if (resetBtn) resetBtn.addEventListener("click", resetTopologyLayout);
+    if (showFullBtn) showFullBtn.addEventListener("click", clearConnectionPathOverlay);
     if (searchInput) wireTopologySearch(searchInput);
     // Intercept clicks on asset links in the topology right-bar so they open
     // the asset details slide-over instead of navigating away to assets.html.
@@ -644,9 +646,17 @@
     });
   }
 
-  // Pulse the matched endpoint's switch on the graph + scroll the info
-  // panel to its row. Click an item to navigate to the asset details.
-  function handleTopologySearchPick(item) {
+  // When the operator picks an endpoint from the topology search:
+  //   1. Pulse the matched endpoint's switch on the graph.
+  //   2. Fetch the asset's connection path (GET /assets/:id/connection-path)
+  //      and overlay the endpoint as a synthetic Cytoscape node connected to
+  //      its switch, dimming everything off the path so the chain stands out
+  //      visually. The "Show full site" button appears in the modal header
+  //      to clear the dim and reveal the rest of the graph.
+  // (Asset details aren't auto-opened in the slide-over for this path —
+  // operators usually want to see the topology answer first; the asset
+  // is reachable from the right-side info panel rows.)
+  async function handleTopologySearchPick(item) {
     closeTopologySearchResults();
     if (cyInstance && item.switchId) {
       var node = cyInstance.getElementById(item.switchId);
@@ -656,8 +666,132 @@
         setTimeout(function () { try { node.removeClass("topology-pulse"); } catch (e) {} }, 1500);
       }
     }
-    // Open the endpoint's asset details in the slide-over panel.
-    if (item.id) openMapAssetPanel(item.id);
+    if (!item.id || !cyInstance) return;
+    try {
+      var path = await api.assets.connectionPath(item.id);
+      if (path) applyConnectionPathOverlay(path);
+    } catch (e) {
+      // Best-effort overlay — fall through to the plain pulse on failure.
+    }
+  }
+
+  // Overlay a focused endpoint→firewall connection path on top of the live
+  // Cytoscape graph. Adds a synthetic endpoint node + edge to the first
+  // switch hop (when the endpoint isn't already a graph node), then dims
+  // every element NOT on the path. Clearing is via the "Show full site"
+  // button in the header or by tapping any non-path node.
+  function applyConnectionPathOverlay(path) {
+    if (!cyInstance || !path || !path.asset || !Array.isArray(path.hops) || path.hops.length === 0) return;
+    // Sweep any leftover overlay from a previous search before drawing the new one.
+    clearConnectionPathOverlay();
+    var ep = path.asset;
+    var leaf = path.hops[0];
+    var nextHop = path.hops[1];
+    var syntheticEdgeId = null;
+
+    // Add the endpoint as a synthetic node when the live topology graph
+    // doesn't already include it (which is almost always — endpoints don't
+    // appear as Cytoscape nodes in the standard topology response, only in
+    // the right-side panel). Switches / APs / firewalls already have nodes,
+    // so we skip the synthesis in those cases.
+    var alreadyOnGraph = cyInstance.getElementById(ep.id).length > 0;
+    if (!alreadyOnGraph && leaf.kind === "endpoint") {
+      cyInstance.add({
+        group: "nodes",
+        data: {
+          id: ep.id,
+          label: ep.hostname || ep.ipAddress || "endpoint",
+          role: "endpoint",
+          nodeColor: endpointNodeColor(leaf),
+          synthetic: 1,
+        },
+      });
+      // Edge from the endpoint to its first switch hop, labeled with the
+      // switch port the endpoint plugs into (parsed from lastSeenSwitch).
+      if (nextHop && cyInstance.getElementById(nextHop.id).length > 0) {
+        syntheticEdgeId = "ep-edge-" + ep.id;
+        cyInstance.add({
+          group: "edges",
+          data: {
+            id: syntheticEdgeId,
+            source: ep.id,
+            target: nextHop.id,
+            label: nextHop.endpointPort ? "port " + nextHop.endpointPort : "",
+            synthetic: 1,
+          },
+        });
+      }
+    }
+
+    // Build the set of path node ids and resolve each into Cytoscape elements.
+    var pathNodeIds = path.hops.map(function (h) { return h.id; });
+    var pathElements = cyInstance.collection();
+    pathNodeIds.forEach(function (id) {
+      var n = cyInstance.getElementById(id);
+      if (n.length > 0) pathElements = pathElements.union(n);
+    });
+    if (syntheticEdgeId) {
+      var syn = cyInstance.getElementById(syntheticEdgeId);
+      if (syn.length > 0) pathElements = pathElements.union(syn);
+    }
+    // Edges between two path nodes (controller / interfaceEdges / lldpEdges
+    // wiring the switches and FortiGate together) are part of the path too.
+    cyInstance.edges().forEach(function (e) {
+      var s = e.data("source");
+      var t = e.data("target");
+      if (pathNodeIds.indexOf(s) !== -1 && pathNodeIds.indexOf(t) !== -1) {
+        pathElements = pathElements.union(e);
+      }
+    });
+
+    cyInstance.elements().not(pathElements).addClass("dimmed");
+    topoState.pathOverlay = { endpointId: ep.id, edgeId: syntheticEdgeId };
+
+    var btn = document.getElementById("topology-show-full");
+    if (btn) btn.hidden = false;
+
+    try {
+      cyInstance.animate({ fit: { eles: pathElements, padding: 60 }, duration: 350 });
+    } catch (e) { /* fit may fail if pathElements is empty / single node */ }
+  }
+
+  // Remove the dim class and tear down any synthetic endpoint node + edge
+  // we added in applyConnectionPathOverlay. Idempotent.
+  function clearConnectionPathOverlay() {
+    if (!cyInstance) return;
+    cyInstance.elements().removeClass("dimmed");
+    var overlay = topoState.pathOverlay;
+    if (overlay) {
+      if (overlay.edgeId) {
+        var edge = cyInstance.getElementById(overlay.edgeId);
+        try { if (edge.length > 0) cyInstance.remove(edge); } catch (e) {}
+      }
+      // Only remove the endpoint node when it was synthetic (added by us).
+      // Tagged via data.synthetic = 1 so we don't accidentally rip out a
+      // pre-existing node (e.g. when the operator searched a switch hostname
+      // — that case never adds a synthetic node, but be defensive).
+      var ep = cyInstance.getElementById(overlay.endpointId);
+      if (ep.length > 0 && ep.data("synthetic")) {
+        try { cyInstance.remove(ep); } catch (e) {}
+      }
+      topoState.pathOverlay = null;
+    }
+    var btn = document.getElementById("topology-show-full");
+    if (btn) btn.hidden = true;
+  }
+
+  // Color the synthetic endpoint node by its monitor state — same five-state
+  // palette the firewall / switch / AP nodes use, so the path reads as a
+  // single visual scheme.
+  function endpointNodeColor(hop) {
+    if (!hop || !hop.monitored) return "#757575"; // gray — unmonitored
+    switch (hop.monitorStatus) {
+      case "up":         return "#2e7d32";
+      case "warning":    return "#f9a825";
+      case "down":       return "#c62828";
+      case "recovering": return "#0288d1";
+      default:           return "#9e9e9e";
+    }
   }
 
   function closeTopologySearchResults() {
@@ -676,6 +810,9 @@
     topoState.siteId = null;
     topoState.hostname = null;
     topoState.data = null;
+    topoState.pathOverlay = null;
+    var showFullBtn = document.getElementById("topology-show-full");
+    if (showFullBtn) showFullBtn.hidden = true;
     // Exit native fullscreen first — otherwise the browser stays in
     // fullscreen mode showing nothing after the modal hides, and the user
     // has to hit Esc / their OS gesture to recover.
@@ -711,6 +848,14 @@
   }
 
   function renderTopologyGraph(data) {
+    // Refresh / reset rebuilds the cyInstance from scratch — any synthetic
+    // overlay nodes / edges are gone, so reset the state and hide the
+    // "Show full site" button before drawing the new graph. Don't call
+    // clearConnectionPathOverlay() here because cyInstance is about to be
+    // torn down regardless.
+    topoState.pathOverlay = null;
+    var showFullBtn = document.getElementById("topology-show-full");
+    if (showFullBtn) showFullBtn.hidden = true;
     var elements = [];
 
     elements.push({
@@ -960,6 +1105,36 @@
             width: 2.4,
           },
         },
+        // Synthetic endpoint node — added by the connection-path overlay
+        // when the operator searches a server / workstation / printer in
+        // the topology modal. Status-colored fill matches the five-state
+        // monitor palette used elsewhere; rounded-square shape distinguishes
+        // it from the round Fortinet infrastructure nodes.
+        {
+          selector: 'node[role="endpoint"]',
+          style: {
+            "background-color": "data(nodeColor)",
+            shape: "round-rectangle",
+            width: 44,
+            height: 36,
+          },
+        },
+        // Off-path elements during a connection-path overlay — fade them
+        // hard so the focused path stands out without losing site context.
+        {
+          selector: 'node.dimmed',
+          style: {
+            opacity: 0.18,
+            "text-opacity": 0.25,
+          },
+        },
+        {
+          selector: 'edge.dimmed',
+          style: {
+            opacity: 0.12,
+            "text-opacity": 0.18,
+          },
+        },
         // Pulse style applied transiently to a node that the topology
         // search just located. Bright accent ring draws the eye; class
         // is removed after ~1.5s by the pick handler.
@@ -1051,6 +1226,14 @@
     cyInstance.on("tap", 'node[role="remote-asset"]', function (evt) {
       var assetId = evt.target.data("assetId");
       if (assetId) openMapAssetPanel(assetId);
+    });
+
+    // Auto-clear the connection-path dim if the operator taps any node
+    // currently dimmed off-path — they're trying to navigate the rest of
+    // the graph, so get out of their way without forcing them to hunt for
+    // the "Show full site" button.
+    cyInstance.on("tap", "node.dimmed", function () {
+      if (topoState.pathOverlay) clearConnectionPathOverlay();
     });
 
     // Hover tooltip on edges — explains the rule + evidence behind each

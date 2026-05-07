@@ -28,6 +28,7 @@ import {
   resolveMonitorSettingsWithProvenance,
 } from "../../services/monitoringService.js";
 import { getCredential } from "../../services/credentialService.js";
+import { resolveConnectionPath } from "../../services/connectionPathService.js";
 import {
   type PollingMethod,
   assetSourceKindFromIntegrationType,
@@ -2379,6 +2380,23 @@ router.delete("/:id/dependencies/override", requireAdmin, async (req, res, next)
     }
 
     res.json({ ok: true, removed: result.count });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/v1/assets/:id/connection-path — endpoint → switch → … → FortiGate
+//
+// Returns the upward chain from this asset to its upstream FortiGate, used by
+// the Device Map topology overlay to dim everything off-path. See
+// connectionPathService for the resolution rules. Open to any authenticated
+// caller (read-only; same scope as the existing /:id/dependencies endpoint).
+router.get("/:id/connection-path", async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const path = await resolveConnectionPath(id);
+    if (!path) throw new AppError(404, "Asset not found");
+    res.json(path);
   } catch (err) {
     next(err);
   }

@@ -241,6 +241,7 @@ const api = {
     getDependencies:      (id)  => request("GET", `/assets/${id}/dependencies`),
     setDependencyOverride:    (id, parentAssetIds) => request("PUT",    `/assets/${id}/dependencies/override`, { parentAssetIds }),
     clearDependencyOverride:  (id) => request("DELETE", `/assets/${id}/dependencies/override`),
+    connectionPath:       (id)  => request("GET", `/assets/${id}/connection-path`),
     bulkQuarantine:       (ids, reason) => request("POST", "/assets/bulk-quarantine", reason !== undefined ? { ids, reason } : { ids }),
     bulkUnquarantine:     (ids) => request("POST", "/assets/bulk-quarantine/release", { ids }),
     getSightingSettings:  ()    => request("GET", "/assets/sighting-settings"),
