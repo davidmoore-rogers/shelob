@@ -42,6 +42,7 @@ import "./jobs/resolvePolarisPushedConflicts.js";
 import "./jobs/resolveStaleReservationConflicts.js";
 import "./jobs/scrubLegacySidGuidTags.js";
 import "./jobs/backfillFortigateEndpointSources.js";
+import "./jobs/fixInfraAssetTypes.js";
 import { ensureRegistryLoaded } from "./services/oidRegistry.js";
 import { detectTimescale, migrateToHypertables } from "./services/timescaleService.js";
 import { initializeQueue, startPgbossWorkers, stopPgbossWorkers } from "./services/queueService.js";

@@ -2473,6 +2473,22 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           ...(acquiredAtUpdate ? { acquiredAt: acquiredAtUpdate } : {}),
           ...buildClassMonitorStamp(switchMonitorCfg, existingAsset),
         };
+        // Correct assetType when an existing asset was created via a different
+        // pathway (device-inventory, DHCP) before FortiSwitch discovery linked
+        // up. Without this, the asset stays "other" forever and the endpoint
+        // pathway keeps stamping a stale fortigate-endpoint source on it.
+        if (existingAsset.assetType !== "switch") {
+          updateData.assetType = "switch";
+          // Sweep the stale fortigate-endpoint source — it was a placeholder
+          // created when this asset was misclassified. The fortiswitch source
+          // upserted just above is now the canonical record.
+          try {
+            await prisma.assetSource.deleteMany({
+              where: { assetId: existingAsset.id, sourceKind: "fortigate-endpoint" },
+            });
+          } catch { /* best-effort */ }
+          existingAsset.assetType = "switch";
+        }
         if (swProjected.hostname !== null) updateData.hostname = swProjected.hostname;
         if (swProjected.osVersion !== null) updateData.osVersion = swProjected.osVersion;
         if (swProjected.manufacturer !== null) updateData.manufacturer = swProjected.manufacturer;
@@ -2634,6 +2650,18 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           ...(existingAsset.status === "decommissioned" ? { status: "active", statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
           ...buildClassMonitorStamp(apMonitorCfg, existingAsset),
         };
+        // Same correction as the FortiSwitch path — fix assetType if a prior
+        // pathway created this asset as "other" before FortiAP discovery linked
+        // up, and sweep the stale fortigate-endpoint source row.
+        if (existingAsset.assetType !== "access_point") {
+          updateData.assetType = "access_point";
+          try {
+            await prisma.assetSource.deleteMany({
+              where: { assetId: existingAsset.id, sourceKind: "fortigate-endpoint" },
+            });
+          } catch { /* best-effort */ }
+          existingAsset.assetType = "access_point";
+        }
         if (apProjected.hostname !== null) updateData.hostname = apProjected.hostname;
         if (apProjected.model !== null) updateData.model = apProjected.model;
         if (apProjected.osVersion !== null) updateData.osVersion = apProjected.osVersion;
