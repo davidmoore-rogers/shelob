@@ -33,7 +33,7 @@ import type { PgBoss as PgBossType, Job as PgBossJob } from "pg-boss";
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
-import { setPgbossQueueJobs, recordQueueMode } from "../metrics.js";
+import { setPgbossQueueJobs, recordQueueMode, setMonitorWorkers } from "../metrics.js";
 import {
   runProbeFor,
   runTelemetryFor,
@@ -283,9 +283,17 @@ function resolveEnvInt(envName: string, fallback: number): number {
  * via env var when benchmarking warrants — particularly on hosts with many
  * cores or DBs with high `max_connections`.
  *
- *   POLARIS_MONITOR_PROBE_WORKERS    teamSize for probe queue (default 16)
- *   POLARIS_MONITOR_FAST_WORKERS     teamSize for fastFiltered queue (default 8)
- *   POLARIS_MONITOR_HEAVY_WORKERS    teamSize for telemetry + systemInfo queues (default 4 each)
+ * The four cadences default to the same `max(8, cpus().length × 2)` floor
+ * because the work is I/O-bound across the board (one or more SNMP / REST
+ * round-trips per job, no heavy CPU). Earlier defaults overprovisioned probe
+ * (16 / N×4) and underprovisioned heavy (4 / N): in practice probe is the
+ * cheapest cadence and finishes fastest, so giving telemetry / systemInfo
+ * the same headroom protects against slow hosts wedging the small heavy pool
+ * without burning extra capacity on a probe cadence that was already idle.
+ *
+ *   POLARIS_MONITOR_PROBE_WORKERS    localConcurrency for probe queue        (default max(8, N×2))
+ *   POLARIS_MONITOR_FAST_WORKERS     localConcurrency for fastFiltered queue (default max(8, N×2))
+ *   POLARIS_MONITOR_HEAVY_WORKERS    localConcurrency for telemetry + systemInfo queues (default max(8, N×2) each)
  */
 function workerSize(envName: string, fallback: number): number {
   return resolveEnvInt(envName, fallback);
@@ -365,9 +373,21 @@ export async function startPgbossWorkers(): Promise<void> {
   // (replaces v11's teamSize × teamConcurrency product). Defaults below are
   // sized for "operator deliberately switched to pg-boss because cursor
   // can't keep up" — small fleets stay on cursor where these don't apply.
-  const probeWorkers = workerSize("POLARIS_MONITOR_PROBE_WORKERS", Math.max(16, cpus().length * 4));
-  const fastWorkers  = workerSize("POLARIS_MONITOR_FAST_WORKERS",  Math.max(8,  cpus().length * 2));
-  const heavyWorkers = workerSize("POLARIS_MONITOR_HEAVY_WORKERS", Math.max(4,  cpus().length));
+  const probeWorkers = workerSize("POLARIS_MONITOR_PROBE_WORKERS", Math.max(8, cpus().length * 2));
+  const fastWorkers  = workerSize("POLARIS_MONITOR_FAST_WORKERS",  Math.max(8, cpus().length * 2));
+  const heavyWorkers = workerSize("POLARIS_MONITOR_HEAVY_WORKERS", Math.max(8, cpus().length * 2));
+  setMonitorWorkers({
+    probe:        probeWorkers,
+    fastFiltered: fastWorkers,
+    telemetry:    heavyWorkers,
+    systemInfo:   heavyWorkers,
+  });
+  logger.info(
+    {
+      probeWorkers, fastWorkers, heavyWorkers, cores: cpus().length,
+    },
+    "pg-boss workers configured",
+  );
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.probe, {
     localConcurrency: probeWorkers, batchSize: 1, pollingIntervalSeconds: 1,

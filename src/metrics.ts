@@ -90,6 +90,13 @@ const monitorQueueModeGauge = new Gauge({
   registers: [registry],
 });
 
+const monitorWorkers = new Gauge({
+  name: "polaris_monitor_workers",
+  help: "Configured worker count by cadence queue. Set once at boot from cpus().length + env-var overrides; static for the life of the process. In pg-boss mode this is each queue's localConcurrency. In cursor mode probe/fastFiltered map to the light-loop concurrency cap and telemetry/systemInfo map to the heavy-loop cap.",
+  labelNames: ["queue"] as const,
+  registers: [registry],
+});
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 export type Cadence = "probe" | "telemetry" | "systemInfo" | "fastFiltered";
@@ -136,6 +143,13 @@ export function setPgbossQueueJobs(queue: string, state: string, count: number):
 
 export function recordQueueMode(mode: string): void {
   monitorQueueModeGauge.set({ mode }, 1);
+}
+
+export function setMonitorWorkers(counts: Record<Cadence, number>): void {
+  monitorWorkers.set({ queue: "probe" },        counts.probe);
+  monitorWorkers.set({ queue: "fastFiltered" }, counts.fastFiltered);
+  monitorWorkers.set({ queue: "telemetry" },    counts.telemetry);
+  monitorWorkers.set({ queue: "systemInfo" },   counts.systemInfo);
 }
 
 export async function renderMetrics(): Promise<{ contentType: string; body: string }> {

@@ -45,7 +45,7 @@ import {
   type MonitorCadence,
 } from "../services/monitoringService.js";
 import { getBootTimeMode, publishMonitorJob } from "../services/queueService.js";
-import { setMonitoredAssets } from "../metrics.js";
+import { setMonitoredAssets, setMonitorWorkers } from "../metrics.js";
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 
@@ -75,6 +75,17 @@ logger.info(
   { probeConcurrency: PROBE_CONCURRENCY, heavyConcurrency: HEAVY_CONCURRENCY, cores: cpus().length },
   "Monitor worker concurrency configured",
 );
+
+// Seed the worker-count gauge with cursor-mode caps. When pg-boss starts up
+// later it overwrites these with its own per-queue localConcurrency values
+// (see startPgbossWorkers); when pg-boss fails to start, the cursor caps
+// remain — which is what the process is actually using in that fallback.
+setMonitorWorkers({
+  probe:        PROBE_CONCURRENCY,
+  fastFiltered: PROBE_CONCURRENCY,
+  telemetry:    HEAVY_CONCURRENCY,
+  systemInfo:   HEAVY_CONCURRENCY,
+});
 
 let runningProbe = false;
 let runningHeavy = false;
