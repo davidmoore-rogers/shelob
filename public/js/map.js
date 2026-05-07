@@ -36,6 +36,7 @@
 
     initMap();
     wireModal();
+    wireRegionEditing();
 
     try {
       await loadSites();
@@ -1379,5 +1380,227 @@
   function displayableUplink(name) {
     if (!name) return "";
     return String(name).toLowerCase() === "fortilink" ? "" : name;
+  }
+
+  // ─── Region editing (admin / networkadmin only) ──────────────────────────
+  // Regions are NOT rendered on the default map view. The "Edit regions"
+  // toolbar button toggles an edit mode that overlays existing regions and
+  // mounts the leaflet-draw control. Saving / renaming / deleting reconciles
+  // tags on the backend; exiting edit mode hides the overlay again.
+  var regionState = {
+    editing: false,
+    layer: null,           // L.featureGroup of L.polygon
+    drawControl: null,
+    polygonsByRegionId: {} // id → L.polygon
+  };
+
+  function wireRegionEditing() {
+    var btn = document.getElementById("map-edit-regions");
+    if (!btn) return;
+    if (typeof canManageNetworks === "function" && !canManageNetworks()) return;
+    btn.hidden = false;
+    btn.addEventListener("click", function () {
+      if (regionState.editing) exitRegionEditMode();
+      else enterRegionEditMode().catch(function (err) {
+        setStatus("Failed to load regions: " + (err && err.message ? err.message : err));
+      });
+    });
+  }
+
+  async function enterRegionEditMode() {
+    if (regionState.editing) return;
+    regionState.editing = true;
+    regionState.polygonsByRegionId = {};
+    regionState.layer = L.featureGroup().addTo(map);
+
+    var regions = [];
+    try {
+      regions = await api.mapRegions.list();
+    } catch (e) {
+      regionState.editing = false;
+      if (regionState.layer) { map.removeLayer(regionState.layer); regionState.layer = null; }
+      throw e;
+    }
+    if (Array.isArray(regions)) {
+      for (var i = 0; i < regions.length; i++) addRegionPolygon(regions[i]);
+    }
+
+    regionState.drawControl = new L.Control.Draw({
+      position: "topright",
+      draw: {
+        polygon: { allowIntersection: false, showArea: false, shapeOptions: { className: "map-region-polygon" } },
+        polyline: false, rectangle: false, circle: false, marker: false, circlemarker: false
+      },
+      edit: { featureGroup: regionState.layer, remove: false } // delete is a polygon-popup action so we can confirm
+    });
+    map.addControl(regionState.drawControl);
+
+    map.on(L.Draw.Event.CREATED, onRegionCreated);
+    map.on(L.Draw.Event.EDITED, onRegionEdited);
+
+    var btn = document.getElementById("map-edit-regions");
+    if (btn) btn.textContent = "Done editing";
+    setStatus("Editing regions: draw a polygon, click an existing region to rename/delete, or click \"Done editing\" to hide.");
+  }
+
+  function exitRegionEditMode() {
+    regionState.editing = false;
+    map.off(L.Draw.Event.CREATED, onRegionCreated);
+    map.off(L.Draw.Event.EDITED, onRegionEdited);
+    if (regionState.drawControl) { map.removeControl(regionState.drawControl); regionState.drawControl = null; }
+    if (regionState.layer) { map.removeLayer(regionState.layer); regionState.layer = null; }
+    regionState.polygonsByRegionId = {};
+    var btn = document.getElementById("map-edit-regions");
+    if (btn) btn.textContent = "Edit regions";
+    setStatus("");
+  }
+
+  function addRegionPolygon(region) {
+    if (!region || !Array.isArray(region.polygon) || region.polygon.length < 3) return;
+    var poly = L.polygon(region.polygon, { className: "map-region-polygon" });
+    poly._polarisRegionId = region.id;
+    poly._polarisRegionName = region.name;
+    poly.bindTooltip(escapeHtml(region.name), { permanent: true, direction: "center", className: "map-region-label" });
+    poly.on("click", function () { openRegionActionsPopup(poly); });
+    regionState.layer.addLayer(poly);
+    regionState.polygonsByRegionId[region.id] = poly;
+  }
+
+  function polygonLatLngsToPairs(poly) {
+    // L.Polygon.getLatLngs() returns nested rings for multi-rings; we only
+    // create simple polygons here, so pull the first ring out.
+    var rings = poly.getLatLngs();
+    var ring = Array.isArray(rings) && rings.length > 0 && Array.isArray(rings[0]) ? rings[0] : rings;
+    var pairs = [];
+    for (var i = 0; i < ring.length; i++) {
+      var ll = ring[i];
+      pairs.push([ll.lat, ll.lng]);
+    }
+    return pairs;
+  }
+
+  async function onRegionCreated(e) {
+    var layer = e.layer;
+    var pairs = polygonLatLngsToPairs(layer);
+    var name = await promptRegionName("Name this region", "");
+    if (!name) return; // cancelled
+    try {
+      var saved = await api.mapRegions.create(name, pairs);
+      // Replace the temporary draw layer with our managed L.polygon so
+      // it picks up the styled className + click handler.
+      addRegionPolygon(saved);
+      setStatus("Region \"" + saved.name + "\" saved.");
+    } catch (err) {
+      window.alert("Failed to save region: " + (err && err.message ? err.message : err));
+    }
+  }
+
+  async function onRegionEdited(e) {
+    var layers = e.layers;
+    if (!layers) return;
+    var edits = [];
+    layers.eachLayer(function (layer) {
+      if (!layer._polarisRegionId) return;
+      edits.push({ id: layer._polarisRegionId, polygon: polygonLatLngsToPairs(layer) });
+    });
+    for (var i = 0; i < edits.length; i++) {
+      try {
+        await api.mapRegions.update(edits[i].id, { polygon: edits[i].polygon });
+      } catch (err) {
+        window.alert("Failed to update region: " + (err && err.message ? err.message : err));
+      }
+    }
+    if (edits.length > 0) setStatus(edits.length + " region" + (edits.length === 1 ? "" : "s") + " updated.");
+  }
+
+  function openRegionActionsPopup(poly) {
+    if (!regionState.editing) return;
+    var id = poly._polarisRegionId;
+    var name = poly._polarisRegionName || "";
+    var html =
+      '<div style="display:flex;flex-direction:column;gap:6px;min-width:180px">' +
+        '<div style="font-weight:600">' + escapeHtml(name) + '</div>' +
+        '<button type="button" class="btn btn-secondary" data-region-rename="' + escapeHtml(id) + '">Rename</button>' +
+        '<button type="button" class="btn btn-danger" data-region-delete="' + escapeHtml(id) + '">Delete</button>' +
+      '</div>';
+    var popup = L.popup({ closeButton: true, autoClose: true }).setLatLng(poly.getBounds().getCenter()).setContent(html).openOn(map);
+    setTimeout(function () {
+      var renameBtn = document.querySelector('[data-region-rename="' + id + '"]');
+      var deleteBtn = document.querySelector('[data-region-delete="' + id + '"]');
+      if (renameBtn) renameBtn.addEventListener("click", function () { map.closePopup(popup); renameRegion(id, name); });
+      if (deleteBtn) deleteBtn.addEventListener("click", function () { map.closePopup(popup); deleteRegion(id, name); });
+    }, 0);
+  }
+
+  async function renameRegion(id, currentName) {
+    var next = await promptRegionName("Rename region", currentName);
+    if (!next || next === currentName) return;
+    try {
+      var updated = await api.mapRegions.update(id, { name: next });
+      var poly = regionState.polygonsByRegionId[id];
+      if (poly) {
+        poly._polarisRegionName = updated.name;
+        if (poly.getTooltip()) poly.setTooltipContent(escapeHtml(updated.name));
+      }
+      setStatus("Region renamed to \"" + updated.name + "\".");
+    } catch (err) {
+      window.alert("Failed to rename region: " + (err && err.message ? err.message : err));
+    }
+  }
+
+  async function deleteRegion(id, name) {
+    var ok = window.confirm('Delete region "' + name + '"? The "region:' + name + '" tag will be removed from every asset that carries it.');
+    if (!ok) return;
+    try {
+      await api.mapRegions.delete(id);
+      var poly = regionState.polygonsByRegionId[id];
+      if (poly && regionState.layer) regionState.layer.removeLayer(poly);
+      delete regionState.polygonsByRegionId[id];
+      setStatus("Region \"" + name + "\" deleted.");
+    } catch (err) {
+      window.alert("Failed to delete region: " + (err && err.message ? err.message : err));
+    }
+  }
+
+  // Reuses the project's openModal helper from app.js. Resolves to the trimmed
+  // name or null if the operator cancels.
+  function promptRegionName(title, initial) {
+    return new Promise(function (resolve) {
+      var bodyHtml =
+        '<label style="display:block;margin-bottom:6px;font-size:0.9rem">Region name</label>' +
+        '<input type="text" id="region-name-input" maxlength="64" value="' + escapeHtml(initial || "") + '" ' +
+          'style="width:100%;padding:6px 8px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-bg-secondary);color:var(--color-text-primary)">' +
+        '<p style="margin-top:8px;font-size:0.8rem;color:var(--color-text-tertiary)">Saved as the tag <code>region:&lt;name&gt;</code>.</p>';
+      var footer =
+        '<button type="button" class="btn btn-secondary" id="region-cancel">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="region-save">Save</button>';
+      var resolved = false;
+      function finish(value) {
+        if (resolved) return;
+        resolved = true;
+        if (typeof closeModal === "function") closeModal();
+        resolve(value);
+      }
+      if (typeof openModal !== "function") {
+        var v = window.prompt(title + ":", initial || "");
+        return resolve(v && v.trim() ? v.trim() : null);
+      }
+      openModal(title, bodyHtml, footer);
+      setTimeout(function () {
+        var input = document.getElementById("region-name-input");
+        if (input) { input.focus(); input.select(); }
+        var cancel = document.getElementById("region-cancel");
+        var save = document.getElementById("region-save");
+        if (cancel) cancel.addEventListener("click", function () { finish(null); });
+        if (save) save.addEventListener("click", function () {
+          var v = input ? input.value.trim() : "";
+          finish(v || null);
+        });
+        if (input) input.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter") { ev.preventDefault(); var v = input.value.trim(); finish(v || null); }
+          if (ev.key === "Escape") { ev.preventDefault(); finish(null); }
+        });
+      }, 0);
+    });
   }
 })();

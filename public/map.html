@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/css/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/css/vendor/leaflet/MarkerCluster.css">
   <link rel="stylesheet" href="/css/vendor/leaflet/MarkerCluster.Default.css">
+  <link rel="stylesheet" href="/css/vendor/leaflet/leaflet.draw.css">
   <link rel="stylesheet" href="/css/map.css">
 </head>
 <body>
@@ -23,6 +24,7 @@
 
       <div class="map-toolbar">
         <button type="button" id="map-theme-toggle" class="btn-icon map-theme-toggle" aria-label="Toggle map theme" title="Toggle map theme (saved per user)" style="line-height:0"></button>
+        <button type="button" id="map-edit-regions" class="btn btn-secondary" hidden>Edit regions</button>
         <div id="map-status" class="map-status"></div>
       </div>
 
@@ -89,6 +91,7 @@
 
   <script src="/js/vendor/leaflet/leaflet.js"></script>
   <script src="/js/vendor/leaflet/leaflet.markercluster.js"></script>
+  <script src="/js/vendor/leaflet/leaflet.draw.js"></script>
   <script src="/js/vendor/cytoscape.min.js"></script>
   <script src="/js/vendor/dagre.min.js"></script>
   <script src="/js/vendor/cytoscape-dagre.js"></script>

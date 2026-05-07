@@ -17,6 +17,7 @@ import serverSettingsRouter from "./routes/serverSettings.js";
 import deviceIconsRouter from "./routes/deviceIcons.js";
 import searchRouter from "./routes/search.js";
 import mapRouter from "./routes/map.js";
+import mapRegionsRouter from "./routes/mapRegions.js";
 import allocationTemplatesRouter from "./routes/allocationTemplates.js";
 import credentialsRouter from "./routes/credentials.js";
 import manufacturerAliasesRouter from "./routes/manufacturerAliases.js";
@@ -56,6 +57,10 @@ router.use("/integrations", requireNetworkAdmin, integrationsRouter);
 router.use("/assets", assetsRouter);
 router.use("/events", eventsRouter);
 router.use("/search", searchRouter);
+// Region routes are mounted BEFORE /map so Express's first-match routing picks
+// the more-specific path. Region CRUD requires admin/networkadmin (drawing
+// regions); the rest of /map is read-only and open to any authenticated user.
+router.use("/map/regions", requireNetworkAdmin, mapRegionsRouter);
 router.use("/map", mapRouter);
 router.use("/conflicts", conflictsRouter);
 router.use("/credentials", credentialsRouter);

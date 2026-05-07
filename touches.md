@@ -250,6 +250,34 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ---
 
+## cross-cutting/asset-tag-mutators
+
+**What it is:** Anything in the codebase that writes `Asset.tags`. The `tags: String[]` column is used by humans (assets-page filtering, search) AND by features that "stamp" managed tags (e.g. `region:<name>` from map regions). Two writer classes coexist: **operator-driven** (asset edit modal, bulk-edit) and **system-driven** (auto-tagging features). The latter must be careful not to step on operator-set values.
+
+**Operator writers:**
+- `src/api/routes/assets.ts:PUT /assets/:id` — primary edit path; accepts `tags: string[]` and writes it as-is.
+- `src/api/routes/assets.ts:POST /assets/:id/sources/:sourceId/split` — clones tag set when splitting an asset.
+- `public/js/assets.js` bulk-edit modal — calls `PUT /assets/:id` per row with "Add" / "Replace" semantics.
+
+**System writers (managed namespaces):**
+- `src/services/mapRegionService.ts` — owns the `region:` prefix. Adds `region:<name>` to in-polygon firewalls + cascaded FortiSwitches/FortiAPs; only strips on rename/delete (never on polygon edit). Sees its own tags via the prefix; never touches operator-set tags. Mirrored to the `Tag` registry under category "Map Regions".
+- Discovery breadcrumb tags — `src/api/routes/integrations.ts` legacy paths still write `entra-disabled`, `ad-disabled`, `prev-*` markers. Some of these (sid:, ad-guid:) are being retired by the multi-source asset model.
+
+**Tag registry mirror (`prisma.tag` rows):**
+- Manual tag pickers (assets edit modal) read from the registry to populate dropdowns. System-managed tags should also appear here so operators can search/filter for them — `mapRegionService` is the canonical example (upserts on create, rotates on rename, deletes on delete).
+
+**Invariants:**
+- A managed tag prefix must be **owned** by exactly one writer. Don't add a second feature that writes `region:*` — pick a different prefix.
+- System writers must be additive in the steady state. Stripping a tag because "the asset doesn't fall in the polygon any more" is a footgun unless the operator explicitly requested that semantic (rename/delete, not polygon edit).
+- Manual operator attachments to system-managed tags (e.g. an endpoint server hand-tagged `region:Atlanta`) must survive periodic reconcilers.
+
+**When changing this:**
+- New auto-tagging feature? Pick a prefix, document it here, mirror to the `Tag` registry, and follow the additive-reconciler pattern from `mapRegionService`.
+- Removing a managed prefix? Audit existing rows for stale tags before retiring the writer.
+- Changing the `Asset.tags` column type or moving tags to a side table? Every writer in this section needs to migrate — the `String[]` shape is load-bearing.
+
+---
+
 ## cross-cutting/dependency-aware-monitoring-suppression
 
 **What it is:** AssetDependencyParent edges + Asset.dependencyLayer + Asset.dependencySuppressed coupled to the response-time five-state machine. Parent (FortiGate / upstream switch) confirmed-down → all transitive descendants pause heavy cadences and slow probe to 2× interval; recovery resumes within one base-cadence tick. "All-down" multi-parent semantics — a switch with redundant uplinks suppresses only when every effective parent is down or itself suppressed.
@@ -345,6 +373,33 @@ Listed alphabetically.
 - Verify saveTemplate's name-collision detection (idempotent update vs new insert)
 - Check prefix length validation matches subnetService expectations
 - Test that VLAN validation in allocationTemplateService is consistent with route schema
+
+---
+
+## services/mapRegionService.ts
+
+**What it owns:** Operator-drawn map regions (polygons on the Device Map). CRUD on Setting JSON blob keyed `mapRegions`. Tag-mutation primitives that add `region:<name>` to in-polygon firewalls + cascaded FortiSwitches/FortiAPs and strip it on rename/delete. Tag-registry mirroring (upserts a `Tag` row at `region:<name>` under category "Map Regions" so the asset edit modal's tag picker shows it).
+
+**Public API:** MapRegion, SaveRegionInput, ReconcileSummary, listRegions, getRegion, createRegion, updateRegion, deleteRegion, applyRename, applyDelete, applyOneRegion, reconcileMapRegions.
+
+**Cross-service deps:** `src/utils/geo.ts:pointInPolygon`, `prisma.tag` (registry mirror), `prisma.asset` (membership compute + tag mutations).
+
+**Used by:**
+- `src/api/routes/mapRegions.ts` — all CRUD endpoints (`GET / POST / PUT / DELETE /map/regions`); each call awaits the appropriate apply* helper before responding.
+- `src/api/routes/integrations.ts` Phase 13 — end-of-syncDhcpSubnets (`mode in {"full", "finalize"}`) calls `reconcileMapRegions()` so newly-discovered firewalls' coords land in the right regions.
+- `src/jobs/reconcileMapRegions.ts` — 6h periodic safety net.
+
+**Invariants:**
+- Region name unique case-insensitively, 1..64 chars, no control characters.
+- Polygon ≥3 vertices and ≤1000; lat in [-90,90]; lng in [-180,180]; finite numbers only.
+- Reconciler is **add-only**: only the rename + delete CRUD paths strip a region tag. Manual operator attachments to out-of-polygon assets persist across runs.
+- Manually removing a region tag from an in-polygon asset will be re-added on the next reconcile (polygon membership is authoritative in the additive direction).
+- Tag-registry rows under category "Map Regions" stay in 1:1 correspondence with region names (create upserts; rename rotates; delete removes).
+
+**When changing this:**
+- If the tag prefix or category constants change, also update CLAUDE.md "Map Regions" section + the assets edit modal's tag picker label conventions.
+- Membership logic depends on `Asset.fortinetTopology.controllerFortigate` matching firewall hostnames; if discovery ever stops setting that field, the cascade silently breaks. Add a coverage test if discovery topology shape evolves.
+- Polygon antimeridian crossings are documented out-of-scope; if Polaris ever supports global polygons, audit `pointInPolygon` for that case.
 
 ---
 
@@ -550,6 +605,35 @@ Listed alphabetically.
 - Check connection-pool peak doesn't reset unexpectedly (module-local state should survive across route calls).
 - Confirm Event emission only fires once per severity change (no duplicate "red" events on each tick).
 - Test fallback PG data directory candidates on RHEL/Windows when `SHOW data_directory` fails (non-superuser app role).
+
+---
+
+## services/connectionPathService.ts
+
+**What it owns:** `resolveConnectionPath(assetId)` — endpoint → switch → … → FortiGate connection-path resolver. Walks the upward dependency chain so the Device Map topology overlay can dim everything off-path.
+
+**Public API:** `resolveConnectionPath`, plus the `ConnectionPath` / `ConnectionPathHop` / `ConnectionHopKind` types.
+
+**Cross-service deps:** Reads `Asset` rows directly + `AssetDependencyParent` (the same source-of-truth `dependencyTreeService` writes). Falls back to `Asset.fortinetTopology` when the dependency tree is empty.
+
+**Used by:** `src/api/routes/assets.ts — GET /api/v1/assets/:id/connection-path`. Total 1 call site today.
+
+**Invariants:**
+- Firewall start short-circuits: `hops = [self]`, `siteId = self.id`, `alternateUplinks = 0`.
+- Switch / AP start: walk begins at self.
+- Endpoint start (workstation / server / printer / other): parse `Asset.lastSeenSwitch = "<switchId>/<port>"`; resolve the switch by hostname OR serialNumber under `assetType="switch"`.
+- Upward walk reads `AssetDependencyParent` rows; `source="override"` set takes precedence over `source="computed"` per the existing dependency convention. Empty override set is NOT modeled here — the resolver just sees zero parents and falls through to fortinetTopology.
+- MCLAG / dual-homed parents pick the one with `monitorStatus="up"` AND most-recent `lastMonitorAt`; remaining parent count is summed across hops into `alternateUplinks`.
+- Fallback to `fortinetTopology.controllerFortigate` (switch → firewall) and `.parentSwitch` (AP → switch) only when `AssetDependencyParent` returns zero rows for the cursor — covers fresh installs before `backfillDependencyTree` runs and freshly-discovered switches awaiting recompute.
+- Cycle / pathological-data guard: walk cap of 16 hops + a `seen` set so a self-referential override row can't infinite-loop the resolver.
+- `endpointPort` lives only on the first switch hop after an endpoint (parsed from `lastSeenSwitch`); `uplinkInterface` lives on every switch / AP hop (from `fortinetTopology.uplinkInterface`).
+
+**When changing this:**
+- If MCLAG parent-preference rules change, update both the sort and the `alternateUplinks` accumulation in lock-step.
+- If `lastSeenSwitch` format ever shifts beyond `"<switchId>/<port>"`, update `parseLastSeenSwitch`. Discovery writes both `hostname` and `serialNumber` forms today; both are matched by `findSwitchByName`.
+- Keep the fortinetTopology fallback rules aligned with how FMG / FortiGate discovery stamps these fields — see fortimanagerService.ts FortiSwitch / FortiAP write paths.
+- Don't include `dependencyLayer` in hops — the resolver runs even when the layer is null (e.g. fresh switches between recomputes), and the consumer doesn't need it.
+- AssetDependencyParent does NOT contain endpoint rows by design (the dependency tree is infra-scoped); changing that would require coordinating with `dependencyTreeService.recomputeDependencyTree`.
 
 ---
 

@@ -28,6 +28,7 @@ Per-pattern sections:
 - [Sortable + filterable data table](#sortable--filterable-data-table)
 - [Per-instance single-consumer serial worker](#per-instance-single-consumer-serial-worker)
 - [Cross-asset graph derivation + persisted DAG](#cross-asset-graph-derivation--persisted-dag)
+- [Setting-backed admin CRUD with periodic + on-demand reconciler](#setting-backed-admin-crud-with-periodic--on-demand-reconciler)
 
 ---
 
@@ -194,3 +195,29 @@ Per-pattern sections:
 - Pick the "in-scope" axis for incremental recompute (here: `discoveredByIntegrationId`). The full graph load is cheap; the per-scope writeback is what matters for keeping cycles isolated to the active integration's writes.
 - Pure helpers go in the service file with explicit `export`. DB-bound wrappers stay in the same file but mark them clearly with a comment header so test contributors know which functions to mock vs which to call directly.
 - Add a touches.md cross-cutting section on day one — runtime callers and UI surfaces will discover the DAG quickly and reach for it; the index keeps the writers/readers visible.
+
+---
+
+## Setting-backed admin CRUD with periodic + on-demand reconciler
+
+**What it is:** A small, admin-managed collection of configuration objects (allocation templates, map regions, …) persisted as a JSON blob in the `Setting` table, with a CRUD API and an optional reconciler that propagates each object's effects through the rest of the system. The reconciler runs inline on every CRUD edit (so operators see immediate effect) AND on a periodic safety-net job (so anything the inline path missed gets caught — restart mid-edit, external state drift, etc.).
+
+**Canonical implementations (parallel):**
+- **No reconciler** (storage-only): `allocationTemplateService` in [src/services/allocationTemplateService.ts](src/services/allocationTemplateService.ts) + [src/api/routes/allocationTemplates.ts](src/api/routes/allocationTemplates.ts).
+- **With reconciler** (storage + side effects on other entities): `mapRegionService` in [src/services/mapRegionService.ts](src/services/mapRegionService.ts) + [src/api/routes/mapRegions.ts](src/api/routes/mapRegions.ts) + [src/jobs/reconcileMapRegions.ts](src/jobs/reconcileMapRegions.ts).
+
+**Key conventions:**
+- **Storage shape.** Single `Setting` row keyed on a stable string (`"networkAllocationTemplates"`, `"mapRegions"`); the `value` JSON is an array of records each carrying its own UUID id (don't store as an object map keyed by id — operators reorder, services iterate, an array preserves intent). Helpers `loadAll()` / `persistAll()` go through `prisma.setting.upsert`.
+- **Validation lives in the service, not the route.** Route uses a Zod schema for shape + obvious bounds; service re-validates and throws `AppError(400 | 404 | 409)` for semantic rules (uniqueness, cross-record consistency). The service is the source of truth so non-route callers (jobs, other services) get the same protection.
+- **Uniqueness on user-visible names is case-insensitive.** Block renames onto another record's name with a 409. Don't rely on Postgres uniqueness — the Setting JSON has none.
+- **Reconciler is additive when possible.** Inline reconciler runs after every create/update/delete (await before responding so the operator sees consistent state on the next page load). Periodic job calls the same reconciler add-only; explicit cleanup (rename, delete) is owned by the route handler so the periodic tick has nothing stale to clean up. See `mapRegionService` for the full pattern: rename = strip-old + add-new, delete = strip, periodic = add-only.
+- **Audit trail.** Each CRUD route writes a `<resource>.<verb>` Event via `logEvent()` (`region.created` / `region.updated` / `region.deleted`); the reconciler writes a separate `<resource>.tags_reconciled`-style event when something actually changed (don't spam events on no-op cycles). Inline reconcile events are children of the CRUD event; periodic ones stand alone.
+- **Auth gate.** `requireNetworkAdmin` (or `requireAdmin` for a more sensitive surface) at the route mount — pick the gate that matches the audience that should be able to see + edit. If the surface only renders while editing (e.g. map regions), gate read access too so non-editors never need the data.
+- **Tag registry mirror (when applicable).** If the reconciled effect is "stamp a tag onto assets," upsert a corresponding `Tag` registry row on create, rotate it on rename, delete it on delete. Operators expect managed tags to appear in the same picker as manual tags.
+
+**When adding a new instance:**
+- Pick a unique `Setting` key. Document it in CLAUDE.md's Setting "Notable keys" list.
+- Mirror the public service API to `allocationTemplateService` (storage-only) or `mapRegionService` (with reconciler) — pick the closer one and copy its shape verbatim.
+- Service-level uniqueness validation must run before persistence. Tests cover the create-create / update-rename collision.
+- If you have a reconciler: provide three entry points — `applyOne(record)` (used inline by create / polygon-only update), `applyRename(record, previousName)` (rename branch), `applyDelete(record)` (delete branch), and `reconcileAll()` (periodic + discovery hook). Periodic job uses the additive `reconcileAll()`; never call the rename/delete helpers from there (those are CRUD-only).
+- Add a touches.md `services/<feature>.ts` section for the service AND a cross-cutting section if your reconciler writes to a shared namespace (e.g. asset tags). The index keeps the additive vs authoritative writer split visible.

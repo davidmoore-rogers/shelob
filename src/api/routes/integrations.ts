@@ -24,6 +24,7 @@ import { recordSample, getBaselines, type Baseline } from "../../services/discov
 import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
 import { recomputeDependencyTree } from "../../services/dependencyTreeService.js";
+import { reconcileMapRegions } from "../../services/mapRegionService.js";
 import * as sightings from "../../services/assetSightingService.js";
 import { quarantineAsset, verifyAssetQuarantine } from "../../services/assetQuarantineService.js";
 import {
@@ -3943,6 +3944,20 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       }
     } catch (err: any) {
       syncLog("error", `Dependency tree recompute failed: ${err?.message || "Unknown error"}`);
+    }
+
+    // Phase 13 — Reconcile map-region tags. Add-only pass: any firewall
+    // whose lat/lng now falls inside an operator-drawn region (or any
+    // FortiSwitch / FortiAP whose controllerFortigate matches one) gets
+    // its `region:<name>` tag stamped. Best-effort, gated to
+    // mode in {full, finalize} mirroring Phase 12.
+    try {
+      const summary = await reconcileMapRegions();
+      if (summary.added > 0) {
+        syncLog("info", `Map region tags: +${summary.added} on ${summary.assetsTouched} asset(s)`);
+      }
+    } catch (err: any) {
+      syncLog("error", `Map region reconcile failed: ${err?.message || "Unknown error"}`);
     }
   }
 

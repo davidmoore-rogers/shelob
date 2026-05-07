@@ -1,0 +1,371 @@
+/**
+ * src/services/mapRegionService.ts
+ *
+ * Map regions — operator-drawn polygons on the Device Map. Each region has a
+ * unique name; firewalls whose lat/lng falls inside the polygon (and the
+ * FortiSwitches / FortiAPs whose `fortinetTopology.controllerFortigate` matches
+ * that firewall's hostname) carry a `region:<name>` tag.
+ *
+ * Storage: single JSON blob in Setting under SETTING_KEY (mirrors the
+ * allocationTemplateService pattern).
+ *
+ * Reconciler is **additive**: it adds region tags to in-polygon assets and
+ * only strips a tag when the region is renamed or deleted. Manual operator
+ * attachments (e.g. an endpoint server hand-tagged with `region:Atlanta`)
+ * survive across runs. Manually *removing* a region tag from an in-polygon
+ * asset will be re-added on the next reconcile — that direction is
+ * authoritative by design so polygon membership always implies the tag.
+ */
+
+import { randomUUID } from "node:crypto";
+import { prisma } from "../db.js";
+import { AppError } from "../utils/errors.js";
+import { logger } from "../utils/logger.js";
+import { pointInPolygon, type LatLng } from "../utils/geo.js";
+
+const SETTING_KEY = "mapRegions";
+const TAG_PREFIX = "region:";
+const TAG_CATEGORY = "Map Regions";
+const TAG_DEFAULT_COLOR = "#4fc3f7";
+
+export interface MapRegion {
+  id: string;
+  name: string;
+  /** [[lat, lng], ...]; >=3 points, <=1000 vertices */
+  polygon: LatLng[];
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SaveRegionInput {
+  id?: string;
+  name?: string;
+  polygon?: LatLng[];
+  actor?: string | null;
+}
+
+export interface ReconcileSummary extends Record<string, unknown> {
+  regionId?: string;
+  added: number;
+  removed: number;
+  assetsTouched: number;
+}
+
+// --- Persistence helpers ---
+
+async function loadAll(): Promise<MapRegion[]> {
+  const row = await prisma.setting.findUnique({ where: { key: SETTING_KEY } });
+  if (!row?.value) return [];
+  const val = row.value as unknown;
+  if (!Array.isArray(val)) return [];
+  return val as MapRegion[];
+}
+
+async function persistAll(regions: MapRegion[]): Promise<void> {
+  await prisma.setting.upsert({
+    where: { key: SETTING_KEY },
+    update: { value: regions as any },
+    create: { key: SETTING_KEY, value: regions as any },
+  });
+}
+
+// --- Validation ---
+
+const MAX_VERTICES = 1000;
+const MAX_NAME = 64;
+const CONTROL_CHARS = /\p{Cc}/u;
+
+function validateName(name: unknown): string {
+  if (typeof name !== "string") throw new AppError(400, "Region name is required");
+  const trimmed = name.trim();
+  if (trimmed.length === 0) throw new AppError(400, "Region name is required");
+  if (trimmed.length > MAX_NAME) {
+    throw new AppError(400, `Region name must be ${MAX_NAME} characters or fewer`);
+  }
+  if (CONTROL_CHARS.test(trimmed)) {
+    throw new AppError(400, "Region name cannot contain control characters");
+  }
+  return trimmed;
+}
+
+function validatePolygon(polygon: unknown): LatLng[] {
+  if (!Array.isArray(polygon)) {
+    throw new AppError(400, "Polygon must be an array of [lat, lng] pairs");
+  }
+  if (polygon.length < 3) throw new AppError(400, "Polygon must have at least 3 vertices");
+  if (polygon.length > MAX_VERTICES) {
+    throw new AppError(400, `Polygon cannot have more than ${MAX_VERTICES} vertices`);
+  }
+  const cleaned: LatLng[] = [];
+  for (const pt of polygon) {
+    if (!Array.isArray(pt) || pt.length !== 2) {
+      throw new AppError(400, "Each polygon vertex must be a [lat, lng] pair");
+    }
+    const lat = Number(pt[0]);
+    const lng = Number(pt[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new AppError(400, "Polygon vertex coordinates must be finite numbers");
+    }
+    if (lat < -90 || lat > 90) throw new AppError(400, "Latitude must be between -90 and 90");
+    if (lng < -180 || lng > 180) throw new AppError(400, "Longitude must be between -180 and 180");
+    cleaned.push([lat, lng]);
+  }
+  return cleaned;
+}
+
+// --- Tag helpers ---
+
+function regionTag(name: string): string {
+  return `${TAG_PREFIX}${name}`;
+}
+
+async function upsertTagRegistry(name: string): Promise<void> {
+  const tagName = regionTag(name);
+  try {
+    await prisma.tag.upsert({
+      where: { name: tagName },
+      update: {},
+      create: { name: tagName, category: TAG_CATEGORY, color: TAG_DEFAULT_COLOR },
+    });
+  } catch (err: any) {
+    logger.debug({ err: err?.message ?? String(err), tag: tagName }, "mapRegion: tag upsert failed (non-fatal)");
+  }
+}
+
+async function deleteTagRegistry(name: string): Promise<void> {
+  const tagName = regionTag(name);
+  try {
+    await prisma.tag.deleteMany({ where: { name: tagName } });
+  } catch (err: any) {
+    logger.debug({ err: err?.message ?? String(err), tag: tagName }, "mapRegion: tag delete failed (non-fatal)");
+  }
+}
+
+// --- Membership computation ---
+
+interface TopologyMeta {
+  role?: "fortigate" | "fortiswitch" | "fortiap";
+  controllerFortigate?: string | null;
+}
+
+function readTopology(raw: unknown): TopologyMeta {
+  if (raw && typeof raw === "object") return raw as TopologyMeta;
+  return {};
+}
+
+/**
+ * Compute the set of asset IDs that should currently carry the given region's
+ * tag: every firewall whose pin is inside the polygon, plus every FortiSwitch
+ * / FortiAP whose `fortinetTopology.controllerFortigate` matches one of those
+ * firewalls' `hostname`.
+ */
+async function computeMembership(region: MapRegion): Promise<Set<string>> {
+  const firewalls = await prisma.asset.findMany({
+    where: {
+      assetType: "firewall",
+      latitude: { not: null },
+      longitude: { not: null },
+    },
+    select: { id: true, hostname: true, latitude: true, longitude: true },
+  });
+
+  const enclosedFirewalls: { id: string; hostname: string | null }[] = [];
+  for (const fw of firewalls) {
+    const lat = fw.latitude as unknown as number | null;
+    const lng = fw.longitude as unknown as number | null;
+    if (lat == null || lng == null) continue;
+    if (pointInPolygon([lat, lng], region.polygon)) {
+      enclosedFirewalls.push({ id: fw.id, hostname: fw.hostname });
+    }
+  }
+
+  const memberIds = new Set<string>(enclosedFirewalls.map((f) => f.id));
+  const enclosedHostnames = new Set<string>(
+    enclosedFirewalls.map((f) => (f.hostname || "").trim()).filter((h) => h.length > 0),
+  );
+  if (enclosedHostnames.size === 0) return memberIds;
+
+  const infra = await prisma.asset.findMany({
+    where: {
+      assetType: { in: ["switch", "access_point"] },
+    },
+    select: { id: true, fortinetTopology: true },
+  });
+  for (const a of infra) {
+    const topo = readTopology(a.fortinetTopology);
+    const ctrl = (topo.controllerFortigate || "").trim();
+    if (ctrl && enclosedHostnames.has(ctrl)) memberIds.add(a.id);
+  }
+  return memberIds;
+}
+
+// --- Tag mutation primitives ---
+
+async function addTagToAssets(assetIds: string[], tag: string): Promise<number> {
+  if (assetIds.length === 0) return 0;
+  const rows = await prisma.asset.findMany({
+    where: { id: { in: assetIds } },
+    select: { id: true, tags: true },
+  });
+  let added = 0;
+  for (const row of rows) {
+    const tags = Array.isArray(row.tags) ? row.tags : [];
+    if (tags.includes(tag)) continue;
+    await prisma.asset.update({ where: { id: row.id }, data: { tags: [...tags, tag] } });
+    added++;
+  }
+  return added;
+}
+
+async function removeTagFromAllAssets(tag: string): Promise<number> {
+  const rows = await prisma.asset.findMany({
+    where: { tags: { has: tag } },
+    select: { id: true, tags: true },
+  });
+  for (const row of rows) {
+    const tags = Array.isArray(row.tags) ? row.tags : [];
+    await prisma.asset.update({
+      where: { id: row.id },
+      data: { tags: tags.filter((t) => t !== tag) },
+    });
+  }
+  return rows.length;
+}
+
+// --- Public API ---
+
+export async function listRegions(): Promise<MapRegion[]> {
+  const all = await loadAll();
+  return all.slice().sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getRegion(id: string): Promise<MapRegion | null> {
+  const all = await loadAll();
+  return all.find((r) => r.id === id) ?? null;
+}
+
+export async function createRegion(input: SaveRegionInput): Promise<MapRegion> {
+  const name = validateName(input.name);
+  const polygon = validatePolygon(input.polygon);
+  const all = await loadAll();
+  if (all.some((r) => r.name.toLowerCase() === name.toLowerCase())) {
+    throw new AppError(409, `A region named "${name}" already exists`);
+  }
+  const now = new Date().toISOString();
+  const created: MapRegion = {
+    id: randomUUID(),
+    name,
+    polygon,
+    createdBy: input.actor ?? null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  all.push(created);
+  await persistAll(all);
+  await upsertTagRegistry(name);
+  return created;
+}
+
+export async function updateRegion(
+  id: string,
+  input: SaveRegionInput,
+): Promise<{ region: MapRegion; previousName: string; renamed: boolean; polygonChanged: boolean }> {
+  const all = await loadAll();
+  const idx = all.findIndex((r) => r.id === id);
+  if (idx === -1) throw new AppError(404, `Region ${id} not found`);
+  const existing = all[idx]!;
+
+  const name = input.name !== undefined ? validateName(input.name) : existing.name;
+  const polygon = input.polygon !== undefined ? validatePolygon(input.polygon) : existing.polygon;
+
+  const renamed = name.toLowerCase() !== existing.name.toLowerCase();
+  if (renamed && all.some((r, i) => i !== idx && r.name.toLowerCase() === name.toLowerCase())) {
+    throw new AppError(409, `A region named "${name}" already exists`);
+  }
+
+  const polygonChanged =
+    input.polygon !== undefined && JSON.stringify(polygon) !== JSON.stringify(existing.polygon);
+
+  const updated: MapRegion = {
+    ...existing,
+    name,
+    polygon,
+    updatedAt: new Date().toISOString(),
+  };
+  all[idx] = updated;
+  await persistAll(all);
+
+  if (renamed) {
+    await deleteTagRegistry(existing.name);
+    await upsertTagRegistry(name);
+  }
+
+  return { region: updated, previousName: existing.name, renamed, polygonChanged };
+}
+
+export async function deleteRegion(id: string): Promise<MapRegion> {
+  const all = await loadAll();
+  const idx = all.findIndex((r) => r.id === id);
+  if (idx === -1) throw new AppError(404, `Region ${id} not found`);
+  const removed = all[idx]!;
+  const next = all.slice(0, idx).concat(all.slice(idx + 1));
+  await persistAll(next);
+  await deleteTagRegistry(removed.name);
+  return removed;
+}
+
+// --- Reconciler ---
+
+/**
+ * Strip the old name's tag from every asset, then add-pass current membership.
+ * Called inline from the rename branch of updateRegion (after persist).
+ */
+export async function applyRename(
+  region: MapRegion,
+  previousName: string,
+): Promise<ReconcileSummary> {
+  const removed = await removeTagFromAllAssets(regionTag(previousName));
+  const members = await computeMembership(region);
+  const added = await addTagToAssets(Array.from(members), regionTag(region.name));
+  return { regionId: region.id, added, removed, assetsTouched: removed + added };
+}
+
+/**
+ * Strip the region's tag from every asset. Called from the DELETE path before
+ * the final reconcile (which then doesn't need to add anything for this id).
+ */
+export async function applyDelete(region: MapRegion): Promise<ReconcileSummary> {
+  const removed = await removeTagFromAllAssets(regionTag(region.name));
+  return { regionId: region.id, added: 0, removed, assetsTouched: removed };
+}
+
+/**
+ * Add-pass for one region: tag its current members, never strip. Used after
+ * create and after polygon-only edits.
+ */
+export async function applyOneRegion(region: MapRegion): Promise<ReconcileSummary> {
+  const members = await computeMembership(region);
+  const added = await addTagToAssets(Array.from(members), regionTag(region.name));
+  return { regionId: region.id, added, removed: 0, assetsTouched: added };
+}
+
+/**
+ * Full reconcile pass over every region. Add-only — does NOT strip tags from
+ * assets that have drifted out of the polygon (those become operator-owned).
+ * Renames and deletes are handled by their dedicated CRUD paths, so by the
+ * time this runs there are no stale region tags to clean up.
+ *
+ * Used by the periodic job and by the discovery-end hook.
+ */
+export async function reconcileMapRegions(): Promise<ReconcileSummary> {
+  const regions = await listRegions();
+  let added = 0;
+  let touched = 0;
+  for (const region of regions) {
+    const summary = await applyOneRegion(region);
+    added += summary.added;
+    touched += summary.assetsTouched;
+  }
+  return { added, removed: 0, assetsTouched: touched };
+}

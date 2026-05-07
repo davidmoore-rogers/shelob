@@ -508,6 +508,12 @@ const api = {
     topology: (id)      => request("GET", `/map/sites/${id}/topology`),
     topologySearch: (id, q) => request("GET", `/map/sites/${id}/topology/search?q=${encodeURIComponent(q)}`),
   },
+  mapRegions: {
+    list:   ()              => request("GET",    "/map/regions"),
+    create: (name, polygon) => request("POST",   "/map/regions", { name, polygon }),
+    update: (id, body)      => request("PUT",    `/map/regions/${id}`, body),
+    delete: (id)            => request("DELETE", `/map/regions/${id}`),
+  },
   auth: {
     me: () => request("GET", "/auth/me"),
     azureConfig: () => request("GET", "/auth/azure/config"),
