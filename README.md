@@ -37,6 +37,8 @@ A Leaflet basemap pinned with every FortiGate that has geo coordinates configure
 
 The graph stitches edges from three independent signals: controller-derived FortiLink/AP→switch edges (authoritative from the FortiGate's own state), inferred edges from FortiOS interface naming conventions for FortiLink-aggregate and operator-named MCLAG pairs (so peer links the controller hierarchy doesn't model still render), and dashed orange LLDP edges for everything else. Cross-site Polaris assets matched via LLDP appear as solid-blue-bordered remote-asset nodes that pivot to the asset details page; LLDP neighbors that don't resolve to a Polaris asset appear as dashed-bordered ghost nodes. Operators can upload custom **device icons** (PNG / JPEG / WebP, 256 KB cap, manufacturer or manufacturer+model scoped) that override the generic node shapes per asset. Node positions are persisted per site so layout edits survive reload.
 
+Admins and network admins can draw named **regions** on the map. Each region's name becomes a `region:<name>` tag stamped on every enclosed FortiGate plus its managed FortiSwitches and FortiAPs, so the assets-page tag column / search / filter can act on "everything in Atlanta" without anyone maintaining the membership list by hand. Polygons render only while editing — the default map view is unchanged.
+
 ### MAC Quarantine
 Polaris records which FortiGate every asset has been sighted on via DHCP. From the asset details panel (or via API token from a SIEM), an operator can quarantine a device — the asset's MACs are pushed as MAC-based address-group entries to every FortiGate that sighted the device within the configured window, after which the device's status flips to `quarantined`.
 
@@ -278,7 +280,7 @@ npm run test:coverage     # with coverage report
 | IP math | `ip-cidr`, `netmask`, `cidr-tools` |
 | LDAP | `ldapts` |
 | Monitoring transports | `net-snmp`, `ssh2`, built-in `node:https` (FortiOS REST + WinRM SOAP), system `ping` |
-| Mapping | Leaflet + leaflet.markercluster + OpenStreetMap |
+| Mapping | Leaflet + leaflet.markercluster + leaflet-draw + OpenStreetMap |
 | Graph layout | Cytoscape.js + dagre + cytoscape-dagre |
 | PDF | jspdf + jspdf-autotable |
 | Security | Helmet, express-rate-limit |
