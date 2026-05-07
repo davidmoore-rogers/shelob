@@ -47,6 +47,21 @@ import { logger } from "../utils/logger.js";
 
 export type Severity = "ok" | "watch" | "amber" | "red";
 
+// ─── Connection-pool peak tracking ───────────────────────────────────────────
+//
+// Tracks the highest pg_stat_activity count this process has seen across
+// every capacity snapshot since boot. Module-local — resets on process
+// restart, which is fine: if the pool is genuinely undersized the alert
+// will resurface within one capacityWatch tick (10 min) of operator load.
+let peakConnectionCount = 0;
+
+function readEnvInt(envName: string, fallback: number): number {
+  const raw = process.env[envName];
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
 export interface CapacityReason {
   severity: "watch" | "amber" | "red";
   code: string;
@@ -122,6 +137,33 @@ export interface CapacitySnapshot {
       pgbossInstalled: boolean;
       active: "cursor" | "pgboss";
       persisted: "cursor" | "pgboss";
+    };
+    /**
+     * Live connection-pool picture against PostgreSQL's `max_connections`.
+     *
+     * `currentInUse` is the snapshot count from pg_stat_activity at the time
+     * this CapacitySnapshot was built. `peakObserved` is a rolling high-water
+     * mark tracked in module-local memory across snapshots — captures the
+     * worst-case during discovery / peak monitoring even though the snapshot
+     * itself might land during a quiet moment. Resets on process restart;
+     * acceptable because the alert recurs naturally if the pool is genuinely
+     * undersized.
+     *
+     * `prismaPoolSize` is what the Prisma driver-adapter pool was created with
+     * (DATABASE_POOL_SIZE env var, default 25). `pgbossPoolSize` is what
+     * pg-boss's separate internal pool was created with (POLARIS_PGBOSS_POOL_SIZE
+     * env var, default 10) — null when the boot-time queue mode is "cursor"
+     * since pg-boss isn't running.
+     *
+     * Drives the `db_pool_undersized` capacity reason and is surfaced on the
+     * Maintenance tab Database card so operators can see headroom at a glance.
+     */
+    connectionPool: {
+      currentInUse: number;
+      peakObserved: number;
+      prismaPoolSize: number;
+      pgbossPoolSize: number | null;
+      maxConnections: number;
     };
   };
   workload: {
@@ -633,6 +675,60 @@ function computeReasons(
     });
   }
 
+  // ── Watch: connection pool undersized ───────────────────────────────────
+  // Fires when the rolling peak `pg_stat_activity` count for the polaris DB
+  // approaches the configured Polaris pool capacity (Prisma + pg-boss),
+  // BUT PostgreSQL still has comfortable max_connections headroom. That's
+  // the case where bumping DATABASE_POOL_SIZE / POLARIS_PGBOSS_POOL_SIZE
+  // is a free win — no Postgres restart, no shared_buffers retune.
+  //
+  // Skipped when max_connections is unknown (lookup failed) so the alert
+  // never fires on bad data.
+  const pool = snap.database.connectionPool;
+  const polarisPoolCapacity = pool.prismaPoolSize + (pool.pgbossPoolSize ?? 0);
+  if (
+    pool.maxConnections > 0 &&
+    polarisPoolCapacity > 0 &&
+    pool.peakObserved >= Math.ceil(polarisPoolCapacity * 0.8) &&
+    pool.peakObserved < Math.ceil(pool.maxConnections * 0.7)
+  ) {
+    // Suggest pool sizes that target ~50% utilization at the observed peak,
+    // capped so the combined Polaris pool never exceeds 70% of max_connections
+    // (leaves headroom for psql / pg_dump / monitoring tools / etc.).
+    const targetTotal = Math.min(
+      Math.ceil(pool.peakObserved * 2),
+      Math.floor(pool.maxConnections * 0.7),
+    );
+    // Distribute the new total roughly proportional to the current split,
+    // keeping pg-boss at minimum 10 when it's running.
+    const currentRatioPgboss = pool.pgbossPoolSize !== null
+      ? pool.pgbossPoolSize / polarisPoolCapacity
+      : 0;
+    const newPgbossSize = pool.pgbossPoolSize !== null
+      ? Math.max(10, Math.round(targetTotal * currentRatioPgboss))
+      : null;
+    const newPrismaSize = newPgbossSize !== null
+      ? targetTotal - newPgbossSize
+      : targetTotal;
+
+    const envLines = newPgbossSize !== null
+      ? `DATABASE_POOL_SIZE=${newPrismaSize} and POLARIS_PGBOSS_POOL_SIZE=${newPgbossSize}`
+      : `DATABASE_POOL_SIZE=${newPrismaSize}`;
+    reasons.push({
+      severity: "watch",
+      code: "db_pool_undersized",
+      message:
+        `Database connection pool peaked at ${pool.peakObserved}/${polarisPoolCapacity} ` +
+        `configured (Prisma ${pool.prismaPoolSize}` +
+        (pool.pgbossPoolSize !== null ? ` + pg-boss ${pool.pgbossPoolSize}` : "") +
+        `). PostgreSQL max_connections is ${pool.maxConnections} with ` +
+        `${pool.maxConnections - pool.peakObserved} free.`,
+      suggestion:
+        `Add to .env: ${envLines}. Restart polaris to apply. ` +
+        `No PostgreSQL changes needed — peak stays well under max_connections.`,
+    });
+  }
+
   // Carry forward the legacy RAM-insufficient and PG-tuning signals as amber.
   if (ramInsufficient) {
     reasons.push({
@@ -710,6 +806,7 @@ export async function getCapacitySnapshot(opts: {
     volumes,
     dbSizeRow,
     sampleTables,
+    connRow,
   ] = await Promise.all([
     getMonitorSettings(),
     prisma.asset.count({ where: { monitored: true } }),
@@ -725,12 +822,27 @@ export async function getCapacitySnapshot(opts: {
       "SELECT pg_database_size(current_database()) AS size",
     ),
     getSampleTableStats(),
+    prisma.$queryRawUnsafe<{ in_use: number; max: number }[]>(`
+      SELECT
+        (SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database()) AS in_use,
+        (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max
+    `).catch(() => [{ in_use: 0, max: 0 }]),
   ]);
   const telemetryEligibleCount  = Number(telemetryEligibleRow[0]?.count  ?? monitoredCount);
   const systemInfoEligibleCount = Number(systemInfoEligibleRow[0]?.count ?? monitoredCount);
 
   const monitoredInterfaceCount = Number(monitoredInterfaceRow[0]?.count ?? 0);
   const dbSizeBytes = Number(dbSizeRow[0]?.size ?? 0);
+
+  // Connection-pool snapshot. Update the rolling peak before reading it back
+  // so the snapshot reflects the new high-water mark when this call is the
+  // one that observed it.
+  const currentInUse = Number(connRow[0]?.in_use ?? 0);
+  const maxConnections = Number(connRow[0]?.max ?? 0);
+  if (currentInUse > peakConnectionCount) peakConnectionCount = currentInUse;
+  const bootMode = getBootTimeMode();
+  const prismaPoolSize = readEnvInt("DATABASE_POOL_SIZE", 25);
+  const pgbossPoolSize = bootMode === "pgboss" ? readEnvInt("POLARIS_PGBOSS_POOL_SIZE", 10) : null;
 
   const cadences = {
     responseTimeSec: monitor.intervalSeconds,
@@ -776,6 +888,13 @@ export async function getCapacitySnapshot(opts: {
         pgbossInstalled: isPgbossInstalled(),
         active: getBootTimeMode(),
         persisted: await getQueueMode(),
+      },
+      connectionPool: {
+        currentInUse,
+        peakObserved: peakConnectionCount,
+        prismaPoolSize,
+        pgbossPoolSize,
+        maxConnections,
       },
     },
     workload: {

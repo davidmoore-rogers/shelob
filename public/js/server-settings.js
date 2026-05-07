@@ -1012,7 +1012,7 @@ function _capacityRenderVolume(v) {
 // host / database / engine+pool / monitoring rather than four narrow
 // columns where the engine and pool barely overlap on what they tell
 // the operator.
-function renderEnginePoolStatHtml(db) {
+function renderEnginePoolStatHtml(db, capacity) {
   if (!db) return "";
   var hasPool = db.uptime || db.activeConnections !== undefined || db.maxConnections !== undefined;
 
@@ -1023,11 +1023,30 @@ function renderEnginePoolStatHtml(db) {
     (db.database ? dbInfoRow("Database", db.database) : "") +
     (db.ssl ? dbInfoRow("SSL", db.ssl) : "");
 
+  // Polaris-side pool sizing comes from the capacity snapshot. Render
+  // alongside the DB-side counters so operators see configured capacity
+  // (Prisma + pg-boss) and observed usage (current + peak) on one card
+  // without having to cross-reference the snapshot JSON.
+  var pollPool = capacity && capacity.database && capacity.database.connectionPool;
+  var polarisPoolRows = "";
+  if (pollPool) {
+    var prismaSize = pollPool.prismaPoolSize;
+    var pgbossSize = pollPool.pgbossPoolSize;
+    var configured = prismaSize + (pgbossSize || 0);
+    var configuredLabel = pgbossSize !== null && pgbossSize !== undefined
+      ? configured + ' (Prisma ' + prismaSize + ' + pg-boss ' + pgbossSize + ')'
+      : String(configured);
+    polarisPoolRows =
+      dbInfoRow("Polaris pool size", configuredLabel) +
+      dbInfoRow("Peak observed", String(pollPool.peakObserved));
+  }
+
   var poolRows = hasPool
     ? (db.activeConnections !== undefined ? dbInfoRow("Active connections", db.activeConnections) : "") +
       (db.maxConnections !== undefined ? dbInfoRow("Max connections", db.maxConnections) : "") +
+      polarisPoolRows +
       (db.uptime ? dbInfoRow("Uptime", db.uptime) : "")
-    : "";
+    : polarisPoolRows;
 
   return '<div class="capacity-stat-card">' +
     '<h5>Database engine</h5>' +
@@ -1044,7 +1063,7 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
     // Capacity grading unavailable (e.g. statfs not supported) — still render
     // the engine + pool stats under a plain Database header so operators
     // don't lose visibility into the database connection.
-    var engineOnly = renderEnginePoolStatHtml(dbInfo);
+    var engineOnly = renderEnginePoolStatHtml(dbInfo, null);
     if (!engineOnly) return "";
     return '<div class="settings-card">' +
       '<h4>Database</h4>' +
@@ -1213,7 +1232,7 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
       '<p class="hint" style="margin-top:0.5rem">Steady-state size is what the database grows to if monitoring settings stay as they are. Reduce retention or cadence to lower it.</p>' +
     '</div>';
 
-  var enginePoolHtml = renderEnginePoolStatHtml(dbInfo);
+  var enginePoolHtml = renderEnginePoolStatHtml(dbInfo, capacity);
 
   return '<div class="settings-card capacity-card capacity-card-' + severity + '" id="capacity-card">' +
     '<div class="capacity-header">' +
