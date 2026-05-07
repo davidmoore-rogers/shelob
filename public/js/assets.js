@@ -4037,50 +4037,130 @@ function _assetMonitorStreamSource(asset, stream) {
   return { polling: polling, source: sourceName };
 }
 
-// Renders the badge content "polling · source" used next to each chart
-// header. Returns "" when the stream isn't delivered for the asset's
-// source kind (caller skips the badge entirely). The polling half uses a
-// coarse local resolver (per-asset override → source default) at first
-// render so the badge appears synchronously; the System tab open path
-// fires _updateStreamSourceBadgesFromEffective() right after to overwrite
-// it with the authoritative tier-walked value from /effective-monitor-
-// settings (covers class overrides + integration tier).
+// Tier labels for the four-tier hierarchy. Provenance values
+// ("asset"|"class"|"integration"|"manual") come from /effective-monitor-
+// settings. The badge tells the operator where to go to change the value.
+var _TIER_LABELS = {
+  asset:       "Asset override",
+  class:       "Class override",
+  integration: "Integration",
+  manual:      "Manual",
+};
+
+// Transport descriptor for a resolved polling method. Returns the inner
+// text (caller wraps in parens). Empty when transport is unambiguous —
+// SNMP/ICMP/WinRM/SSH always go directly to the asset's IP, and standalone
+// FortiGate REST API has no transport to choose. Returns:
+//   "Proxy via <fmg>" / "Direct"   for FMG REST API at the FortiGate
+//   "via parent FortiGate"         for managed FortiSwitch/FortiAP REST API
+//                                  (probe queries the parent FortiGate's
+//                                  controller-status table, not the
+//                                  device's own IP).
+function _streamTransportLabel(asset, resolvedPolling) {
+  if (resolvedPolling !== "rest_api") return "";
+  var integ = asset && asset.discoveredByIntegration;
+  if (!integ) return "";
+  if ((asset.assetType === "switch" || asset.assetType === "access_point") &&
+      (integ.type === "fortimanager" || integ.type === "fortigate")) {
+    return "via parent FortiGate";
+  }
+  if (integ.type === "fortimanager") {
+    if (integ.useProxy === true)  return "Proxy via " + integ.name;
+    if (integ.useProxy === false) return "Direct";
+  }
+  return "";
+}
+
+// Resolves which credential is actually used to authenticate this stream's
+// probe so the badge can name it. Resolution mirrors the dispatcher in
+// monitoringService.probeAsset: per-stream credential → legacy generic
+// monitorCredential → integration's stored credential (SNMP/WinRM/SSH on
+// FMG/FortiGate-discovered assets only — REST API on those uses the
+// integration's API token, which isn't a Credential row and stays implicit
+// in the "Proxy via …" / "Direct" transport label). ICMP doesn't
+// authenticate.
+function _streamCredential(asset, stream, resolvedPolling) {
+  if (!asset || resolvedPolling === "icmp") return null;
+  var perStream = asset[stream + "Credential"];
+  if (perStream && perStream.name) return perStream;
+  if (asset.monitorCredential && asset.monitorCredential.name) return asset.monitorCredential;
+  if ((resolvedPolling === "snmp" || resolvedPolling === "winrm" || resolvedPolling === "ssh") &&
+      asset.integrationMonitorCredential && asset.integrationMonitorCredential.name) {
+    return asset.integrationMonitorCredential;
+  }
+  return null;
+}
+
+// Builds the badge label "<polling>[ (<details>)] · <tier>" used next to
+// each chart header. <details> bundles the transport descriptor and the
+// credential name together in one parenthetical, comma-separated.
+// `provenanceTier` is one of asset|class|integration|manual; pass null to
+// fall back to a coarse sync guess (per-asset field set → asset override;
+// integration present → integration tier; otherwise → manual tier). The
+// async path passes the real provenance.
+function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier) {
+  var pollingLabel = _POLLING_LABELS[resolvedRaw] || resolvedRaw;
+  var transport = _streamTransportLabel(asset, resolvedRaw);
+  var credential = _streamCredential(asset, stream, resolvedRaw);
+  var details = [];
+  if (transport)  details.push(transport);
+  if (credential) details.push(credential.name);
+  var detailsStr = details.length ? " (" + details.join(", ") + ")" : "";
+  var tier;
+  if (provenanceTier && _TIER_LABELS[provenanceTier]) {
+    tier = _TIER_LABELS[provenanceTier];
+  } else {
+    var assetField = stream + "Polling";
+    if (asset[assetField]) tier = _TIER_LABELS.asset;
+    else if (asset.discoveredByIntegration) tier = _TIER_LABELS.integration;
+    else tier = _TIER_LABELS.manual;
+  }
+  return pollingLabel + detailsStr + " · " + tier;
+}
+
+// Renders the badge content used next to each chart header. Returns ""
+// when the stream isn't delivered for the asset's source kind (caller
+// skips the badge entirely). The polling half + tier guess use a coarse
+// local resolver at first render so the badge appears synchronously; the
+// System tab open path fires _updateStreamSourceBadgesFromEffective()
+// right after to overwrite it with the authoritative provenance from
+// /effective-monitor-settings (covers class overrides + integration tier).
 function _streamSourceBadgeHTML(asset, stream) {
-  var info = _assetMonitorStreamSource(asset, stream);
-  if (!info.polling) return "";
-  var label = info.polling + " via " + info.source;
-  var titleLabel = "Polling method · Asset source for this stream";
+  var integration = asset.discoveredByIntegration;
+  var sourceKind  = (integration && integration.type) || "manual";
+  if (!_POLLING_COMPAT[sourceKind]) sourceKind = "manual";
+  var assetField  = stream + "Polling";
+  var resolvedRaw = asset[assetField] || _polarisSourceDefaultPolling(sourceKind, stream);
+  if (!resolvedRaw) return "";
+  var label = _streamBadgeText(asset, stream, resolvedRaw, null);
+  var titleLabel = "Polling method · Where this setting comes from";
   return '<span class="asset-stream-source-badge" data-asset-id="' + escapeHtml(asset.id) + '" data-stream="' + escapeHtml(stream) + '" title="' + escapeHtml(titleLabel) + '" style="font-size:0.75rem;padding:2px 6px;border-radius:10px;background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-secondary);white-space:nowrap">' +
     escapeHtml(label) +
   '</span>';
 }
 
 // Fetches /effective-monitor-settings (which walks all four tiers) and
-// rewrites each badge's polling-method text to reflect the truly-resolved
-// value. Necessary because _assetMonitorStreamSource's coarse fallback
-// (source default) silently disagrees with class-override / integration-
-// tier values — the badge would say "REST API" when the operator had set
-// the integration tier to SNMP. Best-effort; on failure the badge keeps
-// its sync value. Re-checks data-asset-id on each span so a stale fetch
-// after the modal switched assets doesn't write into the wrong row.
+// rewrites each badge's text to reflect the truly-resolved polling method
+// AND the actual tier that supplied it. Necessary because the sync render
+// can't see class overrides or distinguish the integration tier from a
+// source default — the badge would say "REST API · Integration" when the
+// operator had set a class override to SNMP. Best-effort; on failure the
+// badge keeps its sync value. Re-checks data-asset-id on each span so a
+// stale fetch after the modal switched assets doesn't write into the
+// wrong row.
 async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
   if (!assetId || !asset) return;
   var eff;
   try { eff = await api.assets.effectiveMonitorSettings(assetId); } catch (_) { return; }
   if (!eff || !eff.resolved) return;
-  var sourceName = _assetIntegrationLabelWithController(asset, " · ");
-  var cred = asset.monitorCredential;
   var spans = document.querySelectorAll('.asset-stream-source-badge[data-asset-id="' + (window.CSS && CSS.escape ? CSS.escape(assetId) : assetId) + '"]');
   spans.forEach(function (span) {
     var stream = span.getAttribute("data-stream");
     if (!stream) return;
     var resolved = eff.resolved[stream + "Polling"];
     if (!resolved) return;
-    var polling = _POLLING_LABELS[resolved] || resolved;
-    if ((resolved === "snmp" || resolved === "winrm" || resolved === "ssh" || resolved === "rest_api") && cred && cred.name) {
-      polling += " · " + cred.name;
-    }
-    span.textContent = polling + " via " + sourceName;
+    var prov = eff.provenance && eff.provenance[stream + "Polling"];
+    span.textContent = _streamBadgeText(asset, stream, resolved, prov);
   });
 }
 

@@ -121,7 +121,8 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - `src/jobs/monitorAssets.ts` — publishDueWork() and light/heavy loops call resolveMonitorSettings() to determine which assets are due for each cadence
 - `public/js/assets.js` — Asset Monitoring tab UI renders manual override tier (per-asset dropdowns)
 - `public/js/integrations.js` — Integration Monitoring tab renders class-override tier (per-FortiGate / per-FortiSwitch / per-FortiAP subtabs) + integration tier (SNMP credential picker)
-- `src/api/routes/assets.ts` — GET /assets/:id/effective-monitor-settings endpoint returns full resolved stack + provenance (used by System tab intermittency-bar replay)
+- `src/api/routes/assets.ts` — GET /assets/:id/effective-monitor-settings endpoint returns full resolved stack + provenance (used by System tab intermittency-bar replay AND by per-stream chart badges to label which tier supplied each polling method — see _streamBadgeText in public/js/assets.js)
+- `src/api/routes/assets.ts` — GET /assets/:id exposes `discoveredByIntegration.useProxy` (FMG only) so the System tab chart badges can render "Proxy via <fmg>" vs "Direct" without a second round-trip; integration `config` otherwise stripped to keep API tokens out of the response
 
 **Invariants:**
 - Resolver applies the four-tier cascade strictly in order: per-asset → class-override → integration → manual, first non-null wins.

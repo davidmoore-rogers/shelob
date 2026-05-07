@@ -450,8 +450,12 @@ router.get("/:id", async (req, res, next) => {
     // panel can label the chart with the actual probe method (SNMP via the
     // override credential, vs. the default FortiOS REST API path). The
     // integration's full `config` is not safe to leak to the client (it
-    // contains API tokens), so strip it after extracting the credential id.
+    // contains API tokens), so strip it after extracting the credential id
+    // and the FMG `useProxy` toggle (the System tab badges need to know
+    // whether REST API traffic rides FMG's `/sys/proxy/json` or hits the
+    // FortiGate directly).
     let integrationMonitorCredential: { id: string; name: string; type: string } | null = null;
+    let integrationUseProxy: boolean | null = null;
     if (asset.discoveredByIntegration) {
       const cfg = (asset.discoveredByIntegration.config as Record<string, unknown> | null) || {};
       const credId = typeof cfg.monitorCredentialId === "string" ? cfg.monitorCredentialId : null;
@@ -462,6 +466,10 @@ router.get("/:id", async (req, res, next) => {
         });
         if (cred) integrationMonitorCredential = cred;
       }
+      // Only meaningful for FortiManager; standalone FortiGate is always direct.
+      if (asset.discoveredByIntegration.type === "fortimanager") {
+        integrationUseProxy = cfg.useProxy !== false;
+      }
     }
     const { config: _omit, ...integrationLite } = (asset.discoveredByIntegration as { config?: unknown } | null) || {};
     const { associatedIpRows, macAddressRows, ...assetRest } = asset;
@@ -469,7 +477,9 @@ router.get("/:id", async (req, res, next) => {
       ...assetRest,
       associatedIps: shapeAssociatedIps(associatedIpRows),
       macAddresses:  shapeMacRows(macAddressRows),
-      discoveredByIntegration: asset.discoveredByIntegration ? integrationLite : null,
+      discoveredByIntegration: asset.discoveredByIntegration
+        ? { ...integrationLite, useProxy: integrationUseProxy }
+        : null,
       integrationMonitorCredential,
     };
 
