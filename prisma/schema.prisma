@@ -223,7 +223,7 @@ model Credential {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  assets           Asset[] @relation("AssetMonitorCred")    // default credential back-relation
+  assets           Asset[] @relation("AssetMonitorCred") // default credential back-relation
   rtAssets         Asset[] @relation("AssetRTCred")
   telemetryAssets  Asset[] @relation("AssetTelemetryCred")
   interfacesAssets Asset[] @relation("AssetInterfacesCred")
@@ -372,39 +372,39 @@ model Asset {
   // by polling methods that need authentication (snmp/winrm/ssh/restapi);
   // FMG/FortiGate-discovered firewalls fall back to the discovering
   // integration's stored API token / SNMP credential when this is null.
-  monitored           Boolean     @default(false)
+  monitored                Boolean     @default(false)
   // Sticky flag set whenever an operator explicitly toggles `monitored` (asset
   // edit modal, bulk-monitor, clickable Status pill in the Assets list). When
   // true, discovery's `addAsMonitored` re-stamp on FortiSwitch/FortiAP/AD paths
   // is suppressed so an operator's manual "unmonitored" choice persists across
   // re-discovery cycles. Cleared only by an operator action — discovery does
   // not flip it.
-  monitoredOperatorSet Boolean    @default(false)
-  monitorCredentialId String?
-  monitorCredential         Credential? @relation("AssetMonitorCred",     fields: [monitorCredentialId],         references: [id], onDelete: SetNull)
-  responseTimeCredentialId  String?
-  responseTimeCredential    Credential? @relation("AssetRTCred",          fields: [responseTimeCredentialId],   references: [id], onDelete: SetNull)
-  telemetryCredentialId     String?
-  telemetryCredential       Credential? @relation("AssetTelemetryCred",   fields: [telemetryCredentialId],      references: [id], onDelete: SetNull)
-  interfacesCredentialId    String?
-  interfacesCredential      Credential? @relation("AssetInterfacesCred",  fields: [interfacesCredentialId],     references: [id], onDelete: SetNull)
-  lldpCredentialId          String?
-  lldpCredential            Credential? @relation("AssetLldpCred",        fields: [lldpCredentialId],           references: [id], onDelete: SetNull)
-  monitorIntervalSec  Int? // Per-asset override for response-time probes; falls back to the resolved tier-3 setting
+  monitoredOperatorSet     Boolean     @default(false)
+  monitorCredentialId      String?
+  monitorCredential        Credential? @relation("AssetMonitorCred", fields: [monitorCredentialId], references: [id], onDelete: SetNull)
+  responseTimeCredentialId String?
+  responseTimeCredential   Credential? @relation("AssetRTCred", fields: [responseTimeCredentialId], references: [id], onDelete: SetNull)
+  telemetryCredentialId    String?
+  telemetryCredential      Credential? @relation("AssetTelemetryCred", fields: [telemetryCredentialId], references: [id], onDelete: SetNull)
+  interfacesCredentialId   String?
+  interfacesCredential     Credential? @relation("AssetInterfacesCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
+  lldpCredentialId         String?
+  lldpCredential           Credential? @relation("AssetLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
+  monitorIntervalSec       Int? // Per-asset override for response-time probes; falls back to the resolved tier-3 setting
   // Per-asset override for the probe TCP/UDP/HTTP timeout in milliseconds.
   // Range 100..60000; null = inherit from the resolved tier-3 setting (default 5000ms).
   // Below 500ms the UI shows a warning icon — at that range probes start to
   // false-fail on healthy networks under transient latency.
-  probeTimeoutMs      Int?
-  monitorStatus       String? // "up" | "warning" | "recovering" | "down" | "unknown"
-  lastMonitorAt       DateTime?
-  lastResponseTimeMs  Int?
-  consecutiveFailures Int         @default(0)
+  probeTimeoutMs           Int?
+  monitorStatus            String? // "up" | "warning" | "recovering" | "down" | "unknown"
+  lastMonitorAt            DateTime?
+  lastResponseTimeMs       Int?
+  consecutiveFailures      Int         @default(0)
   // Counts probe successes since the last failure. Drives the
   // pending/warning -> up transition: an asset stays in pending or warning
   // until consecutiveSuccesses reaches the resolved failureThreshold (the
   // same value gates both directions). Reset to 0 on any failure.
-  consecutiveSuccesses Int        @default(0)
+  consecutiveSuccesses     Int         @default(0)
 
   // Per-stream polling-method overrides. Each accepts the 5-way enum
   // "rest_api" | "snmp" | "winrm" | "ssh" | "icmp" or null (= inherit from
@@ -412,10 +412,10 @@ model Asset {
   // in monitoringService applies the compatibility matrix from
   // utils/pollingCompatibility — values that don't match the asset's
   // source are silently ignored at resolution time.
-  responseTimePolling       String?
-  telemetryPolling          String?
-  interfacesPolling         String?
-  lldpPolling               String?
+  responseTimePolling String?
+  telemetryPolling    String?
+  interfacesPolling   String?
+  lldpPolling         String?
 
   // System tab cadences. Telemetry = CPU% + memory snapshot, taken once per minute by default.
   // System info = full interface + storage scrape, taken once per ten minutes by default.
@@ -463,6 +463,18 @@ model Asset {
   quarantinedBy          String?
   quarantineTargets      Json         @default("[]")
 
+  // Dependency-aware monitoring suppression. dependencyLayer is the BFS
+  // shortest-path distance from any FortiGate root (1 = FortiGate, 2 =
+  // direct child switch/AP, 3+ = chained). dependencySuppressed is the
+  // runtime flag set by the dependencyReconciler job when ALL of the
+  // asset's effective parents are confirmed down (or themselves
+  // suppressed). While suppressed, telemetry / systemInfo / fastFiltered
+  // are skipped and the response-time probe runs at 2× the resolved
+  // interval. See dependencyTreeService for the resolution rules.
+  dependencyLayer        Int?
+  dependencySuppressed   Boolean   @default(false)
+  dependencySuppressedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -481,6 +493,8 @@ model Asset {
   sources             AssetSource[]
   associatedIpRows    AssetAssociatedIp[]
   macAddressRows      AssetMacAddress[]
+  dependencyParents   AssetDependencyParent[]  @relation("AssetDependencyChild")
+  dependencyChildren  AssetDependencyParent[]  @relation("AssetDependencyParent")
 
   @@index([ipAddress])
   @@index([macAddress])
@@ -494,6 +508,7 @@ model Asset {
   @@index([discoveredByIntegrationId])
   @@index([monitored])
   @@index([monitored, lastMonitorAt])
+  @@index([dependencySuppressed])
   @@map("assets")
 }
 
@@ -1073,6 +1088,50 @@ model AssetSource {
   @@index([sourceKind])
   @@index([integrationId])
   @@map("asset_sources")
+}
+
+// Persistent parent→child edges of the Fortinet infrastructure dependency
+// DAG. Drives dependency-aware monitoring suppression: when ALL of an
+// asset's effective parents are confirmed down (or themselves suppressed),
+// telemetry / systemInfo / fastFiltered cadences pause and the
+// response-time probe slows to 2× the resolved interval. Multi-parent rows
+// model MCLAG / dual-homed switches; "all-down" semantics mean a redundant
+// uplink keeps an asset polling normally.
+//
+// Resolution rule: if any source="override" rows exist for an asset, those
+// are its effective parents and the computed set is ignored; otherwise the
+// source="computed" set is used. Operators get full control (admin-only
+// override endpoints) without losing the computed audit trail.
+//
+// The recomputeDependencyTree helper rebuilds the source="computed" rows
+// at end of every FMG/FortiGate discovery cycle (Phase 2d in
+// syncDhcpSubnets, plus the standalone FortiGate path). source="override"
+// rows are operator-managed and never touched by the recompute.
+//
+// detectedVia distinguishes the signal that produced a computed row:
+//   - "controller" — Asset.fortinetTopology.controllerFortigate / parentSwitch
+//   - "interface"  — interfaceTopologyService inferred edge (FortiLink /
+//                    MCLAG aggregate naming)
+//   - "lldp"       — AssetLldpNeighbor.matchedAssetId fallback
+//   - "manual"     — operator override (only present on source="override")
+model AssetDependencyParent {
+  id            String @id @default(uuid())
+  assetId       String
+  asset         Asset  @relation("AssetDependencyChild", fields: [assetId], references: [id], onDelete: Cascade)
+  parentAssetId String
+  parent        Asset  @relation("AssetDependencyParent", fields: [parentAssetId], references: [id], onDelete: Cascade)
+
+  source      String // "computed" | "override"
+  detectedVia String // "controller" | "interface" | "lldp" | "manual"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([assetId, parentAssetId])
+  @@index([assetId])
+  @@index([parentAssetId])
+  @@index([source])
+  @@map("asset_dependency_parents")
 }
 
 // Operator-uploaded device icons used by the Device Map's topology graph

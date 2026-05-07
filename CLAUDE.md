@@ -136,6 +136,7 @@ polaris/
 │   │   ├── assetQuarantineService.ts # FortiGate MAC quarantine push/pull. quarantineAsset()/releaseQuarantine() orchestrate per-FortiGate pushes using buildTransportForIntegration() (supports both FMG proxy/direct and standalone FortiGate). Pushes to user.quarantine.targets/<name>/macs on FortiOS. quarantineTargets JSON array tracks per-target status (synced|drift|failed). verifyAssetQuarantine() drift-checks all targets without writing. statusBeforeQuarantine preserves prior status for restore on release. Auto-quarantine fires from discovery when a quarantined asset is sighted on a new FortiGate.
 │   │   ├── apiTokenService.ts       # Bearer-token auth for external callers. createToken/listTokens/revokeToken/deleteToken/verifyToken. Wire format: polaris_<32-char-base64url>. argon2id hash + tokenPrefix-indexed candidate lookup. Scopes: assets:quarantine, assets:read. lastUsedAt/lastUsedIp bumped on successful verify.
 │   │   ├── interfaceTopologyService.ts # Inter-Fortinet topology inference from interface naming conventions. inferInterfaceTopology(seedAssetIds) reads the latest AssetInterfaceSample per (assetId, ifName) for the seed set, parses each ifName through fortinetSerialPattern, and resolves matches against the in-memory Fortinet asset inventory by serial-fragment endsWith (FortiOS-auto peer aggregates) or hostname exact/prefix-with-separator (operator-named MCLAG aggregates). Skips ambiguous (>1 hit) and self-loop matches. Returns sibling edges plus a remoteAssets map for cross-site peers. Read-only — uses data the monitoring pipeline already collected, no new device queries. Wired into GET /map/sites/:id/topology.
+│   │   ├── dependencyTreeService.ts # Dependency-aware monitoring suppression. recomputeDependencyTree(integrationId?) walks fortinetTopology.controllerFortigate / parentSwitch + interfaceTopologyService edges + AssetLldpNeighbor.matchedAssetId into a parent→child DAG, prunes via BFS shortest-path layer assignment from each FortiGate (layer 1) outward, persists the resulting source="computed" rows in AssetDependencyParent and Asset.dependencyLayer per scope. Operator overrides (source="override") take precedence per asset; computed rows survive alongside for audit. reconcileDependencySuppression() is the 60s reconciler — source of truth for Asset.dependencySuppressed; "all-down" multi-parent semantics (a switch with redundant uplinks suppresses only when EVERY effective parent is down or itself suppressed). Unmonitored parents are transparent — the walk continues to their grandparents. propagateAfterStatusChange(assetId) is the latency-optimization hook fired from recordProbeResult after monitor.status_changed lands. Pure helpers (buildDependencyEdgesFromInputs, assignLayers, evaluateSuppression) are exported for unit testing.
 │   │   └── updateService.ts         # Software update checking
 │   ├── jobs/
 │   │   ├── expireReservations.ts    # Mark past-TTL reservations as expired (every 15 min)
@@ -426,6 +427,18 @@ Asset
   quarantinedAt          DateTime?
   quarantinedBy          String?
   quarantineTargets      Json?
+  -- Dependency-aware monitoring suppression. dependencyLayer is the BFS
+  -- shortest-path distance from any FortiGate root computed by
+  -- dependencyTreeService.recomputeDependencyTree (1 = FortiGate, 2 = direct
+  -- child switch/AP, 3+ = chained). dependencySuppressed is the runtime flag
+  -- set by the dependency reconciler when ALL of the asset's effective
+  -- parents are confirmed down (or themselves suppressed); see the
+  -- AssetDependencyParent model above for the resolution rules. While
+  -- suppressed, telemetry / systemInfo / fastFiltered cadences pause and
+  -- the response-time probe runs at 2× the resolved interval.
+  dependencyLayer        Int?
+  dependencySuppressed   Boolean   @default(false)
+  dependencySuppressedAt DateTime?
 
 AssetFortigateSighting          -- DHCP-only sightings: tracks which FortiGate each asset has been seen on
   id                UUID PK
@@ -505,6 +518,15 @@ AssetSource                     -- Per-discovery-source view of an asset (Phase 
   lastSeen      DateTime        -- last time this source reported the device as active
   @@unique([sourceKind, externalId]) -- (sourceKind, externalId) is the dedupe key — re-runs upsert in place
   -- Backfilled from existing assetTag / "sid:" / "ad-guid:" tags via the shadow-write Prisma extension in src/db.ts plus the one-shot backfillAssetSources startup job. All major discovery pathways (AD, Entra/Intune, FMG/FortiGate firewalls, FortiSwitches, FortiAPs, endpoints) now write AssetSource rows as the source of truth; projected Asset fields are derived from these rows via projectAssetFromSources(). The unified Asset row stays the stable FK target for everything downstream (monitoring, ip-history, sightings, quarantine).
+
+AssetDependencyParent           -- Persistent parent→child edges of the Fortinet infra dependency DAG. Drives dependency-aware monitoring suppression (see Asset.dependencySuppressed / dependencyLayer below).
+  id            UUID PK
+  assetId       UUID FK → Asset (cascade delete)        -- the child
+  parentAssetId UUID FK → Asset (cascade delete)        -- the parent (FortiGate / upstream switch)
+  source        String          -- "computed" | "override". Override rows take precedence per asset; if any override exists for a child the computed set is ignored (operator pin). Empty override set = explicit "no parents" pin (asset opts out of suppression).
+  detectedVia   String          -- "controller" (Asset.fortinetTopology.controllerFortigate / parentSwitch) | "interface" (interfaceTopologyService inferred edge — FortiLink / MCLAG aggregate naming) | "lldp" (AssetLldpNeighbor.matchedAssetId fallback) | "manual" (operator override)
+  @@unique([assetId, parentAssetId])
+  -- recomputeDependencyTree (in dependencyTreeService) replaces the source="computed" rows for an integration's assets at end of every FMG/FortiGate discovery cycle. source="override" rows are operator-managed via the admin override endpoints and are never touched by recompute. Multi-parent rows model MCLAG / dual-homed switches; "all-down" semantics in the reconciler mean a redundant uplink keeps an asset polling normally.
 
 AssetMonitorSample              -- Time-series of monitoring probe results; written by the monitorAssets job
   id            UUID PK
