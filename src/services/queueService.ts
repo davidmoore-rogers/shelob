@@ -283,17 +283,19 @@ function resolveEnvInt(envName: string, fallback: number): number {
  * via env var when benchmarking warrants — particularly on hosts with many
  * cores or DBs with high `max_connections`.
  *
- * The four cadences default to the same `max(8, cpus().length × 2)` floor
- * because the work is I/O-bound across the board (one or more SNMP / REST
- * round-trips per job, no heavy CPU). Earlier defaults overprovisioned probe
- * (16 / N×4) and underprovisioned heavy (4 / N): in practice probe is the
- * cheapest cadence and finishes fastest, so giving telemetry / systemInfo
- * the same headroom protects against slow hosts wedging the small heavy pool
- * without burning extra capacity on a probe cadence that was already idle.
+ * The four cadences default to the same `max(16, min(64, cpus().length × 4))`
+ * — enough headroom that an 8-core box gets 32 workers per queue, and bigger
+ * hosts cap at 64 so the combined Polaris connection pool stays well below
+ * a default Postgres `max_connections=100`. The work is I/O-bound across the
+ * board (one or more SNMP / REST round-trips per job, no heavy CPU) so each
+ * worker spends ~95% of its time blocked on the network — fewer workers
+ * leaves cores idle. Earlier defaults of `max(8, N×2)` were overcautious
+ * for I/O-bound work; the cap protects boxes with many cores from running
+ * the connection pool dry.
  *
- *   POLARIS_MONITOR_PROBE_WORKERS    localConcurrency for probe queue        (default max(8, N×2))
- *   POLARIS_MONITOR_FAST_WORKERS     localConcurrency for fastFiltered queue (default max(8, N×2))
- *   POLARIS_MONITOR_HEAVY_WORKERS    localConcurrency for telemetry + systemInfo queues (default max(8, N×2) each)
+ *   POLARIS_MONITOR_PROBE_WORKERS    localConcurrency for probe queue        (default max(16, min(64, N×4)))
+ *   POLARIS_MONITOR_FAST_WORKERS     localConcurrency for fastFiltered queue (default max(16, min(64, N×4)))
+ *   POLARIS_MONITOR_HEAVY_WORKERS    localConcurrency for telemetry + systemInfo queues (default max(16, min(64, N×4)) each)
  */
 function workerSize(envName: string, fallback: number): number {
   return resolveEnvInt(envName, fallback);
@@ -331,9 +333,11 @@ export async function startPgbossWorkers(): Promise<void> {
 
   const { PgBoss } = await import("pg-boss");
   // pg-boss manages its own pg.Pool separate from Prisma's adapter pool.
-  // Default is 10 (pg library default). Expose as POLARIS_PGBOSS_POOL_SIZE
-  // so operators can size it alongside DATABASE_POOL_SIZE.
-  const pgbossPoolSize = resolveEnvInt("POLARIS_PGBOSS_POOL_SIZE", 10);
+  // Default 20 — sized for the bumped worker defaults below (max 64 per
+  // queue on bigger boxes); operators on small pg-boss fleets can drop it
+  // back via env var. Expose as POLARIS_PGBOSS_POOL_SIZE so operators can
+  // size it alongside DATABASE_POOL_SIZE.
+  const pgbossPoolSize = resolveEnvInt("POLARIS_PGBOSS_POOL_SIZE", 20);
   const boss: PgBossType = new PgBoss({
     connectionString: process.env.DATABASE_URL,
     max: pgbossPoolSize,
@@ -346,10 +350,14 @@ export async function startPgbossWorkers(): Promise<void> {
   await boss.start();
 
   // Per-queue config:
-  //   - policy "exclusive" + singletonKey on every send → only one job
+  //   - policy "singleton" + singletonKey on every send → only one job
   //     per (assetId, cadence) can be queued or active. Duplicate submits
   //     while a job is in flight are absorbed silently. Natural coalescing
-  //     for the publisher's "re-evaluate every tick" pattern.
+  //     for the publisher's "re-evaluate every tick" pattern. Different
+  //     assetIds run fully in parallel up to localConcurrency. (Earlier
+  //     iterations passed "exclusive" here, which is not a documented
+  //     pg-boss policy and silently throttled each queue to ~1 active job
+  //     globally regardless of localConcurrency.)
   //   - retryLimit 0: monitor cadences are stateless. Next tick re-evaluates
   //     due state and re-publishes; better than retrying with stale snapshot.
   //   - deleteAfterSeconds 1d: keep recent completed/failed for debugging,
@@ -360,7 +368,7 @@ export async function startPgbossWorkers(): Promise<void> {
   //     they don't pile up across worker restarts.
   for (const name of Object.values(QUEUE_NAMES)) {
     await boss.createQueue(name, {
-      policy: "exclusive",
+      policy: "singleton",
       retryLimit: 0,
       deleteAfterSeconds: 86_400,
       retentionSeconds: 3_600,
@@ -373,9 +381,10 @@ export async function startPgbossWorkers(): Promise<void> {
   // (replaces v11's teamSize × teamConcurrency product). Defaults below are
   // sized for "operator deliberately switched to pg-boss because cursor
   // can't keep up" — small fleets stay on cursor where these don't apply.
-  const probeWorkers = workerSize("POLARIS_MONITOR_PROBE_WORKERS", Math.max(8, cpus().length * 2));
-  const fastWorkers  = workerSize("POLARIS_MONITOR_FAST_WORKERS",  Math.max(8, cpus().length * 2));
-  const heavyWorkers = workerSize("POLARIS_MONITOR_HEAVY_WORKERS", Math.max(8, cpus().length * 2));
+  const defaultWorkers = Math.max(16, Math.min(64, cpus().length * 4));
+  const probeWorkers = workerSize("POLARIS_MONITOR_PROBE_WORKERS", defaultWorkers);
+  const fastWorkers  = workerSize("POLARIS_MONITOR_FAST_WORKERS",  defaultWorkers);
+  const heavyWorkers = workerSize("POLARIS_MONITOR_HEAVY_WORKERS", defaultWorkers);
   setMonitorWorkers({
     probe:        probeWorkers,
     fastFiltered: fastWorkers,
