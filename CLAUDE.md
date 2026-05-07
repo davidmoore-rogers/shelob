@@ -15,7 +15,8 @@ Version policy: `<major>.<minor>` lives in `package.json` and is the single sour
 ```
 polaris/
 ├── CLAUDE.md
-├── touches.md                       # Lookup index: per-service writers/readers/invariants + 6 cross-cutting concerns. Reviewed alongside CLAUDE.md on every commit per "Before any commit, review CLAUDE.md and touches.md for updates" — keeps regression-prone relationships visible without rereading every consumer.
+├── touches.md                       # Lookup index: per-service writers/readers/invariants + 6 cross-cutting concerns. Reviewed alongside CLAUDE.md on every commit per "Before any commit, review CLAUDE.md, touches.md, and primaries.md for updates" — keeps regression-prone relationships visible without rereading every consumer.
+├── primaries.md                     # Canonical-implementation index: when there are multiple ways to build the same thing (chart, modal, slide-over, sortable table, …), this names the reference implementation new work should match. Reviewed alongside CLAUDE.md and touches.md on every commit so canonicals don't go stale.
 ├── README.md
 ├── .env.example
 ├── package.json
@@ -1435,7 +1436,7 @@ npm run lint
 - Write a unit test for every public function in `src/utils/` and `src/services/`.
 - All audit-worthy actions (creates, updates, deletes, discovery events) must write an `Event` record.
 - **Ask before committing.** After completing each logical change, do not commit automatically — ask the user whether to commit. Each logical change still gets its own commit (don't batch unrelated work), but the user decides when.
-- **Before any commit, review CLAUDE.md and `touches.md` for updates.** When the user approves a commit, re-read both — CLAUDE.md sections (new models, fields, routes, services, jobs, env vars, or behavior shifts) AND the relevant `touches.md` entries (per-service writers/readers/invariants/checklists or cross-cutting writer/reader lists). Anything the change moved, broke, or invalidated gets refreshed in the same commit. The touches index only stays trustworthy if it's reviewed every commit.
+- **Before any commit, review CLAUDE.md, `touches.md`, and `primaries.md` for updates.** When the user approves a commit, re-read all three — CLAUDE.md sections (new models, fields, routes, services, jobs, env vars, or behavior shifts), the relevant `touches.md` entries (per-service writers/readers/invariants/checklists or cross-cutting writer/reader lists), AND the relevant `primaries.md` entries (canonical implementations whose file paths, function names, conventions, or checklists may have shifted; new patterns that have crystallized into a clear canonical and should be added). Anything the change moved, broke, or invalidated gets refreshed in the same commit. The indexes only stay trustworthy if they're reviewed every commit.
 - **Keep demo.mjs current.** When you add a significant new entity, field, or feature, update `demo.mjs` so it exercises the new capability.
 - **Ask before pushing.** Never push without the user's explicit go-ahead.
 - **Before any push, audit deployment surfaces.** When the user approves a push, re-read `README.md`, `docs/INSTALL.md`, the installation scripts under `scripts/`, and the Dockerfile / compose files for anything the change invalidated. Stage doc/script fixes as additional commits before pushing.
