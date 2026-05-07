@@ -19,6 +19,17 @@
     PolarisAuth.renderLogin(app);
   };
 
+  // Best-effort portrait lock. Honored on Android Chrome / Firefox; iOS
+  // Safari outside an installed PWA silently rejects, which is fine —
+  // mobile.css carries a landscape lockout overlay as the universal
+  // fallback for that case. Wrapped in try/catch because the API throws
+  // synchronously on some platforms when called outside fullscreen.
+  try {
+    if (screen && screen.orientation && typeof screen.orientation.lock === "function") {
+      screen.orientation.lock("portrait").catch(function () { /* unsupported — fall through to CSS overlay */ });
+    }
+  } catch (e) { /* silent — same path as a quiet rejection */ }
+
   // ─── Boot ──────────────────────────────────────────────────────────────
   async function boot() {
     app.dataset.tab = "";

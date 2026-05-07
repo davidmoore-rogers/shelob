@@ -8,12 +8,19 @@
 // site so deep-links from search work.
 //
 // Mobile-specific decisions vs desktop map.js:
-//   - No topology graph (Cytoscape is too heavy and the modal is unwieldy
-//     on a phone). Sheet shows a "View topology on desktop" link instead.
+//   - The site sheet's "View topology" button hands off to the
+//     `topology/<siteId>` detail route, which lazy-loads Cytoscape inline
+//     and renders a top-to-bottom graph fullscreen — no more bouncing to
+//     the desktop page.
 //   - Pin tap opens the sheet locally without changing the URL — keeps
 //     re-renders cheap. The sheet's close button just closes; deep-links
 //     from search are still URL-driven via the `site` route.
 //   - No theme toggle (mobile inherits the app's overall dark theme).
+//   - User-location pin: a stick figure with a yellow hardhat, driven by
+//     navigator.geolocation.watchPosition. Walking animation plays when
+//     the figure is actually moving (browser-reported speed first, with a
+//     haversine fallback that gates on the GPS accuracy radius so jitter
+//     doesn't trigger phantom strides while standing still).
 
 (function () {
   // Module-level state. Reused across renders so back-and-forth between
@@ -23,6 +30,32 @@
   var _markersById = Object.create(null);
   var _sites = [];
   var _leafletPromise = null;
+
+  // User-location state. _watchId is the active Geolocation watch handle;
+  // _userMarker / _userAccuracyRing are the on-map Leaflet objects;
+  // _lastFix tracks the previous position so we can compute speed for the
+  // walking-animation gate.
+  var _watchId = null;
+  var _userMarker = null;
+  var _userAccuracyRing = null;
+  var _lastFix = null; // { lat, lng, t }
+
+  // Inline SVG for the user-location pin. Stick figure with a construction-
+  // yellow hardhat. Limbs are individual <line> elements so CSS keyframes
+  // can rotate them around shoulder/hip pivots when the .walking class is
+  // toggled on. Kept module-local — no external file fetch.
+  var STICK_FIGURE_SVG = ''
+    + '<svg viewBox="0 0 40 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+    +   '<ellipse class="hat" cx="20" cy="9" rx="9" ry="5"/>'
+    +   '<rect class="hat" x="9" y="9" width="22" height="2.5" rx="1"/>'
+    +   '<line class="hat-stripe" x1="20" y1="4" x2="20" y2="9"/>'
+    +   '<circle class="face" cx="20" cy="14" r="3.5"/>'
+    +   '<line class="stroke spine" x1="20" y1="17.5" x2="20" y2="34"/>'
+    +   '<line class="stroke arm arm-l" x1="20" y1="22" x2="14" y2="30"/>'
+    +   '<line class="stroke arm arm-r" x1="20" y1="22" x2="26" y2="30"/>'
+    +   '<line class="stroke leg leg-l" x1="20" y1="34" x2="15" y2="46"/>'
+    +   '<line class="stroke leg leg-r" x1="20" y1="34" x2="25" y2="46"/>'
+    + '</svg>';
 
   // ─── Lazy loaders ──────────────────────────────────────────────────────
   function _addLink(href) {
@@ -98,6 +131,12 @@
         return loadSites();
       }).then(function () {
         setStatus("");
+        // Auto-start the user-location watch when geolocation permission
+        // was already granted on a prior visit. Permissions API is
+        // best-effort — Safari historically lacked support, but modern
+        // versions (iOS 16+) do, and the catch falls through quietly when
+        // the API isn't there.
+        maybeAutoStartUserWatch();
         if (preselectId) {
           var site = _sites.find(function (s) { return s.id === preselectId; });
           if (site) {
@@ -114,6 +153,16 @@
       });
     },
   };
+
+  // Stop the Geolocation watch whenever the operator navigates away from
+  // the Map tab (or from the `site/<id>` deep-link that reuses it). Hooks
+  // hashchange directly so we don't have to extend the router or
+  // monkey-patch app.js.
+  window.addEventListener("hashchange", function () {
+    var hash = (window.location.hash || "").replace(/^#/, "");
+    var name = hash.split("/")[0];
+    if (name !== "map" && name !== "site") stopUserLocationWatch();
+  });
 
   function setStatus(msg) {
     var el = document.getElementById("map-status");
@@ -228,11 +277,138 @@
     }
     navigator.geolocation.getCurrentPosition(function (pos) {
       _map.flyTo([pos.coords.latitude, pos.coords.longitude], 11, { duration: 0.6 });
+      // Permission was either already granted or just granted via the
+      // browser prompt — start watching so the pin tracks the operator
+      // as they walk around the site.
+      handleFix(pos);
+      startUserLocationWatch();
     }, function (err) {
       var msg = "Couldn't get your location";
       if (err && err.code === err.PERMISSION_DENIED) msg = "Location permission denied";
       PolarisTabs.showSnackbar(msg, { error: true });
-    }, { timeout: 6000 });
+    }, { timeout: 6000, enableHighAccuracy: true });
+  }
+
+  // ─── User-location pin (stick figure with hardhat) ─────────────────────
+  // Triggered automatically when geolocation permission was already
+  // granted on a prior visit, or on the first successful recenter tap.
+  // Uses watchPosition with high accuracy + short maximumAge so the
+  // walking-animation gate stays responsive — cadence-throttled fixes
+  // would otherwise lock the figure into "still" while the operator is
+  // actively moving around the site.
+  function maybeAutoStartUserWatch() {
+    if (!navigator.geolocation) return;
+    if (!navigator.permissions || typeof navigator.permissions.query !== "function") return;
+    try {
+      navigator.permissions.query({ name: "geolocation" }).then(function (status) {
+        if (status && status.state === "granted") startUserLocationWatch();
+      }).catch(function () { /* unsupported in some browsers — silent */ });
+    } catch (e) { /* Safari before iOS 16 — silent */ }
+  }
+
+  function startUserLocationWatch() {
+    if (_watchId != null || !navigator.geolocation) return;
+    try {
+      _watchId = navigator.geolocation.watchPosition(
+        function (pos) { handleFix(pos); },
+        function () { /* permission revoked or transient — keep silent */ },
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+      );
+    } catch (e) { /* very old browsers — silent */ }
+  }
+
+  function stopUserLocationWatch() {
+    if (_watchId != null) {
+      try { navigator.geolocation.clearWatch(_watchId); } catch (e) {}
+      _watchId = null;
+    }
+    _lastFix = null;
+    if (_userMarker && _map) {
+      try { _map.removeLayer(_userMarker); } catch (e) {}
+      _userMarker = null;
+    }
+    if (_userAccuracyRing && _map) {
+      try { _map.removeLayer(_userAccuracyRing); } catch (e) {}
+      _userAccuracyRing = null;
+    }
+  }
+
+  // Decide whether the figure is walking, then update the marker. Movement
+  // is determined from browser-reported speed when the platform supplies
+  // it (Geolocation API surfaces m/s for many devices), or from haversine
+  // distance vs. dt with a jitter gate that requires the displacement to
+  // exceed both 3 meters AND the reported GPS accuracy radius. Without
+  // the accuracy gate, a phone sitting still on a desk can register
+  // "moving" because consecutive fixes can land 5–15m apart from noise.
+  function handleFix(pos) {
+    var lat = pos.coords.latitude;
+    var lng = pos.coords.longitude;
+    var t   = pos.timestamp || Date.now();
+    var moving = false;
+
+    if (typeof pos.coords.speed === "number" && !isNaN(pos.coords.speed)) {
+      moving = pos.coords.speed > 0.4; // ~1.4 km/h — slower than a casual walk
+    } else if (_lastFix) {
+      var dMeters = haversineMeters(_lastFix.lat, _lastFix.lng, lat, lng);
+      var dtSec   = Math.max(0.5, (t - _lastFix.t) / 1000);
+      var speed   = dMeters / dtSec;
+      moving = speed > 0.4 && dMeters > Math.max(3, pos.coords.accuracy || 0);
+    }
+    _lastFix = { lat: lat, lng: lng, t: t };
+    updateUserMarker(lat, lng, pos.coords.accuracy, moving);
+  }
+
+  function haversineMeters(lat1, lng1, lat2, lng2) {
+    var R = 6371000;
+    var toRad = Math.PI / 180;
+    var dLat = (lat2 - lat1) * toRad;
+    var dLng = (lng2 - lng1) * toRad;
+    var s1 = Math.sin(dLat / 2);
+    var s2 = Math.sin(dLng / 2);
+    var a = s1 * s1 + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * s2 * s2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  function updateUserMarker(lat, lng, accuracy, moving) {
+    if (!_map) return;
+    var L = window.L;
+    if (!_userMarker) {
+      var icon = L.divIcon({
+        className: "",
+        html: '<div class="user-pin' + (moving ? " walking" : "") + '">' + STICK_FIGURE_SVG + "</div>",
+        iconSize: [40, 56],
+        iconAnchor: [20, 52],
+      });
+      _userMarker = L.marker([lat, lng], {
+        icon: icon,
+        interactive: false,
+        keyboard: false,
+        zIndexOffset: 1000,
+      }).addTo(_map);
+    } else {
+      _userMarker.setLatLng([lat, lng]);
+      var el = _userMarker.getElement();
+      if (el) {
+        var inner = el.querySelector(".user-pin");
+        if (inner) inner.classList.toggle("walking", !!moving);
+      }
+    }
+
+    if (accuracy && accuracy > 0) {
+      if (!_userAccuracyRing) {
+        _userAccuracyRing = L.circle([lat, lng], {
+          radius: accuracy,
+          color: "#fbbf24",
+          weight: 1,
+          opacity: 0.5,
+          fillOpacity: 0.08,
+          interactive: false,
+        }).addTo(_map);
+      } else {
+        _userAccuracyRing.setLatLng([lat, lng]);
+        _userAccuracyRing.setRadius(accuracy);
+      }
+    }
   }
 
   // ─── Site bottom sheet ─────────────────────────────────────────────────
@@ -270,8 +446,8 @@
       + '  <span class="muted" style="font-size:12px;">' + escapeHtml(subnetLine) + '</span>'
       + '</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      + '  <button class="btn btn-filled" id="map-sheet-topology"><svg viewBox="0 0 24 24"><use href="#i-router"/></svg>View topology</button>'
       + '  <button class="btn btn-tonal" id="map-sheet-asset"><svg viewBox="0 0 24 24"><use href="#i-server"/></svg>View asset</button>'
-      + '  <a class="btn btn-outlined" href="/map.html#site=' + encodeURIComponent(site.id) + '&topology=1" target="_blank" rel="noopener"><svg viewBox="0 0 24 24"><use href="#i-desktop"/></svg>Topology (desktop)</a>'
       + '</div>';
 
     document.body.appendChild(scrim);
@@ -282,6 +458,10 @@
     document.getElementById("map-sheet-asset").addEventListener("click", function () {
       closeSiteSheet();
       PolarisRouter.go("asset/" + site.id);
+    });
+    document.getElementById("map-sheet-topology").addEventListener("click", function () {
+      closeSiteSheet();
+      PolarisRouter.go("topology/" + site.id);
     });
   }
 

@@ -473,6 +473,14 @@ input, select, textarea { font-family: inherit; }
 }
 .app[data-tab=""] .m3-navbar { display: none; }
 
+/* Fullbleed mode — used by the topology surface so the Cytoscape graph
+   gets the entire viewport. The tab module renders its own floating
+   chrome (close FAB, search bar) over the graph; the shell's topbar
+   slot and bottom navbar both step out of the way. */
+.app[data-tab="__fullbleed"] .m3-navbar { display: none; }
+.app[data-tab="__fullbleed"] #topbar-slot { display: none; }
+.app[data-tab="__fullbleed"] .app-body { padding: 0; }
+
 /* ─── Text fields ─────────────────────────────────────────────────────── */
 .tf-outlined {
   position: relative;
@@ -929,4 +937,225 @@ button, .list-item, .chip { touch-action: manipulation; }
 .seg .seg-item.on {
   background: var(--md-secondary-container);
   color: var(--md-on-secondary-container);
+}
+
+/* ─── User-location pin (stick figure with hardhat) ──────────────────────
+   Driven by navigator.geolocation.watchPosition in map-tab.js. The
+   .walking class is toggled on the inner div whenever the operator is
+   actually moving (browser-reported speed, with a haversine fallback
+   gated on GPS accuracy so jitter doesn't trigger phantom strides). */
+.user-pin {
+  width: 40px;
+  height: 56px;
+  display: block;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.45));
+}
+.user-pin svg { width: 100%; height: 100%; overflow: visible; }
+.user-pin .hat        { fill: #fbbf24; }                    /* construction-yellow helmet */
+.user-pin .hat-stripe { stroke: #b45309; stroke-width: 0.8; }
+.user-pin .face       { fill: #f5d3a8; }                    /* skin tone */
+.user-pin .stroke     { stroke: #1f2937; stroke-width: 2.4; stroke-linecap: round; fill: none; }
+
+/* Walking animation — alternate left/right limb poses on a ~480ms cycle.
+   transform-box:fill-box + per-limb transform-origin pivots the limbs
+   from shoulder/hip rather than the SVG's top-left corner. */
+.user-pin .arm,
+.user-pin .leg                              { transform-box: fill-box; }
+.user-pin .arm-l, .user-pin .arm-r,
+.user-pin .leg-l, .user-pin .leg-r          { transform-origin: 50% 0%; }
+
+@keyframes user-walk-l {
+  0%   { transform: rotate(20deg); }
+  50%  { transform: rotate(-20deg); }
+  100% { transform: rotate(20deg); }
+}
+@keyframes user-walk-r {
+  0%   { transform: rotate(-20deg); }
+  50%  { transform: rotate(20deg); }
+  100% { transform: rotate(-20deg); }
+}
+@keyframes user-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-1.5px); }
+}
+
+.user-pin.walking .arm-l,
+.user-pin.walking .leg-l { animation: user-walk-l 0.48s linear infinite; }
+.user-pin.walking .arm-r,
+.user-pin.walking .leg-r { animation: user-walk-r 0.48s linear infinite; }
+.user-pin.walking        { animation: user-bob 0.48s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .user-pin,
+  .user-pin.walking,
+  .user-pin .arm,
+  .user-pin .leg { animation: none !important; }
+}
+
+/* ─── Topology surface (per-site Cytoscape graph) ────────────────────────
+   Reached via the `topology/<siteId>` detail route. Renders fullscreen
+   when .app is in __fullbleed mode (rule above hides the topbar slot
+   and the bottom navbar). */
+.topo-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--md-surface, #0f172a);
+  display: flex;
+  flex-direction: column;
+  z-index: 30; /* above app-body, below sheets/scrim */
+}
+.topo-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  background: linear-gradient(to bottom, var(--md-surface) 0%, var(--md-surface) 70%, transparent 100%);
+}
+.topo-bar .icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  background: var(--md-surface-cont-low, #1c2029);
+  border: none;
+  color: var(--md-on-surface, #e2e8f0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.topo-bar .icon-btn svg { width: 22px; height: 22px; fill: currentColor; }
+.topo-search-wrap { position: relative; flex: 1; min-width: 0; }
+.topo-search {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  background: var(--md-surface-cont-low, #1c2029);
+  color: var(--md-on-surface, #e2e8f0);
+  border: 1px solid var(--md-outline, #44495a);
+  font: 500 14px/1 "Inter", system-ui, sans-serif;
+  outline: none;
+}
+.topo-search:focus { border-color: var(--md-primary, #4fc3f7); }
+.topo-search::placeholder { color: var(--md-on-surface-variant, #9aa2b1); }
+.topo-search-results {
+  position: absolute;
+  left: 0; right: 0; top: calc(100% + 4px);
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+  background: var(--md-surface-cont, #232732);
+  border-radius: 12px;
+  box-shadow: 0 12px 24px rgba(0,0,0,.5);
+  max-height: 50vh;
+  overflow-y: auto;
+  z-index: 2;
+}
+.topo-search-results li {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-bottom: 1px solid var(--md-outline, #2c3140);
+  cursor: pointer;
+}
+.topo-search-results li:last-child { border-bottom: none; }
+.topo-search-results li.empty {
+  color: var(--md-on-surface-variant, #9aa2b1);
+  font-size: 13px;
+  padding: 14px;
+  text-align: center;
+  cursor: default;
+}
+.topo-search-results .meta {
+  color: var(--md-on-surface-variant, #9aa2b1);
+  font-size: 12px;
+}
+.topo-graph {
+  flex: 1;
+  min-height: 0; /* allow Cytoscape to fill the available space */
+  background: var(--md-surface, #0f172a);
+}
+.topo-status {
+  position: absolute;
+  bottom: 24px;
+  left: 16px;
+  right: 16px;
+  text-align: center;
+  color: var(--md-on-surface-variant, #9aa2b1);
+  font-size: 13px;
+  letter-spacing: .25px;
+  pointer-events: none;
+}
+
+/* Topology node-tap sheet sections — endpoints list under a tapped switch. */
+.topo-section {
+  margin: 4px 0 12px;
+  padding: 12px;
+  background: var(--md-surface-cont-low, #1c2029);
+  border-radius: 12px;
+}
+.topo-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: .25px;
+  color: var(--md-on-surface, #e2e8f0);
+  margin-bottom: 8px;
+}
+.topo-endpoints {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.topo-endpoint-row {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--md-on-surface, #e2e8f0);
+  padding: 8px 10px;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+.topo-endpoint-row:hover,
+.topo-endpoint-row:active { background: var(--md-surface-cont, #232732); }
+.topo-endpoint-row .meta {
+  color: var(--md-on-surface-variant, #9aa2b1);
+  font-size: 12px;
+}
+
+/* ─── Landscape orientation lockout ──────────────────────────────────────
+   Phone-class viewport rotated to landscape: replace the entire UI with
+   a "rotate back" prompt. iOS Safari ignores screen.orientation.lock()
+   outside of an installed PWA, so this CSS-only fallback is the actual
+   lockout for that ~half of the install base. The max-height gate
+   scopes the rule to phones — tablets in landscape are unaffected. */
+@media (orientation: landscape) and (max-height: 480px) {
+  .app,
+  .scrim,
+  .sheet,
+  .topo-screen,
+  .snackbar { display: none !important; }
+  body::before {
+    content: "Rotate your device to portrait to use Polaris.";
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    background: var(--md-surface, #0f172a);
+    color: var(--md-on-surface, #e2e8f0);
+    font: 500 16px/1.4 "Inter", "Roboto", system-ui, sans-serif;
+    letter-spacing: 0.25px;
+  }
 }

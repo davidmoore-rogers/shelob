@@ -136,10 +136,28 @@
     },
   };
 
+  // ─── Topology (per-site Cytoscape graph) ───────────────────────────────
+  // Real spec lives in /js/mobile/topology-tab.js. Falls back to a
+  // placeholder if the module didn't load.
+  var Topology = (window.PolarisTopologyTab && window.PolarisTopologyTab.spec) || {
+    parentTab: "map",
+    renderTopbar: function () { return backTopbar("Topology"); },
+    render: function (body, ctx) {
+      var id = ctx.route.parts[0] || "";
+      body.innerHTML = placeholderBody(
+        "Topology module not loaded",
+        "PolarisTopologyTab is missing — check script load order in mobile.html.",
+        "/map.html#site=" + encodeURIComponent(id) + "&topology=1"
+      );
+      wireBack("map");
+    },
+  };
+
   window.PolarisDetails = {
     asset: Asset,
     subnet: Subnet,
     block: Block,
     site: Site,
+    topology: Topology,
   };
 })();

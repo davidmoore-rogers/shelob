@@ -833,18 +833,10 @@
     }
   }
 
+  // Delegates to PolarisTopologyRender so desktop and mobile share one
+  // color scheme. Kept as a local alias for the existing call sites.
   function fortigateNodeColor(fg) {
-    if (!fg.monitored) return "#757575"; // gray — unmonitored
-    // Same priority as the Status pill in the assets list: a confirmed-down
-    // probe wins over the suppressed flag (the probe is the proof). When the
-    // probe is healthy but a parent is down, render slate-blue.
-    if (fg.dependencySuppressed && fg.monitorHealth !== "down") return "#607d8b"; // slate — Dep. Down
-    switch (fg.monitorHealth) {
-      case "up":       return "#2e7d32"; // green
-      case "degraded": return "#f9a825"; // amber
-      case "down":     return "#c62828"; // red
-      default:         return "#9e9e9e"; // unknown — light gray
-    }
+    return window.PolarisTopologyRender.fortinetNodeColor(fg);
   }
 
   function renderTopologyGraph(data) {
@@ -856,103 +848,17 @@
     topoState.pathOverlay = null;
     var showFullBtn = document.getElementById("topology-show-full");
     if (showFullBtn) showFullBtn.hidden = true;
-    var elements = [];
 
-    elements.push({
-      data: {
-        id: data.fortigate.id,
-        label: data.fortigate.hostname || "FortiGate",
-        role: "fortigate",
-        nodeColor: fortigateNodeColor(data.fortigate),
-        iconUrl: data.fortigate.iconUrl || null,
-        hasIcon: data.fortigate.iconUrl ? 1 : 0,
-      },
-    });
-    (data.switches || []).forEach(function (s) {
-      elements.push({
-        data: {
-          id: s.id,
-          label: s.hostname || "FortiSwitch",
-          role: "fortiswitch",
-          nodeColor: fortigateNodeColor(s),
-          iconUrl: s.iconUrl || null,
-          hasIcon: s.iconUrl ? 1 : 0,
-        },
-      });
-    });
-    (data.aps || []).forEach(function (a) {
-      elements.push({
-        data: {
-          id: a.id,
-          label: a.hostname || "FortiAP",
-          role: "fortiap",
-          nodeColor: fortigateNodeColor(a),
-          iconUrl: a.iconUrl || null,
-          hasIcon: a.iconUrl ? 1 : 0,
-        },
-      });
-    });
-    (data.edges || []).forEach(function (e, i) {
-      elements.push({
-        data: {
-          id: "e" + i, source: e.source, target: e.target,
-          label: e.label || "",
-          reason: e.reason || "",
-        },
-      });
-    });
-    // LLDP-derived ghost nodes for non-Polaris neighbors. The dashed border
-    // and orange tint signal "observed via LLDP, not authoritatively managed".
-    (data.lldpNodes || []).forEach(function (n) {
-      var label = n.hostname || n.managementIp || n.chassisId || "Unknown";
-      elements.push({
-        data: { id: n.id, label: label, role: "lldp" },
-      });
-    });
-    // Cross-site Polaris assets observed via LLDP from this site. Separate
-    // role so the styling can flag "real asset, just elsewhere" — and
-    // tagged with `assetId` so the click handler can pivot to that asset's
-    // details page.
-    (data.remoteAssetNodes || []).forEach(function (n) {
-      var label = n.hostname || n.ipAddress || n.id;
-      elements.push({
-        data: {
-          id: n.id, label: label, role: "remote-asset",
-          assetId: n.id, assetType: n.assetType || null,
-          iconUrl: n.iconUrl || null, hasIcon: n.iconUrl ? 1 : 0,
-        },
-      });
-    });
-    (data.lldpEdges || []).forEach(function (e, i) {
-      elements.push({
-        data: {
-          id: "le" + i, source: e.source, target: e.target,
-          label: e.label || "", isLldp: 1,
-          reason: e.reason || "",
-        },
-      });
-    });
-    // Interface-inferred edges — CMDB-stamped peer aggregates (FortiOS auto
-    // serial-named or operator-named hostname-named). Authoritative, so
-    // rendered with a solid teal line to contrast with the dashed orange
-    // LLDP edges and the muted gray controller-data edges.
-    (data.interfaceEdges || []).forEach(function (e, i) {
-      elements.push({
-        data: {
-          id: "ie" + i, source: e.source, target: e.target,
-          label: e.label || "", isIface: 1,
-          reason: e.reason || "",
-        },
-      });
-    });
+    // Element + stylesheet construction is shared with the mobile topology
+    // surface — see public/js/topology-render.js. Desktop opts into the
+    // endpoint-overlay styles because the connection-path search dims
+    // off-path elements and adds a synthetic round-rectangle endpoint node.
+    var elements = window.PolarisTopologyRender.buildTopologyElements(data);
 
     // Topology graph follows the per-user MAP theme (not the global app
     // theme) so the toolbar toggle drives both the basemap and the
     // modal coherently.
     var theme = getMapTheme();
-    var isDark = theme === "dark";
-    var textColor = isDark ? "#eef0f4" : "#1a1a1a";
-    var edgeColor = isDark ? "#6a7388" : "#9aa2b1";
 
     // Refresh path: tear down the previous cytoscape before mounting the
     // new one. Without this, a Refresh click stacks two graphs and the
@@ -988,208 +894,7 @@
         fit: true,
         padding: 30,
       },
-      style: [
-        {
-          selector: "node",
-          style: {
-            label: "data(label)",
-            "text-wrap": "wrap",
-            "text-max-width": 160,
-            color: textColor,
-            "font-size": "11px",
-            "font-family": "Inter, system-ui, sans-serif",
-            "text-valign": "bottom",
-            "text-margin-y": 6,
-            "background-color": "#546e7a",
-            width: 44,
-            height: 44,
-            "border-width": 2,
-            "border-color": "#ffffff",
-            "border-opacity": 0.85,
-          },
-        },
-        // Node colors are driven by monitor health for all Fortinet devices.
-        // FortiSwitches and FortiAPs are probed via their parent FortiGate
-        // controller (probeFortinetController path), so their monitorStatus
-        // is maintained by the same five-state machine as the FortiGate.
-        { selector: 'node[role="fortigate"]',   style: { "background-color": "data(nodeColor)", width: 64, height: 64, "font-weight": 700 } },
-        { selector: 'node[role="fortiswitch"]', style: { "background-color": "data(nodeColor)" } },
-        { selector: 'node[role="fortiap"]',     style: { "background-color": "data(nodeColor)", width: 36, height: 36 } },
-        // LLDP-discovered ghost neighbor (non-Polaris device, e.g. an upstream
-        // ISP router or a third-party access switch). Orange + dashed border
-        // signals "we know it's there because LLDP told us, but Polaris isn't
-        // managing it directly".
-        {
-          selector: 'node[role="lldp"]',
-          style: {
-            "background-color": "#7a4f1a",
-            "border-color": "#f59e0b",
-            "border-style": "dashed",
-            width: 36,
-            height: 36,
-          },
-        },
-        // Cross-site Polaris asset observed via LLDP (e.g. a firewall at
-        // another site that this site's FortiGate sees as an upstream
-        // neighbor). Solid border + blue tint signals "real Polaris asset,
-        // just not this site". Click navigates to the asset details page.
-        {
-          selector: 'node[role="remote-asset"]',
-          style: {
-            "background-color": "#1e3a5f",
-            "border-color": "#4fc3f7",
-            "border-style": "solid",
-            "border-width": 2,
-            width: 44,
-            height: 44,
-          },
-        },
-        // Operator-uploaded device icon. Overrides the role-color with the
-        // uploaded image when an icon was resolved for this node's
-        // (manufacturer, model, assetType) combo. Sized larger so the icon
-        // is legible. Selected with `hasIcon = 1` (Cytoscape doesn't allow
-        // boolean property selectors directly, so the data field stamps an
-        // integer).
-        {
-          selector: 'node[hasIcon = 1]',
-          style: {
-            "background-image": "data(iconUrl)",
-            "background-fit": "contain",
-            "background-clip": "node",
-            "background-color": "#ffffff", // contrast layer behind translucent icons
-            "background-opacity": 0.95,
-            width: 56,
-            height: 56,
-            "border-width": 1,
-          },
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1.8,
-            "line-color": edgeColor,
-            "target-arrow-color": edgeColor,
-            "target-arrow-shape": "none",
-            "curve-style": "bezier",
-            label: "data(label)",
-            "font-size": "9px",
-            color: textColor,
-            "text-background-color": isDark ? "#1c2029" : "#ffffff",
-            "text-background-opacity": 0.85,
-            "text-background-padding": 2,
-            "text-rotation": "autorotate",
-          },
-        },
-        // LLDP edges render dashed in the orange ghost-node tint so the
-        // operator can tell at a glance which links came from authoritative
-        // controller data (FortiLink, switch-controller MAC learning) vs
-        // observed LLDP advertisements.
-        {
-          selector: 'edge[isLldp = 1]',
-          style: {
-            "line-style": "dashed",
-            "line-color": "#f59e0b",
-            "target-arrow-color": "#f59e0b",
-          },
-        },
-        // Interface-inferred edges (peer aggregates whose name encodes the
-        // peer's serial fragment or hostname). These are CMDB-stamped, so
-        // a confident solid teal line — distinct from both the muted
-        // gray controller-data edges and the dashed orange LLDP edges.
-        {
-          selector: 'edge[isIface = 1]',
-          style: {
-            "line-style": "solid",
-            "line-color": "#14b8a6",
-            "target-arrow-color": "#14b8a6",
-            width: 2.4,
-          },
-        },
-        // Synthetic endpoint node — added by the connection-path overlay
-        // when the operator searches a server / workstation / printer in
-        // the topology modal. Status-colored fill matches the five-state
-        // monitor palette used elsewhere; rounded-square shape distinguishes
-        // it from the round Fortinet infrastructure nodes.
-        {
-          selector: 'node[role="endpoint"]',
-          style: {
-            "background-color": "data(nodeColor)",
-            shape: "round-rectangle",
-            width: 44,
-            height: 36,
-          },
-        },
-        // Off-path elements during a connection-path overlay — fade them
-        // hard so the focused path stands out without losing site context.
-        {
-          selector: 'node.dimmed',
-          style: {
-            opacity: 0.18,
-            "text-opacity": 0.25,
-          },
-        },
-        {
-          selector: 'edge.dimmed',
-          style: {
-            opacity: 0.12,
-            "text-opacity": 0.18,
-          },
-        },
-        // Pulse style applied transiently to a node that the topology
-        // search just located. Bright accent ring draws the eye; class
-        // is removed after ~1.5s by the pick handler.
-        {
-          selector: 'node.topology-pulse',
-          style: {
-            "border-color": "#22d3ee",
-            "border-width": 4,
-            "border-opacity": 1,
-          },
-        },
-        // Selected nodes (shift+drag box-select OR shift+click) — bright
-        // cyan halo + thicker border so the operator can see exactly
-        // which nodes are about to move when they drag the group. The
-        // default Cytoscape selection styling is too subtle on dark.
-        {
-          selector: 'node:selected',
-          style: {
-            "border-color": "#22d3ee",
-            "border-width": 5,
-            "border-opacity": 1,
-            "overlay-color": "#22d3ee",
-            "overlay-opacity": 0.18,
-            "overlay-padding": 6,
-          },
-        },
-        // Selected edges get the same accent so multi-select operations
-        // that include edges (e.g. inspecting a sub-graph) read clearly.
-        {
-          selector: 'edge:selected',
-          style: {
-            "line-color": "#22d3ee",
-            "target-arrow-color": "#22d3ee",
-            width: 3,
-            "overlay-color": "#22d3ee",
-            "overlay-opacity": 0.15,
-            "overlay-padding": 3,
-          },
-        },
-        // Selection rectangle (shift+drag on background). The default
-        // Cytoscape rectangle is a faint gray that disappears against
-        // the dark modal background. Give it the same bright cyan
-        // accent the selected nodes use.
-        {
-          selector: 'core',
-          style: {
-            "selection-box-color":        "#22d3ee",
-            "selection-box-border-color": "#22d3ee",
-            "selection-box-border-width": 1.5,
-            "selection-box-opacity":      0.22,
-            "active-bg-color":            "#22d3ee",
-            "active-bg-opacity":          0.14,
-          },
-        },
-      ],
+      style: window.PolarisTopologyRender.topologyStylesheet(theme, { includeEndpointOverlay: true }),
     });
 
     // Restore saved positions AFTER the dagre layout finishes so any
