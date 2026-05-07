@@ -2991,6 +2991,14 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       const asset = assetIdx.findByEntry(entry.macAddress, entry.hostname, entry.ipAddress, { allowIpFallback: false });
       if (!asset) continue;
 
+      // Infrastructure assets (firewall/switch/AP) get their ipAddress,
+      // ipSource, and learnedLocation from the dedicated FortiGate /
+      // FortiSwitch / FortiAP pathways earlier in this sync. A DHCP lease
+      // for one of these devices typically points at a non-management
+      // interface (FortiLink, mirror VLAN, stack mgmt port) and would
+      // clobber the authoritative connecting_from / mgmtIp value.
+      const isInfraAsset = asset.assetType === "firewall" || asset.assetType === "switch" || asset.assetType === "access_point";
+
       if (entry.device) {
         sightingRows.push({
           assetId: asset.id,
@@ -3002,7 +3010,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         // Stamp this asset as a fortigate-endpoint source target — every
         // DHCP sighting counts even if the asset wasn't created via
         // device-inventory. End-of-sync flush below upserts the row.
-        if (asset.assetType !== "firewall" && asset.assetType !== "switch" && asset.assetType !== "access_point") {
+        if (!isInfraAsset) {
           fortigateEndpointAssetIds.add(asset.id);
         }
       }
@@ -3032,27 +3040,32 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
       // Queue asset update. macAddresses go to the side table via the
       // reconcile call inside batchSettled, not as a JSON column write.
+      const updateData: Record<string, unknown> = {
+        macAddress: macList[0].mac,
+        status: "active",
+        ...(asset.status !== "active" ? { statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
+        lastSeen: new Date(now),
+      };
+      if (!isInfraAsset) {
+        updateData.ipAddress = entry.ipAddress;
+        updateData.ipSource = entry.device || integrationType;
+        if (entry.device) updateData.learnedLocation = entry.device;
+      }
       assetUpdates.push({
         id: asset.id,
-        data: {
-          macAddress: macList[0].mac,
-          ipAddress: entry.ipAddress,
-          ipSource: entry.device || integrationType,
-          status: "active",
-          ...(asset.status !== "active" ? { statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
-          lastSeen: new Date(now),
-          ...(entry.device ? { learnedLocation: entry.device } : {}),
-        },
+        data: updateData,
         macs: macList,
       });
 
       // Update in-memory so device inventory phase sees current state
       asset.macAddress = macList[0].mac;
       asset.macAddresses = macList;
-      asset.ipAddress = entry.ipAddress;
+      if (!isInfraAsset) {
+        asset.ipAddress = entry.ipAddress;
+        if (entry.device) asset.learnedLocation = entry.device;
+      }
       asset.status = "active";
       asset.lastSeen = now;
-      if (entry.device) asset.learnedLocation = entry.device;
       assetIdx.reindex(asset);
 
       // Queue reservation cross-update (in-memory lookup, no DB query)
