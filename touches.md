@@ -1119,8 +1119,8 @@ Listed alphabetically.
 **Invariants:**
 - MAC normalization handles any whitespace/colon/dash separator; result is uppercase colon form.
 - CIDR vs plain IP vs MAC classification is hierarchical: CIDR requires `/` with `/\d{1,2}$` pattern; IP uses `isValidIpAddress()` fallback; MAC is compact 12-hex-digit match with any separator.
-- PER_GROUP_LIMIT (8) caps all five hit groups; order is stable (name/hostname/cidr asc).
-- Site filtering removes firewall assets with lat/lng from the regular asset group to avoid duplication on the Device Map.
+- PER_GROUP_LIMIT (8) caps all six hit groups (blocks/subnets/reservations/assets/ips/sites); order is stable (name/hostname/cidr asc).
+- Pinned firewalls (assetType=firewall + lat/lng set) are queried as their own group via `searchPinnedFirewalls`; `searchAssets` excludes them at the SQL layer via a `NOT { AND: [...] }` filter so each group gets an independent 8-row budget. Both pathways funnel through `runAssetSearch(like, mac, baseFilter)` which owns the OR clauses + AssetSource cross-search + dedup merge — keep them in lock-step when adding new asset-search fields.
 - Asset origin resolution (for topology modal focus) prioritizes most-recent DHCP sighting, falls back to `learnedLocation` for Entra/AD-discovered hosts.
 - AssetSource externalId search strips `entra:`, `ad:`, `fgt:`, `intune:`, `fortiswitch:`, `fortiap:` prefixes so operators can paste either form.
 

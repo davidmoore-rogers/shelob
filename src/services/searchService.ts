@@ -74,24 +74,20 @@ export async function searchAll(rawQuery: string): Promise<SearchResults> {
   // Text pattern used for contains-insensitive matches
   const like = q;
 
-  // Run all queries in parallel
-  const [blocks, subnets, reservations, assets, ipHit] = await Promise.all([
+  // Run all queries in parallel. Pinned firewalls are queried as their
+  // own group (`sites`) with an independent PER_GROUP_LIMIT budget so
+  // they don't get crowded out of `assets` by alphabetically-earlier
+  // workstations/switches matching the same site code on large fleets.
+  const [blocks, subnets, reservations, assets, sites, ipHit] = await Promise.all([
     searchBlocks(like),
     searchSubnets(like, isCidr ? q : null),
     searchReservations(like, isIp ? q : null),
     searchAssets(like, mac),
+    searchPinnedFirewalls(like, mac),
     isIp ? resolveIp(q) : Promise.resolve(null),
   ]);
 
-  // Site = firewall asset with lat/lng coords. Surface separately under
-  // the "Device Map" section so the dropdown can pan-to-marker. Drop
-  // these from the regular Assets group too so the same FortiGate
-  // doesn't appear in both sections.
-  const sites = assets.filter(
-    (a) => a.assetType === "firewall" && a.latitude !== null && a.longitude !== null,
-  );
-  const siteIds = new Set(sites.map((s) => s.id));
-  const assetsWithoutSites = assets.filter((a) => !siteIds.has(a.id));
+  const assetsWithoutSites = assets;
 
   // Resolve the origin FortiGate (a pinned site on the Device Map)
   // for each asset hit. When set, the dropdown's map-page handler can
@@ -261,6 +257,28 @@ async function searchReservations(like: string, ipExact: string | null) {
 }
 
 async function searchAssets(like: string, mac: string | null) {
+  // Exclude pinned firewalls (assetType=firewall with lat/lng) — they're
+  // queried separately as `sites` so each group gets its own row budget.
+  return runAssetSearch(like, mac, {
+    NOT: {
+      AND: [
+        { assetType: "firewall" },
+        { latitude: { not: null } },
+        { longitude: { not: null } },
+      ],
+    },
+  });
+}
+
+async function searchPinnedFirewalls(like: string, mac: string | null) {
+  return runAssetSearch(like, mac, {
+    assetType: "firewall",
+    latitude: { not: null },
+    longitude: { not: null },
+  });
+}
+
+async function runAssetSearch(like: string, mac: string | null, baseFilter: any) {
   const or: any[] = [
     { hostname: { contains: like, mode: "insensitive" as const } },
     { dnsName: { contains: like, mode: "insensitive" as const } },
@@ -285,13 +303,14 @@ async function searchAssets(like: string, mac: string | null) {
   const sourceQuery = stripSourceKindPrefix(like);
   const [byAsset, sourceHits] = await Promise.all([
     prisma.asset.findMany({
-      where: { OR: or },
+      where: { ...baseFilter, OR: or },
       take: PER_GROUP_LIMIT,
       orderBy: { hostname: "asc" },
     }),
     prisma.assetSource.findMany({
       where: {
         externalId: { contains: sourceQuery, mode: "insensitive" as const },
+        asset: baseFilter,
       },
       include: {
         asset: true,
