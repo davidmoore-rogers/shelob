@@ -385,11 +385,13 @@
     var screenshotBtn = document.getElementById("topology-screenshot");
     var fullscreenBtn = document.getElementById("topology-fullscreen");
     var refreshBtn = document.getElementById("topology-refresh");
+    var resetBtn = document.getElementById("topology-reset-layout");
     var searchInput = document.getElementById("topology-search-input");
     closeBtn.addEventListener("click", closeTopology);
     if (screenshotBtn) screenshotBtn.addEventListener("click", screenshotTopology);
     if (fullscreenBtn) fullscreenBtn.addEventListener("click", toggleFullscreenTopology);
     if (refreshBtn) refreshBtn.addEventListener("click", refreshTopology);
+    if (resetBtn) resetBtn.addEventListener("click", resetTopologyLayout);
     if (searchInput) wireTopologySearch(searchInput);
     // Intercept clicks on asset links in the topology right-bar so they open
     // the asset details slide-over instead of navigating away to assets.html.
@@ -517,6 +519,18 @@
     } finally {
       if (btn) btn.disabled = false;
     }
+  }
+
+  // Drop the operator's saved node positions for this site and re-run the
+  // dagre layout against the cached topology data. Used when manual drags
+  // have produced a layout the operator wants to abandon (e.g. inherited
+  // positions from before a tuning change to dagre's nodeSep / rankSep).
+  function resetTopologyLayout() {
+    if (!topoState.siteId || !topoState.data) return;
+    try { localStorage.removeItem(POSITION_STORAGE_PREFIX + topoState.siteId); }
+    catch (e) { /* quota / private mode — proceed with re-render anyway */ }
+    renderTopologyGraph(topoState.data);
+    if (typeof showToast === "function") showToast("Layout reset");
   }
 
   // ── Position persistence ───────────────────────────────────────────────────
@@ -823,8 +837,8 @@
       layout: {
         name: "dagre",
         rankDir: "LR",
-        nodeSep: 55,
-        rankSep: 120,
+        nodeSep: 30,
+        rankSep: 160,
         fit: true,
         padding: 30,
       },
