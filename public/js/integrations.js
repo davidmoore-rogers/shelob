@@ -15,21 +15,25 @@ var _POLLING_LABELS = {
   winrm:    "WinRM",
   ssh:      "SSH",
   icmp:     "ICMP",
+  disabled: "Disabled",
 };
 
 var _POLLING_COMPAT = {
-  fortimanager:    ["rest_api", "snmp", "ssh", "icmp"],
-  fortigate:       ["rest_api", "snmp", "ssh", "icmp"],
-  activedirectory: ["icmp", "winrm", "ssh"],
-  entraid:         ["icmp", "winrm", "ssh"],
-  windowsserver:   ["icmp", "winrm", "ssh"],
-  manual:          ["rest_api", "snmp", "winrm", "ssh", "icmp"],
+  fortimanager:    ["rest_api", "snmp", "ssh", "icmp", "disabled"],
+  fortigate:       ["rest_api", "snmp", "ssh", "icmp", "disabled"],
+  activedirectory: ["icmp", "winrm", "ssh", "disabled"],
+  entraid:         ["icmp", "winrm", "ssh", "disabled"],
+  windowsserver:   ["icmp", "winrm", "ssh", "disabled"],
+  manual:          ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"],
 };
 
 // Source-default polling for one stream. Mirrors defaultPollingForSource() in
 // src/services/monitoringService.ts. Used to label the "Inherit" option.
 function _polarisSourceDefaultPolling(source, stream) {
-  if (source === "fortimanager" || source === "fortigate") return "rest_api";
+  if (source === "fortimanager" || source === "fortigate") {
+    if (stream === "lldp") return "disabled";
+    return "rest_api";
+  }
   if (stream === "responseTime") return "icmp";
   return null; // telemetry/interfaces/lldp not delivered on AD/Entra/Win/Manual by default
 }
@@ -487,26 +491,34 @@ function _readPushQuarantineToggle() {
 // plus four checkboxes that decide which streams (response-time, telemetry,
 // interfaces, LLDP) ride SNMP vs the default FortiOS REST API. IPsec is always
 // REST regardless — SNMP has no equivalent.
-// SNMP credential picker for the FortiGates subtab on FMG/FortiGate
+// SNMP / SSH credential pickers for the FortiGates subtab on FMG/FortiGate
 // integration modals. Per-stream polling-method selection (REST API / SNMP /
-// SSH / ICMP) lives in the Cadence & Retention section above; this picker
-// supplies the credential the SNMP-keyed streams will use. A per-asset
+// SSH / ICMP) lives in the Cadence & Retention section above; these pickers
+// supply the credentials the SNMP- or SSH-keyed streams will use. A per-asset
 // monitorCredential on the Asset's Monitoring tab takes priority.
-function integrationMonitorOverrideHTML(credentials, selectedId) {
-  var snmp = (credentials || []).filter(function (c) { return c.type === "snmp"; });
-  var options = '<option value="">— none —</option>' +
-    snmp.map(function (c) {
-      var sel = (selectedId && c.id === selectedId) ? " selected" : "";
-      return '<option value="' + escapeHtml(c.id) + '"' + sel + '>' + escapeHtml(c.name) + '</option>';
-    }).join("");
-  var emptyHint = snmp.length === 0
-    ? '<p class="hint" style="color:var(--color-warning)">No SNMP credentials defined yet — add one under Server Settings &gt; Credentials before pointing any polling method at SNMP.</p>'
-    : '<p class="hint">Used by every stream above whose polling method is SNMP. A per-asset credential on the Asset Monitoring tab takes precedence when set.</p>';
-  return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">SNMP credential</p>' +
-    '<div class="form-group">' +
-      '<select id="f-mon-credential">' + options + '</select>' +
-      emptyHint +
-    '</div>' +
+//
+// Both rows are rendered with `display:none` and revealed reactively by
+// _syncCredentialPickerVisibility() based on which polling methods are
+// currently selected on the four tier dropdowns.
+function integrationMonitorOverrideHTML(credentials, selectedSnmpId, selectedSshId) {
+  function row(type, label, selectId, selectedId) {
+    var creds = (credentials || []).filter(function (c) { return c.type === type; });
+    var options = '<option value="">— none —</option>' +
+      creds.map(function (c) {
+        var sel = (selectedId && c.id === selectedId) ? " selected" : "";
+        return '<option value="' + escapeHtml(c.id) + '"' + sel + '>' + escapeHtml(c.name) + '</option>';
+      }).join("");
+    var emptyHint = creds.length === 0
+      ? '<p class="hint" style="color:var(--color-warning)">No ' + escapeHtml(label) + ' credentials defined yet — add one under Server Settings &gt; Credentials.</p>'
+      : '<p class="hint">Used by every stream above whose polling method is ' + escapeHtml(label) + '. A per-asset credential on the Asset Monitoring tab takes precedence when set.</p>';
+    return '<div class="form-group" id="' + selectId + '-row" style="display:none">' +
+        '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.4rem">' + escapeHtml(label) + ' credential</p>' +
+        '<select id="' + selectId + '">' + options + '</select>' +
+        emptyHint +
+      '</div>';
+  }
+  return row("snmp", "SNMP", "f-mon-credential",     selectedSnmpId) +
+         row("ssh",  "SSH",  "f-mon-credential-ssh", selectedSshId)  +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">';
 }
 
@@ -560,31 +572,37 @@ function _integrationCadenceSectionHTML(s, integrationType) {
 }
 
 // Picker block for the FortiSwitch / FortiAP subtab — "enable direct polling"
-// checkbox + SNMP credential dropdown + "Add as Monitored" checkbox. id
-// prefix collides if you instantiate twice on the same page; we use distinct
-// prefixes per class.
-function _classDirectPollHTML(idPrefix, kindLabel, snmpCredentials, currentEnabled, currentCredId, currentAddAsMonitored) {
-  var snmp = (snmpCredentials || []).filter(function (c) { return c.type === "snmp"; });
-  var options = '<option value="">— select credential —</option>' +
-    snmp.map(function (c) {
-      var sel = (currentCredId && c.id === currentCredId) ? " selected" : "";
-      return '<option value="' + escapeHtml(c.id) + '"' + sel + '>' + escapeHtml(c.name) + '</option>';
-    }).join("");
-  var emptyHint = snmp.length === 0
-    ? '<p class="hint" style="color:var(--color-warning)">No SNMP credentials defined yet — add one under Server Settings &gt; Credentials, or leave direct polling off and Polaris will fall back to ICMP when "Add as Monitored" is checked below.</p>'
-    : '<p class="hint">Discovery stamps each newly-found ' + escapeHtml(kindLabel) + ' with this credential. Operator overrides on existing assets are preserved.</p>';
+// checkbox + per-credential-type dropdowns (SNMP / SSH) + "Add as Monitored"
+// checkbox. id prefix collides if you instantiate twice on the same page; we
+// use distinct prefixes per class. The SNMP and SSH rows render hidden and
+// are revealed reactively by _syncCredentialPickerVisibility() once the
+// integration-tier polling dropdowns pick the matching method.
+function _classDirectPollHTML(idPrefix, kindLabel, credentials, currentEnabled, currentSnmpCredId, currentAddAsMonitored, currentSshCredId) {
+  function credRow(type, label, selectId, selectedId) {
+    var rows = (credentials || []).filter(function (c) { return c.type === type; });
+    var options = '<option value="">— select credential —</option>' +
+      rows.map(function (c) {
+        var sel = (selectedId && c.id === selectedId) ? " selected" : "";
+        return '<option value="' + escapeHtml(c.id) + '"' + sel + '>' + escapeHtml(c.name) + '</option>';
+      }).join("");
+    var emptyHint = rows.length === 0
+      ? '<p class="hint" style="color:var(--color-warning)">No ' + escapeHtml(label) + ' credentials defined yet — add one under Server Settings &gt; Credentials, or leave direct polling off and Polaris will fall back to ICMP when "Add as Monitored" is checked below.</p>'
+      : '<p class="hint">Discovery stamps each newly-found ' + escapeHtml(kindLabel) + ' with this credential when ' + escapeHtml(label) + ' is the resolved polling method. Operator overrides on existing assets are preserved.</p>';
+    return '<div class="form-group" id="' + selectId + '-row" style="margin-bottom:0.6rem;display:none">' +
+        '<label>' + escapeHtml(label) + ' credential</label>' +
+        '<select id="' + selectId + '">' + options + '</select>' +
+        emptyHint +
+      '</div>';
+  }
   return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Direct polling</p>' +
     '<div style="background:rgba(79,195,247,0.08);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
-      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.6rem 0">Managed ' + escapeHtml(kindLabel) + 's in FortiLink mode usually keep their own management plane locked down. Polaris can\'t reach them through the controller FortiGate, so direct polling only works when SNMP has been explicitly enabled on the ' + escapeHtml(kindLabel) + ' itself.</p>' +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.6rem 0">Managed ' + escapeHtml(kindLabel) + 's in FortiLink mode usually keep their own management plane locked down. Polaris can\'t reach them through the controller FortiGate, so direct polling only works when the matching protocol has been explicitly enabled on the ' + escapeHtml(kindLabel) + ' itself.</p>' +
       '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.6rem">' +
         '<input type="checkbox" id="' + idPrefix + 'enabled" ' + (currentEnabled ? "checked" : "") + ' style="width:auto">' +
         '<label for="' + idPrefix + 'enabled" style="margin:0;font-weight:500">Enable direct polling of managed ' + escapeHtml(kindLabel) + 's</label>' +
       '</div>' +
-      '<div class="form-group" style="margin-bottom:0">' +
-        '<label>SNMP credential</label>' +
-        '<select id="' + idPrefix + 'credentialId">' + options + '</select>' +
-        emptyHint +
-      '</div>' +
+      credRow("snmp", "SNMP", idPrefix + "credentialId",    currentSnmpCredId) +
+      credRow("ssh",  "SSH",  idPrefix + "sshCredentialId", currentSshCredId)  +
     '</div>' +
     // "Add as Monitored" checkbox — independent of direct polling. When on,
     // each newly-discovered switch/AP is created with monitored=true; the
@@ -884,26 +902,21 @@ function _fortigateAddMonitoredHTML(idPrefix, currentAddAsMonitored) {
 // install (server-side resolver picks the top-level when a class field is
 // unset). Showing the inherited number as the placeholder lets the operator
 // see what's currently in effect even if they haven't customized this class.
-// Renders the integration's Monitoring tab. Three stacked sections:
+// Renders the integration's Monitoring tab. Two stacked sections:
 //
 //   1. Cadence & Retention — the integration tier of the monitor settings
 //      hierarchy (8 fields). Saved via PUT /monitor-settings/integration/:id
 //      when the modal's Save Changes button fires.
 //   2. Discovery Defaults — for FMG/FortiGate integrations only; renders
-//      the existing 3-subtab layout (FortiGates / FortiSwitches / FortiAPs)
-//      with each class's discovery-time defaults: addAsMonitored,
-//      snmpCredentialId, autoMonitorInterfaces, plus the FortiGates
-//      per-stream transport overrides + SNMP credential picker. Cadence
-//      inputs are intentionally NOT in this section anymore — they live
-//      in the Cadence section above and apply to every class.
-//   3. Class Overrides — list of MonitorClassOverride rows scoped to
-//      THIS integration. Add/Edit/Delete each row inline. Loaded
-//      asynchronously by `_intgWireClassOverridesSection` after the modal
-//      renders. Hidden on the Add flow (no integration id yet).
+//      the 3-subtab layout (FortiGates / FortiSwitches / FortiAPs) with each
+//      class's discovery-time defaults: addAsMonitored, snmpCredentialId,
+//      sshCredentialId, autoMonitorInterfaces. Cadence inputs and class
+//      overrides live elsewhere — the Cadence section above (cadence) and
+//      the Assets-page Monitoring Settings modal (class overrides).
 //
 // opts: { integrationId, integrationType, integrationName, snmpCredentials,
-//         monitorCredentialId, fortigateMonitor, fortiswitchMonitor,
-//         fortiapMonitor }
+//         monitorCredentialId, sshCredentialId, fortigateMonitor,
+//         fortiswitchMonitor, fortiapMonitor }
 function monitorSettingsFormHTML(s, opts) {
   s = s || {};
   opts = opts || {};
@@ -917,7 +930,7 @@ function monitorSettingsFormHTML(s, opts) {
       '<h4 style="margin:0 0 0.25rem 0">Cadence & Retention</h4>' +
       '<p class="hint" style="margin:0 0 1rem 0;color:var(--color-text-tertiary)">' +
         'Default cadences and retention windows applied to every asset discovered by this integration. ' +
-        'A class override below or a per-asset override on the asset itself takes priority.' +
+        'A class override (Assets page → Monitoring Settings) or a per-asset override on the asset itself takes priority.' +
       '</p>' +
       _integrationCadenceSectionHTML(s, integrationType) +
     '</section>';
@@ -925,8 +938,8 @@ function monitorSettingsFormHTML(s, opts) {
   // ─── Section 2: Discovery Defaults (FMG/FortiGate only) ───────────────────
   var discoverySection = "";
   if (isFmgFgt) {
-    var fwSwCfg = opts.fortiswitchMonitor || { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null };
-    var fwApCfg = opts.fortiapMonitor     || { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null };
+    var fwSwCfg = opts.fortiswitchMonitor || { enabled: false, snmpCredentialId: null, sshCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null };
+    var fwApCfg = opts.fortiapMonitor     || { enabled: false, snmpCredentialId: null, sshCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null };
     var fwFgCfg = opts.fortigateMonitor   || { addAsMonitored: false, autoMonitorInterfaces: null };
 
     // Stash auto-monitor selections for the lazy-loaded checklists.
@@ -938,15 +951,15 @@ function monitorSettingsFormHTML(s, opts) {
 
     var fortigatePanel =
       _fortigateAddMonitoredHTML("f-mon-fortigate-", fwFgCfg.addAsMonitored === true) +
-      integrationMonitorOverrideHTML(opts.snmpCredentials, opts.monitorCredentialId) +
+      integrationMonitorOverrideHTML(opts.snmpCredentials, opts.monitorCredentialId, opts.sshCredentialId || null) +
       _autoMonitorInterfacesHTML("f-mon-fortigate-amon-", "FortiGate", fwFgCfg.autoMonitorInterfaces || null, "names", hasId);
 
     var switchPanel =
-      _classDirectPollHTML("f-mon-fortiswitch-", "FortiSwitch", opts.snmpCredentials, fwSwCfg.enabled === true, fwSwCfg.snmpCredentialId || null, fwSwCfg.addAsMonitored === true) +
+      _classDirectPollHTML("f-mon-fortiswitch-", "FortiSwitch", opts.snmpCredentials, fwSwCfg.enabled === true, fwSwCfg.snmpCredentialId || null, fwSwCfg.addAsMonitored === true, fwSwCfg.sshCredentialId || null) +
       _autoMonitorInterfacesHTML("f-mon-fortiswitch-amon-", "FortiSwitch", fwSwCfg.autoMonitorInterfaces || null, "wildcard", hasId);
 
     var apPanel =
-      _classDirectPollHTML("f-mon-fortiap-", "FortiAP", opts.snmpCredentials, fwApCfg.enabled === true, fwApCfg.snmpCredentialId || null, fwApCfg.addAsMonitored === true) +
+      _classDirectPollHTML("f-mon-fortiap-", "FortiAP", opts.snmpCredentials, fwApCfg.enabled === true, fwApCfg.snmpCredentialId || null, fwApCfg.addAsMonitored === true, fwApCfg.sshCredentialId || null) +
       _autoMonitorInterfacesHTML("f-mon-fortiap-amon-", "FortiAP", fwApCfg.autoMonitorInterfaces || null, "type", hasId);
 
     discoverySection =
@@ -963,28 +976,8 @@ function monitorSettingsFormHTML(s, opts) {
       '</section>';
   }
 
-  // ─── Section 3: Class Overrides (only on edit) ────────────────────────────
-  var classOverridesSection = '<section>' +
-    '<h4 style="margin:0 0 0.25rem 0">Class Overrides</h4>' +
-    '<p class="hint" style="margin:0 0 0.75rem 0;color:var(--color-text-tertiary)">' +
-      'Per-class overrides scoped to this integration. Each row supplies values for one asset class (firewall, switch, server, etc.) ' +
-      'that take priority over the Cadence settings above and apply to every asset of that class discovered by this integration. ' +
-      'Per-asset overrides (set from each asset\'s Monitoring tab) take priority over class overrides.' +
-    '</p>' +
-    (hasId
-      ? '<div id="intg-class-overrides-wrap" data-integration-id="' + escapeHtml(opts.integrationId) +
-        '" data-integration-name="' + escapeHtml(opts.integrationName || "") +
-        '" data-integration-type="' + escapeHtml(integrationType) + '">' +
-          '<div class="empty-state" style="padding:1rem 0;font-size:0.85rem">Loading class overrides…</div>' +
-        '</div>'
-      : '<p class="hint" style="font-size:0.82rem;color:var(--color-text-tertiary)">Class overrides become available after the integration is created.</p>'
-    ) +
-  '</section>';
-
   return cadenceSection +
-    (discoverySection ? '<hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--color-border)">' + discoverySection : '') +
-    '<hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--color-border)">' +
-    classOverridesSection;
+    (discoverySection ? '<hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--color-border)">' + discoverySection : '');
 }
 
 // Wires the per-asset-timeout warning indicator so the Cadence section
@@ -1002,226 +995,46 @@ function _wireProbeTimeoutWarning() {
   check();
 }
 
-// Lazy-loads the class-override list once the modal is in the DOM. Looks up
-// the integration's saved overrides via /monitor-settings/class-overrides
-// scoped to this integrationId, renders the table, and wires Add / Edit /
-// Delete handlers. Safe to call when integrationId is null (Add flow) —
-// the wrapper element won't exist there and we no-op.
-async function _intgWireClassOverridesSection() {
-  var wrap = document.getElementById("intg-class-overrides-wrap");
-  if (!wrap) return;
-  var integrationId   = wrap.getAttribute("data-integration-id") || null;
-  var integrationName = wrap.getAttribute("data-integration-name") || "";
-  var integrationType = wrap.getAttribute("data-integration-type") || "";
-  if (!integrationId) return;
-  var scope = {
-    integrationId:   integrationId,
-    integrationName: integrationName,
-    integrationType: integrationType,
-  };
-
-  var rows = [];
-  try {
-    rows = await api.monitorSettings.listClassOverrides({ integrationId: integrationId });
-  } catch (err) {
-    wrap.innerHTML = '<div class="empty-state" style="padding:1rem 0;color:var(--color-danger)">Failed to load: ' +
-      escapeHtml(err.message || "unknown error") + '</div>';
-    return;
+// Reactive show/hide of the Discovery Defaults credential rows on the
+// FortiGates / FortiSwitches / FortiAPs subtabs. The SNMP rows appear iff
+// any of the four integration-tier polling dropdowns is set to SNMP; the
+// SSH rows appear iff any is set to SSH. Run on initial render and on every
+// dropdown change so the UI reflects the live selection without a save.
+function _syncCredentialPickerVisibility() {
+  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-telemetryPolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
+  var anySnmp = false, anySsh = false;
+  for (var i = 0; i < ids.length; i++) {
+    var el = document.getElementById(ids[i]);
+    if (!el) continue;
+    if (el.value === "snmp") anySnmp = true;
+    if (el.value === "ssh")  anySsh  = true;
   }
-  _intgRenderClassOverridesList(rows || [], scope);
-}
-
-function _intgRenderClassOverridesList(rows, scope) {
-  var wrap = document.getElementById("intg-class-overrides-wrap");
-  if (!wrap) return;
-  // Stash the live row list so per-row handlers can reach it without
-  // closing over a stale snapshot.
-  wrap.__rows = rows;
-
-  var rowHTML = rows.length === 0
-    ? '<tr><td colspan="3" class="empty-state" style="padding:1rem 0;text-align:center">No class overrides configured for this integration.</td></tr>'
-    : rows.map(function (o) {
-        var classLabel = (typeof ASSET_TYPE_LABELS !== "undefined" && ASSET_TYPE_LABELS[o.assetType]) || o.assetType;
-        return '<tr>' +
-          '<td style="padding:6px 8px">' + escapeHtml(classLabel) + '</td>' +
-          '<td style="padding:6px 8px"><span class="hint" style="font-size:0.78rem;color:var(--color-text-tertiary)">' +
-            escapeHtml(_intgOverrideSummary(o)) + '</span></td>' +
-          '<td style="padding:6px 8px;white-space:nowrap;text-align:right">' +
-            '<button type="button" class="btn btn-sm btn-secondary" data-edit-override="' + escapeHtml(o.id) + '">Edit</button> ' +
-            '<button type="button" class="btn btn-sm btn-danger"    data-delete-override="' + escapeHtml(o.id) + '">Delete</button>' +
-          '</td>' +
-        '</tr>';
-      }).join("");
-
-  wrap.innerHTML =
-    '<div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem">' +
-      '<button type="button" class="btn btn-secondary btn-sm" id="btn-intg-add-override">+ Add Class Override</button>' +
-    '</div>' +
-    '<table style="width:100%;border-collapse:collapse">' +
-      '<thead><tr>' +
-        '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--color-border)">Class</th>' +
-        '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--color-border)">Overrides</th>' +
-        '<th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--color-border)">Actions</th>' +
-      '</tr></thead>' +
-      '<tbody>' + rowHTML + '</tbody>' +
-    '</table>';
-
-  document.getElementById("btn-intg-add-override").addEventListener("click", function () {
-    _intgOpenClassOverrideEditor(scope, null);
-  });
-  wrap.querySelectorAll("[data-edit-override]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var id  = btn.getAttribute("data-edit-override");
-      var row = (wrap.__rows || []).find(function (r) { return r.id === id; });
-      if (row) _intgOpenClassOverrideEditor(scope, row);
-    });
-  });
-  wrap.querySelectorAll("[data-delete-override]").forEach(function (btn) {
-    btn.addEventListener("click", async function () {
-      var id  = btn.getAttribute("data-delete-override");
-      var row = (wrap.__rows || []).find(function (r) { return r.id === id; });
-      var label = row
-        ? (((typeof ASSET_TYPE_LABELS !== "undefined" && ASSET_TYPE_LABELS[row.assetType]) || row.assetType) + " override")
-        : "this override";
-      var ok = await showConfirm("Delete " + label + "?");
-      if (!ok) return;
-      try {
-        await api.monitorSettings.deleteClassOverride(id);
-        var nextRows = (wrap.__rows || []).filter(function (r) { return r.id !== id; });
-        _intgRenderClassOverridesList(nextRows, scope);
-        showToast("Override deleted");
-      } catch (err) {
-        showToast(err.message || "Failed to delete override", "error");
-      }
-    });
-  });
-}
-
-function _intgOverrideSummary(o) {
-  var parts = [];
-  var labels = {
-    intervalSeconds:           "probe",
-    failureThreshold:          "threshold",
-    probeTimeoutMs:            "timeout",
-    telemetryIntervalSeconds:  "telemetry",
-    systemInfoIntervalSeconds: "sysinfo",
-    sampleRetentionDays:       "probe-retain",
-    telemetryRetentionDays:    "telem-retain",
-    systemInfoRetentionDays:   "sysinfo-retain",
-  };
-  Object.keys(labels).forEach(function (k) {
-    if (o[k] !== null && o[k] !== undefined) parts.push(labels[k] + "=" + o[k]);
-  });
-  return parts.length === 0 ? "(empty — all fields inherited)" : parts.join(", ");
-}
-
-// Opens an Add or Edit modal for one class override scoped to a specific
-// integration. The integration is fixed (not a picker); only the class
-// dropdown lets the operator choose. On edit the class is also locked
-// since changing it is effectively delete-and-recreate.
-function _intgOpenClassOverrideEditor(scope, existing) {
-  var ASSET_TYPES = {
-    server: "Server", switch: "Switch", router: "Router", firewall: "Firewall",
-    workstation: "Workstation", printer: "Printer", access_point: "AP", other: "Other",
-  };
-  var labels = (typeof ASSET_TYPE_LABELS !== "undefined") ? ASSET_TYPE_LABELS : ASSET_TYPES;
-  var isEdit = !!existing;
-
-  var classOpts = Object.keys(labels).map(function (key) {
-    var sel = (existing && existing.assetType === key) ? " selected" : "";
-    return '<option value="' + escapeHtml(key) + '"' + sel + '>' + escapeHtml(labels[key]) + '</option>';
-  }).join("");
-  var v = existing || {};
-
-  function field(name, label, value, min, max, hint) {
-    var raw = (value === null || value === undefined) ? "" : value;
-    return '<div class="form-group"><label>' + escapeHtml(label) + '</label>' +
-      '<input type="number" id="intg-cov-' + name + '" value="' + escapeHtml(String(raw)) + '" min="' + min + '" max="' + max + '" style="width:140px" placeholder="inherit">' +
-      (hint ? '<p class="hint">' + escapeHtml(hint) + '</p>' : '') +
-    '</div>';
-  }
-
-  // Source kind is fixed for class overrides scoped to an integration —
-  // they apply only to assets discovered by THIS integration. Methods are
-  // filtered against the source's compatibility matrix by the helper.
-  var sourceKind = scope.integrationType || "manual";
-  if (!_POLLING_COMPAT[sourceKind]) sourceKind = "manual";
-  var body =
-    '<div class="form-group"><label>Asset Source</label>' +
-      '<input type="text" value="' + escapeHtml(scope.integrationName || "(this integration)") + '" disabled style="opacity:0.7">' +
-    '</div>' +
-    '<div class="form-group"><label>Class</label>' +
-      '<select id="intg-cov-class"' + (isEdit ? " disabled" : "") + '>' + classOpts + '</select>' +
-      (isEdit ? '<p class="hint" style="font-size:0.78rem;color:var(--color-text-tertiary)">Class is fixed for an existing override; delete and re-create to change it.</p>' : '') +
-    '</div>' +
-    '<p class="hint" style="margin:0.5rem 0 0.75rem 0">Leave a field blank to inherit from the integration tier above.</p>' +
-    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem 1rem">' +
-      field("intervalSeconds",           "Probe interval",         v.intervalSeconds,           1,   86400, "seconds") +
-      field("failureThreshold",          "Failure threshold",      v.failureThreshold,          1,   100,   "consecutive failures") +
-      field("probeTimeoutMs",            "Probe timeout",          v.probeTimeoutMs,            100, 60000, "ms (warning under 500)") +
-      field("telemetryIntervalSeconds",  "Telemetry interval",     v.telemetryIntervalSeconds,  15,  86400, "seconds (CPU + memory + temp)") +
-      field("systemInfoIntervalSeconds", "System info interval",   v.systemInfoIntervalSeconds, 60,  86400, "seconds (interfaces + storage)") +
-      field("sampleRetentionDays",       "Probe sample retention", v.sampleRetentionDays,       0,   3650,  "days (0 = forever)") +
-      field("telemetryRetentionDays",    "Telemetry retention",    v.telemetryRetentionDays,    0,   3650,  "days (0 = forever)") +
-      field("systemInfoRetentionDays",   "System info retention",  v.systemInfoRetentionDays,   0,   3650,  "days (0 = forever)") +
-    '</div>' +
-    '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
-    _polarisPollingFourStreamHTML("intg-cov-", sourceKind, v);
-
-  var footer = '<button type="button" class="btn btn-secondary" id="btn-intg-cov-cancel">Cancel</button>' +
-    '<button type="button" class="btn btn-primary" id="btn-intg-cov-save">' + (isEdit ? "Save Changes" : "Create Override") + '</button>';
-  openModal(isEdit ? "Edit Class Override" : "Add Class Override", body, footer);
-
-  document.getElementById("btn-intg-cov-cancel").addEventListener("click", function () {
-    closeModal();
-  });
-  document.getElementById("btn-intg-cov-save").addEventListener("click", function () {
-    _intgSaveClassOverride(scope, existing);
-  });
-}
-
-async function _intgSaveClassOverride(scope, existing) {
-  var btn = document.getElementById("btn-intg-cov-save");
-  if (!btn) return;
-  var prevText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Saving…";
-  function readOptional(name) {
-    var el = document.getElementById("intg-cov-" + name);
-    if (!el || el.value === "") return null;
-    var n = parseInt(el.value, 10);
-    return Number.isFinite(n) ? n : null;
-  }
-  var fields = {
-    intervalSeconds:           readOptional("intervalSeconds"),
-    failureThreshold:          readOptional("failureThreshold"),
-    probeTimeoutMs:            readOptional("probeTimeoutMs"),
-    telemetryIntervalSeconds:  readOptional("telemetryIntervalSeconds"),
-    systemInfoIntervalSeconds: readOptional("systemInfoIntervalSeconds"),
-    sampleRetentionDays:       readOptional("sampleRetentionDays"),
-    telemetryRetentionDays:    readOptional("telemetryRetentionDays"),
-    systemInfoRetentionDays:   readOptional("systemInfoRetentionDays"),
-  };
-  Object.assign(fields, _polarisReadPollingFourStream("intg-cov-"));
-  try {
-    if (existing) {
-      await api.monitorSettings.updateClassOverride(existing.id, fields);
-      showToast("Class override updated");
-    } else {
-      var assetType = document.getElementById("intg-cov-class").value;
-      await api.monitorSettings.createClassOverride(
-        Object.assign({ assetType: assetType, integrationId: scope.integrationId }, fields)
-      );
-      showToast("Class override created");
+  var snmpRowIds = ["f-mon-credential-row", "f-mon-fortiswitch-credentialId-row", "f-mon-fortiap-credentialId-row"];
+  var sshRowIds  = ["f-mon-credential-ssh-row", "f-mon-fortiswitch-sshCredentialId-row", "f-mon-fortiap-sshCredentialId-row"];
+  function toggle(idList, show) {
+    for (var j = 0; j < idList.length; j++) {
+      var row = document.getElementById(idList[j]);
+      if (row) row.style.display = show ? "" : "none";
     }
-    closeModal();
-    // Refresh the list under the integration modal that's still open underneath.
-    _intgWireClassOverridesSection();
-  } catch (err) {
-    showToast(err.message || "Failed to save override", "error");
-    btn.disabled    = false;
-    btn.textContent = prevText;
   }
+  toggle(snmpRowIds, anySnmp);
+  toggle(sshRowIds,  anySsh);
+}
+
+// Wires `change` listeners on the four integration-tier polling dropdowns so
+// _syncCredentialPickerVisibility() runs whenever the operator picks a new
+// method. Also runs once on initial mount so a freshly-opened modal lands in
+// the correct state.
+function _wireCredentialPickerVisibility() {
+  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-telemetryPolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
+  var any = false;
+  for (var i = 0; i < ids.length; i++) {
+    var el = document.getElementById(ids[i]);
+    if (!el) continue;
+    el.addEventListener("change", _syncCredentialPickerVisibility);
+    any = true;
+  }
+  if (any) _syncCredentialPickerVisibility();
 }
 
 // Call after monitorSettingsFormHTML() has been inserted into the DOM. Wires
@@ -1266,18 +1079,23 @@ function getMonitorSettingsFromForm() {
   return _readIntegrationCadenceForm();
 }
 
-// Reads the "enable direct polling" + SNMP credential picker + the auto-Monitor
-// flag + the auto-monitor-interfaces selection for one class (FortiSwitch or
-// FortiAP). Returns null when the subtab didn't render.
+// Reads the "enable direct polling" + SNMP/SSH credential pickers + the
+// auto-Monitor flag + the auto-monitor-interfaces selection for one class
+// (FortiSwitch or FortiAP). Returns null when the subtab didn't render.
+// Both credential ids are persisted regardless of which row is currently
+// visible — flipping the integration tier between SNMP and SSH should
+// restore the prior selection rather than zero it out.
 function _readClassMonitorBlock(prefix) {
   var enabledEl    = document.getElementById(prefix + "enabled");
   var credEl       = document.getElementById(prefix + "credentialId");
+  var sshCredEl    = document.getElementById(prefix + "sshCredentialId");
   var addMonEl     = document.getElementById(prefix + "addAsMonitored");
   if (!enabledEl || !credEl) return null;
   var ami = _readAutoMonitorInterfaces(prefix + "amon-");
   return {
     enabled: enabledEl.checked === true,
     snmpCredentialId: credEl.value || null,
+    sshCredentialId:  sshCredEl ? (sshCredEl.value || null) : null,
     addAsMonitored: addMonEl ? addMonEl.checked === true : false,
     autoMonitorInterfaces: ami === undefined ? null : ami,
   };
@@ -1826,6 +1644,14 @@ function _readMonitorCredentialId() {
   return el.value || "";
 }
 
+// Reads the SSH override picker. Same semantics as _readMonitorCredentialId
+// but for the parallel SSH credential row in integrationMonitorOverrideHTML.
+function _readSshCredentialId() {
+  var el = document.getElementById("f-mon-credential-ssh");
+  if (!el) return undefined;
+  return el.value || "";
+}
+
 function _titleForType(type, action) {
   var product =
     type === "windowsserver" ? "Windows Server" :
@@ -1901,7 +1727,7 @@ async function openCreateModal(type) {
   var footer = '<button class="btn btn-secondary" id="btn-test-new">Test Connection</button>' +
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create</button>';
-  openModal(title, body, footer);
+  openModal(title, body, footer, { wide: true });
   if (isFmg || isFgt) {
     _intWireModalTabs("intg-edit");
     // Inner sub-tabs inside the Monitoring tab's Discovery Defaults section
@@ -1909,8 +1735,7 @@ async function openCreateModal(type) {
     _intWireModalTabs("intg-mon");
     wireAutoMonitorCards(null);
     _wireProbeTimeoutWarning();
-    // Class overrides not available on Add (no integration ID yet); the
-    // Monitoring tab renders a hint pointing operators at the Edit modal.
+    _wireCredentialPickerVisibility();
   } else if (isAd || isEntra || isWin) {
     _intWireModalTabs("intg-edit");
     _wireProbeTimeoutWarning();
@@ -1962,6 +1787,8 @@ async function openCreateModal(type) {
       if (isFmg || isFgt) {
         var credId = _readMonitorCredentialId();
         if (credId) createConfig.monitorCredentialId = credId;
+        var sshCredId = _readSshCredentialId();
+        if (sshCredId) createConfig.sshCredentialId = sshCredId;
         // Per-stream polling methods are part of the integration tier
         // settings now (Cadence & Retention section); they're written to
         // Integration.config.monitorSettings.polling by the
@@ -2214,6 +2041,7 @@ async function openEditModal(id) {
         { key: "monitoring", label: "Monitoring", html: monitorSettingsFormHTML(monSettings, {
           snmpCredentials: creds,
           monitorCredentialId: config.monitorCredentialId || null,
+          sshCredentialId:    config.sshCredentialId    || null,
           fortigateMonitor:   config.fortigateMonitor   || null,
           fortiswitchMonitor: config.fortiswitchMonitor || null,
           fortiapMonitor:     config.fortiapMonitor     || null,
@@ -2245,17 +2073,16 @@ async function openEditModal(id) {
     var footer = '<button class="btn btn-secondary" id="btn-test-existing">Test Connection</button>' +
       '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
-    openModal("Edit Integration", body, footer);
+    openModal("Edit Integration", body, footer, { wide: true });
     if (isFmgOrFgt) {
       _intWireModalTabs("intg-edit");
       _intWireModalTabs("intg-mon");
       wireAutoMonitorCards(id);
       _wireProbeTimeoutWarning();
-      _intgWireClassOverridesSection();
+      _wireCredentialPickerVisibility();
     } else if (isAd || isEntra || isWin) {
       _intWireModalTabs("intg-edit");
       _wireProbeTimeoutWarning();
-      _intgWireClassOverridesSection();
     }
 
     document.getElementById("btn-test-existing").addEventListener("click", async function () {
@@ -2311,6 +2138,7 @@ async function openEditModal(id) {
         // Always send the picker value so an explicit clear round-trips.
         // Empty string is normalized to null on the server.
         editConfig.monitorCredentialId = _readMonitorCredentialId() || null;
+        editConfig.sshCredentialId     = _readSshCredentialId()     || null;
         // Per-stream polling methods are persisted via the
         // /monitor-settings/integration/:id PUT below — they live in
         // Integration.config.monitorSettings.polling now.

@@ -1449,7 +1449,7 @@ function assetMonitoringFormHTML(asset) {
   // sub-row. The sub-row is hidden by default and shown/hidden by JS in
   // _wireMonitorEditTab whenever the polling method changes.
   function streamRow(label, streamName, pollingId, credSelectId, currentPoll, currentCredId) {
-    var needsCred = currentPoll && currentPoll !== "icmp";
+    var needsCred = currentPoll && currentPoll !== "icmp" && currentPoll !== "disabled";
     var credDisplay = needsCred ? "flex" : "none";
     return '<label style="margin:0">' + label + '</label>' +
       _polarisPollingDropdownHTML(pollingId, assetSourceKind, streamName, currentPoll) +
@@ -4148,7 +4148,7 @@ function _streamTransportLabel(asset, resolvedPolling) {
 // in the "Proxy via …" / "Direct" transport label). ICMP doesn't
 // authenticate.
 function _streamCredential(asset, stream, resolvedPolling) {
-  if (!asset || resolvedPolling === "icmp") return null;
+  if (!asset || resolvedPolling === "icmp" || resolvedPolling === "disabled") return null;
   var perStream = asset[stream + "Credential"];
   if (perStream && perStream.name) return perStream;
   if (asset.monitorCredential && asset.monitorCredential.name) return asset.monitorCredential;

@@ -2104,6 +2104,20 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   margin-bottom: 1.5rem;
   gap: 0;
 }
+/* Sticky outer modal tabs. Direct child of .modal-body — keeps the outer
+   navigation (General / Filters / Monitoring / …) pinned to the top while
+   scrolling a long form. Inner tabbed surfaces (Discovery Defaults
+   FortiGates/FortiSwitches/FortiAPs) live deeper in the DOM and are
+   intentionally not sticky. The negative top margin + matching padding
+   cancel the modal-body's 1.25rem padding so the strip sits flush. */
+.modal-body > .page-tabs {
+  position: sticky;
+  top: 0;
+  background: var(--color-bg-primary);
+  z-index: 5;
+  margin-top: -1.25rem;
+  padding-top: 1.25rem;
+}
 .page-tab {
   padding: 0.7rem 1.25rem;
   font-size: 0.9rem;

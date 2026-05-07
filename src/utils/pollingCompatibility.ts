@@ -23,7 +23,7 @@
  * "Polling-method compatibility matrix".
  */
 
-export type PollingMethod = "rest_api" | "snmp" | "winrm" | "ssh" | "icmp";
+export type PollingMethod = "rest_api" | "snmp" | "winrm" | "ssh" | "icmp" | "disabled";
 export type AssetSourceKind =
   | "fortimanager"
   | "fortigate"
@@ -32,17 +32,18 @@ export type AssetSourceKind =
   | "windowsserver"
   | "manual";
 
-const ALL_METHODS: ReadonlyArray<PollingMethod> = ["rest_api", "snmp", "winrm", "ssh", "icmp"];
+const ALL_METHODS: ReadonlyArray<PollingMethod> = ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"];
 
 // Each entry is the full set of valid methods for that source. A `Set` is
 // O(1) lookup which matters for the resolver running in the hot monitor
-// loop, even though the cardinality is small.
+// loop, even though the cardinality is small. "disabled" is universally
+// allowed — it means "do not poll this stream" and applies to any source.
 const COMPATIBILITY: Readonly<Record<AssetSourceKind, ReadonlySet<PollingMethod>>> = {
-  fortimanager:    new Set<PollingMethod>(["rest_api", "snmp", "ssh", "icmp"]),
-  fortigate:       new Set<PollingMethod>(["rest_api", "snmp", "ssh", "icmp"]),
-  activedirectory: new Set<PollingMethod>(["icmp", "winrm", "ssh"]),
-  entraid:         new Set<PollingMethod>(["icmp", "winrm", "ssh"]),
-  windowsserver:   new Set<PollingMethod>(["icmp", "winrm", "ssh"]),
+  fortimanager:    new Set<PollingMethod>(["rest_api", "snmp", "ssh", "icmp", "disabled"]),
+  fortigate:       new Set<PollingMethod>(["rest_api", "snmp", "ssh", "icmp", "disabled"]),
+  activedirectory: new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled"]),
+  entraid:         new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled"]),
+  windowsserver:   new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled"]),
   manual:          new Set<PollingMethod>(ALL_METHODS),
 };
 
@@ -92,5 +93,6 @@ export function pollingMethodLabel(method: PollingMethod): string {
     case "winrm":    return "WinRM";
     case "ssh":      return "SSH";
     case "icmp":     return "ICMP";
+    case "disabled": return "Disabled";
   }
 }

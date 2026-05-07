@@ -182,9 +182,12 @@ const AutoMonitorInterfacesSchema = z.discriminatedUnion("mode", [
 const FortinetClassMonitorSchema = z.object({
   enabled:               z.boolean().optional().default(false),
   snmpCredentialId:      z.string().uuid().nullable().optional(),
+  // Stored SSH credential used when the integration tier resolves any stream
+  // for this asset class to "ssh". Type-aware sibling to snmpCredentialId.
+  sshCredentialId:       z.string().uuid().nullable().optional(),
   addAsMonitored:        z.boolean().optional().default(false),
   autoMonitorInterfaces: AutoMonitorInterfacesSchema,
-}).optional().default({ enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null });
+}).optional().default({ enabled: false, snmpCredentialId: null, sshCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null });
 
 // FortiGate-class equivalent. FortiGates always get a monitorType stamped
 // at discovery (the integration's native type), so this block only carries
@@ -221,6 +224,10 @@ const FortiManagerConfigSchema = z.object({
   // resolver falls back to the source default and SNMP-keyed streams surface
   // a configuration error in the System tab refresh toast.
   monitorCredentialId: z.string().uuid().nullable().optional(),
+  // Stored SSH credential used by the integration's per-stream polling-method
+  // tier-3 setting when the operator picks SSH for a stream. Type-aware
+  // sibling to monitorCredentialId (which carries the SNMP credential).
+  sshCredentialId: z.string().uuid().nullable().optional(),
   // Per-class auto-monitor settings for assets discovered through this
   // integration. fortigateMonitor only carries `addAsMonitored` since
   // FortiGates always get a discoveredByIntegrationId stamp at discovery;
@@ -256,6 +263,7 @@ const FortiGateConfigSchema = z.object({
   inventoryExcludeInterfaces: z.array(z.string()).optional().default([]),
   inventoryIncludeInterfaces: z.array(z.string()).optional().default([]),
   monitorCredentialId: z.string().uuid().nullable().optional(),
+  sshCredentialId:    z.string().uuid().nullable().optional(),
   fortigateMonitor:   FortiGateClassMonitorSchema,
   fortiswitchMonitor: FortinetClassMonitorSchema,
   fortiapMonitor:     FortinetClassMonitorSchema,
@@ -446,6 +454,12 @@ router.post("/", async (req, res, next) => {
         if (!cred) throw new AppError(400, "Selected monitor credential not found");
         if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
       }
+      const sshCredId = cfg.sshCredentialId;
+      if (sshCredId) {
+        const cred = await prisma.credential.findUnique({ where: { id: sshCredId } });
+        if (!cred) throw new AppError(400, "Selected SSH credential not found");
+        if (cred.type !== "ssh") throw new AppError(400, "SSH credential override must be SSH");
+      }
       const polling = (cfg.monitorSettings && typeof cfg.monitorSettings === "object")
         ? (cfg.monitorSettings.polling as Record<string, unknown> | undefined) ?? {}
         : {};
@@ -456,6 +470,14 @@ router.post("/", async (req, res, next) => {
       if (polling.lldp         === "snmp") snmpStreams.push("LLDP");
       if (snmpStreams.length > 0 && !credId) {
         throw new AppError(400, `Select an SNMP credential to route ${snmpStreams.join(", ")} via SNMP`);
+      }
+      const sshStreams: string[] = [];
+      if (polling.responseTime === "ssh") sshStreams.push("Response time");
+      if (polling.telemetry    === "ssh") sshStreams.push("Telemetry");
+      if (polling.interfaces   === "ssh") sshStreams.push("Interfaces");
+      if (polling.lldp         === "ssh") sshStreams.push("LLDP");
+      if (sshStreams.length > 0 && !sshCredId) {
+        throw new AppError(400, `Select an SSH credential to route ${sshStreams.join(", ")} via SSH`);
       }
       // Validate the per-class FortiSwitch / FortiAP monitor credentials.
       // Direct-polling SNMP requires a credential; ICMP fallback (when
@@ -471,6 +493,12 @@ router.post("/", async (req, res, next) => {
           const cred = await prisma.credential.findUnique({ where: { id: cId } });
           if (!cred) throw new AppError(400, `${label} not found`);
           if (cred.type !== "snmp") throw new AppError(400, `${label} must be SNMP`);
+        }
+        const sId = block?.sshCredentialId;
+        if (sId) {
+          const cred = await prisma.credential.findUnique({ where: { id: sId } });
+          if (!cred) throw new AppError(400, `${label.replace("monitor credential", "SSH credential")} not found`);
+          if (cred.type !== "ssh") throw new AppError(400, `${label.replace("monitor credential", "SSH credential")} must be SSH`);
         }
       }
       // Pre-compile any wildcard patterns so a bad pattern is rejected with a
@@ -597,6 +625,14 @@ router.put("/:id", async (req, res, next) => {
           if (!cred) throw new AppError(400, "Selected monitor credential not found");
           if (cred.type !== "snmp") throw new AppError(400, "Monitor credential override must be SNMP");
         }
+        const sshCredId = newConfig.sshCredentialId;
+        if (sshCredId === "" || sshCredId == null) {
+          newConfig.sshCredentialId = null;
+        } else if (typeof sshCredId === "string") {
+          const cred = await prisma.credential.findUnique({ where: { id: sshCredId } });
+          if (!cred) throw new AppError(400, "Selected SSH credential not found");
+          if (cred.type !== "ssh") throw new AppError(400, "SSH credential override must be SSH");
+        }
         // Match the POST validation: any tier-3 polling field set to "snmp"
         // requires a credential. Reads the polling block from monitorSettings,
         // not the legacy monitor*Source toggles.
@@ -611,8 +647,16 @@ router.put("/:id", async (req, res, next) => {
         if (snmpStreams.length > 0 && !newConfig.monitorCredentialId) {
           throw new AppError(400, `Select an SNMP credential to route ${snmpStreams.join(", ")} via SNMP`);
         }
+        const sshStreams: string[] = [];
+        if (polling.responseTime === "ssh") sshStreams.push("Response time");
+        if (polling.telemetry    === "ssh") sshStreams.push("Telemetry");
+        if (polling.interfaces   === "ssh") sshStreams.push("Interfaces");
+        if (polling.lldp         === "ssh") sshStreams.push("LLDP");
+        if (sshStreams.length > 0 && !newConfig.sshCredentialId) {
+          throw new AppError(400, `Select an SSH credential to route ${sshStreams.join(", ")} via SSH`);
+        }
         // Per-class FortiSwitch / FortiAP monitor credentials. Same rules as
-        // POST: the credential must exist and must be of type "snmp".
+        // POST: the credential must exist and match the expected type.
         for (const [field, label] of [
           ["fortiswitchMonitor", "FortiSwitch monitor credential"],
           ["fortiapMonitor",     "FortiAP monitor credential"],
@@ -621,11 +665,18 @@ router.put("/:id", async (req, res, next) => {
           if (!block) continue;
           // Normalize empty-string credentialIds to null for consistency with the probe path.
           if (block.snmpCredentialId === "") block.snmpCredentialId = null;
+          if (block.sshCredentialId  === "") block.sshCredentialId  = null;
           if (block.enabled && !block.snmpCredentialId) throw new AppError(400, `${label} must be selected when direct polling is enabled`);
           if (block.snmpCredentialId) {
             const cred = await prisma.credential.findUnique({ where: { id: block.snmpCredentialId } });
             if (!cred) throw new AppError(400, `${label} not found`);
             if (cred.type !== "snmp") throw new AppError(400, `${label} must be SNMP`);
+          }
+          if (block.sshCredentialId) {
+            const sshLabel = label.replace("monitor credential", "SSH credential");
+            const cred = await prisma.credential.findUnique({ where: { id: block.sshCredentialId } });
+            if (!cred) throw new AppError(400, `${sshLabel} not found`);
+            if (cred.type !== "ssh") throw new AppError(400, `${sshLabel} must be SSH`);
           }
         }
         validateAutoMonitorPatterns(newConfig);
@@ -1914,9 +1965,24 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   // keys; other integration types simply have no fortigateMonitor /
   // fortiswitchMonitor / fortiapMonitor entry, in which case the helpers
   // below resolve to "do nothing".
-  type ClassMonCfg = { enabled: boolean; snmpCredentialId: string | null; addAsMonitored: boolean };
-  let switchMonitorCfg: ClassMonCfg = { enabled: false, snmpCredentialId: null, addAsMonitored: false };
-  let apMonitorCfg:     ClassMonCfg = { enabled: false, snmpCredentialId: null, addAsMonitored: false };
+  //
+  // Each class block now carries both `snmpCredentialId` and
+  // `sshCredentialId`. The integration tier's resolved `responseTimePolling`
+  // decides which one to stamp on a freshly-discovered asset: "ssh" picks
+  // sshCredentialId; anything else (rest_api/snmp/icmp/disabled/null) falls
+  // back to snmpCredentialId for back-compat with existing installs whose
+  // credential is the SNMP one.
+  type ClassMonCfg = {
+    enabled: boolean;
+    snmpCredentialId: string | null;
+    sshCredentialId:  string | null;
+    addAsMonitored:   boolean;
+    // Pre-resolved credential ID to stamp; null = don't stamp.
+    stampCredentialId: string | null;
+  };
+  const emptyClassCfg: ClassMonCfg = { enabled: false, snmpCredentialId: null, sshCredentialId: null, addAsMonitored: false, stampCredentialId: null };
+  let switchMonitorCfg: ClassMonCfg = emptyClassCfg;
+  let apMonitorCfg:     ClassMonCfg = emptyClassCfg;
   let fortigateAddAsMonitored = false;
   if (integrationType === "fortimanager" || integrationType === "fortigate") {
     const integ = await prisma.integration.findUnique({ where: { id: integrationId }, select: { config: true } });
@@ -1924,15 +1990,30 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     const sw = (cfg.fortiswitchMonitor as Record<string, unknown> | undefined) || {};
     const ap = (cfg.fortiapMonitor     as Record<string, unknown> | undefined) || {};
     const fg = (cfg.fortigateMonitor   as Record<string, unknown> | undefined) || {};
+    const monSettings = (cfg.monitorSettings as Record<string, unknown> | undefined) || {};
+    const polling     = (monSettings.polling as Record<string, unknown> | undefined) || {};
+    const responseTimePolling = typeof polling.responseTime === "string" ? polling.responseTime : null;
+    const pickStamp = (snmpId: string | null, sshId: string | null): string | null => {
+      if (responseTimePolling === "ssh") return sshId ?? snmpId ?? null;
+      return snmpId ?? sshId ?? null;
+    };
+    const swSnmp = typeof sw.snmpCredentialId === "string" ? sw.snmpCredentialId : null;
+    const swSsh  = typeof sw.sshCredentialId  === "string" ? sw.sshCredentialId  : null;
+    const apSnmp = typeof ap.snmpCredentialId === "string" ? ap.snmpCredentialId : null;
+    const apSsh  = typeof ap.sshCredentialId  === "string" ? ap.sshCredentialId  : null;
     switchMonitorCfg = {
       enabled: sw.enabled === true,
-      snmpCredentialId: typeof sw.snmpCredentialId === "string" ? sw.snmpCredentialId : null,
+      snmpCredentialId: swSnmp,
+      sshCredentialId:  swSsh,
       addAsMonitored: sw.addAsMonitored === true,
+      stampCredentialId: pickStamp(swSnmp, swSsh),
     };
     apMonitorCfg = {
       enabled: ap.enabled === true,
-      snmpCredentialId: typeof ap.snmpCredentialId === "string" ? ap.snmpCredentialId : null,
+      snmpCredentialId: apSnmp,
+      sshCredentialId:  apSsh,
       addAsMonitored: ap.addAsMonitored === true,
+      stampCredentialId: pickStamp(apSnmp, apSsh),
     };
     fortigateAddAsMonitored = fg.addAsMonitored === true;
   }
@@ -2488,10 +2569,14 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     // asset has none (or has the same credential — the no-op idempotent
     // case). Anything else (operator-chosen credential of a different
     // type or pointing elsewhere) is preserved.
-    if (cfg.enabled && cfg.snmpCredentialId) {
+    //
+    // The credential to stamp is pre-resolved into stampCredentialId based
+    // on the integration's responseTimePolling: SSH polling stamps the SSH
+    // credential, anything else stamps the SNMP credential.
+    if (cfg.enabled && cfg.stampCredentialId) {
       const existingCred = existing?.monitorCredentialId ?? null;
-      if (existingCred === null || existingCred === cfg.snmpCredentialId) {
-        stamp.monitorCredentialId = cfg.snmpCredentialId;
+      if (existingCred === null || existingCred === cfg.stampCredentialId) {
+        stamp.monitorCredentialId = cfg.stampCredentialId;
       } else {
         // Operator pointed this asset at a different credential — leave
         // their choice in place.

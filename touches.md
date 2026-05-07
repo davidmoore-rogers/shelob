@@ -120,7 +120,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - `src/services/monitoringService.ts:runMonitorPass` — per-stream (probe/telemetry/systemInfo/fastFiltered) dispatch branches consult resolved settings to pick method + timeout + retry logic
 - `src/jobs/monitorAssets.ts` — publishDueWork() and light/heavy loops call resolveMonitorSettings() to determine which assets are due for each cadence
 - `public/js/assets.js` — Asset Monitoring tab UI renders manual override tier (per-asset dropdowns)
-- `public/js/integrations.js` — Integration Monitoring tab renders class-override tier (per-FortiGate / per-FortiSwitch / per-FortiAP subtabs) + integration tier (SNMP credential picker)
+- `public/js/integrations.js` — Integration Monitoring tab renders the integration tier (Cadence & Retention + per-stream polling dropdowns) and the Discovery Defaults section (FortiGates / FortiSwitches / FortiAPs subtabs with reactive SNMP / SSH credential pickers). Class overrides have moved to the Assets-page Monitoring Settings modal
 - `src/api/routes/assets.ts` — GET /assets/:id/effective-monitor-settings endpoint returns full resolved stack + provenance (used by System tab intermittency-bar replay AND by per-stream chart badges to label which tier supplied each polling method — see _streamBadgeText in public/js/assets.js)
 - `src/api/routes/assets.ts` — GET /assets/:id exposes `discoveredByIntegration.useProxy` (FMG only) so the System tab chart badges can render "Proxy via <fmg>" vs "Direct" without a second round-trip; integration `config` otherwise stripped to keep API tokens out of the response
 
@@ -130,7 +130,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - If a higher tier specifies an incompatible method, it silently falls through to the next tier (never error; don't break monitoring).
 - Compatibility matrix is locked per CLAUDE.md "Polling-method compatibility matrix"; breaches must go through the design process.
 - AD-discovered assets default to ICMP for response-time unless the operator picks winrm/ssh on the per-asset tier (bind-creds fallback at probe time).
-- FMG/FortiGate-discovered firewalls default to REST API on all four streams (source default from assetSourceKindFromIntegrationType).
+- FMG/FortiGate-discovered firewalls default to REST API on response-time / telemetry / interfaces and `disabled` on LLDP (FortiOS REST `lldp-neighbors` is empty on most fleets — operators flip back to `rest_api` if their fleet has it enabled).
 
 **When changing this:**
 - Compatibility matrix changes require design review and manual tier updates across the codebase (four UI surfaces).

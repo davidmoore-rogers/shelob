@@ -410,7 +410,13 @@ function defaultPollingForSource(
   source: AssetSourceKind,
   stream: "responseTime" | "telemetry" | "interfaces" | "lldp",
 ): PollingMethod | null {
-  if (source === "fortimanager" || source === "fortigate") return "rest_api";
+  if (source === "fortimanager" || source === "fortigate") {
+    // FortiOS exposes lldp-neighbors but most fleets don't enable LLDP per
+    // interface, so the endpoint returns nothing on every probe. Default
+    // off; operators flip to rest_api when their fleet actually has it.
+    if (stream === "lldp") return "disabled";
+    return "rest_api";
+  }
   if (source === "activedirectory" || source === "entraid" || source === "windowsserver") {
     return stream === "responseTime" ? "icmp" : null;
   }

@@ -87,7 +87,10 @@ const FORTI_POLLING_DEFAULT = {
   responseTimePolling: "rest_api" as const,
   telemetryPolling:    "rest_api" as const,
   interfacesPolling:   "rest_api" as const,
-  lldpPolling:         "rest_api" as const,
+  // LLDP defaults to "disabled" on FMG/FortiGate sources because the
+  // FortiOS REST `lldp-neighbors` endpoint is empty on most fleets;
+  // operators flip this back to rest_api when they actually have LLDP on.
+  lldpPolling:         "disabled" as const,
 };
 
 beforeEach(() => {
