@@ -2059,6 +2059,7 @@ async function openViewModal(id) {
     if (a.monitored) _loadMonitorHistoryFor(a.id, _getChartRangePref("assetMonitor", "24h"));
     if (a.monitored) _loadSystemTabFor(a.id, _getChartRangePref("assetSystem", "1h"), a);
     if (a.monitored) _renderIntermittencyBar(a.id);
+    if (a.monitored) _updateStreamSourceBadgesFromEffective(a.id, a);
     document.querySelectorAll(".asset-system-range-btn").forEach(function (b) {
       b.addEventListener("click", function () {
         var range = b.getAttribute("data-range");
@@ -4038,15 +4039,49 @@ function _assetMonitorStreamSource(asset, stream) {
 
 // Renders the badge content "polling · source" used next to each chart
 // header. Returns "" when the stream isn't delivered for the asset's
-// source kind (caller skips the badge entirely).
+// source kind (caller skips the badge entirely). The polling half uses a
+// coarse local resolver (per-asset override → source default) at first
+// render so the badge appears synchronously; the System tab open path
+// fires _updateStreamSourceBadgesFromEffective() right after to overwrite
+// it with the authoritative tier-walked value from /effective-monitor-
+// settings (covers class overrides + integration tier).
 function _streamSourceBadgeHTML(asset, stream) {
   var info = _assetMonitorStreamSource(asset, stream);
   if (!info.polling) return "";
   var label = info.polling + " via " + info.source;
   var titleLabel = "Polling method · Asset source for this stream";
-  return '<span title="' + escapeHtml(titleLabel) + '" style="font-size:0.75rem;padding:2px 6px;border-radius:10px;background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-secondary);white-space:nowrap">' +
+  return '<span class="asset-stream-source-badge" data-asset-id="' + escapeHtml(asset.id) + '" data-stream="' + escapeHtml(stream) + '" title="' + escapeHtml(titleLabel) + '" style="font-size:0.75rem;padding:2px 6px;border-radius:10px;background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-secondary);white-space:nowrap">' +
     escapeHtml(label) +
   '</span>';
+}
+
+// Fetches /effective-monitor-settings (which walks all four tiers) and
+// rewrites each badge's polling-method text to reflect the truly-resolved
+// value. Necessary because _assetMonitorStreamSource's coarse fallback
+// (source default) silently disagrees with class-override / integration-
+// tier values — the badge would say "REST API" when the operator had set
+// the integration tier to SNMP. Best-effort; on failure the badge keeps
+// its sync value. Re-checks data-asset-id on each span so a stale fetch
+// after the modal switched assets doesn't write into the wrong row.
+async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
+  if (!assetId || !asset) return;
+  var eff;
+  try { eff = await api.assets.effectiveMonitorSettings(assetId); } catch (_) { return; }
+  if (!eff || !eff.resolved) return;
+  var sourceName = _assetIntegrationLabelWithController(asset, " · ");
+  var cred = asset.monitorCredential;
+  var spans = document.querySelectorAll('.asset-stream-source-badge[data-asset-id="' + (window.CSS && CSS.escape ? CSS.escape(assetId) : assetId) + '"]');
+  spans.forEach(function (span) {
+    var stream = span.getAttribute("data-stream");
+    if (!stream) return;
+    var resolved = eff.resolved[stream + "Polling"];
+    if (!resolved) return;
+    var polling = _POLLING_LABELS[resolved] || resolved;
+    if ((resolved === "snmp" || resolved === "winrm" || resolved === "ssh" || resolved === "rest_api") && cred && cred.name) {
+      polling += " · " + cred.name;
+    }
+    span.textContent = polling + " via " + sourceName;
+  });
 }
 
 function assetMonitoringViewHTML(a) {
