@@ -2843,18 +2843,10 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // Phase 4b — (intentionally removed) FortiGate associatedIps from interface IPs
-  // ══════════════════════════════════════════════════════════════════════════════
-  //
-  // Per-interface IPs and MACs for the FortiGate itself are now populated by
-  // the System tab's interface scrape (monitoringService.collectSystemInfo +
-  // recordSystemInfoResult), which runs on the configurable telemetry cadence
-  // once monitoring is enabled on the asset. Discovery no longer races to
-  // overwrite associatedIps here — the live monitor pull is the single source.
-  // Manual associatedIps entries (`source: "manual"`) survive the monitor pull
-  // by the same merge logic that used to live in this phase.
-  syncLog("info", "Phase 4b: skipped — interface IPs/MACs are now managed by the System tab when monitoring is enabled");
+  // Phase 4b (removed): per-interface IPs/MACs for the FortiGate asset are now
+  // populated by the System tab's interface scrape (monitoringService.collectSystemInfo
+  // + recordSystemInfoResult) on the configured telemetry cadence. Discovery no
+  // longer writes associatedIps here; manual entries survive the monitor pull.
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 5 — Create DHCP lease/reservation entries (in-memory lookups)
