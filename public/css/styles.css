@@ -2110,12 +2110,17 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
    FortiGates/FortiSwitches/FortiAPs) live deeper in the DOM and are
    intentionally not sticky.
 
-   The strip pins at top:0 of the modal-body's padding box (1.25rem below
-   the modal header). Negative left/right margins + matching padding
-   stretch the strip's solid-color background across the modal-body's full
-   horizontal extent so content scrolled past disappears cleanly behind it
-   even at the corners. The bottom border (from .page-tabs base) is the
-   visual seam where panel content slides under. */
+   When a modal-body's first child is a page-tabs strip, drop the body's
+   own top padding so the strip can sit flush against the modal header.
+   The strip's INTERNAL padding (top:1.25rem, sides:1.25rem) restores the
+   visual breathing room and stretches the solid-color background to the
+   full body width. This keeps the strip's box wholly inside the scroll
+   container's padding box — earlier negative-margin variants extended
+   into the body's padding zone, which different browsers clipped
+   inconsistently and let panel content leak above the pinned strip. */
+.modal-body:has(> .page-tabs:first-child) {
+  padding-top: 0;
+}
 .modal-body > .page-tabs {
   position: sticky;
   top: 0;
@@ -2123,8 +2128,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   z-index: 5;
   margin-left: -1.25rem;
   margin-right: -1.25rem;
-  padding-left: 1.25rem;
-  padding-right: 1.25rem;
+  padding: 1.25rem 1.25rem 0 1.25rem;
 }
 .page-tab {
   padding: 0.7rem 1.25rem;
