@@ -322,7 +322,14 @@ export async function startPgbossWorkers(): Promise<void> {
   }
 
   const { PgBoss } = await import("pg-boss");
-  const boss: PgBossType = new PgBoss(process.env.DATABASE_URL);
+  // pg-boss manages its own pg.Pool separate from Prisma's adapter pool.
+  // Default is 10 (pg library default). Expose as POLARIS_PGBOSS_POOL_SIZE
+  // so operators can size it alongside DATABASE_POOL_SIZE.
+  const pgbossPoolSize = resolveEnvInt("POLARIS_PGBOSS_POOL_SIZE", 10);
+  const boss: PgBossType = new PgBoss({
+    connectionString: process.env.DATABASE_URL,
+    max: pgbossPoolSize,
+  });
 
   boss.on("error", (err: Error) => {
     logger.error({ err }, "pg-boss error");
