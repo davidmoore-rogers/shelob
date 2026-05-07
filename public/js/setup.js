@@ -325,10 +325,17 @@ document.getElementById("btn-finalize").addEventListener("click", async function
     var attempts = 0;
     var maxAttempts = 30;
 
+    // Finalize auto-generates HEALTH_TOKEN in .env and returns it here so
+    // the post-restart poll can authenticate; without this header the poll
+    // would 401 forever and the auto-redirect would time out at 60s.
+    var healthHeaders = data.healthToken
+      ? { "Authorization": "Bearer " + data.healthToken }
+      : {};
     var pollInterval = setInterval(async function () {
       attempts++;
       try {
         var healthRes = await fetch("http://localhost:" + targetPort + "/health", {
+          headers: healthHeaders,
           signal: AbortSignal.timeout(2000),
         });
         if (healthRes.ok) {

@@ -729,6 +729,46 @@ function computeReasons(
     });
   }
 
+  // ── Watch: unauthenticated /metrics or /health endpoint ────────────────
+  // Both endpoints are open by default and gated by their respective bearer
+  // tokens when set. The setup wizard auto-generates both tokens at install
+  // time; this fires when an operator has cleared one (or upgraded from a
+  // pre-auto-token install). /metrics is the higher-impact leak — fleet
+  // size, monitor health by status, queue depth, transport-level RTT
+  // histograms — so it gets its own reason; /health is recon-only ("the
+  // app is up") but symmetric and trivial to gate, so we surface it too.
+  // Watch-severity: Maintenance-tab warning + audit Event, no navbar
+  // banner. Operators who deliberately want either endpoint open (some
+  // L4 health probes can't carry a header) can ignore the warning.
+  if (!process.env.METRICS_TOKEN || process.env.METRICS_TOKEN.trim() === "") {
+    reasons.push({
+      severity: "watch",
+      code: "metrics_token_unset",
+      message:
+        "/metrics is reachable without authentication. The endpoint exposes " +
+        "fleet size, monitored asset health, monitor pass duration, and queue " +
+        "depth — useful recon for an attacker if Polaris is publicly reachable.",
+      suggestion:
+        "Set METRICS_TOKEN=<random-hex> in .env (generate with " +
+        "`openssl rand -hex 32`) and restart Polaris. Update your Prometheus " +
+        "scrape config to send `Authorization: Bearer <token>` — see " +
+        "docs/grafana/README.md.",
+    });
+  }
+  if (!process.env.HEALTH_TOKEN || process.env.HEALTH_TOKEN.trim() === "") {
+    reasons.push({
+      severity: "watch",
+      code: "health_token_unset",
+      message:
+        "/health is reachable without authentication. The leak is small " +
+        "(just 'the app is up') but the gate is trivial to enable.",
+      suggestion:
+        "Set HEALTH_TOKEN=<random-hex> in .env (generate with " +
+        "`openssl rand -hex 32`) and restart Polaris. Configure your " +
+        "monitoring system to send `Authorization: Bearer <token>`.",
+    });
+  }
+
   // Carry forward the legacy RAM-insufficient and PG-tuning signals as amber.
   if (ramInsufficient) {
     reasons.push({
