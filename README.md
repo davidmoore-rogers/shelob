@@ -221,7 +221,7 @@ Authentication is session-based for the UI; long-lived bearer tokens (`polaris_<
 On-premise FortiManager **7.4.7+ / 7.6.2+** via JSON-RPC with a bearer API token. Discovers DHCP scopes, leases + static reservations (merged from CMDB and live monitor), interface IPs, VIPs, managed FortiSwitches, managed FortiAPs, and FortiGate inventory. Two transports are selectable per integration:
 
 - **Proxy** (default) — every per-device call funnels through FMG's `/sys/proxy/json`. Simpler firewall posture; FMG-imposed serial polling caps the practical fleet size.
-- **Direct** — FMG is queried only for the device roster; per-device calls go straight to each FortiGate's management IP using a shared REST API admin credential. Unlocks parallelism and is recommended above ~20 FortiGates.
+- **Direct** — FMG is queried for the device roster + management-IP resolution (cached across cycles, so warm runs dispatch directly against monitor-up FortiGates with no FMG round-trip and self-heal via FMG re-resolve when a cached IP turns stale); per-device calls go straight to each FortiGate's management IP using a shared REST API admin credential. Unlocks parallelism and is recommended above ~20 FortiGates.
 
 DHCP push, quarantine push, monitoring transport (per-stream REST/SNMP toggles), per-class FortiSwitch/FortiAP direct polling, and per-class Auto-Monitor Interfaces selections are all configured per integration.
 

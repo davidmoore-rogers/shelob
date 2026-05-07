@@ -65,11 +65,12 @@ interface FortiOsQuarantineTarget {
 
 type Transport =
   | { kind: "direct-fortigate"; fgConfig: FortiGateConfig; vdom: string }
-  | { kind: "fmg-proxy"; fmgConfig: FortiManagerConfig; deviceName: string; vdom: string };
+  | { kind: "fmg-proxy"; fmgConfig: FortiManagerConfig; deviceName: string; vdom: string; integrationId: string };
 
 async function buildTransport(
   fmgConfig: FortiManagerConfig,
   deviceName: string,
+  integrationId: string,
 ): Promise<Transport> {
   const vdom = "root";
 
@@ -80,7 +81,7 @@ async function buildTransport(
     if (!fmgConfig.mgmtInterface?.trim()) {
       throw new AppError(400, 'Direct mode requires "Management Interface" to be set on the integration');
     }
-    const mgmtIp = await resolveDeviceMgmtIpViaFmg(fmgConfig, deviceName);
+    const mgmtIp = await resolveDeviceMgmtIpViaFmg(fmgConfig, deviceName, undefined, integrationId);
     if (!mgmtIp) {
       throw new AppError(502, `Could not resolve management IP for "${deviceName}" via FortiManager`);
     }
@@ -96,7 +97,7 @@ async function buildTransport(
     return { kind: "direct-fortigate", fgConfig, vdom };
   }
 
-  return { kind: "fmg-proxy", fmgConfig, deviceName, vdom };
+  return { kind: "fmg-proxy", fmgConfig, deviceName, vdom, integrationId };
 }
 
 /**
@@ -109,7 +110,7 @@ async function buildTransportForIntegration(
   deviceName: string,
 ): Promise<Transport> {
   if (integration.type === "fortimanager") {
-    return buildTransport(integration.config as FortiManagerConfig, deviceName);
+    return buildTransport(integration.config as FortiManagerConfig, deviceName, integration.id);
   }
   if (integration.type === "fortigate") {
     const cfg = integration.config as FortiGateConfig;
@@ -139,7 +140,7 @@ async function callFortiOs<T>(
   }
   const sep = path.includes("?") ? "&" : "?";
   const resource = `${path}${sep}vdom=${encodeURIComponent(t.vdom)}`;
-  return fmgProxyRest<T>(t.fmgConfig, t.deviceName, method, resource, { body });
+  return fmgProxyRest<T>(t.fmgConfig, t.deviceName, method, resource, { body, integrationId: t.integrationId });
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────

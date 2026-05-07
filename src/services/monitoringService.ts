@@ -1070,7 +1070,7 @@ async function resolveControllerMgmtIp(
 
   // Fallback: FortiGate not yet discovered as an asset (or has no IP stamped).
   // Hit FMG CMDB the old way so fresh installs and edge cases still work.
-  const ip = await resolveDeviceMgmtIpViaFmg(fmgConfig, deviceName);
+  const ip = await resolveDeviceMgmtIpViaFmg(fmgConfig, deviceName, undefined, integrationId);
   if (ip) {
     controllerMgmtIpCache.set(cacheKey, { ip, cachedAt: Date.now() });
   }
@@ -1166,7 +1166,7 @@ async function fetchFortinetControllerInventory(
           const ac = new AbortController();
           const timer = setTimeout(() => ac.abort(), timeoutMs);
           try {
-            rawRows = await fmgProxyRest<unknown>(fmgConfig, deviceName, "GET", path, { signal: ac.signal });
+            rawRows = await fmgProxyRest<unknown>(fmgConfig, deviceName, "GET", path, { signal: ac.signal, integrationId: integration.id });
           } finally {
             clearTimeout(timer);
           }

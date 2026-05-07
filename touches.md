@@ -705,29 +705,56 @@ Listed alphabetically.
 
 ---
 
+## services/fmgWorker.ts
+
+**What it owns:** Per-integration single-consumer worker that serializes ALL FortiManager-bound traffic from this Polaris process. Module-level `Map<integrationId, FmgWorker>` lazy-created on first `submit()`; never torn down (idle workers are negligible).
+
+**Public API:** `getFmgWorker(integrationId): FmgWorker`, `FmgWorker.submit<T>(label, task, signal)`, `FmgWorker.queueDepth`, `FmgWorker.inFlightLabel`, `__resetFmgWorkersForTests`.
+
+**Cross-service deps:** metrics (publishes `polaris_fmg_worker_queue_depth{integrationId}` / `polaris_fmg_worker_inflight{integrationId}` via `setFmgWorkerQueueDepth` / `setFmgWorkerInflight`).
+
+**Used by:** src/services/fortimanagerService.ts — `rpc()` wraps every internal call when `integrationId` is provided, which covers `testConnection` / `resolveDeviceMgmtIpViaFmg` / `proxyQuery` / `fmgProxyRest` / `proxyQueryViaFortigate` / `discoverDhcpSubnets`. By transitivity also reservationPushService.ts and assetQuarantineService.ts (both call `fmgProxyRest` and `resolveDeviceMgmtIpViaFmg` with an `integrationId`), and monitoringService.ts (controller-IP cache miss + proxy-mode `fmgProxyRest`). Routes that hit FMG (test-connection, manual /query) thread integration.id through the same APIs.
+
+**Invariants:**
+- Single-consumer FIFO: `submit()` callers see ordered execution per-integration; one task at a time per FortiManager instance.
+- Aborts: pre-dispatch abort drops the queued entry and rejects with `AbortError`. In-flight abort is the task's responsibility (the inner fetch's signal threading); the worker doesn't force-cancel.
+- One worker per integration id. Different integrations (different FMG hosts) get independent workers and run concurrently.
+- The worker is the ONLY path code in this process should use to talk to FMG — any direct `rpc()` / `fmgProxyRest()` call without an `integrationId` bypasses the cross-feature serialization and is reintroducing the parallel-connection failure mode.
+- Workers are not torn down on integration delete — the map entry remains until process exit. This is intentional (cheap, no GC race on `getFmgWorker`).
+
+**When changing this:**
+- Adding a NEW FMG-bound code path: thread `integrationId` from the route handler / service caller all the way to the FMG-touching function so it ends up at `rpc()`. Verify with grep: `await rpc(.*[^,]\)` (no trailing integrationId) inside fortimanagerService.ts is a smell.
+- If you need queue-priority semantics later (e.g. discovery-low / push-high), add a priority parameter to `submit()` and a heap-based queue — keep the public API back-compat with FIFO as the default.
+- Adding a metric: extend `setFmgWorkerQueueDepth` / `setFmgWorkerInflight` rather than introducing a new gauge — operators already grep for `polaris_fmg_worker_*`.
+- Test serial behavior: submit two tasks concurrently and confirm the second resolves only after the first completes, even when both signals start out un-aborted.
+
+---
+
 ## services/fortimanagerService.ts
 
 **What it owns:** FortiManager JSON-RPC API client & full discovery orchestration (DHCP subnets, device inventory, interface IPs, VLAN membership, DHCP reservations, FortiSwitches/FortiAPs, VIPs, ARP).
 
-**Public API:** testConnection, resolveDeviceMgmtIpViaFmg, testRandomFortiGate, proxyQuery, fmgProxyRest, proxyQueryViaFortigate, discoverDhcpSubnets, FortiManagerConfig, DiscoveryResult, DiscoveryProgressCallback (and 6 DiscoveredXxx types).
+**Public API:** testConnection, resolveDeviceMgmtIpViaFmg, testRandomFortiGate, proxyQuery, fmgProxyRest, proxyQueryViaFortigate, discoverDhcpSubnets, FortiManagerConfig, DiscoveryResult, DiscoveryProgressCallback (and 6 DiscoveredXxx types). Every entry point accepts an optional `integrationId?: string` (and `discoverDhcpSubnets` additionally accepts `warmCacheIps?: Map<string,string>`); when supplied, internal `rpc()` calls funnel through `getFmgWorker(integrationId)` so FMG traffic stays serial against the "one-request-at-a-time" constraint.
 
-**Cross-service deps:** fortigateService (imports discoverDhcpSubnets for direct-mode fallback; imports fgTestConnection and proxyQuery for proxy testing).
+**Cross-service deps:** fortigateService (imports discoverDhcpSubnets for direct-mode fallback; imports fgTestConnection and proxyQuery for proxy testing); fmgWorker (every rpc call routes through `getFmgWorker` when an integrationId is in scope).
 
-**Used by:** src/api/routes/integrations.ts:531,693,824,840,1107,1282 — discovery orchestration + test + manual proxy query + realtime push via FMG, src/services/monitoringService.ts:39 — FMG proxy REST for uptime monitoring, src/services/reservationPushService.ts:26 — push DHCP reservations to FortiGate via FMG proxy/direct, src/services/assetQuarantineService.ts:49 — push quarantine targets via FMG proxy/direct.
+**Used by:** src/api/routes/integrations.ts:531,693,824,840,1107,1283 — discovery orchestration + test + manual proxy query + realtime push via FMG, src/services/monitoringService.ts:39 — FMG proxy REST for uptime monitoring, src/services/reservationPushService.ts:26 — push DHCP reservations to FortiGate via FMG proxy/direct, src/services/assetQuarantineService.ts:49 — push quarantine targets via FMG proxy/direct.
 
 **Invariants:**
-- Proxy mode (`useProxy: true`, default) clamps parallelism to 1 because FortiManager drops parallel proxy connections; CMDB queries not subject to throttle.
-- Direct mode (`useProxy: false`) requires valid fortigateApiUser/fortigateApiToken config on the FMG integration; resolveDeviceMgmtIpViaFmg must be called before per-device REST calls.
-- All discovery payloads route through FMG's `/sys/proxy/json` or `/pm/config/...` endpoints; per-device monitor queries (DHCP leases, ARP) proxy through `/sys/proxy/json`.
+- Proxy mode (`useProxy: true`, default) clamps per-FortiGate parallelism to 1 because FortiManager drops parallel proxy connections; CMDB queries not subject to throttle (still routed through the FMG worker, which is itself serial).
+- Direct mode (`useProxy: false`) requires valid fortigateApiUser/fortigateApiToken on the FMG integration; mgmt IPs come from either the warm cache (monitor-up firewall Asset rows) or `resolveDeviceMgmtIpViaFmg` for cache-cold/new devices.
+- All FMG-bound calls go through `getFmgWorker(integrationId).submit(...)` when an integrationId is in scope. Per-device direct-FortiGate calls do NOT touch FMG and are NOT serialized through the worker — they fan out up to `discoveryParallelism` wide.
 - Parity invariant: both FMG and standalone FortiGate return identical DiscoveryResult shape for sync pipeline compatibility.
 - FortiAP LLDP/mesh fields extracted via extractApLldpAndMesh, skipping wireless-mesh peers (system_description != "FortiSwitch-*").
+- Cache-miss fallback in processDevice's direct-mode branch: if a warm-cache dispatch fails, re-resolve via FMG worker and retry once at the freshly-resolved IP. Cleared via `cachedNames.delete(deviceName)` so the loop never iterates more than twice.
 
 **When changing this:**
 - Verify parity with fortigateService.discoverDhcpSubnets (DiscoveryResult shape + field semantics).
-- Check reservationPushService & assetQuarantineService both call fmgProxyRest correctly for proxy mode + resolveDeviceMgmtIpViaFmg for direct mode.
-- Confirm monitoringService still resolves management IPs and calls fmgProxyRest for proxy-mode health checks.
+- Check reservationPushService & assetQuarantineService both call fmgProxyRest correctly for proxy mode + resolveDeviceMgmtIpViaFmg for direct mode, AND that both pass `integrationId` so the call routes through the FMG worker.
+- Confirm monitoringService still resolves management IPs and calls fmgProxyRest with `integrationId` for proxy-mode health checks.
 - Update docs/fmg-discovery.md if transport modes, roster filters, or per-class stamping change.
-- Test proxy-mode parallelism clamp + direct-mode device resolution end-to-end.
+- Test proxy-mode parallelism clamp + direct-mode device resolution end-to-end. Confirm warm-cache producer fills the worker pool from t=0 on a fleet with monitor-up firewalls.
+- New FMG-bound code paths MUST submit through `getFmgWorker(integrationId)` — bare `rpc()` without an integrationId loses cross-feature serialization and reintroduces the parallel-connection failure mode.
 
 ---
 

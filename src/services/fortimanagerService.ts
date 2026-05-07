@@ -8,6 +8,7 @@ import { Netmask } from "netmask";
 import { AppError } from "../utils/errors.js";
 import { extractApLldpAndMesh } from "../utils/fortiapLldp.js";
 import { trackCallStart, trackCallEnd } from "../utils/apiCallTracker.js";
+import { getFmgWorker } from "./fmgWorker.js";
 import {
   discoverDhcpSubnets as discoverViaFortigate,
   testConnection as fgTestConnection,
@@ -57,7 +58,10 @@ interface JsonRpcResponse {
  * Test connectivity to a FortiManager using bearer token auth.
  * Calls /sys/status to verify access and retrieve version info.
  */
-export async function testConnection(config: FortiManagerConfig): Promise<{
+export async function testConnection(
+  config: FortiManagerConfig,
+  integrationId?: string,
+): Promise<{
   ok: boolean;
   message: string;
   version?: string;
@@ -71,7 +75,7 @@ export async function testConnection(config: FortiManagerConfig): Promise<{
       params: [{ url: "/sys/status" }],
     };
 
-    const statusRes = await rpc(baseUrl, statusPayload, config.apiUser, config.apiToken, config.verifySsl);
+    const statusRes = await rpc(baseUrl, statusPayload, config.apiUser, config.apiToken, config.verifySsl, undefined, integrationId);
 
     const code = statusRes.result?.[0]?.status?.code;
     if (code !== 0) {
@@ -145,11 +149,12 @@ export async function resolveDeviceMgmtIpViaFmg(
   config: FortiManagerConfig,
   deviceName: string,
   signal?: AbortSignal,
+  integrationId?: string,
 ): Promise<string | null> {
   const mgmtIfaceName = config.mgmtInterface?.trim();
   if (!mgmtIfaceName) return null;
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
-  return resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName, signal);
+  return resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName, signal, integrationId);
 }
 
 async function resolveDeviceMgmtIp(
@@ -158,6 +163,7 @@ async function resolveDeviceMgmtIp(
   deviceName: string,
   mgmtIfaceName: string,
   signal?: AbortSignal,
+  integrationId?: string,
 ): Promise<string | null> {
   const url = `/pm/config/device/${deviceName}/global/system/interface`;
 
@@ -166,7 +172,7 @@ async function resolveDeviceMgmtIp(
     const filteredRes = await rpc(
       baseUrl,
       { id: 2, method: "get", params: [{ url, filter: [["name", "==", mgmtIfaceName]], fields: ["name", "ip"] }] },
-      config.apiUser, config.apiToken, config.verifySsl, signal,
+      config.apiUser, config.apiToken, config.verifySsl, signal, integrationId,
     );
     const list = filteredRes.result?.[0]?.data;
     if (Array.isArray(list) && list.length > 0) {
@@ -183,7 +189,7 @@ async function resolveDeviceMgmtIp(
   const fullRes = await rpc(
     baseUrl,
     { id: 2, method: "get", params: [{ url, fields: ["name", "ip"] }] },
-    config.apiUser, config.apiToken, config.verifySsl, signal,
+    config.apiUser, config.apiToken, config.verifySsl, signal, integrationId,
   );
   const all = fullRes.result?.[0]?.data;
   if (!Array.isArray(all)) return null;
@@ -197,7 +203,10 @@ async function resolveDeviceMgmtIp(
  * credentials. Exposed as a standalone call so the UI can stream its
  * result independently of the FMG connection test.
  */
-export async function testRandomFortiGate(config: FortiManagerConfig): Promise<{
+export async function testRandomFortiGate(
+  config: FortiManagerConfig,
+  integrationId?: string,
+): Promise<{
   ok: boolean;
   message: string;
   deviceName: string;
@@ -221,7 +230,7 @@ export async function testRandomFortiGate(config: FortiManagerConfig): Promise<{
 
   let devicesRes: JsonRpcResponse;
   try {
-    devicesRes = await rpc(baseUrl, devicesPayload, config.apiUser, config.apiToken, config.verifySsl);
+    devicesRes = await rpc(baseUrl, devicesPayload, config.apiUser, config.apiToken, config.verifySsl, undefined, integrationId);
   } catch (err: any) {
     return { ok: false, message: `Failed to fetch device list from FMG: ${err.message || "Unknown error"}`, deviceName: "(none)" };
   }
@@ -262,7 +271,7 @@ export async function testRandomFortiGate(config: FortiManagerConfig): Promise<{
 
   let mgmtIp: string | null;
   try {
-    mgmtIp = await resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName);
+    mgmtIp = await resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName, undefined, integrationId);
   } catch (err: any) {
     return {
       ok: false,
@@ -295,8 +304,43 @@ export async function testRandomFortiGate(config: FortiManagerConfig): Promise<{
 
 /**
  * Low-level JSON RPC call to FortiManager with bearer token auth.
+ *
+ * When `integrationId` is provided, the call funnels through the
+ * per-integration FmgWorker so that all FMG-bound traffic across the process
+ * (discovery, reservation push, quarantine push, manual proxy, test calls)
+ * stays serial against FortiManager's "one-request-at-a-time" constraint.
+ * When omitted (e.g. test-connection on an unsaved integration where no id
+ * exists yet), the call runs direct — there's no other code talking to that
+ * FMG instance, so contention is impossible.
  */
 async function rpc(
+  url: string,
+  payload: JsonRpcRequest,
+  apiUser: string,
+  apiToken: string,
+  verifySsl?: boolean,
+  externalSignal?: AbortSignal,
+  integrationId?: string,
+): Promise<JsonRpcResponse> {
+  const inner = () => rpcInner(url, payload, apiUser, apiToken, verifySsl, externalSignal);
+  if (!integrationId) return inner();
+  const label = `fmg.${payload.method}:${describeRpcParams(payload)}`;
+  return getFmgWorker(integrationId).submit(label, inner, externalSignal);
+}
+
+function describeRpcParams(payload: JsonRpcRequest): string {
+  const first = payload.params?.[0] as { url?: string; data?: { resource?: string; target?: string[] } } | undefined;
+  if (!first) return "?";
+  // /sys/proxy/json wraps the real path in data.resource + data.target[0]
+  if (first.url === "/sys/proxy/json" && first.data) {
+    const tgt = first.data.target?.[0] ?? "?";
+    const res = first.data.resource ?? "?";
+    return `${tgt}:${res}`;
+  }
+  return first.url ?? "?";
+}
+
+async function rpcInner(
   url: string,
   payload: JsonRpcRequest,
   apiUser: string,
@@ -357,9 +401,10 @@ export async function proxyQuery(
   config: FortiManagerConfig,
   method: string,
   params: unknown[],
+  integrationId?: string,
 ): Promise<unknown> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
-  return rpc(baseUrl, { id: 1, method, params }, config.apiUser, config.apiToken, config.verifySsl);
+  return rpc(baseUrl, { id: 1, method, params }, config.apiUser, config.apiToken, config.verifySsl, undefined, integrationId);
 }
 
 /**
@@ -382,7 +427,7 @@ export async function fmgProxyRest<T = unknown>(
   deviceName: string,
   method: "GET" | "POST" | "PUT" | "DELETE",
   resource: string,
-  opts: { body?: unknown; signal?: AbortSignal } = {},
+  opts: { body?: unknown; signal?: AbortSignal; integrationId?: string } = {},
 ): Promise<T> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
   const adom = config.adom || "root";
@@ -403,7 +448,7 @@ export async function fmgProxyRest<T = unknown>(
     params: [{ url: "/sys/proxy/json", data }],
   };
 
-  const res = await rpc(baseUrl, payload, config.apiUser, config.apiToken, config.verifySsl, opts.signal);
+  const res = await rpc(baseUrl, payload, config.apiUser, config.apiToken, config.verifySsl, opts.signal, opts.integrationId);
 
   const fmgCode = res.result?.[0]?.status?.code;
   if (fmgCode !== 0) {
@@ -450,6 +495,7 @@ export async function proxyQueryViaFortigate(
   method: "GET" | "POST",
   path: string,
   query?: Record<string, string>,
+  integrationId?: string,
 ): Promise<unknown> {
   if (!config.fortigateApiToken) {
     throw new AppError(400, 'Direct mode requires "FortiGate API Token" to be set on this integration');
@@ -460,7 +506,7 @@ export async function proxyQueryViaFortigate(
   }
 
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
-  const mgmtIp = await resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName);
+  const mgmtIp = await resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName, undefined, integrationId);
   if (!mgmtIp) {
     throw new AppError(502, `Could not resolve a management IP for "${deviceName}" on interface "${mgmtIfaceName}"`);
   }
@@ -693,6 +739,15 @@ export async function discoverDhcpSubnets(
   onProgress?: DiscoveryProgressCallback,
   inventoryMaxAgeHours = 24,
   onDeviceComplete?: (result: DiscoveryResult) => Promise<void>,
+  integrationId?: string,
+  // Warm cache: deviceName → cached management IP. Populated by the caller
+  // from the firewall Asset rows that were monitor-up at discovery start.
+  // Direct mode dispatches these to processDevice immediately (no FMG round
+  // trip) while the cache-cold + new FortiGates flow serially through the
+  // FMG worker. Cache-miss fallback inside processDevice handles the case
+  // where a cached IP turned stale. Proxy mode ignores this map (every
+  // per-device call is FMG-bound anyway).
+  warmCacheIps?: Map<string, string>,
 ): Promise<DiscoveryResult> {
   const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
   const adom = config.adom || "root";
@@ -719,7 +774,7 @@ export async function discoverDhcpSubnets(
 
   let devicesRes: JsonRpcResponse;
   try {
-    devicesRes = await rpc(baseUrl, devicesPayload, apiUser, apiToken, verifySsl, signal);
+    devicesRes = await rpc(baseUrl, devicesPayload, apiUser, apiToken, verifySsl, signal, integrationId);
   } catch (err: any) {
     log("discover.devices", "error", `Failed to list managed devices: ${err.message || "Unknown error"}`);
     throw err;
@@ -798,51 +853,38 @@ export async function discoverDhcpSubnets(
   const mgmtIfaceName = config.mgmtInterface || "mgmt";
   const useProxy = config.useProxy !== false; // default true
 
-  // Direct-mode dispatch is pipelined: a serial mgmt-IP resolver streams
-  // each FortiGate into the worker pool the moment its management IP is
-  // known, instead of resolving all 193 (or however many) IPs up front.
-  // FMG only handles one request at a time for this API user (see project
-  // memo "FMG concurrency limit"), so the resolver itself stays strictly
-  // serial — but each FortiGate is hit independently after that, so the
-  // workers (`discoveryParallelism`-wide) can run in parallel with the
-  // remaining lookups. Proxy mode skips the resolver entirely; processDevice
-  // calls resolveDeviceMgmtIp inline there with concurrency forced to 1.
+  // Direct-mode dispatch runs two producers concurrently feeding one shared
+  // worker pool gated at `discoveryParallelism`:
+  //
+  //   • **Warm-cache producer** — for each FortiGate whose firewall Asset row
+  //     was monitor-up at discovery start, dispatch immediately using the
+  //     cached management IP. No FMG round-trip; the pool fills from t=0.
+  //   • **Verify producer** — for the rest (cache-cold or new), serially
+  //     resolve each mgmt IP through the FMG worker (FMG drops parallel
+  //     calls past 1-2 for this API user, so the resolver itself stays
+  //     strictly serial), then dispatch as each IP lands.
+  //
+  // Cache-miss fallback inside processDevice covers the case where a cached
+  // IP went stale (FortiGate was renumbered between discoveries): the first
+  // direct REST call fails, we re-resolve via the FMG worker, and retry once
+  // at the new address. Self-healing without a second discovery cycle.
+  //
+  // Proxy mode (useProxy=true) ignores the warm cache entirely — every
+  // per-device call funnels through `/sys/proxy/json` which is FMG-bound, so
+  // the cache offers no speedup. concurrency is forced to 1 to match FMG's
+  // proxy-connection limit.
   const mgmtIpByDevice = new Map<string, string>();
-  const yieldDevicesAsReady = async function* (): AsyncGenerator<any> {
-    if (useProxy) {
-      for (const raw of devicesData) yield raw;
-      return;
+
+  // Pre-populate from the warm cache (direct mode only). cachedNames tracks
+  // which entries came from the cache so the cache-miss fallback knows
+  // whether to retry on direct-call failure.
+  const cachedNames = new Set<string>();
+  if (!useProxy && warmCacheIps && warmCacheIps.size > 0) {
+    for (const [name, ip] of warmCacheIps) {
+      mgmtIpByDevice.set(name, ip);
+      cachedNames.add(name);
     }
-    const connectedCount = devicesData.filter(
-      (d) => d.conn_status === undefined || d.conn_status === 1,
-    ).length;
-    log("discover.mgmtip.pre", "info", `Streaming mgmt-IP resolution for ${connectedCount} connected device(s); FortiGate workers will start as IPs land`);
-    let resolved = 0;
-    let failed = 0;
-    for (const raw of devicesData) {
-      if (signal?.aborted) break;
-      const isConnected = raw.conn_status === undefined || raw.conn_status === 1;
-      const name: string = raw.name || raw.hostname;
-      if (isConnected && name) {
-        try {
-          const ip = await resolveDeviceMgmtIp(baseUrl, config, name, mgmtIfaceName, signal);
-          if (ip) {
-            mgmtIpByDevice.set(name, ip);
-            resolved++;
-          } else {
-            failed++;
-          }
-        } catch (err: any) {
-          failed++;
-          log("discover.mgmtip.pre", "error", `${name}: Failed to resolve management IP — ${err.message || "Unknown error"}`, name);
-        }
-      }
-      // Yield disconnected devices and resolve-failures too, so processDevice
-      // emits its standard skip log for each.
-      yield raw;
-    }
-    log("discover.mgmtip.pre", "info", `mgmt-IP resolution complete: ${resolved} resolved, ${failed} failed`);
-  };
+  }
 
   // Per-device discovery: runs all 8 RPC steps and returns local result arrays.
   // Isolated from shared state — safe to run concurrently across devices.
@@ -870,21 +912,23 @@ export async function discoverDhcpSubnets(
         return null;
       }
 
-      // Direct mode uses the management IP resolved upfront by the serial
-      // pre-pass (see mgmtIpByDevice above) — we must NOT call
-      // resolveDeviceMgmtIp here, because this function runs in parallel
-      // workers and FMG can only service one request at a time.
-      const directHost = mgmtIpByDevice.get(deviceName) ?? null;
+      // Direct mode uses the management IP populated up front — either from
+      // the warm cache (Producer A) or the FMG-serial resolve pass (Producer
+      // B). Both write to mgmtIpByDevice before dispatching this function;
+      // we must NOT call resolveDeviceMgmtIp synchronously here because
+      // multiple workers can be running in parallel and FMG only serves one
+      // request at a time on the resolver path.
+      let directHost = mgmtIpByDevice.get(deviceName) ?? null;
       if (!directHost) {
         log("discover.device.skip", "error", `Skipping ${deviceName} — no management IP configured on interface "${mgmtIfaceName}" (pre-resolve missed or failed)`, deviceName);
         return null;
       }
 
-      const fgConfig: FortiGateConfig = {
-        host: directHost,
+      const buildFgConfig = (host: string): FortiGateConfig => ({
+        host,
         port: 443,
         apiUser: config.fortigateApiUser || "",
-        apiToken: config.fortigateApiToken,
+        apiToken: config.fortigateApiToken!,
         vdom: "root",
         verifySsl: config.fortigateVerifySsl === true,
         mgmtInterface: config.mgmtInterface,
@@ -894,66 +938,101 @@ export async function discoverDhcpSubnets(
         dhcpExclude: config.dhcpExclude,
         inventoryIncludeInterfaces: config.inventoryIncludeInterfaces,
         inventoryExcludeInterfaces: config.inventoryExcludeInterfaces,
-      };
+      });
+      let fgConfig = buildFgConfig(directHost);
 
-      try {
-        const fgResult = await discoverViaFortigate(fgConfig, signal, log, inventoryMaxAgeHours, undefined, true);
-        // fortigateService reports one "device" keyed by the FortiGate's own
-        // hostname/serial. Remap every cross-reference to FMG's canonical
-        // deviceName so the downstream sync pipeline treats this as one device
-        // belonging to the FMG integration.
-        const fgDeviceName = fgResult.devices[0]?.name || rawDevice.ip;
-        for (const s of fgResult.subnets)         s.fortigateDevice = s.fortigateDevice === fgDeviceName ? deviceName : s.fortigateDevice;
-        for (const i of fgResult.interfaceIps)    i.device          = i.device === fgDeviceName ? deviceName : i.device;
-        for (const e of fgResult.dhcpEntries)     e.device          = e.device === fgDeviceName ? deviceName : e.device;
-        for (const v of fgResult.vips)            v.device          = v.device === fgDeviceName ? deviceName : v.device;
-        for (const sw of fgResult.fortiSwitches)  sw.device         = sw.device === fgDeviceName ? deviceName : sw.device;
-        for (const ap of fgResult.fortiAps)       ap.device         = ap.device === fgDeviceName ? deviceName : ap.device;
-        for (const inv of fgResult.deviceInventory) inv.device      = inv.device === fgDeviceName ? deviceName : inv.device;
+      // Retry-once loop: if the FIRST attempt's IP came from the warm cache
+      // and the call fails, re-resolve via the FMG worker and retry. Any
+      // subsequent failure is treated as a real outage.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        try {
+          const fgResult = await discoverViaFortigate(fgConfig, signal, log, inventoryMaxAgeHours, undefined, true);
+          // fortigateService reports one "device" keyed by the FortiGate's own
+          // hostname/serial. Remap every cross-reference to FMG's canonical
+          // deviceName so the downstream sync pipeline treats this as one device
+          // belonging to the FMG integration.
+          const fgDeviceName = fgResult.devices[0]?.name || rawDevice.ip;
+          for (const s of fgResult.subnets)         s.fortigateDevice = s.fortigateDevice === fgDeviceName ? deviceName : s.fortigateDevice;
+          for (const i of fgResult.interfaceIps)    i.device          = i.device === fgDeviceName ? deviceName : i.device;
+          for (const e of fgResult.dhcpEntries)     e.device          = e.device === fgDeviceName ? deviceName : e.device;
+          for (const v of fgResult.vips)            v.device          = v.device === fgDeviceName ? deviceName : v.device;
+          for (const sw of fgResult.fortiSwitches)  sw.device         = sw.device === fgDeviceName ? deviceName : sw.device;
+          for (const ap of fgResult.fortiAps)       ap.device         = ap.device === fgDeviceName ? deviceName : ap.device;
+          for (const inv of fgResult.deviceInventory) inv.device      = inv.device === fgDeviceName ? deviceName : inv.device;
 
-        // Prefer FMG-configured coordinates (Device Manager → Geographical
-        // Location) and fall back to whatever the FortiGate itself returned
-        // via /api/v2/cmdb/system/global.
-        const fmgLat = parseFloat(String(rawDevice.latitude ?? ""));
-        const fmgLng = parseFloat(String(rawDevice.longitude ?? ""));
-        const fmgCoordsOk = Number.isFinite(fmgLat) && Number.isFinite(fmgLng) && !(fmgLat === 0 && fmgLng === 0);
-        const localDev: DiscoveredDevice = {
-          name: deviceName,
-          hostname: rawDevice.hostname || deviceName,
-          serial:   rawDevice.sn || fgResult.devices[0]?.serial || "",
-          model:    rawDevice.platform_str || fgResult.devices[0]?.model || "",
-          mgmtIp:   directHost,
-          latitude:  fmgCoordsOk ? fmgLat : fgResult.devices[0]?.latitude,
-          longitude: fmgCoordsOk ? fmgLng : fgResult.devices[0]?.longitude,
-        };
-        if (fmgCoordsOk) {
-          log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
+          // Prefer FMG-configured coordinates (Device Manager → Geographical
+          // Location) and fall back to whatever the FortiGate itself returned
+          // via /api/v2/cmdb/system/global.
+          const fmgLat = parseFloat(String(rawDevice.latitude ?? ""));
+          const fmgLng = parseFloat(String(rawDevice.longitude ?? ""));
+          const fmgCoordsOk = Number.isFinite(fmgLat) && Number.isFinite(fmgLng) && !(fmgLat === 0 && fmgLng === 0);
+          const localDev: DiscoveredDevice = {
+            name: deviceName,
+            hostname: rawDevice.hostname || deviceName,
+            serial:   rawDevice.sn || fgResult.devices[0]?.serial || "",
+            model:    rawDevice.platform_str || fgResult.devices[0]?.model || "",
+            mgmtIp:   directHost,
+            latitude:  fmgCoordsOk ? fmgLat : fgResult.devices[0]?.latitude,
+            longitude: fmgCoordsOk ? fmgLng : fgResult.devices[0]?.longitude,
+          };
+          if (fmgCoordsOk) {
+            log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
+          }
+
+          log("discover.device.complete", "info", `Completed direct discovery for ${deviceName}`, deviceName);
+          return {
+            device: localDev,
+            subnets: fgResult.subnets,
+            interfaceIps: fgResult.interfaceIps,
+            dhcpEntries: fgResult.dhcpEntries,
+            deviceInventory: fgResult.deviceInventory,
+            didInventory: fgResult.inventoryDevices.length > 0,
+            fortiSwitches: fgResult.fortiSwitches,
+            fortiAps: fgResult.fortiAps,
+            vips: fgResult.vips,
+            switchMacTable: fgResult.switchMacTable,
+            arpTable: fgResult.arpTable,
+            cmdbSwitchSerials: fgResult.cmdbSwitchSerials,
+            cmdbApSerials: fgResult.cmdbApSerials,
+            // Direct mode delegates inventory to fortigateService — surface the
+            // same per-device "did this query succeed" flags it returns so the
+            // decommission sweep behaves identically across transport modes.
+            didSwitchQuery: !!fgResult.switchInventoriedDevices && fgResult.switchInventoriedDevices.length > 0,
+            didApQuery:     !!fgResult.apInventoriedDevices     && fgResult.apInventoriedDevices.length     > 0,
+          };
+        } catch (err: any) {
+          // Cache-miss fallback: only retry when the IP came from the warm
+          // cache. cachedNames is cleared on first attempt so we never loop
+          // a second time.
+          if (!cachedNames.has(deviceName)) {
+            log("discover.device", "error", `${deviceName}: Direct discovery failed — ${err.message || "Unknown error"}`, deviceName);
+            return null;
+          }
+          cachedNames.delete(deviceName);
+          log("discover.device.cache_miss", "info", `${deviceName}: Cached management IP ${directHost} unreachable — re-resolving via FortiManager (${err.message || "unknown error"})`, deviceName);
+          let newIp: string | null;
+          try {
+            newIp = await resolveDeviceMgmtIp(baseUrl, config, deviceName, mgmtIfaceName, signal, integrationId);
+          } catch (resolveErr: any) {
+            log("discover.device", "error", `${deviceName}: Direct discovery failed and FMG re-resolve failed — ${resolveErr.message || "unknown error"} (original: ${err.message || "unknown error"})`, deviceName);
+            return null;
+          }
+          if (!newIp) {
+            log("discover.device", "error", `${deviceName}: Direct discovery failed; FortiManager returned no management IP on re-resolve. Original: ${err.message || "unknown error"}`, deviceName);
+            return null;
+          }
+          if (newIp === directHost) {
+            log("discover.device", "error", `${deviceName}: Direct discovery failed; FMG re-resolve returned the same IP (${directHost}) — FortiGate appears unreachable. Original: ${err.message || "unknown error"}`, deviceName);
+            return null;
+          }
+          // Fresh IP — update the in-memory map (so any later code in this
+          // run sees the new IP) and retry once at the new address.
+          mgmtIpByDevice.set(deviceName, newIp);
+          directHost = newIp;
+          fgConfig = buildFgConfig(newIp);
+          // continue while loop → retry once at newIp
         }
-
-        log("discover.device.complete", "info", `Completed direct discovery for ${deviceName}`, deviceName);
-        return {
-          device: localDev,
-          subnets: fgResult.subnets,
-          interfaceIps: fgResult.interfaceIps,
-          dhcpEntries: fgResult.dhcpEntries,
-          deviceInventory: fgResult.deviceInventory,
-          didInventory: fgResult.inventoryDevices.length > 0,
-          fortiSwitches: fgResult.fortiSwitches,
-          fortiAps: fgResult.fortiAps,
-          vips: fgResult.vips,
-          switchMacTable: fgResult.switchMacTable,
-          arpTable: fgResult.arpTable,
-          cmdbSwitchSerials: fgResult.cmdbSwitchSerials,
-          cmdbApSerials: fgResult.cmdbApSerials,
-          // Direct mode delegates inventory to fortigateService — surface the
-          // same per-device "did this query succeed" flags it returns so the
-          // decommission sweep behaves identically across transport modes.
-          didSwitchQuery: !!fgResult.switchInventoriedDevices && fgResult.switchInventoriedDevices.length > 0,
-          didApQuery:     !!fgResult.apInventoriedDevices     && fgResult.apInventoriedDevices.length     > 0,
-        };
-      } catch (err: any) {
-        log("discover.device", "error", `${deviceName}: Direct discovery failed — ${err.message || "Unknown error"}`, deviceName);
-        return null;
       }
     }
 
@@ -1005,7 +1084,7 @@ export async function discoverDhcpSubnets(
         method: "get",
         params: [{ url: `/pm/config/device/${deviceName}/global/system/interface`, filter: [["name", "==", mgmtIfaceName]], fields: ["name", "ip"] }],
       };
-      const mgmtIfaceRes = await rpc(baseUrl, mgmtIfacePayload, apiUser, apiToken, verifySsl, signal);
+      const mgmtIfaceRes = await rpc(baseUrl, mgmtIfacePayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const ifaceList = mgmtIfaceRes.result?.[0]?.data;
       if (Array.isArray(ifaceList)) {
         const found = (ifaceList as any[]).find((i) => i.name === mgmtIfaceName);
@@ -1029,7 +1108,7 @@ export async function discoverDhcpSubnets(
         method: "get",
         params: [{ url: `/pm/config/device/${deviceName}/vdom/root/system/dhcp/server` }],
       };
-      const dhcpRes = await rpc(baseUrl, dhcpPayload, apiUser, apiToken, verifySsl, signal);
+      const dhcpRes = await rpc(baseUrl, dhcpPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const dhcpData = dhcpRes.result?.[0]?.data;
       if (!Array.isArray(dhcpData)) {
         const dhcpStatus = dhcpRes.result?.[0]?.status;
@@ -1094,7 +1173,7 @@ export async function discoverDhcpSubnets(
           },
         }],
       };
-      const leaseRes = await rpc(baseUrl, leasePayload, apiUser, apiToken, verifySsl, signal);
+      const leaseRes = await rpc(baseUrl, leasePayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const leaseData = leaseRes.result?.[0]?.data;
       const monitorStatus = Array.isArray(leaseData) ? leaseData[0]?.status?.code : undefined;
       const rawResults = Array.isArray(leaseData)
@@ -1178,7 +1257,7 @@ export async function discoverDhcpSubnets(
         method: "get",
         params: [{ url: `/pm/config/device/${deviceName}/vdom/root/system/interface`, fields: ["name", "ip", "vlanid", "switch-controller-mgmt-vlan"] }],
       };
-      const ifaceRes = await rpc(baseUrl, ifacePayload, apiUser, apiToken, verifySsl, signal);
+      const ifaceRes = await rpc(baseUrl, ifacePayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const ifaceData = ifaceRes.result?.[0]?.data;
       const ifaceVlanMap = new Map<string, number>();
       let ifaceIpCount = 0;
@@ -1223,7 +1302,7 @@ export async function discoverDhcpSubnets(
           },
         }],
       };
-      const inventoryRes = await rpc(baseUrl, inventoryPayload, apiUser, apiToken, verifySsl, signal);
+      const inventoryRes = await rpc(baseUrl, inventoryPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const inventoryData = inventoryRes.result?.[0]?.data;
       const results = Array.isArray(inventoryData)
         ? inventoryData[0]?.response?.results
@@ -1275,7 +1354,7 @@ export async function discoverDhcpSubnets(
           },
         }],
       };
-      const switchRes = await rpc(baseUrl, switchPayload, apiUser, apiToken, verifySsl, signal);
+      const switchRes = await rpc(baseUrl, switchPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const switchData = switchRes.result?.[0]?.data;
       const switchProxyEntry = Array.isArray(switchData) ? switchData[0] : switchData as any;
       const switchProxyStatus = switchProxyEntry?.status?.code ?? 0;
@@ -1361,7 +1440,7 @@ export async function discoverDhcpSubnets(
           },
         }],
       };
-      const apRes = await rpc(baseUrl, apPayload, apiUser, apiToken, verifySsl, signal);
+      const apRes = await rpc(baseUrl, apPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const apData = apRes.result?.[0]?.data;
       const apProxyEntry = Array.isArray(apData) ? apData[0] : apData as any;
       const apProxyStatus = apProxyEntry?.status?.code ?? 0;
@@ -1454,7 +1533,7 @@ export async function discoverDhcpSubnets(
           },
         }],
       };
-      const detRes = await rpc(baseUrl, detectedPayload, apiUser, apiToken, verifySsl, signal);
+      const detRes = await rpc(baseUrl, detectedPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const detData = detRes.result?.[0]?.data;
       const detEntry = Array.isArray(detData) ? detData[0] : detData as any;
       const detStatus = detEntry?.status?.code ?? 0;
@@ -1540,7 +1619,7 @@ export async function discoverDhcpSubnets(
           },
         }],
       };
-      const arpRes = await rpc(baseUrl, arpPayload, apiUser, apiToken, verifySsl, signal);
+      const arpRes = await rpc(baseUrl, arpPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const arpData = arpRes.result?.[0]?.data;
       const arpEntry = Array.isArray(arpData) ? arpData[0] : arpData as any;
       const arpStatus = arpEntry?.status?.code ?? 0;
@@ -1617,7 +1696,7 @@ export async function discoverDhcpSubnets(
         method: "get",
         params: [{ url: `/pm/config/device/${deviceName}/vdom/root/firewall/vip`, fields: ["name", "extip", "mappedip", "extintf"] }],
       };
-      const vipRes = await rpc(baseUrl, vipPayload, apiUser, apiToken, verifySsl, signal);
+      const vipRes = await rpc(baseUrl, vipPayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const vipData = vipRes.result?.[0]?.data;
       let vipCount = 0;
       if (Array.isArray(vipData)) {
@@ -1671,8 +1750,13 @@ export async function discoverDhcpSubnets(
   const concurrency = useProxy ? 1 : Math.max(1, config.discoveryParallelism ?? 5);
   const executing = new Set<Promise<void>>();
 
-  for await (const rawDevice of yieldDevicesAsReady()) {
-    if (signal?.aborted) break;
+  // Per-FortiGate dispatch into the worker pool. Two producers (warm-cache and
+  // FMG-verify) call this concurrently; the semaphore (executing.size cap)
+  // gates the actual concurrency.
+  async function dispatchDevice(rawDevice: any): Promise<void> {
+    if (signal?.aborted) return;
+    if (executing.size >= concurrency) await Promise.race(executing);
+    if (signal?.aborted) return;
 
     const task: Promise<void> = (async () => {
       const chunk = await processDevice(rawDevice);
@@ -1738,8 +1822,90 @@ export async function discoverDhcpSubnets(
 
     executing.add(task);
     task.then(() => executing.delete(task), () => executing.delete(task));
-    if (executing.size >= concurrency) await Promise.race(executing);
   }
+
+  // Index FMG roster devices by name for O(1) lookup from the warm-cache producer.
+  const devicesByName = new Map<string, any>();
+  for (const d of devicesData) {
+    const n = d.name || d.hostname;
+    if (typeof n === "string" && n.length > 0) devicesByName.set(n, d);
+  }
+
+  // Producer A — warm-cache: dispatch every monitor-up FortiGate immediately
+  // using its cached management IP. No FMG round-trip. Skipped in proxy mode
+  // (FMG is in front of every per-device call there anyway).
+  const warmDispatched = new Set<string>();
+  const warmCacheTask: Promise<void> = (async () => {
+    if (useProxy || cachedNames.size === 0) return;
+    let dispatched = 0;
+    for (const name of cachedNames) {
+      if (signal?.aborted) return;
+      const raw = devicesByName.get(name);
+      if (!raw) continue; // device left the FMG roster (or was filtered out)
+      // Respect FMG's view of online/offline — if FMG says the device is
+      // disconnected, processDevice's standard skip log fires anyway, but
+      // there's no value in attempting the direct call.
+      warmDispatched.add(name);
+      await dispatchDevice(raw);
+      dispatched++;
+    }
+    if (dispatched > 0) {
+      log("discover.warmcache", "info", `Dispatched ${dispatched} FortiGate(s) from warm cache (no FMG mgmt-IP resolve required)`);
+    }
+  })();
+
+  // Producer B — FMG-verify: dispatch the remaining devices, serially
+  // resolving each mgmt IP through the FMG worker. In proxy mode this
+  // dispatches every device with no resolves (the existing behavior).
+  const verifyTask: Promise<void> = (async () => {
+    if (useProxy) {
+      for (const raw of devicesData) {
+        if (signal?.aborted) return;
+        await dispatchDevice(raw);
+      }
+      return;
+    }
+
+    const verifyTargets = devicesData.filter((d) => {
+      const n = d.name || d.hostname;
+      return typeof n === "string" && !warmDispatched.has(n);
+    });
+    const connectedVerifyCount = verifyTargets.filter(
+      (d) => d.conn_status === undefined || d.conn_status === 1,
+    ).length;
+    if (connectedVerifyCount > 0) {
+      log("discover.mgmtip.pre", "info", `Streaming mgmt-IP resolution for ${connectedVerifyCount} cache-cold device(s); FortiGate workers will start as IPs land`);
+    }
+    let resolved = 0;
+    let failed = 0;
+    for (const raw of verifyTargets) {
+      if (signal?.aborted) return;
+      const isConnected = raw.conn_status === undefined || raw.conn_status === 1;
+      const name: string = raw.name || raw.hostname;
+      if (isConnected && name) {
+        try {
+          const ip = await resolveDeviceMgmtIp(baseUrl, config, name, mgmtIfaceName, signal, integrationId);
+          if (ip) {
+            mgmtIpByDevice.set(name, ip);
+            resolved++;
+          } else {
+            failed++;
+          }
+        } catch (err: any) {
+          failed++;
+          log("discover.mgmtip.pre", "error", `${name}: Failed to resolve management IP — ${err.message || "Unknown error"}`, name);
+        }
+      }
+      // Dispatch disconnected devices and resolve-failures too, so
+      // processDevice emits its standard skip log for each.
+      await dispatchDevice(raw);
+    }
+    if (connectedVerifyCount > 0) {
+      log("discover.mgmtip.pre", "info", `mgmt-IP resolution complete: ${resolved} resolved, ${failed} failed`);
+    }
+  })();
+
+  await Promise.all([warmCacheTask, verifyTask]);
   await Promise.all(executing);
 
   // Step 4: Filtering was applied per-device during collection; log summary and return.

@@ -97,6 +97,20 @@ const monitorWorkers = new Gauge({
   registers: [registry],
 });
 
+const fmgWorkerQueueDepth = new Gauge({
+  name: "polaris_fmg_worker_queue_depth",
+  help: "Queued FMG tasks awaiting dispatch on the per-integration single-consumer worker. FMG drops parallel API calls past 1-2 concurrent requests, so every FMG-bound code path (discovery, reservation push, quarantine push, manual proxy, test-connection) funnels through one worker per integration id.",
+  labelNames: ["integrationId"] as const,
+  registers: [registry],
+});
+
+const fmgWorkerInflight = new Gauge({
+  name: "polaris_fmg_worker_inflight",
+  help: "1 when the FMG worker for this integration id is currently executing a task; 0 when idle.",
+  labelNames: ["integrationId"] as const,
+  registers: [registry],
+});
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 export type Cadence = "probe" | "telemetry" | "systemInfo" | "fastFiltered";
@@ -150,6 +164,14 @@ export function setMonitorWorkers(counts: Record<Cadence, number>): void {
   monitorWorkers.set({ queue: "fastFiltered" }, counts.fastFiltered);
   monitorWorkers.set({ queue: "telemetry" },    counts.telemetry);
   monitorWorkers.set({ queue: "systemInfo" },   counts.systemInfo);
+}
+
+export function setFmgWorkerQueueDepth(integrationId: string, depth: number): void {
+  fmgWorkerQueueDepth.set({ integrationId }, depth);
+}
+
+export function setFmgWorkerInflight(integrationId: string, value: 0 | 1): void {
+  fmgWorkerInflight.set({ integrationId }, value);
 }
 
 export async function renderMetrics(): Promise<{ contentType: string; body: string }> {

@@ -26,6 +26,7 @@ Per-pattern sections:
 - [Modal](#modal)
 - [Slide-over panel](#slide-over-panel)
 - [Sortable + filterable data table](#sortable--filterable-data-table)
+- [Per-instance single-consumer serial worker](#per-instance-single-consumer-serial-worker)
 
 ---
 
@@ -141,3 +142,28 @@ Per-pattern sections:
 - For columns whose displayed text differs from the underlying value (badges, formatted dates), pull the raw value from the row and stash it as the display source — never let the `data-sf-key` resolution diverge from what the user sees.
 - Pagination, if needed, lives **outside** `TableSF` (apply pagination after `sf.apply()`).
 - Always wire `onChange` to the render function so filter/sort updates live-refresh.
+
+---
+
+## Per-instance single-consumer serial worker
+
+**What it is:** A FIFO queue + single consumer used to serialize all traffic to a flaky external system whose own concurrency limits would otherwise drop parallel connections. Distinct from a worker pool — the cap is hard-coded to 1, and the value is cross-feature serialization (every code path that talks to the system funnels through the same queue) rather than throttling.
+
+**Canonical implementation:** `FmgWorker` in [src/services/fmgWorker.ts](src/services/fmgWorker.ts). One `FmgWorker` per integration id; module-level `Map<integrationId, FmgWorker>` keyed off the integration row's id.
+
+**Key conventions:**
+- Public API is just `submit<T>(label: string, task: () => Promise<T>, signal?: AbortSignal): Promise<T>` plus read-only `queueDepth` / `inFlightLabel` for telemetry. Don't expose the queue itself.
+- FIFO single-consumer drain loop owned by the class — caller `submit()`s and awaits the returned promise. Caller never touches the queue directly.
+- AbortSignal handling: pre-dispatch abort drops the entry from the queue and rejects with `AbortError(...)` (a custom subclass of Error with `name = "AbortError"`). In-flight abort is the *task's* responsibility (via fetch signal threading) — the worker doesn't force-cancel.
+- Lazy creation, never torn down. `getFmgWorker(id)` returns the existing worker or creates one. Workers leak on integration-delete; that's intentional (cheap; tearing down races with concurrent `getXxxWorker` callers).
+- Telemetry: every queue depth change publishes a Prometheus gauge (`polaris_fmg_worker_queue_depth{integrationId}`); inflight is a 0/1 gauge so operators can correlate `queue_depth>0 AND inflight=1` as "FMG is the bottleneck right now."
+- Test reset: provide a `__resetXxxWorkersForTests()` symbol so tests start with a clean registry without relying on module-cache reset.
+- Label is a short string used for telemetry (`inFlightLabel`) and audit logs. Format like `"fmg.<rpcMethod>:<resourceUrl>"` — derived from the inner task, not freeform.
+- The wrapping point should be the SHARED low-level helper that every code path goes through (in FmgWorker's case, `rpc()` in `fortimanagerService.ts`). Wrapping individual high-level functions instead means future contributors can add a NEW high-level function that bypasses the worker.
+
+**When adding a new instance:**
+- Identify the shared low-level helper that all callers funnel through. Wrap THAT in `getXxxWorker(id).submit(...)`. Don't scatter `pLimit(1)` wraps at every entry point — the next contributor will forget one.
+- Thread the keying id (typically integrationId) through every public function that ends up calling the helper. The id flows from the route handler → service → low-level helper.
+- Public functions take the id as the LAST optional parameter so unsaved-state callers (e.g. pre-create test connection on a draft integration) can omit it; in that case the worker is bypassed and the call runs direct (no contention possible since there's no other code talking to this instance yet).
+- Wire two gauges to `src/metrics.ts`: queue depth (count) and inflight (0/1). Keep the metric names parallel to FmgWorker's so dashboards generalize.
+- Document a "load-bearing test": one task A in-flight against the worker, submit task B from a different feature surface, confirm B waits until A completes. This is the cross-feature-serialization invariant the primitive exists to enforce.

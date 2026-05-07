@@ -528,7 +528,7 @@ router.post("/", async (req, res, next) => {
         } else if (input.type === "fortigate") {
           discoveryResult = await fortigate.discoverDhcpSubnets(input.config as any, ac.signal);
         } else {
-          discoveryResult = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal);
+          discoveryResult = await fortimanager.discoverDhcpSubnets(input.config as any, ac.signal, undefined, undefined, undefined, integration.id);
         }
         const syncResult = await syncDhcpSubnets(integration.id, input.name, input.type, discoveryResult, req.session?.username, "full");
         response.dhcpDiscovery = syncResult;
@@ -690,7 +690,7 @@ router.post("/:id/test", async (req, res, next) => {
     logEvent({ action: "integration.test.started", resourceType: "integration", resourceId: req.params.id, resourceName: integration.name, actor: req.session?.username, message: `Connection test started for "${integration.name}"` });
 
     if (integration.type === "fortimanager") {
-      result = await fortimanager.testConnection(config as any);
+      result = await fortimanager.testConnection(config as any, integration.id);
     } else if (integration.type === "fortigate") {
       result = await fortigate.testConnection(config as any);
     } else if (integration.type === "windowsserver") {
@@ -731,7 +731,7 @@ router.post("/:id/test/fortigate-sample", async (req, res, next) => {
     const cfg = integration.config as Record<string, unknown>;
     if (cfg.useProxy !== false) throw new AppError(400, "FortiGate sample test is only valid when the FMG proxy is disabled");
 
-    const fgResult = await fortimanager.testRandomFortiGate(cfg as any);
+    const fgResult = await fortimanager.testRandomFortiGate(cfg as any, req.params.id);
     const message = fgResult.ok
       ? `Randomly selected FortiGate "${fgResult.deviceName}" reachable${fgResult.version ? ` (FortiOS ${fgResult.version})` : ""}`
       : `Randomly selected FortiGate "${fgResult.deviceName}" failed: ${fgResult.message}`;
@@ -781,7 +781,7 @@ router.post("/test/fortigate-sample", async (req, res, next) => {
       }
     }
 
-    const fgResult = await fortimanager.testRandomFortiGate(cfg as any);
+    const fgResult = await fortimanager.testRandomFortiGate(cfg as any, existingId ?? undefined);
     const message = fgResult.ok
       ? `Randomly selected FortiGate "${fgResult.deviceName}" reachable${fgResult.version ? ` (FortiOS ${fgResult.version})` : ""}`
       : `Randomly selected FortiGate "${fgResult.deviceName}" failed: ${fgResult.message}`;
@@ -827,6 +827,7 @@ router.post("/:id/query", async (req, res, next) => {
           method,
           path,
           query,
+          integration.id,
         );
         sendProxyJson(res, result);
         return;
@@ -837,7 +838,7 @@ router.post("/:id/query", async (req, res, next) => {
         method: z.string().min(1),
         params: z.array(z.unknown()),
       }).parse(req.body);
-      const result = await fortimanager.proxyQuery(integration.config as any, method, params);
+      const result = await fortimanager.proxyQuery(integration.config as any, method, params, integration.id);
       sendProxyJson(res, result);
       return;
     }
@@ -1102,9 +1103,46 @@ function fmtSec(ms: number): string {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
-async function runPreflightTest(integration: { type: string; config: unknown }): Promise<{ ok: boolean; message: string }> {
+/**
+ * Pull the warm-cache management IPs for an FMG integration's monitor-up
+ * firewalls. Returns deviceName → mgmtIp. Empty in proxy mode (the cache
+ * doesn't help when every per-device call funnels through FMG anyway), and
+ * empty on first run before any firewall has been monitored. Errors are
+ * swallowed: the cache is a speedup, not a correctness requirement, and
+ * discovery falls back to the FMG-serial resolver path automatically when
+ * the map is empty.
+ */
+async function buildFmgWarmCacheIps(
+  integrationId: string,
+  config: Record<string, unknown>,
+): Promise<Map<string, string>> {
+  const empty = new Map<string, string>();
+  try {
+    const useProxy = config.useProxy !== false;
+    if (useProxy) return empty;
+    const rows = await prisma.asset.findMany({
+      where: {
+        discoveredByIntegrationId: integrationId,
+        assetType: "firewall",
+        monitorStatus: "up",
+        ipAddress: { not: null },
+        hostname: { not: null },
+      },
+      select: { hostname: true, ipAddress: true },
+    });
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      if (r.hostname && r.ipAddress) map.set(r.hostname, r.ipAddress);
+    }
+    return map;
+  } catch {
+    return empty;
+  }
+}
+
+async function runPreflightTest(integration: { id: string; type: string; config: unknown }): Promise<{ ok: boolean; message: string }> {
   const config = integration.config as Record<string, unknown>;
-  if (integration.type === "fortimanager") return fortimanager.testConnection(config as any);
+  if (integration.type === "fortimanager") return fortimanager.testConnection(config as any, integration.id);
   if (integration.type === "fortigate") return fortigate.testConnection(config as any);
   if (integration.type === "windowsserver") return windowsServer.testConnection(config as any);
   if (integration.type === "entraid") return entraId.testConnection(config as any);
@@ -1279,7 +1317,15 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       } else {
         // FortiManager: onDeviceComplete fires after each managed FortiGate is queried,
         // syncing subnets/assets/reservations incrementally.
-        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24, onDeviceComplete);
+        // Build the warm cache before dispatch — every firewall Asset row
+        // discovered by THIS integration that the monitor loop most recently
+        // saw as "up" gets its cached management IP fed to discovery so the
+        // direct-mode worker pool fills from t=0 instead of dripping in
+        // behind the FMG-serial mgmt-IP resolver. Cold-cache (first run, or
+        // monitor unseeded) returns 0 rows and the resolver path runs as
+        // before. Skipped in proxy mode.
+        const warmCacheIps = await buildFmgWarmCacheIps(integrationId, config);
+        discoveryResult = await fortimanager.discoverDhcpSubnets(config as any, ac.signal, onProgress, integration.pollInterval ?? 24, onDeviceComplete, integrationId, warmCacheIps);
         // Skip Phase 2 (stale deprecation) if the run was aborted — an aborted
         // run shouldn't take destructive actions, even though the FMG device
         // roster used for deprecation is captured up front (not per-device).
@@ -2112,6 +2158,52 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           },
         });
       }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 2a — Decommission stale FortiGate firewalls
+  // ══════════════════════════════════════════════════════════════════════════════
+  //
+  // For every firewall Asset row discovered by this integration whose hostname
+  // is no longer in the FMG roster: flip it to status="decommissioned". The
+  // FMG roster (`knownDeviceNames`) is captured up front from
+  // /dvmdb/adom/<adom>/device with NO conn_status filter, so an offline
+  // FortiGate stays in the set and isn't flagged. Devices filtered out by
+  // deviceInclude/exclude also stay in the set for the same reason — flipping
+  // a filter shouldn't decommission previously-discovered firewalls.
+  //
+  // A decommissioned firewall is reactivated by the Phase-3b firewall update
+  // path above on a future discovery cycle when the device returns to FMG.
+  if (knownDeviceNames.size > 0 && (integrationType === "fortimanager" || integrationType === "fortigate")) {
+    const candidateFws = await prisma.asset.findMany({
+      where: {
+        discoveredByIntegrationId: integrationId,
+        assetType: "firewall",
+        status: { not: "decommissioned" },
+      },
+      select: { id: true, hostname: true, serialNumber: true },
+    });
+    const staleFwIds: string[] = [];
+    for (const a of candidateFws) {
+      if (!a.hostname) continue;
+      if (knownDeviceNames.has(a.hostname)) continue;
+      staleFwIds.push(a.id);
+      logEvent({
+        action: "asset.fortigate.decommissioned",
+        resourceType: "asset",
+        resourceId: a.id,
+        resourceName: a.hostname || a.serialNumber || a.id,
+        actor,
+        message: `FortiGate "${a.hostname || a.serialNumber}" decommissioned — no longer configured in "${integrationName}"`,
+        details: { reason: "missing-from-roster", integrationId, integrationName },
+      });
+    }
+    if (staleFwIds.length > 0) {
+      await prisma.asset.updateMany({
+        where: { id: { in: staleFwIds } },
+        data: { status: "decommissioned", statusChangedAt: new Date(now), statusChangedBy: integrationLabel },
+      });
     }
   }
 
