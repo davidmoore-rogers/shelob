@@ -27,6 +27,7 @@ Per-pattern sections:
 - [Slide-over panel](#slide-over-panel)
 - [Sortable + filterable data table](#sortable--filterable-data-table)
 - [Per-instance single-consumer serial worker](#per-instance-single-consumer-serial-worker)
+- [Cross-asset graph derivation + persisted DAG](#cross-asset-graph-derivation--persisted-dag)
 
 ---
 
@@ -168,3 +169,28 @@ Per-pattern sections:
 - Public functions take the id as the LAST optional parameter so unsaved-state callers (e.g. pre-create test connection on a draft integration) can omit it; in that case the worker is bypassed and the call runs direct (no contention possible since there's no other code talking to this instance yet).
 - Wire two gauges to `src/metrics.ts`: queue depth (count) and inflight (0/1). Keep the metric names parallel to FmgWorker's so dashboards generalize.
 - Document a "load-bearing test": one task A in-flight against the worker, submit task B from a different feature surface, confirm B waits until A completes. This is the cross-feature-serialization invariant the primitive exists to enforce.
+
+---
+
+## Cross-asset graph derivation + persisted DAG
+
+**What it is:** A dependency / topology graph derived from heterogeneous discovery signals (controller-stamped fields + interface-name inference + LLDP), persisted as parent→child edges with a per-node BFS layer, refreshed at end of every discovery cycle, and read by both runtime logic (e.g. monitoring suppression) and the topology UI. Distinct from a per-request topology computation — persisting the DAG gives runtime callers a single source of truth without re-walking signals on every probe.
+
+**Canonical implementation:** `recomputeDependencyTree()` + `reconcileDependencySuppression()` + `propagateAfterStatusChange()` in [src/services/dependencyTreeService.ts](src/services/dependencyTreeService.ts), backed by the `AssetDependencyParent` model + `Asset.dependencyLayer` / `Asset.dependencySuppressed` columns.
+
+**Key conventions:**
+- **Pure helpers exported for tests.** `buildDependencyEdgesFromInputs(assets, interfaceEdges, lldpEdges)`, `assignLayers(assets, edges)`, `evaluateSuppression(states, parents)` are pure functions — no DB, no side effects. The DB-bound `recomputeDependencyTree` / `reconcileDependencySuppression` are thin wrappers that load inputs, call the pure helper, and write the diff. New tests cover the pure helpers; the wrappers are exercised via integration tests.
+- **Signal precedence at edge-build time.** When the same parent→child pair surfaces from multiple signals, keep the strongest. Convention: controller (3) > interface (2) > lldp (1). Implemented as a `(child|parent) → {edge, strength}` map that tracks the winner.
+- **BFS layer assignment from a known root set, with edge pruning.** Layer-1 nodes are assigned by domain rule (here: every FortiGate). BFS outward; a candidate edge is kept only when `layer[parent] + 1 === layer[child]`. Same-layer edges (siblings, MCLAG pairs) and reverse edges are dropped. Cycles can't form once layers are settled — disconnected components or chains through unmonitored intermediates surface as `unresolved`.
+- **Persistence is replace-and-recreate per scope, not diff.** `recomputeDependencyTree(integrationId)` deletes computed rows for in-scope assets, re-inserts from `keptEdges`, updates `dependencyLayer` — all in one `prisma.$transaction`. Operator override rows (`source="override"`) are never touched. In-scope is the integration's discovered assets; out-of-scope rows are owned by another integration's recompute and left alone.
+- **Override resolution at read time.** When loading effective parents, "if any override row exists for an asset, use the override set; else use the computed set." Empty override set = explicit "no parents" pin. Read-time resolution avoids any write coupling between operator edits and discovery cycles.
+- **Reconciler is the source of truth for runtime state; event hook is a latency optimization.** The 60s `reconcileDependencySuppression()` walks every monitored asset in BFS layer order, computes desired suppression under the domain rule (here: all-down multi-parent), writes only diffs. The event hook (`propagateAfterStatusChange`) calls the same reconciler on every probe-result transition for sub-second propagation, but correctness never depends on it firing — server restart mid-transition / race / dropped event are all caught by the next periodic tick.
+- **Discovery hook runs at the END of the discovery function**, after all asset writes and projection-apply phases — not interleaved. Gated on `mode in {full, finalize}` so per-device skip-deprecation passes don't trigger partial recomputes.
+- **One-shot startup backfill** (`backfillDependencyTree.ts`) runs `recomputeDependencyTree()` 30 s after boot so existing installs see populated rows without waiting for the next scheduled discovery cycle.
+
+**When adding a new instance:**
+- Identify your domain's "layer-1 root rule" (here: assetType === "firewall"). Hardcoded in the BFS layer assigner; write tests that cover the orphan case (no path from any root → null layer).
+- Define your edge-strength order over the available signals. Document it in the service header comment so future contributors don't re-litigate which signal wins.
+- Pick the "in-scope" axis for incremental recompute (here: `discoveredByIntegrationId`). The full graph load is cheap; the per-scope writeback is what matters for keeping cycles isolated to the active integration's writes.
+- Pure helpers go in the service file with explicit `export`. DB-bound wrappers stay in the same file but mark them clearly with a comment header so test contributors know which functions to mock vs which to call directly.
+- Add a touches.md cross-cutting section on day one — runtime callers and UI surfaces will discover the DAG quickly and reach for it; the index keeps the writers/readers visible.

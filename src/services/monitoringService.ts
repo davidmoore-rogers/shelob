@@ -62,6 +62,7 @@ import {
   assetSourceKindFromIntegrationType,
 } from "../utils/pollingCompatibility.js";
 import { withIntegrationCtx } from "../utils/apiCallTracker.js";
+import { propagateAfterStatusChange } from "./dependencyTreeService.js";
 
 export interface ProbeResult {
   success: boolean;
@@ -3975,6 +3976,13 @@ export async function recordProbeResult(assetId: string, result: ProbeResult): P
         consecutiveSuccesses: newCs,
       },
     });
+    // Fire-and-forget latency hook: propagate the confirmed-up / confirmed-down
+    // edge into descendant `dependencySuppressed` state immediately so heavy
+    // cadences pause within milliseconds of the parent flipping to "down"
+    // (and resume the moment it recovers). The 60s reconciler is the source
+    // of truth; this just shortens the worst-case lag from ~60s to one
+    // probe-tick on the parent.
+    void propagateAfterStatusChange(assetId);
   }
 }
 
@@ -4173,6 +4181,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       monitoredInterfaces: true,
       monitoredStorage: true,
       monitoredIpsecTunnels: true,
+      dependencySuppressed: true,
     },
   });
 
@@ -4226,8 +4235,17 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // Probe cadence is just the resolved intervalSeconds — no backoff for
     // down hosts. Down-host suppression below stops heavy cadences regardless;
     // the cheap response-time probe keeps firing at base cadence so recovery
-    // is detected within one tick.
-    const probe      = isDue(a.lastMonitorAt,    eff.intervalSeconds);
+    // is detected within one tick. EXCEPT when dependency suppression is
+    // active (parent is down): the probe slows to 2× the configured interval
+    // since the asset is unlikely to answer until the parent recovers, but
+    // we still poll at half-rate to catch cases where it answers via a
+    // redundant L3 path or out-of-band management. Disabled streams stay
+    // disabled regardless of suppression — there's nothing to slow down.
+    const probeIntervalSec =
+      a.dependencySuppressed && eff.responseTimePolling !== "disabled"
+        ? eff.intervalSeconds * 2
+        : eff.intervalSeconds;
+    const probe      = isDue(a.lastMonitorAt,    probeIntervalSec);
     const telemetry  = isDue(a.lastTelemetryAt,  eff.telemetryIntervalSeconds);
     const systemInfo = isDue(a.lastSystemInfoAt, eff.systemInfoIntervalSeconds);
     const hasFastPin =
@@ -4263,8 +4281,10 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
 
     // Heavy-cadence suppression. Telemetry / systemInfo / fastFiltered run
-    // ONLY while the asset is confirmed up — every other state (warning /
-    // pending / down / unknown) suppresses them. Rationale:
+    // ONLY while the asset is confirmed up AND not dependency-suppressed.
+    // Every other state (warning / pending / down / unknown) suppresses
+    // them, AND a confirmed-down upstream parent suppresses them too.
+    // Rationale:
     //   - "down": stale by definition; full SNMP walks just burn worker
     //     time on a host that's about to time out three more times.
     //   - "warning": the asset has missed at least one probe; its data is
@@ -4273,9 +4293,13 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     //   - "pending": brand-new or recovering; not yet confirmed up.
     //   - "unknown": never been probed; let the response-time probe alone
     //     establish a baseline before scheduling heavy walks.
+    //   - dependencySuppressed: parent is confirmed down; if the asset's
+    //     own probe still answers via a redundant path the response-time
+    //     stream catches it; heavy walks against an unreachable upstream
+    //     mostly time out and waste worker budget.
     // The cheap probe keeps firing in every state so recovery can be
     // detected within one tick of the resolved cadence.
-    const isUp = a.monitorStatus === "up";
+    const isUp = a.monitorStatus === "up" && !a.dependencySuppressed;
     const integrationId   = a.discoveredByIntegration?.id   ?? undefined;
     const integrationName = a.discoveredByIntegration?.name ?? undefined;
     if (probe      && enabled.has("probe"))                                      probes.push({ id: a.id, kind: "probe", integrationId, integrationName });

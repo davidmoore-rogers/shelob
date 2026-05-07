@@ -130,6 +130,7 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       monitoredInterfaces: true,
       monitoredStorage: true,
       monitoredIpsecTunnels: true,
+      dependencySuppressed: true,
     },
   });
 
@@ -146,7 +147,15 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       ...a,
       discoveredByIntegrationType: a.discoveredByIntegration?.type ?? null,
     });
-    const probe      = isDue(a.lastMonitorAt,    eff.intervalSeconds);
+    // Probe cadence: 2× the resolved interval when dependency-suppressed
+    // (parent down) — otherwise base cadence so recovery is detected within
+    // one tick. Disabled streams stay disabled regardless of suppression.
+    // See the matching block in monitoringService.runMonitorPass.
+    const probeIntervalSec =
+      a.dependencySuppressed && eff.responseTimePolling !== "disabled"
+        ? eff.intervalSeconds * 2
+        : eff.intervalSeconds;
+    const probe      = isDue(a.lastMonitorAt,    probeIntervalSec);
     const telemetry  = isDue(a.lastTelemetryAt,  eff.telemetryIntervalSeconds);
     const systemInfo = isDue(a.lastSystemInfoAt, eff.systemInfoIntervalSeconds);
     const hasFastPin =
@@ -170,9 +179,10 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       eff.interfacesPolling !== null &&
       !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
 
-    // Heavy-cadence suppression: only "up" runs telemetry / systemInfo /
-    // fastFiltered. See the matching comment in monitoringService.runMonitorPass.
-    const isUp = a.monitorStatus === "up";
+    // Heavy-cadence suppression: only "up" AND not dependency-suppressed
+    // runs telemetry / systemInfo / fastFiltered. See the matching comment
+    // in monitoringService.runMonitorPass.
+    const isUp = a.monitorStatus === "up" && !a.dependencySuppressed;
 
     if (probe && enabled.has("probe")) {
       // Transport label for the per-probe metrics. Uses the resolved

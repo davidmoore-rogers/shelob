@@ -23,6 +23,7 @@ import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
 import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
+import { recomputeDependencyTree } from "../../services/dependencyTreeService.js";
 import * as sightings from "../../services/assetSightingService.js";
 import { quarantineAsset, verifyAssetQuarantine } from "../../services/assetQuarantineService.js";
 import {
@@ -3916,6 +3917,32 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       syncLog("error", `fortigate-endpoint projection apply: corrected ${projectionCorrected}, ${projFailed} failed`);
     } else if (projectionCorrected > 0) {
       syncLog("info", `fortigate-endpoint projection apply: corrected ${projectionCorrected} of ${fortigateEndpointAssetIds.size} touched assets`);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 12 — Recompute dependency tree
+  //
+  // After every infra asset write (FortiGates, FortiSwitches, FortiAPs)
+  // is on disk and the projection apply has reconciled multi-source
+  // fields, rebuild this integration's parent→child DAG from the latest
+  // fortinetTopology + interface-topology + LLDP signals. Drives the
+  // dependency-suppression reconciler — see dependencyTreeService.
+  //
+  // Gated on mode in {full, finalize} — per-device skip-deprecation passes
+  // see only a partial slice of the fleet, so a recompute run there would
+  // race with sibling per-device passes and write churn. The finalize
+  // pass owns the recompute.
+  //
+  // Best-effort. Failures are logged but never block the sync return.
+  if (mode === "full" || mode === "finalize") {
+    try {
+      const dep = await recomputeDependencyTree(integrationId);
+      if (dep.scoped > 0) {
+        syncLog("info", `Dependency tree: ${dep.edgesWritten} edge(s) across ${dep.scoped} asset(s)${dep.unresolved > 0 ? `, ${dep.unresolved} unresolved` : ""}`);
+      }
+    } catch (err: any) {
+      syncLog("error", `Dependency tree recompute failed: ${err?.message || "Unknown error"}`);
     }
   }
 

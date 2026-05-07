@@ -25,7 +25,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ## Sections
 
-- [Cross-cutting concerns](#cross-cutting-concerns) (6)
+- [Cross-cutting concerns](#cross-cutting-concerns) (7)
 - [Per-service touches](#per-service-touches) — alphabetical, 39 services in `src/services/`
 
 ---
@@ -37,7 +37,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **What it is:** Asset.monitorStatus ∈ {up, warning, recovering, down, unknown} driven by consecutiveFailures/consecutiveSuccesses counters (see "Five-state monitor machine" in CLAUDE.md).
 
 **Writers** (files that mutate or emit this state):
-- `src/services/monitoringService.ts` — runProbeFor() updates Asset.monitorStatus/consecutiveFailures/consecutiveSuccesses after each probe result, emits monitor.status_changed Event on up↔down transitions
+- `src/services/monitoringService.ts` — runProbeFor() updates Asset.monitorStatus/consecutiveFailures/consecutiveSuccesses after each probe result, emits monitor.status_changed Event on up↔down transitions, fires propagateAfterStatusChange() to push the edge into descendant dependencySuppressed state
 - `src/jobs/monitorAssets.ts` — Light/heavy ticking loops invoke runMonitorPass() which dispatches probe collection
 - `src/api/routes/assets.ts:651` — recordProbeResult() on manual /probe-now endpoint
 - `src/api/routes/assets.ts` — PUT /assets/:id validateMonitorConfig handler resets consecutiveFailures on manual disable
@@ -46,17 +46,18 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **Readers** (files that consume it):
 - `public/js/assets.js:223-229` — Status pill renderer colors by monitorStatus (green/amber/blue/red/grey)
 - `public/js/assets.js:1152` — intermittency-bar client-side replay engine reads monitorStatus to color per-sample cells
-- `src/services/monitoringService.ts:runMonitorPass()` — Heavy-cadence suppression gate: telemetry/systemInfo only run when monitorStatus==="up"
+- `src/services/monitoringService.ts:runMonitorPass()` — Heavy-cadence suppression gate: telemetry/systemInfo only run when monitorStatus==="up" AND !dependencySuppressed; probe interval doubles when dependencySuppressed (parent down)
+- `src/services/dependencyTreeService.ts` — reconcileDependencySuppression() reads monitorStatus to evaluate "all-down" suppression — only the confirmed-down edge propagates (warning/recovering do NOT)
 - `src/api/routes/map.ts` — Device Map topology endpoint reads monitorStatus for FortiGate/switch/AP health coloring via monitorStatusToHealth()
-- `src/jobs/monitorAssets.ts:110` — Queue eligibility check consults monitorStatus
+- `src/jobs/monitorAssets.ts:110` — Queue eligibility check consults monitorStatus + dependencySuppressed
 
 **Invariants:**
 - State machine accepts only {up, warning, recovering, down, unknown}; no other string values permitted.
 - Transition to "down" happens when consecutiveFailures ≥ failureThreshold; to "up" when consecutiveSuccesses ≥ failureThreshold (same threshold both directions).
 - "recovering" is the transient mid-recovery state (was-down, now succeeding). Exits to "up" once the success threshold is crossed.
 - "warning" is mid-degradation (was-up, now accumulating failures but below threshold). Exits to "down" when threshold crossed, back to "up" on success.
-- monitor.status_changed Event fires ONLY on up↔down transitions, not on warning/recovering churn.
-- Heavy cadences (telemetry/systemInfo/fastFiltered) are suppressed (don't run) when monitorStatus ≠ "up".
+- monitor.status_changed Event fires ONLY on up↔down transitions, not on warning/recovering churn. propagateAfterStatusChange() fires from the same edge so dependency suppression follows the confirmed-down edge — never the flap.
+- Heavy cadences (telemetry/systemInfo/fastFiltered) are suppressed when monitorStatus ≠ "up" OR dependencySuppressed. The probe runs at 2× cadence when dependencySuppressed AND responseTimePolling !== "disabled".
 - Response-time probe runs in every state; it's the cheap path that detects recovery.
 
 **When changing this:**
@@ -66,6 +67,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Test manual /probe-now against a down asset — should advance consecutiveSuccesses and possibly transition to recovering within one call.
 - Check Map topology endpoint colors match asset list Status pills (monitorStatusToHealth must be consistent).
 - Verify clamp logic in db.ts doesn't interfere: disable should reset, but re-enable (flip to active) should not auto-resume monitoring.
+- If touching the cadence dispatch (runMonitorPass / publishDueWork): mirror EVERY change in BOTH `src/services/monitoringService.ts` AND `src/jobs/monitorAssets.ts` — they're parallel implementations and must stay in lock-step.
 
 ---
 
@@ -245,6 +247,44 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Check conflict bypass: create a manual reservation, add an integration that discovers the same IP; verify conflict is raised only for non-manual priors.
 - Lease-release cadence: toggle pushReservations off mid-deployment, release a dhcp_lease row; confirm unpush is skipped but the Polaris row is freed.
 - Verify read-back verify: FortiGate DHCP create succeeds but the verify read fails (transient device timeout); confirm the push is retried or fails cleanly.
+
+---
+
+## cross-cutting/dependency-aware-monitoring-suppression
+
+**What it is:** AssetDependencyParent edges + Asset.dependencyLayer + Asset.dependencySuppressed coupled to the response-time five-state machine. Parent (FortiGate / upstream switch) confirmed-down → all transitive descendants pause heavy cadences and slow probe to 2× interval; recovery resumes within one base-cadence tick. "All-down" multi-parent semantics — a switch with redundant uplinks suppresses only when every effective parent is down or itself suppressed.
+
+**Writers** (files that mutate or emit this state):
+- `src/services/dependencyTreeService.ts` — recomputeDependencyTree() rebuilds source="computed" rows in AssetDependencyParent + Asset.dependencyLayer at end of every FMG/FortiGate discovery cycle. Source="override" rows are operator-managed (admin override endpoints — to be added in API commit) and never touched by recompute.
+- `src/services/dependencyTreeService.ts` — reconcileDependencySuppression() is the source of truth for Asset.dependencySuppressed; emits monitor.dependency_suppressed / monitor.dependency_resumed Events on transitions.
+- `src/services/dependencyTreeService.ts` — propagateAfterStatusChange() is the latency-optimization hook called from recordProbeResult after every monitor.status_changed Event.
+- `src/jobs/dependencyReconciler.ts` — 60s tick that calls reconcileDependencySuppression(); the source of truth catches anything the event hook missed.
+- `src/jobs/backfillDependencyTree.ts` — one-shot startup runs recomputeDependencyTree() so existing installs see populated rows without waiting 4h.
+- `src/api/routes/integrations.ts` — Phase 12 of syncDhcpSubnets calls recomputeDependencyTree(integrationId) on mode in {full, finalize}.
+
+**Readers** (files that consume it):
+- `src/services/monitoringService.ts:runMonitorPass()` — Cadence dispatch: heavy cadences gated on `monitorStatus==="up" && !dependencySuppressed`; probe interval doubles when dependencySuppressed AND responseTimePolling !== "disabled".
+- `src/jobs/monitorAssets.ts:publishDueWork()` — Same gate, mirrored for the pg-boss publisher path.
+- (planned) `public/js/assets.js` — Status pill 6th label "Dep. Down" reads dependencySuppressed.
+- (planned) `src/api/routes/map.ts` — Topology endpoint will read AssetDependencyParent for FG→switch / switch→AP edges instead of per-request BFS.
+- (planned) `src/api/routes/assets.ts` — Three new endpoints: GET /assets/:id/dependencies, PUT /:id/dependencies/override, DELETE /:id/dependencies/override.
+
+**Invariants:**
+- Suppression follows the **confirmed-down** edge only. monitor.status_changed Event fires solely on up↔down transitions, and propagateAfterStatusChange() is called only from that same emission point. Warning / recovering flapping does NOT propagate.
+- "All-down" multi-parent: an asset with N effective parents suppresses iff every parent is down or itself dependencySuppressed. Empty parent set = never suppressed.
+- Override resolution: if any source="override" row exists for an asset, those are the effective parents (computed rows ignored). Empty override set = explicit "no parents" pin (asset opts out entirely).
+- Unmonitored parents are transparent — the suppression walk skips them and continues to their grandparents. A monitored ancestor must say "down" before suppression can fire.
+- recomputeDependencyTree only touches source="computed" rows for in-scope assets; out-of-scope rows and source="override" rows are never deleted.
+- Layer assignment is BFS shortest-path from any FortiGate (layer 1). Cycles, disconnected subgraphs, or chains through unmonitored intermediates may leave dependencyLayer = null.
+- Reconciler runs in BFS layer order so parent's effective state is settled before children evaluate (otherwise multi-tier suppression could oscillate).
+
+**When changing this:**
+- Mirror cadence-dispatch changes in BOTH src/services/monitoringService.ts AND src/jobs/monitorAssets.ts. The two are parallel implementations and must stay in lock-step.
+- Verify the propagateAfterStatusChange() hook still fires only from the up↔down emission point — never from warning/recovering churn.
+- Run the dependencyTreeService.test.ts suite — covers BFS layers, MCLAG siblings, dual-homed multi-parent, all-down semantics, transparent unmonitored parents, confirmed-down-only edge.
+- Smoke-test on dev: pick a live FortiGate, set monitorStatus="down" via direct DB write, wait one reconciler tick (≤60s); confirm child switches/APs flip to dependencySuppressed and emit monitor.dependency_suppressed Events.
+- If the topology endpoint refactor lands: hit /api/v1/map/sites/:id/topology before/after; edge sets must match (same FG→switch / switch→AP edges) modulo the new dependencySuppressed flag on each node.
+- Watch for cycles introduced by override edits: the override endpoint must reject inputs that would form a cycle (BFS-back-walk validation).
 
 ---
 
