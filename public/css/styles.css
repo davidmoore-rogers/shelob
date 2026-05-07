@@ -2108,15 +2108,23 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
    navigation (General / Filters / Monitoring / …) pinned to the top while
    scrolling a long form. Inner tabbed surfaces (Discovery Defaults
    FortiGates/FortiSwitches/FortiAPs) live deeper in the DOM and are
-   intentionally not sticky. The negative top margin + matching padding
-   cancel the modal-body's 1.25rem padding so the strip sits flush. */
+   intentionally not sticky.
+
+   The strip pins at top:0 of the modal-body's padding box (1.25rem below
+   the modal header). Negative left/right margins + matching padding
+   stretch the strip's solid-color background across the modal-body's full
+   horizontal extent so content scrolled past disappears cleanly behind it
+   even at the corners. The bottom border (from .page-tabs base) is the
+   visual seam where panel content slides under. */
 .modal-body > .page-tabs {
   position: sticky;
   top: 0;
   background: var(--color-bg-primary);
   z-index: 5;
-  margin-top: -1.25rem;
-  padding-top: 1.25rem;
+  margin-left: -1.25rem;
+  margin-right: -1.25rem;
+  padding-left: 1.25rem;
+  padding-right: 1.25rem;
 }
 .page-tab {
   padding: 0.7rem 1.25rem;
