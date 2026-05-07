@@ -2164,6 +2164,69 @@ router.get("/:id/dependencies", async (req, res, next) => {
     const hasOverride = overrideParents.length > 0;
     const effectiveParents = hasOverride ? overrideParents : computedParents;
 
+    // Direct children — every asset that has THIS asset as one of its
+    // EFFECTIVE parents. We pull every asset_dependency_parents row pointing
+    // at this id, then resolve each child's effective-parent rule (override
+    // wins when present) to filter out children that pin this asset only via
+    // their computed set when an override has since replaced it.
+    const childRows = await prisma.assetDependencyParent.findMany({
+      where: { parentAssetId: id },
+      include: {
+        asset: {
+          select: {
+            id: true,
+            hostname: true,
+            assetType: true,
+            dependencyLayer: true,
+            monitorStatus: true,
+            monitored: true,
+            dependencySuppressed: true,
+          },
+        },
+      },
+      orderBy: [{ source: "asc" }, { createdAt: "asc" }],
+    });
+    // For each candidate child, ask "does this child have any override row?"
+    // — if yes, only the override row counts as binding; if no, only the
+    // computed row counts. Same resolution rule as the parents view.
+    const childIds = [...new Set(childRows.map(r => r.assetId))];
+    const childOverrideMap = new Map<string, boolean>();
+    if (childIds.length > 0) {
+      const childOverrides = await prisma.assetDependencyParent.findMany({
+        where: { assetId: { in: childIds }, source: "override" },
+        select: { assetId: true },
+      });
+      for (const r of childOverrides) childOverrideMap.set(r.assetId, true);
+    }
+    const seenChildIds = new Set<string>();
+    const children = [];
+    for (const r of childRows) {
+      const childHasOverride = childOverrideMap.get(r.assetId) === true;
+      const isBinding = childHasOverride ? r.source === "override" : r.source === "computed";
+      if (!isBinding) continue;
+      if (seenChildIds.has(r.assetId)) continue; // dedupe if a child pins us via both computed AND override
+      seenChildIds.add(r.assetId);
+      children.push({
+        id:                  r.asset.id,
+        hostname:            r.asset.hostname,
+        assetType:           r.asset.assetType,
+        dependencyLayer:     r.asset.dependencyLayer,
+        monitorStatus:       r.asset.monitorStatus,
+        monitored:           r.asset.monitored,
+        dependencySuppressed: r.asset.dependencySuppressed,
+        source:              r.source,
+        detectedVia:         r.detectedVia,
+      });
+    }
+    // Stable display order: type (firewall→switch→ap→other), then hostname.
+    const TYPE_ORDER: Record<string, number> = { firewall: 1, switch: 2, access_point: 3 };
+    children.sort((a, b) => {
+      const ta = TYPE_ORDER[a.assetType] ?? 99;
+      const tb = TYPE_ORDER[b.assetType] ?? 99;
+      if (ta !== tb) return ta - tb;
+      return (a.hostname || "").localeCompare(b.hostname || "");
+    });
+
     res.json({
       asset: {
         id:                     asset.id,
@@ -2177,6 +2240,7 @@ router.get("/:id/dependencies", async (req, res, next) => {
       computedParents,
       overrideParents,
       hasOverride,
+      children,
     });
   } catch (err) {
     next(err);

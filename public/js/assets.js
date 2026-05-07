@@ -2000,7 +2000,12 @@ async function openViewModal(id) {
     var a = fetched[0];
     if (fetched[1]) _monitorSettingsCache = fetched[1];
     _currentAssetForRefresh = a;
-    var generalHTML = '<div class="asset-view-grid">' +
+    // Dependency tree block (General tab) — populated asynchronously after
+    // openViewModal awaits api.assets.getDependencies(id) below. Rendered
+    // inline at the top of the General tab so it's visible without scrolling.
+    var dependencyTreeMountHTML = '<div id="asset-dep-tree-mount-' + escapeHtml(a.id) + '"></div>';
+
+    var generalHTML = dependencyTreeMountHTML + '<div class="asset-view-grid">' +
       (a.ipAddress && !a.hostname
         ? '<div class="detail-row"><span class="detail-label">Hostname</span><span class="detail-value">- <button class="btn btn-sm btn-secondary" onclick="singleDnsLookup(\'' + a.id + '\')" title="Reverse DNS lookup (PTR record)">PTR Lookup</button></span></div>'
         : viewRow("Hostname", a.hostname, false, false, true)) +
@@ -2048,15 +2053,15 @@ async function openViewModal(id) {
       { key: "general", label: "General", html: generalHTML },
       { key: "system",  label: "System",  html: systemHTML },
     ];
-    // Sources tab — surfaces the multi-source asset model (Phase 3a). Loaded
-    // ahead of render so the table is ready on first paint; failures fall
-    // through to an empty-state message so the rest of the modal still works.
-    var sources = [];
-    try {
-      sources = await api.assets.getSources(a.id);
-    } catch (err) {
-      console.warn("Failed to load asset sources", err);
-    }
+    // Sources tab + dependency tree block fetched in parallel — both feed
+    // the General-tab area and the Sources tab on first paint. Failures fall
+    // through to empty-state so the rest of the modal still works.
+    var auxResults = await Promise.all([
+      api.assets.getSources(a.id).catch(function (err) { console.warn("Failed to load asset sources", err); return []; }),
+      api.assets.getDependencies(a.id).catch(function (err) { console.warn("Failed to load asset dependencies", err); return null; }),
+    ]);
+    var sources         = auxResults[0] || [];
+    var dependencies    = auxResults[1];
     tabs.push({ key: "sources", label: "Sources", html: _assetSourcesTabHTML(sources, a.id) });
     // SNMP Walk tab — admin-only, mirrors the backend gate. Loads credentials
     // before render so the picker isn't empty on first paint.
@@ -2092,6 +2097,12 @@ async function openViewModal(id) {
     _wireModalTabs("asset-view");
     if (isAdmin()) _wireSnmpWalkTab(a);
     if (canManageAssets()) _wireQuarantineTab(a);
+    // Mount the dependency tree into its placeholder div on the General tab.
+    var depMount = document.getElementById("asset-dep-tree-mount-" + a.id);
+    if (depMount) {
+      depMount.innerHTML = renderDependencyTreeBlock(dependencies, a.id);
+      _wireDependencyTreeLinks(depMount);
+    }
     _wireHoverTriggersIn(bodyEl);
     bodyEl.addEventListener("click", _handleCopyClick);
     document.getElementById("btn-asset-copy").addEventListener("click", _copyAssetDetails);
@@ -7420,6 +7431,137 @@ function _formatSourceObservedValue(v) {
     return escapeHtml(v);
   }
   return '<code class="mono" style="font-size:0.78rem">' + escapeHtml(JSON.stringify(v)) + '</code>';
+}
+
+// Status pip rendered next to each row in the dependency tree. Mirrors the
+// Status-pill priority used elsewhere: probe-down beats dep-down beats the
+// rest of the five-state machine. We render a single character (▲ ● ▼) so
+// the tree stays scannable; full label is in the title tooltip.
+function _depTreeStatusPip(node) {
+  // node may be either a parent (no dependencySuppressed field surfaced) or a
+  // child (has it). For parents we don't have suppressed in the payload —
+  // that's fine, the pip just reflects monitorStatus.
+  if (!node || node.monitored === false) return '<span class="dep-tree-pip dep-tree-pip-unmon" title="Unmonitored">●</span>';
+  if (node.dependencySuppressed && node.monitorStatus !== "down") {
+    return '<span class="dep-tree-pip dep-tree-pip-dep" title="Dep. Down — upstream parent is offline">●</span>';
+  }
+  switch (node.monitorStatus) {
+    case "up":         return '<span class="dep-tree-pip dep-tree-pip-up"   title="Up">▲</span>';
+    case "warning":    return '<span class="dep-tree-pip dep-tree-pip-warn" title="Warning">▲</span>';
+    case "recovering": return '<span class="dep-tree-pip dep-tree-pip-rec"  title="Recovering">▲</span>';
+    case "down":       return '<span class="dep-tree-pip dep-tree-pip-down" title="Down">▼</span>';
+    default:           return '<span class="dep-tree-pip dep-tree-pip-unk"  title="Pending">●</span>';
+  }
+}
+
+var _DEP_TREE_TYPE_LABEL = { firewall: "firewall", switch: "switch", access_point: "access point" };
+
+// Click target: hostname becomes a button that pivots openViewModal to that
+// asset. When the hostname is missing we fall through to the asset id.
+function _depTreeNodeRow(node, opts) {
+  opts = opts || {};
+  var name = node.hostname || node.id;
+  var safeName = escapeHtml(name);
+  var typeLabel = _DEP_TREE_TYPE_LABEL[node.assetType] || node.assetType || "asset";
+  var pip = _depTreeStatusPip(node);
+  var hostHTML;
+  if (opts.self) {
+    // Current asset — bold + non-clickable, with the layer annotation.
+    var layerBit = (node.dependencyLayer != null) ? ' <span class="dep-tree-self-meta">— layer ' + node.dependencyLayer + '</span>' : "";
+    hostHTML = '<strong class="dep-tree-self">' + safeName + '</strong>' + layerBit;
+  } else {
+    hostHTML = '<button type="button" class="dep-tree-link" data-asset-id="' + escapeHtml(node.id) + '" title="Open ' + safeName + '">' + safeName + '</button>';
+  }
+  var sourceTag = (node.source === "override") ? ' <span class="dep-tree-source-tag" title="Operator override">override</span>' : "";
+  return '<div class="dep-tree-row' + (opts.self ? ' dep-tree-row-self' : '') + '">' +
+    pip + ' ' + hostHTML +
+    ' <span class="dep-tree-type">' + escapeHtml(typeLabel) + '</span>' +
+    sourceTag +
+    '</div>';
+}
+
+// Render the General-tab dependency tree block. Hidden by default; populated
+// asynchronously after openViewModal awaits api.assets.getDependencies(id).
+// `payload` is the full /dependencies response. `selfId` distinguishes the
+// current asset from any other id that might appear in the lists (defensive).
+function renderDependencyTreeBlock(payload, selfId) {
+  if (!payload) return "";
+  var parents  = Array.isArray(payload.effectiveParents) ? payload.effectiveParents : [];
+  var children = Array.isArray(payload.children)         ? payload.children         : [];
+  var self     = payload.asset || {};
+  if (parents.length === 0 && children.length === 0) {
+    // Only show "standalone" messaging for Fortinet infra types; endpoint
+    // assets (workstations, printers, etc.) shouldn't see the block at all
+    // since they're never in the dependency tree.
+    var infraTypes = ["firewall", "switch", "access_point"];
+    if (infraTypes.indexOf(self.assetType) === -1) return "";
+    return '<div class="dep-tree-block">' +
+      '<div class="dep-tree-header">Dependency Tree</div>' +
+      '<div class="dep-tree-empty">Standalone — not part of any discovered dependency chain.</div>' +
+      '</div>';
+  }
+
+  var subtitle;
+  if (parents.length === 0) subtitle = "Layer 1 — root of the dependency tree";
+  else if (parents.length === 1) {
+    var p0 = parents[0].parent;
+    subtitle = "Layer " + (self.dependencyLayer != null ? self.dependencyLayer : "?") + " · directly under " + escapeHtml(p0.hostname || p0.id);
+  } else {
+    subtitle = "Layer " + (self.dependencyLayer != null ? self.dependencyLayer : "?") + " · " + parents.length + " parents";
+  }
+
+  var parentsHTML = "";
+  if (parents.length > 0) {
+    parentsHTML = parents.map(function (p) { return _depTreeNodeRow({
+      id: p.parent.id, hostname: p.parent.hostname, assetType: p.parent.assetType,
+      dependencyLayer: p.parent.dependencyLayer, monitorStatus: p.parent.monitorStatus,
+      monitored: p.parent.monitored, dependencySuppressed: false /* we don't have it on parent */, source: p.source,
+    }); }).join("");
+    parentsHTML += '<div class="dep-tree-connector">│</div>';
+  }
+  var selfHTML = _depTreeNodeRow({
+    id: self.id, hostname: self.hostname, assetType: self.assetType,
+    dependencyLayer: self.dependencyLayer, monitorStatus: null,
+    monitored: true, dependencySuppressed: !!self.dependencySuppressed,
+  }, { self: true });
+
+  var childrenHTML = "";
+  if (children.length > 0) {
+    childrenHTML += '<div class="dep-tree-connector">│</div>';
+    childrenHTML += children.map(function (c) {
+      return _depTreeNodeRow(c);
+    }).join("");
+  }
+
+  var overrideTag = payload.hasOverride
+    ? '<span class="dep-tree-override-tag" title="Operator override is in effect">override active</span>'
+    : "";
+
+  return '<div class="dep-tree-block">' +
+    '<div class="dep-tree-header">Dependency Tree ' + overrideTag + '</div>' +
+    '<div class="dep-tree-subtitle">' + escapeHtml(subtitle) + '</div>' +
+    '<div class="dep-tree-body">' +
+      parentsHTML +
+      selfHTML +
+      childrenHTML +
+    '</div>' +
+    '</div>';
+}
+
+// Wire clicks on .dep-tree-link buttons inside the body element. Each button
+// carries data-asset-id; clicking pivots the open modal to that asset. Closes
+// the current view in place (openViewModal swaps the body) so the user can
+// keep walking up/down the tree.
+function _wireDependencyTreeLinks(rootEl) {
+  if (!rootEl) return;
+  var btns = rootEl.querySelectorAll("[data-asset-id].dep-tree-link");
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].addEventListener("click", function (e) {
+      e.preventDefault();
+      var id = e.currentTarget.getAttribute("data-asset-id");
+      if (id) openViewModal(id);
+    });
+  }
 }
 
 function _assetSourcesTabHTML(sources, assetId) {

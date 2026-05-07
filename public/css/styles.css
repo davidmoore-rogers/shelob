@@ -2018,6 +2018,114 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   gap: 4px 24px;
 }
 
+/* ─── Dependency Tree block (asset details General tab) ──────────────────────
+ * Compact vertical tree: parents above the current asset, children below. The
+ * current asset is rendered bold and unclickable; everything else is a
+ * clickable hostname that pivots openViewModal to that asset. Status pip on
+ * each row mirrors the Status pill priority (probe-down > dep-down > five-
+ * state machine). */
+.dep-tree-block {
+  margin: 0 0 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-elevated, rgba(255,255,255,0.02));
+}
+.dep-tree-header {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.dep-tree-subtitle {
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 10px;
+}
+.dep-tree-empty {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+.dep-tree-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.88rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.dep-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+.dep-tree-row-self {
+  background: rgba(79,195,247,0.08);
+  border: 1px dashed rgba(79,195,247,0.30);
+  padding: 5px 8px;
+}
+.dep-tree-self {
+  color: var(--color-text);
+}
+.dep-tree-self-meta {
+  color: var(--color-text-secondary);
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+.dep-tree-connector {
+  color: var(--color-text-secondary);
+  margin-left: 12px;
+  user-select: none;
+  line-height: 0.9;
+}
+.dep-tree-link {
+  background: none;
+  border: 0;
+  color: var(--color-accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-decoration: none;
+}
+.dep-tree-link:hover { text-decoration: underline; }
+.dep-tree-type {
+  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+}
+.dep-tree-source-tag,
+.dep-tree-override-tag {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(79,195,247,0.12);
+  color: var(--color-accent);
+  border: 1px solid rgba(79,195,247,0.25);
+  font-family: var(--font-sans, sans-serif);
+}
+.dep-tree-pip {
+  display: inline-block;
+  width: 1em;
+  text-align: center;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.dep-tree-pip-up   { color: var(--color-success); }
+.dep-tree-pip-warn { color: #ffd54f; }
+.dep-tree-pip-rec  { color: var(--color-accent); }
+.dep-tree-pip-down { color: #ef9a9a; }
+.dep-tree-pip-dep  { color: #b0bec5; }
+.dep-tree-pip-unk,
+.dep-tree-pip-unmon { color: var(--color-deprecated); }
+[data-theme="light"] .dep-tree-row-self { background: rgba(79,195,247,0.06); border-color: rgba(79,195,247,0.30); }
+[data-theme="light"] .dep-tree-pip-down { color: #c62828; }
+[data-theme="light"] .dep-tree-pip-dep  { color: #455a64; }
+
 /* ─── Charts / Dashboard-specific ──────────────────────────────────────────── */
 .overview-grid {
   display: grid;
