@@ -287,6 +287,8 @@ async function runAssetSearch(like: string, mac: string | null, baseFilter: any)
     { ipAddress: { contains: like, mode: "insensitive" as const } },
     { manufacturer: { contains: like, mode: "insensitive" as const } },
     { model: { contains: like, mode: "insensitive" as const } },
+    { assignedTo: { contains: like, mode: "insensitive" as const } },
+    { department: { contains: like, mode: "insensitive" as const } },
   ];
   if (mac) {
     or.push({ macAddress: mac });
@@ -301,7 +303,8 @@ async function runAssetSearch(like: string, mac: string | null, baseFilter: any)
   // legacy assetTag column, new rows match via AssetSource. Strip the
   // common "<kind>:" prefix so an operator can paste either form.
   const sourceQuery = stripSourceKindPrefix(like);
-  const [byAsset, sourceHits] = await Promise.all([
+  const likePattern = `%${like}%`;
+  const [byAsset, sourceHits, macSideHits, ipSideHits, jsonHitIds] = await Promise.all([
     prisma.asset.findMany({
       where: { ...baseFilter, OR: or },
       take: PER_GROUP_LIMIT,
@@ -317,24 +320,82 @@ async function runAssetSearch(like: string, mac: string | null, baseFilter: any)
       },
       take: PER_GROUP_LIMIT,
     }),
+    // Full MAC history (the side table) — `Asset.macAddress` only carries the
+    // most-recently-seen value, so historical MACs from prior NICs / sightings
+    // would otherwise be invisible to search.
+    prisma.assetMacAddress.findMany({
+      where: {
+        mac: mac ?? { contains: like, mode: "insensitive" as const },
+        asset: baseFilter,
+      },
+      include: { asset: true },
+      take: PER_GROUP_LIMIT,
+      orderBy: { lastSeen: "desc" },
+    }),
+    // Secondary interface IPs — `Asset.ipAddress` is the primary; multi-NIC
+    // servers / FortiGates with several VIPs hold their other IPs in this
+    // side table.
+    prisma.assetAssociatedIp.findMany({
+      where: {
+        ip: { contains: like, mode: "insensitive" as const },
+        asset: baseFilter,
+      },
+      include: { asset: true },
+      take: PER_GROUP_LIMIT,
+      orderBy: { lastSeen: "desc" },
+    }),
+    // JSON-blob substring search across `Asset.associatedUsers` (logged-in
+    // users from FortiGate DHCP sightings, shape `[{user, domain?, lastSeen,
+    // source?}]`) and `AssetSource.observed` (Entra/AD/Intune raw blobs —
+    // SID, UPN, onPremisesSecurityIdentifier, etc.). Backed by GIN trigram
+    // indexes added in 20260507200000_search_json_trgm_indexes; falls back
+    // to a seq scan only for queries shorter than 3 chars.
+    prisma.$queryRaw<{ assetId: string }[]>`
+      SELECT id AS "assetId" FROM assets
+      WHERE "associatedUsers"::text ILIKE ${likePattern}
+      UNION
+      SELECT "assetId" FROM asset_sources
+      WHERE observed::text ILIKE ${likePattern}
+      LIMIT ${PER_GROUP_LIMIT * 4}
+    `,
   ]);
-  // Merge dedup by asset id; assetTag-side wins on hostname-sort order
-  // for ties, so the existing presentation is preserved when both
-  // pathways return the same row.
+  // The raw query returns asset ids only; load the asset rows with the
+  // baseFilter applied so the firewall vs. non-firewall partition still
+  // holds (a pinned-firewall hit via observed-blob substring would otherwise
+  // leak into the regular Assets group).
+  const jsonAssets = jsonHitIds.length
+    ? await prisma.asset.findMany({
+        where: { ...baseFilter, id: { in: jsonHitIds.map((r) => r.assetId) } },
+        take: PER_GROUP_LIMIT,
+        orderBy: { hostname: "asc" },
+      })
+    : [];
+  // Merge dedup by asset id; the byAsset query wins on hostname-sort order
+  // for ties so existing presentation is preserved. Source/MAC/IP side hits
+  // and JSON-blob hits fill any remaining budget in that order.
   const seen = new Set<string>();
   const merged: typeof byAsset = [];
-  for (const a of byAsset) {
-    if (a && a.id && !seen.has(a.id)) {
-      seen.add(a.id);
-      merged.push(a);
-    }
-  }
-  for (const s of sourceHits) {
-    const a = s.asset;
-    if (!a || !a.id || seen.has(a.id)) continue;
+  const tryPush = (a: any) => {
+    if (!a || !a.id || seen.has(a.id)) return;
     seen.add(a.id);
-    merged.push(a as any);
+    merged.push(a);
+  };
+  for (const a of byAsset) tryPush(a);
+  for (const s of sourceHits) {
     if (merged.length >= PER_GROUP_LIMIT) break;
+    tryPush(s.asset);
+  }
+  for (const m of macSideHits) {
+    if (merged.length >= PER_GROUP_LIMIT) break;
+    tryPush(m.asset);
+  }
+  for (const ip of ipSideHits) {
+    if (merged.length >= PER_GROUP_LIMIT) break;
+    tryPush(ip.asset);
+  }
+  for (const a of jsonAssets) {
+    if (merged.length >= PER_GROUP_LIMIT) break;
+    tryPush(a);
   }
   return merged.slice(0, PER_GROUP_LIMIT);
 }
