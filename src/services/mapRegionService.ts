@@ -26,7 +26,15 @@ import { pointInPolygon, type LatLng } from "../utils/geo.js";
 const SETTING_KEY = "mapRegions";
 const TAG_PREFIX = "region:";
 const TAG_CATEGORY = "Map Regions";
-const TAG_DEFAULT_COLOR = "#4fc3f7";
+const TAG_COLOR_PALETTE = [
+  "#4fc3f7", "#4ade80", "#f59e0b", "#f472b6", "#a78bfa",
+  "#fb923c", "#38bdf8", "#34d399", "#e879f9", "#facc15",
+  "#f87171", "#2dd4bf", "#818cf8", "#c084fc",
+];
+
+function randomTagColor(): string {
+  return TAG_COLOR_PALETTE[Math.floor(Math.random() * TAG_COLOR_PALETTE.length)]!;
+}
 
 export interface MapRegion {
   id: string;
@@ -123,10 +131,12 @@ function regionTag(name: string): string {
 async function upsertTagRegistry(name: string): Promise<void> {
   const tagName = regionTag(name);
   try {
+    // Pick a random palette color for new region tags so the operator sees a
+    // varied default; existing tags keep whatever color was previously chosen.
     await prisma.tag.upsert({
       where: { name: tagName },
       update: {},
-      create: { name: tagName, category: TAG_CATEGORY, color: TAG_DEFAULT_COLOR },
+      create: { name: tagName, category: TAG_CATEGORY, color: randomTagColor() },
     });
   } catch (err: any) {
     logger.debug({ err: err?.message ?? String(err), tag: tagName }, "mapRegion: tag upsert failed (non-fatal)");

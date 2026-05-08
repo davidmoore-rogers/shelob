@@ -4157,6 +4157,9 @@ async function openAddTagModal() {
     '<div class="form-group"><label>Color</label>' +
       '<div style="display:flex;gap:8px;align-items:center">' +
         '<input type="color" id="f-tag-color" value="' + randomTagColor() + '" style="width:40px;height:32px;padding:2px;border:1px solid var(--color-border);border-radius:4px;background:transparent;cursor:pointer">' +
+        '<button type="button" id="f-tag-color-random" title="Random color" aria-label="Random color" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--color-border);border-radius:4px;background:transparent;color:var(--color-text-secondary);cursor:pointer">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/><path d="M20.49 15a9 9 0 01-14.85 3.36L1 14"/></svg>' +
+        '</button>' +
         '<span id="f-tag-color-hex" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--color-text-secondary)"></span>' +
       '</div>' +
     '</div>';
@@ -4184,6 +4187,12 @@ async function openAddTagModal() {
     hexLabel.textContent = colorInput.value;
   });
   hexLabel.textContent = colorInput.value;
+
+  var randomBtn = document.getElementById("f-tag-color-random");
+  if (randomBtn) randomBtn.addEventListener("click", function () {
+    colorInput.value = randomTagColor();
+    hexLabel.textContent = colorInput.value;
+  });
 
   document.getElementById("btn-save-tag").addEventListener("click", async function () {
     var btn = this;
@@ -4254,6 +4263,9 @@ async function openEditTagModal(id) {
     '<div class="form-group"><label>Color</label>' +
       '<div style="display:flex;gap:8px;align-items:center">' +
         '<input type="color" id="f-tag-color" value="' + escapeHtml(tag.color || "#4fc3f7") + '" style="width:40px;height:32px;padding:2px;border:1px solid var(--color-border);border-radius:4px;background:transparent;cursor:pointer">' +
+        '<button type="button" id="f-tag-color-random" title="Random color" aria-label="Random color" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--color-border);border-radius:4px;background:transparent;color:var(--color-text-secondary);cursor:pointer">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/><path d="M20.49 15a9 9 0 01-14.85 3.36L1 14"/></svg>' +
+        '</button>' +
         '<span id="f-tag-color-hex" style="font-family:var(--font-mono);font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(tag.color || "#4fc3f7") + '</span>' +
       '</div>' +
     '</div>';
@@ -4279,6 +4291,12 @@ async function openEditTagModal(id) {
     hexLabel.textContent = colorInput.value;
   });
   hexLabel.textContent = colorInput.value;
+
+  var randomBtn = document.getElementById("f-tag-color-random");
+  if (randomBtn) randomBtn.addEventListener("click", function () {
+    colorInput.value = randomTagColor();
+    hexLabel.textContent = colorInput.value;
+  });
 
   document.getElementById("btn-save-tag").addEventListener("click", async function () {
     var btn = this;
