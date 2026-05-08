@@ -31,6 +31,7 @@
   var _siteName = null;
   var _focusTerm = null;
   var _resizeHandler = null;
+  var _themeObserver = null;
   var _searchDebounce = null;
   var _suggestState = { open: false, items: [], index: -1 };
   var _cyPromise = null;
@@ -131,6 +132,22 @@
       };
       window.addEventListener("resize", _resizeHandler);
 
+      // Re-render the graph when the operator toggles theme via More
+      // tab → Appearance while topology is open. The Cytoscape
+      // stylesheet captures theme at render time, so a flip needs a
+      // rebuild to swap text/edge colors. Mobile doesn't persist node
+      // positions so the dagre re-layout is the right behavior here.
+      if (_themeObserver) { try { _themeObserver.disconnect(); } catch (e) {} }
+      _themeObserver = new MutationObserver(function (muts) {
+        for (var i = 0; i < muts.length; i++) {
+          if (muts[i].attributeName === "data-theme" && _topoData) {
+            renderGraph(_topoData);
+            break;
+          }
+        }
+      });
+      _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
       loadCytoscape().then(function () {
         return api.map.topology(_siteId);
       }).then(function (data) {
@@ -174,6 +191,10 @@
   function closeTopology() {
     closeTopologySheet();
     closeTopologySearchResults();
+    if (_themeObserver) {
+      try { _themeObserver.disconnect(); } catch (e) {}
+      _themeObserver = null;
+    }
     if (_resizeHandler) {
       window.removeEventListener("resize", _resizeHandler);
       _resizeHandler = null;

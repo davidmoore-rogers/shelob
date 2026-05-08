@@ -8,6 +8,26 @@
 // shared /js/api.js). The 401 hook below redirects to the in-app login
 // rather than /login.html, so session expiry pops a familiar screen.
 
+// Apply persisted theme BEFORE the IIFE below runs, so the first paint
+// uses the right surface color (no dark-flash on a light-mode user's
+// reload). Same `polaris-theme` localStorage key the desktop uses, so a
+// preference set on either surface flows to the other.
+(function () {
+  var saved = "dark";
+  try { saved = localStorage.getItem("polaris-theme") || "dark"; } catch (e) {}
+  document.documentElement.setAttribute("data-theme", saved);
+})();
+
+// Tiny shared get/set so map-tab and more-tab can flip theme without
+// duplicating the localStorage key.
+window.PolarisTheme = {
+  get: function () { return document.documentElement.getAttribute("data-theme") || "dark"; },
+  set: function (theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem("polaris-theme", theme); } catch (e) {}
+  },
+};
+
 (function () {
   var app = document.getElementById("app");
   var currentUser = null;

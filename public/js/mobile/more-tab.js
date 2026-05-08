@@ -226,6 +226,8 @@
     var displayName = user.displayName || user.username || "user";
     var role = user.role || "?";
 
+    var themeIsDark = (window.PolarisTheme ? PolarisTheme.get() : "dark") === "dark";
+
     body.innerHTML = ''
       + '<div class="section-head">Network</div>'
       + menuRow("blocks", "i-block",   "Blocks",       "")
@@ -236,6 +238,15 @@
 
       + '<div class="section-head">Operations</div>'
       + menuRow("events", "i-event", "Events", "Audit log · last 7 days")
+
+      + '<div class="section-head">Appearance</div>'
+      + '<button class="list-item two-line" id="theme-toggle-row">'
+      + '  <span class="leading"><svg viewBox="0 0 24 24" id="theme-toggle-icon"><use href="#' + (themeIsDark ? "i-sun" : "i-moon") + '"/></svg></span>'
+      + '  <div class="content">'
+      + '    <div class="headline">Theme</div>'
+      + '    <div class="supporting" id="theme-current-label">' + (themeIsDark ? "Dark" : "Light") + '</div>'
+      + '  </div>'
+      + '</button>'
 
       + '<div class="section-head">Account</div>'
       + '<div class="list-item two-line">'
@@ -260,6 +271,24 @@
         PolarisRouter.go("more/" + row.dataset.sub);
       });
     });
+
+    var themeToggle = document.getElementById("theme-toggle-row");
+    if (themeToggle) {
+      themeToggle.addEventListener("click", function () {
+        var nowDark = (window.PolarisTheme ? PolarisTheme.get() : "dark") === "dark";
+        var next = nowDark ? "light" : "dark";
+        if (window.PolarisTheme) PolarisTheme.set(next);
+        // Update the row in place — supporting label + icon — instead of
+        // re-rendering the whole tab.
+        var label = document.getElementById("theme-current-label");
+        if (label) label.textContent = next === "dark" ? "Dark" : "Light";
+        var iconSvg = document.getElementById("theme-toggle-icon");
+        if (iconSvg) {
+          var useEl = iconSvg.querySelector("use");
+          if (useEl) useEl.setAttribute("href", next === "dark" ? "#i-sun" : "#i-moon");
+        }
+      });
+    }
 
     document.getElementById("sign-out-btn").addEventListener("click", function () {
       var headers = {};

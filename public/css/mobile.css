@@ -47,6 +47,11 @@
   --md-success:                 #5ed87b;
   --md-warning:                 #ffd54a;
 
+  /* GPS pin stroke — flips per theme so the stick figure stays legible
+     against either basemap. Light mode override lives in the
+     [data-theme="light"] block below. */
+  --user-pin-stroke:            #f3f4f6;
+
   /* Shape tokens */
   --shape-xs: 4px;
   --shape-sm: 8px;
@@ -63,6 +68,50 @@
   /* Layout */
   --topbar-h:  64px;
   --navbar-h:  80px;
+}
+
+/* Light theme — applied when <html data-theme="light"> is set by the
+   bootstrap in mobile/app.js (or by the More → Appearance toggle).
+   Variable names mirror the dark :root block above so component rules
+   don't have to branch on theme. Status colors (monitor health pills,
+   topology node colors in topology-render.js) deliberately stay literal
+   in their component blocks — they're status colors, not theme colors,
+   and need the same hue regardless of basemap. */
+[data-theme="light"] {
+  --md-primary:                 #005ac1;
+  --md-on-primary:              #ffffff;
+  --md-primary-container:       #d8e2ff;
+  --md-on-primary-container:    #001a41;
+  --md-secondary:               #565e71;
+  --md-on-secondary:            #ffffff;
+  --md-secondary-container:     #dae2f9;
+  --md-on-secondary-container:  #131c2b;
+  --md-tertiary:                #715574;
+  --md-on-tertiary:             #ffffff;
+  --md-tertiary-container:      #fbd7fc;
+  --md-on-tertiary-container:   #29132d;
+  --md-error:                   #ba1a1a;
+  --md-on-error:                #ffffff;
+  --md-error-container:         #ffdad6;
+  --md-on-error-container:      #410002;
+
+  --md-surface:                 #faf9fd;
+  --md-surface-cont-lowest:     #ffffff;
+  --md-surface-cont-low:        #f3f3fa;
+  --md-surface-cont:            #eef0f7;
+  --md-surface-cont-high:       #e8eaf2;
+  --md-surface-cont-highest:    #e2e2eb;
+  --md-on-surface:              #1a1c20;
+  --md-on-surface-variant:      #44474e;
+  --md-outline:                 #74777f;
+  --md-outline-variant:         #c4c6d0;
+  --md-inverse-surface:         #2e3035;
+  --md-inverse-on-surface:      #f1f0f7;
+
+  --md-success:                 #1f7a3a;
+  --md-warning:                 #b86e00;
+
+  --user-pin-stroke:            #1f2937;
 }
 
 * { box-sizing: border-box; }
@@ -954,7 +1003,7 @@ button, .list-item, .chip { touch-action: manipulation; }
 .user-pin .hat        { fill: #fbbf24; }                    /* construction-yellow helmet */
 .user-pin .hat-stripe { stroke: #b45309; stroke-width: 0.8; }
 .user-pin .face       { fill: #f5d3a8; }                    /* skin tone */
-.user-pin .stroke     { stroke: #1f2937; stroke-width: 2.4; stroke-linecap: round; fill: none; }
+.user-pin .stroke     { stroke: var(--user-pin-stroke); stroke-width: 2.4; stroke-linecap: round; fill: none; }
 
 /* Walking animation — alternate left/right limb poses on a ~480ms cycle.
    transform-box:fill-box + per-limb transform-origin pivots the limbs

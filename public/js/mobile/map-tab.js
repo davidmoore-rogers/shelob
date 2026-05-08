@@ -40,6 +40,12 @@
   var _userAccuracyRing = null;
   var _lastFix = null; // { lat, lng, t }
 
+  // Active basemap tile layer (so we can swap it in place when the user
+  // toggles theme without re-initializing the whole map). The
+  // MutationObserver below the initMap call handles the swap.
+  var _basemapLayer = null;
+  var _themeObserver = null;
+
   // Inline SVG for the user-location pin. Stick figure with a construction-
   // yellow hardhat. Limbs are individual <line> elements so CSS keyframes
   // can rotate them around shoulder/hip pivots when the .walking class is
@@ -180,16 +186,44 @@
       zoomControl: false, // pinch + the recenter FAB are enough on phones
     });
 
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-      maxZoom: 19,
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
-    }).addTo(_map);
+    applyBasemapTheme();
+
+    // Toggle theme via More tab → Appearance flips data-theme on <html>.
+    // Observe and swap tiles in place so the user doesn't have to leave
+    // and re-enter the Map tab to see the new basemap.
+    if (_themeObserver) { try { _themeObserver.disconnect(); } catch (e) {} }
+    _themeObserver = new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        if (muts[i].attributeName === "data-theme") { applyBasemapTheme(); break; }
+      }
+    });
+    _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     _markerCluster = L.markerClusterGroup({
       showCoverageOnHover: false,
       iconCreateFunction: clusterIcon,
     });
     _map.addLayer(_markerCluster);
+  }
+
+  // Theme-aware basemap. Mirrors desktop map.js's tile choice — CartoDB
+  // Dark Matter for dark theme, OpenStreetMap default for light. Swaps
+  // the layer in place so an open-map theme toggle doesn't leak the
+  // previous tile layer.
+  function applyBasemapTheme() {
+    if (!_map) return;
+    var L = window.L;
+    var isDark = (window.PolarisTheme ? PolarisTheme.get() : "dark") === "dark";
+    var url = isDark
+      ? "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+      : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+    var attribution = isDark
+      ? '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>'
+      : '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+    if (_basemapLayer) {
+      try { _map.removeLayer(_basemapLayer); } catch (e) {}
+    }
+    _basemapLayer = L.tileLayer(url, { maxZoom: 19, attribution: attribution }).addTo(_map);
   }
 
   function clusterIcon(cluster) {
