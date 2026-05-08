@@ -52,6 +52,7 @@ import {
   recordProbe,
   setMonitoredAssets,
   setQueueDepth,
+  startSampleWriteTimer,
 } from "../metrics.js";
 import { dropChunks } from "./timescaleService.js";
 import {
@@ -1890,6 +1891,7 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
   const d = result.data;
   const now = new Date();
   if (d.interfaces.length > 0) {
+    const stopWrite = startSampleWriteTimer("asset_interface_samples");
     await prisma.assetInterfaceSample.createMany({
       data: d.interfaces.map((i) => ({
         assetId,
@@ -1908,8 +1910,10 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
         description: i.description ?? null,
       })),
     });
+    stopWrite();
   }
   if (d.storage.length > 0) {
+    const stopWrite = startSampleWriteTimer("asset_storage_samples");
     await prisma.assetStorageSample.createMany({
       data: d.storage.map((s) => ({
         assetId,
@@ -1919,8 +1923,10 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
         usedBytes:  s.usedBytes  != null ? BigInt(Math.round(s.usedBytes))  : null,
       })),
     });
+    stopWrite();
   }
   if (Array.isArray(d.ipsecTunnels) && d.ipsecTunnels.length > 0) {
+    const stopWrite = startSampleWriteTimer("asset_ipsec_tunnel_samples");
     await prisma.assetIpsecTunnelSample.createMany({
       data: d.ipsecTunnels.map((t) => ({
         assetId,
@@ -1934,6 +1940,7 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
         proxyIdCount:    t.proxyIdCount,
       })),
     });
+    stopWrite();
   }
 }
 
@@ -3498,17 +3505,22 @@ export async function recordTelemetryResult(assetId: string, result: CollectionR
   const now = new Date();
   if (result.data) {
     const d = result.data;
-    await prisma.assetTelemetrySample.create({
-      data: {
-        assetId,
-        timestamp: now,
-        cpuPct:        d.cpuPct ?? null,
-        memPct:        d.memPct ?? null,
-        memUsedBytes:  d.memUsedBytes  != null ? BigInt(Math.round(d.memUsedBytes))  : null,
-        memTotalBytes: d.memTotalBytes != null ? BigInt(Math.round(d.memTotalBytes)) : null,
-      },
-    });
+    {
+      const stopWrite = startSampleWriteTimer("asset_telemetry_samples");
+      await prisma.assetTelemetrySample.create({
+        data: {
+          assetId,
+          timestamp: now,
+          cpuPct:        d.cpuPct ?? null,
+          memPct:        d.memPct ?? null,
+          memUsedBytes:  d.memUsedBytes  != null ? BigInt(Math.round(d.memUsedBytes))  : null,
+          memTotalBytes: d.memTotalBytes != null ? BigInt(Math.round(d.memTotalBytes)) : null,
+        },
+      });
+      stopWrite();
+    }
     if (Array.isArray(d.temperatures) && d.temperatures.length > 0) {
+      const stopWrite = startSampleWriteTimer("asset_temperature_samples");
       await prisma.assetTemperatureSample.createMany({
         data: d.temperatures.map((t) => ({
           assetId,
@@ -3517,6 +3529,7 @@ export async function recordTelemetryResult(assetId: string, result: CollectionR
           celsius:    t.celsius,
         })),
       });
+      stopWrite();
     }
   }
   // Always advance the cadence stamp so a transient failure doesn't make us
@@ -3530,6 +3543,7 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
   if (result.data) {
     const d = result.data;
     if (d.interfaces.length > 0) {
+      const stopWrite = startSampleWriteTimer("asset_interface_samples");
       await prisma.assetInterfaceSample.createMany({
         data: d.interfaces.map((i) => ({
           assetId,
@@ -3551,8 +3565,10 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           description: i.description ?? null,
         })),
       });
+      stopWrite();
     }
     if (d.storage.length > 0) {
+      const stopWrite = startSampleWriteTimer("asset_storage_samples");
       await prisma.assetStorageSample.createMany({
         data: d.storage.map((s) => ({
           assetId,
@@ -3562,8 +3578,10 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           usedBytes:  s.usedBytes  != null ? BigInt(Math.round(s.usedBytes))  : null,
         })),
       });
+      stopWrite();
     }
     if (Array.isArray(d.ipsecTunnels) && d.ipsecTunnels.length > 0) {
+      const stopWrite = startSampleWriteTimer("asset_ipsec_tunnel_samples");
       await prisma.assetIpsecTunnelSample.createMany({
         data: d.ipsecTunnels.map((t) => ({
           assetId,
@@ -3577,6 +3595,7 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           proxyIdCount:    t.proxyIdCount,
         })),
       });
+      stopWrite();
     }
     // Mirror per-interface IPs+MACs into the asset_associated_ips side
     // table. Replaces the legacy JSONB read-modify-write pattern. Discovery
@@ -3592,6 +3611,7 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     // empty result, matching the prior null-return behavior).
     const monitorAssocEntries = buildMonitorAssocIpEntries(d.interfaces, now);
     if (monitorAssocEntries.length > 0) {
+      const stopWrite = startSampleWriteTimer("asset_associated_ips");
       await prisma.$transaction([
         prisma.assetAssociatedIp.deleteMany({
           where: { assetId, source: { not: "manual" } },
@@ -3601,12 +3621,15 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           skipDuplicates: true,
         }),
       ]);
+      stopWrite();
     }
     // LLDP neighbors. `undefined` = the collector didn't run / unsupported
     // transport, so leave the existing rows alone. `[]` or a populated array
     // = queried successfully → replace the asset's neighbor set.
     if (Array.isArray(d.lldpNeighbors)) {
+      const stopWrite = startSampleWriteTimer("asset_lldp_neighbors");
       await persistLldpNeighbors(assetId, d.lldpNeighbors, now, d.lldpSource ?? "fortios");
+      stopWrite();
     }
     // Only bump lastSystemInfoAt on a successful pass. The /system-info GET
     // endpoint anchors its interface query to this timestamp so it can render
@@ -3936,15 +3959,19 @@ export async function recordProbeResult(assetId: string, result: ProbeResult): P
     }
   }
 
-  await prisma.assetMonitorSample.create({
-    data: {
-      assetId,
-      timestamp: now,
-      success: result.success,
-      responseTimeMs: result.success ? result.responseTimeMs : null,
-      error: result.success ? null : (result.error ?? null),
-    },
-  });
+  {
+    const stopWrite = startSampleWriteTimer("asset_monitor_samples");
+    await prisma.assetMonitorSample.create({
+      data: {
+        assetId,
+        timestamp: now,
+        success: result.success,
+        responseTimeMs: result.success ? result.responseTimeMs : null,
+        error: result.success ? null : (result.error ?? null),
+      },
+    });
+    stopWrite();
+  }
 
   await prisma.asset.update({
     where: { id: assetId },

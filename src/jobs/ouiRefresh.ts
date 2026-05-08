@@ -11,24 +11,27 @@
 
 import { refreshOuiDatabase, getOuiStatus } from "../services/ouiService.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
 
 async function runRefresh(): Promise<void> {
   try {
-    const status = await getOuiStatus();
+    await runInstrumentedJob("ouiRefresh", async () => {
+      const status = await getOuiStatus();
 
-    // Skip if refreshed within the last 6 days (avoids duplicate refreshes on restart)
-    if (status.refreshedAt) {
-      const age = Date.now() - new Date(status.refreshedAt).getTime();
-      if (age < INTERVAL_MS - 24 * 60 * 60 * 1000) {
-        logger.info({ refreshedAt: status.refreshedAt, entries: status.entries }, "OUI database is current — skipping refresh");
-        return;
+      // Skip if refreshed within the last 6 days (avoids duplicate refreshes on restart)
+      if (status.refreshedAt) {
+        const age = Date.now() - new Date(status.refreshedAt).getTime();
+        if (age < INTERVAL_MS - 24 * 60 * 60 * 1000) {
+          logger.info({ refreshedAt: status.refreshedAt, entries: status.entries }, "OUI database is current — skipping refresh");
+          return;
+        }
       }
-    }
 
-    const result = await refreshOuiDatabase();
-    logger.info({ entries: result.entries, sizeKb: result.sizeKb }, "OUI database refreshed");
+      const result = await refreshOuiDatabase();
+      logger.info({ entries: result.entries, sizeKb: result.sizeKb }, "OUI database refreshed");
+    });
   } catch (err) {
     logger.error(err, "Failed to refresh OUI database");
   }

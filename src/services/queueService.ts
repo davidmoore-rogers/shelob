@@ -33,7 +33,7 @@ import type { PgBoss as PgBossType, Job as PgBossJob } from "pg-boss";
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
-import { setPgbossQueueJobs, recordQueueMode, setMonitorWorkers } from "../metrics.js";
+import { setPgbossQueueJobs, setPgbossJobAge, recordQueueMode, setMonitorWorkers } from "../metrics.js";
 import {
   runProbeFor,
   runTelemetryFor,
@@ -208,8 +208,14 @@ async function refreshPgbossMetrics(): Promise<void> {
   let heavyActive  = 0;
   try {
     const queueNames = Object.values(QUEUE_NAMES);
-    const rows = await prisma.$queryRaw<Array<{ name: string; state: string; count: number }>>`
-      SELECT name, state, count(*)::int AS count
+    // MAX(EXTRACT(...)) gives the oldest waiting job per (queue, state) so a
+    // queue that's draining quickly (low age) is distinguishable from one
+    // that's stuck (high age) even at identical depth.
+    const rows = await prisma.$queryRaw<Array<{ name: string; state: string; count: number; age_seconds: number | null }>>`
+      SELECT name,
+             state,
+             count(*)::int AS count,
+             EXTRACT(EPOCH FROM (now() - MIN(created_on)))::float8 AS age_seconds
       FROM pgboss.job
       WHERE name = ANY(${queueNames}::text[])
       AND state IN ('created', 'active', 'failed')
@@ -219,10 +225,18 @@ async function refreshPgbossMetrics(): Promise<void> {
       setPgbossQueueJobs(name, "created", 0);
       setPgbossQueueJobs(name, "active", 0);
       setPgbossQueueJobs(name, "failed", 0);
+      setPgbossJobAge(name, "created", 0);
+      setPgbossJobAge(name, "active", 0);
     }
     const heavyQueues = new Set([QUEUE_NAMES.telemetry, QUEUE_NAMES.systemInfo]);
     for (const row of rows) {
       setPgbossQueueJobs(row.name, row.state, Number(row.count));
+      // Only created/active have a meaningful "oldest job age." Failed jobs
+      // sit until the 1h archive runs; their age isn't a backlog signal.
+      if (row.state === "created" || row.state === "active") {
+        const age = row.age_seconds != null ? Number(row.age_seconds) : 0;
+        setPgbossJobAge(row.name, row.state, Number.isFinite(age) ? age : 0);
+      }
       if (row.state === "created") {
         totalCreated += Number(row.count);
         if (heavyQueues.has(row.name)) heavyCreated += Number(row.count);

@@ -221,3 +221,35 @@ Per-pattern sections:
 - Service-level uniqueness validation must run before persistence. Tests cover the create-create / update-rename collision.
 - If you have a reconciler: provide three entry points — `applyOne(record)` (used inline by create / polygon-only update), `applyRename(record, previousName)` (rename branch), `applyDelete(record)` (delete branch), and `reconcileAll()` (periodic + discovery hook). Periodic job uses the additive `reconcileAll()`; never call the rename/delete helpers from there (those are CRUD-only).
 - Add a touches.md `services/<feature>.ts` section for the service AND a cross-cutting section if your reconciler writes to a shared namespace (e.g. asset tags). The index keeps the additive vs authoritative writer split visible.
+
+---
+
+## Prometheus metric instrumentation
+
+**What it is:** Adding a new metric (counter / gauge / histogram) or instrumenting a new code path with an existing one. Single Registry singleton + helper functions per metric — callers never import metric objects directly. Default Node.js metrics from `prom-client.collectDefaultMetrics` are registered alongside Polaris-specific ones, all under one `/metrics` endpoint.
+
+**Canonical implementation:** [src/metrics.ts](src/metrics.ts) — every metric is defined here with its labels, buckets (for histograms), and a typed helper export (e.g. `recordProbe`, `setDbPoolGauges`, `startSampleWriteTimer`). Mounted at `/metrics` in [src/app.ts](src/app.ts) with optional `METRICS_TOKEN` Bearer-token auth. For periodic-job timing, [src/jobs/_metrics.ts](src/jobs/_metrics.ts) exports `runInstrumentedJob(name, fn)` — every job in `src/jobs/` wraps its tick body in this helper.
+
+**Key conventions:**
+- **One Registry singleton.** `registry = new Registry()` at module top; `collectDefaultMetrics({ register: registry })` runs at module load. Never create a second registry — `prom-client`'s global registry is intentionally not used.
+- **Helpers, not raw metric objects.** Every metric gets a typed helper: `startXTimer()` / `recordX(...)` / `setX(...)`. Callers never `import { someHistogram }` — they import the helper. This localizes label changes / renames / bucket tweaks to one file. The metric object itself is module-private.
+- **Cardinality discipline.** Only bounded label sets cross the boundary: `cadence` (4 values), `transport` (5), `outcome` (2-3), `status` (3), `queue` (4), `state` (3), `severity` (4), `mode` (2), `table` (~8), `route` (matched Express template, not URL), `status_class` (4), `job` (~25), `volume` + `roles` (per-host, ~4), `integration_type` (~6). The only intentionally-unbounded label is `integrationId` (counted in dozens, justified by per-integration FMG worker isolation).
+- **Histogram buckets are explicit, not default.** Pick buckets that span the actual operation's latency range — defaults from `prom-client` (0.005 .. 10) waste resolution on most Polaris operations. Pass-duration buckets go up to 900 s; probe buckets go down to 0.01 s; HTTP buckets fit between.
+- **Cursor/pg-boss mode mutual-exclusion is explicit.** Mode-specific metrics (`polaris_monitor_queue_depth` cursor-only, `polaris_pgboss_*` pg-boss-only) keep emitting in the inactive mode but stay at 0. Use `polaris_monitor_queue_mode{mode}` to pick which family is authoritative.
+- **`.reset()` before re-stamping volatile label sets.** When the set of label values is computed each tick (volumes from statfs, sample tables from pg_class), call `metric.reset()` first so dropped values don't leave orphan series. Don't `.reset()` for stable label sets (cadences, transports, queues).
+- **Histograms observe successful work only.** Failures / aborts / errors increment a counter (`polaris_*_total{outcome}`) without polluting the latency distribution. Achieved by structuring the helper as `startTimer() ... await op() ... stop()` — a throw before `stop()` drops the observation.
+- **HTTP middleware uses `req.route?.path` at finish time.** Captured in `res.once("finish", ...)` so the Express router has had a chance to match. Unmatched paths roll up to `"unmatched"`. Combine with `req.baseUrl` for routers mounted on a sub-path. `/metrics` and `/health` are explicitly skipped so scrape requests don't show up as application traffic.
+- **`runInstrumentedJob(name, fn)` for periodic jobs.** Wraps the tick body without changing existing error semantics — thrown errors propagate to the caller's existing try/catch. Job names are stable, machine-readable identifiers; multi-tick modules use `<module>.<loop>` (e.g. `monitorAssets.probe` / `monitorAssets.heavy`).
+- **Documentation in two places.** Every new metric family gets a one-paragraph entry in CLAUDE.md's Observability section AND a writers/readers/invariants entry in `touches.md`'s `cross-cutting/observability-metrics`.
+
+**When adding a new metric:**
+- Define the metric object + helpers in `src/metrics.ts`. Helpers go right after the definitions, in the existing `// ─── Helpers ───` block.
+- Decide on histogram buckets by walking through the actual range the operation can take. Powers-of-10 spaced for >1s metrics, 0.005/0.025/0.1/0.5/1/5 for HTTP-class metrics, 0.01..15 for probe-class.
+- Consider cardinality before adding a label. If the value is per-asset / per-row / per-UUID, push it into the histogram buckets or aggregate it by class instead.
+- Wire the helper into the call site. ONE call site per metric family if possible — the FMG worker's queue-depth gauge is updated only inside `FmgWorker`, not elsewhere; the discovery duration histogram fires only at the `recordSample()` callsite.
+- Add the documentation entries (CLAUDE.md Observability + touches.md cross-cutting/observability-metrics) in the same commit.
+
+**When instrumenting a new job:**
+- Wrap the tick body in `runInstrumentedJob("name", async () => { ... })`. Keep the existing outer try/catch for error logging — the helper's catch re-throws so log paths are preserved.
+- Pick a stable, machine-readable name (no spaces, no version suffixes, no UUIDs). One-shot startup migrations use the module basename; multi-tick modules use `<module>.<loop>`.
+- If the new job ships with the same commit that adds an unrelated capability, the metric label is one observation that confirms the job is actually firing on a real install — useful smoke check during the first deploy.

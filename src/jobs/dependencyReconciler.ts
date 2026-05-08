@@ -21,6 +21,7 @@
 
 import { logger } from "../utils/logger.js";
 import { reconcileDependencySuppression } from "../services/dependencyTreeService.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 60 * 1000;
 
@@ -30,7 +31,9 @@ async function tick(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    await reconcileDependencySuppression();
+    await runInstrumentedJob("dependencyReconciler", async () => {
+      await reconcileDependencySuppression();
+    });
   } catch (err: any) {
     logger.debug({ err: err?.message ?? String(err) }, "dependencyReconciler tick failed (non-fatal)");
   } finally {

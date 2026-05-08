@@ -24,9 +24,11 @@
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 async function resolvePolarisPushedConflicts(): Promise<void> {
   try {
+    await runInstrumentedJob("resolvePolarisPushedConflicts", async () => {
     // Pull every pending reservation conflict whose underlying row was
     // pushed by Polaris. Volume is bounded by total pending conflicts on
     // the instance — small (low hundreds at most) on real deployments.
@@ -74,6 +76,7 @@ async function resolvePolarisPushedConflicts(): Promise<void> {
         "Auto-resolved Polaris-pushed reservation conflicts at startup",
       );
     }
+    });
   } catch (err) {
     logger.error(err, "Error running resolvePolarisPushedConflicts startup job");
   }

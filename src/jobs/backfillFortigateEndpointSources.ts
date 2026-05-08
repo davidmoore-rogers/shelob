@@ -28,9 +28,11 @@
 
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 (async () => {
   try {
+    await runInstrumentedJob("backfillFortigateEndpointSources", async () => {
     // FMG/FortiGate integrations — used to map discoveredByIntegrationId
     // to the per-source integrationId reference.
     const fortinetIntegrations = await prisma.integration.findMany({
@@ -133,6 +135,7 @@ import { prisma } from "../db.js";
     if (stamped > 0) {
       logger.info({ stamped, manualSwept }, "Backfilled fortigate-endpoint AssetSource rows for FMG/FortiGate-discovered endpoints");
     }
+    });
   } catch (err) {
     logger.error({ err }, "fortigate-endpoint backfill failed (will retry next boot)");
   }

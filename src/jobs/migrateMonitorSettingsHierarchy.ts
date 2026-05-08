@@ -34,6 +34,7 @@
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
 import { invalidateMonitorSettingsCache } from "../services/monitoringService.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const LEGACY_KEY   = "monitorSettings";
 const MANUAL_KEY   = "manualMonitorSettings";
@@ -91,6 +92,7 @@ function tierToOverride(tier: TierShape, base: TierShape): Partial<TierShape> {
 
 (async () => {
   try {
+    await runInstrumentedJob("migrateMonitorSettingsHierarchy", async () => {
     // Idempotency guard.
     const migratedRow = await prisma.setting.findUnique({ where: { key: MIGRATED_KEY } });
     if (migratedRow) return;
@@ -207,6 +209,7 @@ function tierToOverride(tier: TierShape, base: TierShape): Partial<TierShape> {
       },
       "Monitor-settings hierarchy migration complete",
     );
+    });
   } catch (err) {
     logger.error(
       { err },

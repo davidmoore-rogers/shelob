@@ -23,7 +23,13 @@ import { initHttps, httpsRedirectMiddleware } from "./httpsManager.js";
 import { getHttpsSettings } from "./services/serverSettingsService.js";
 import { UPLOADS_DIR } from "./utils/paths.js";
 import { isAzureSsoConfiguredAsync, getSsoSettings } from "./services/azureAuthService.js";
-import { renderMetrics } from "./metrics.js";
+import {
+  renderMetrics,
+  startHttpRequestTimer,
+  incHttpInFlight,
+  decHttpInFlight,
+  statusToClass,
+} from "./metrics.js";
 import "./jobs/pruneEvents.js";
 import "./jobs/ouiRefresh.js";
 import "./jobs/updateCheck.js";
@@ -250,6 +256,33 @@ app.use(
 // Must come after session middleware (reads/writes req.session) and before
 // any route handler that performs writes.
 app.use(csrfMiddleware);
+
+// ─── HTTP request metrics ────────────────────────────────────────────────────
+// Tracks `polaris_http_request_duration_seconds` (by method/route/status_class)
+// and `polaris_http_in_flight`. Skips /metrics and /health to avoid scrape
+// requests showing up as application traffic. The matched Express route
+// template is captured at response-finish time so cardinality stays bounded
+// — unmatched paths roll up to "unmatched" instead of one series per URL.
+app.use((req, res, next) => {
+  if (req.path === "/metrics" || req.path === "/health") return next();
+  incHttpInFlight();
+  const stopTimer = startHttpRequestTimer();
+  let observed = false;
+  const finalize = () => {
+    if (observed) return;
+    observed = true;
+    decHttpInFlight();
+    // req.route is populated only when Express matched a route. Combine with
+    // baseUrl so /api/v1/assets/:id renders correctly instead of just "/:id".
+    const route = req.route?.path
+      ? (req.baseUrl ?? "") + (typeof req.route.path === "string" ? req.route.path : "unmatched")
+      : "unmatched";
+    stopTimer(req.method, route, statusToClass(res.statusCode));
+  };
+  res.once("finish", finalize);
+  res.once("close", finalize);
+  next();
+});
 
 // ─── Rate limiting ───────────────────────────────────────────────────────────
 const loginLimiter = rateLimit({

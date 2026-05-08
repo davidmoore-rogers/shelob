@@ -18,6 +18,7 @@
 import { logger } from "../utils/logger.js";
 import { reconcileMapRegions } from "../services/mapRegionService.js";
 import { logEvent } from "../api/routes/events.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STARTUP_DELAY_MS = 60 * 1000;
@@ -28,15 +29,17 @@ async function tick(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    const summary = await reconcileMapRegions();
-    if (summary.assetsTouched > 0) {
-      logEvent({
-        action: "region.tags_reconciled",
-        resourceType: "map-region",
-        message: `Periodic region reconcile: +${summary.added} on ${summary.assetsTouched} asset${summary.assetsTouched === 1 ? "" : "s"}`,
-        details: summary,
-      });
-    }
+    await runInstrumentedJob("reconcileMapRegions", async () => {
+      const summary = await reconcileMapRegions();
+      if (summary.assetsTouched > 0) {
+        logEvent({
+          action: "region.tags_reconciled",
+          resourceType: "map-region",
+          message: `Periodic region reconcile: +${summary.added} on ${summary.assetsTouched} asset${summary.assetsTouched === 1 ? "" : "s"}`,
+          details: summary,
+        });
+      }
+    });
   } catch (err: any) {
     logger.debug({ err: err?.message ?? String(err) }, "reconcileMapRegions tick failed (non-fatal)");
   } finally {

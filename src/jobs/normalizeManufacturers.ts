@@ -20,18 +20,21 @@ import {
   refreshAliasCache,
   applyAliasesToExistingRows,
 } from "../services/manufacturerAliasService.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 (async () => {
   try {
-    const seeded = await seedDefaultAliases();
-    if (seeded.inserted > 0) {
-      logger.info({ count: seeded.inserted }, "Seeded default manufacturer aliases");
-    }
-    await refreshAliasCache();
-    const applied = await applyAliasesToExistingRows();
-    if (applied.assets > 0 || applied.mibs > 0) {
-      logger.info(applied, "Normalized manufacturer strings on existing rows");
-    }
+    await runInstrumentedJob("normalizeManufacturers", async () => {
+      const seeded = await seedDefaultAliases();
+      if (seeded.inserted > 0) {
+        logger.info({ count: seeded.inserted }, "Seeded default manufacturer aliases");
+      }
+      await refreshAliasCache();
+      const applied = await applyAliasesToExistingRows();
+      if (applied.assets > 0 || applied.mibs > 0) {
+        logger.info(applied, "Normalized manufacturer strings on existing rows");
+      }
+    });
   } catch (err) {
     logger.error({ err }, "Manufacturer alias startup task failed (writes will pass through unchanged)");
   }

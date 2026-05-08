@@ -46,6 +46,7 @@ import {
 } from "../services/monitoringService.js";
 import { getBootTimeMode, publishMonitorJob } from "../services/queueService.js";
 import { setMonitoredAssets, setMonitorWorkers } from "../metrics.js";
+import { runInstrumentedJob } from "./_metrics.js";
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 
@@ -212,17 +213,19 @@ async function probeTick(): Promise<void> {
   if (runningProbe) return;
   runningProbe = true;
   try {
-    if (getBootTimeMode() === "pgboss") {
-      await publishDueWork(["probe", "fastFiltered"]);
-    } else {
-      const stats = await runMonitorPass({
-        cadences: ["probe", "fastFiltered"],
-        concurrency: PROBE_CONCURRENCY,
-      });
-      if (stats.probed > 0 || stats.fastFiltered.collected > 0) {
-        logger.debug({ stats }, "Light monitor pass complete");
+    await runInstrumentedJob("monitorAssets.probe", async () => {
+      if (getBootTimeMode() === "pgboss") {
+        await publishDueWork(["probe", "fastFiltered"]);
+      } else {
+        const stats = await runMonitorPass({
+          cadences: ["probe", "fastFiltered"],
+          concurrency: PROBE_CONCURRENCY,
+        });
+        if (stats.probed > 0 || stats.fastFiltered.collected > 0) {
+          logger.debug({ stats }, "Light monitor pass complete");
+        }
       }
-    }
+    });
   } catch (err) {
     logger.error({ err }, "Light monitor tick failed");
   } finally {
@@ -234,28 +237,30 @@ async function heavyTick(): Promise<void> {
   if (runningHeavy) return;
   runningHeavy = true;
   try {
-    if (getBootTimeMode() === "pgboss") {
-      await publishDueWork(["telemetry", "systemInfo"]);
-    } else {
-      const stats = await runMonitorPass({
-        cadences: ["telemetry", "systemInfo"],
-        concurrency: HEAVY_CONCURRENCY,
-      });
-      if (stats.telemetry.collected > 0 || stats.systemInfo.collected > 0) {
-        logger.debug({ stats }, "Heavy monitor pass complete");
+    await runInstrumentedJob("monitorAssets.heavy", async () => {
+      if (getBootTimeMode() === "pgboss") {
+        await publishDueWork(["telemetry", "systemInfo"]);
+      } else {
+        const stats = await runMonitorPass({
+          cadences: ["telemetry", "systemInfo"],
+          concurrency: HEAVY_CONCURRENCY,
+        });
+        if (stats.telemetry.collected > 0 || stats.systemInfo.collected > 0) {
+          logger.debug({ stats }, "Heavy monitor pass complete");
+        }
       }
-    }
-    if (Date.now() - lastPruneAt >= PRUNE_INTERVAL_MS) {
-      const [pruned, telPruned, sysPruned] = await Promise.all([
-        pruneMonitorSamples(),
-        pruneTelemetrySamples(),
-        pruneSystemInfoSamples(),
-      ]);
-      lastPruneAt = Date.now();
-      if (pruned > 0 || telPruned > 0 || sysPruned > 0) {
-        logger.info({ pruned, telPruned, sysPruned }, "Pruned old monitor samples");
+      if (Date.now() - lastPruneAt >= PRUNE_INTERVAL_MS) {
+        const [pruned, telPruned, sysPruned] = await Promise.all([
+          pruneMonitorSamples(),
+          pruneTelemetrySamples(),
+          pruneSystemInfoSamples(),
+        ]);
+        lastPruneAt = Date.now();
+        if (pruned > 0 || telPruned > 0 || sysPruned > 0) {
+          logger.info({ pruned, telPruned, sysPruned }, "Pruned old monitor samples");
+        }
       }
-    }
+    });
   } catch (err) {
     logger.error({ err }, "Heavy monitor tick failed");
   } finally {

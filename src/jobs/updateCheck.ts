@@ -11,33 +11,36 @@
 
 import { checkForUpdates, getUpdateStatus } from "../services/updateService.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
 
 async function runCheck(): Promise<void> {
   try {
-    const current = getUpdateStatus();
+    await runInstrumentedJob("updateCheck", async () => {
+      const current = getUpdateStatus();
 
-    // Don't overwrite an in-progress update or a completed notification
-    if (
-      current.state === "applying" ||
-      current.state === "restarting" ||
-      current.state === "complete" ||
-      current.state === "available"
-    ) {
-      return;
-    }
+      // Don't overwrite an in-progress update or a completed notification
+      if (
+        current.state === "applying" ||
+        current.state === "restarting" ||
+        current.state === "complete" ||
+        current.state === "available"
+      ) {
+        return;
+      }
 
-    const result = await checkForUpdates();
+      const result = await checkForUpdates();
 
-    if (result.state === "available") {
-      logger.info(
-        { current: result.currentVersion, latest: result.latestVersion, behind: result.commitsBehind },
-        "Application update available"
-      );
-    } else {
-      logger.debug("Update check: up to date");
-    }
+      if (result.state === "available") {
+        logger.info(
+          { current: result.currentVersion, latest: result.latestVersion, behind: result.commitsBehind },
+          "Application update available"
+        );
+      } else {
+        logger.debug("Update check: up to date");
+      }
+    });
   } catch (err) {
     logger.error(err, "Failed to check for updates");
   }

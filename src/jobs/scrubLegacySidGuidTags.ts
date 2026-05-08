@@ -25,11 +25,13 @@
 
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const LEGACY_PREFIXES = ["sid:", "ad-guid:"];
 
 (async () => {
   try {
+    await runInstrumentedJob("scrubLegacySidGuidTags", async () => {
     const rows = await prisma.asset.findMany({
       where: {
         // Postgres `array_position` would be cheaper than scanning every
@@ -60,6 +62,7 @@ const LEGACY_PREFIXES = ["sid:", "ad-guid:"];
         "Scrubbed legacy sid:/ad-guid: tags from Asset.tags (Phase 4b)",
       );
     }
+    });
   } catch (err) {
     logger.error(
       { err },

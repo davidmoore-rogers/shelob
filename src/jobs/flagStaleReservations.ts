@@ -17,15 +17,18 @@
 
 import { logger } from "../utils/logger.js";
 import { flagStaleReservations } from "../services/reservationStaleService.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 async function runFlagStaleReservations(): Promise<void> {
   try {
-    const emitted = await flagStaleReservations();
-    if (emitted > 0) {
-      logger.info({ emitted }, "Flagged stale DHCP reservations");
-    }
+    await runInstrumentedJob("flagStaleReservations", async () => {
+      const emitted = await flagStaleReservations();
+      if (emitted > 0) {
+        logger.info({ emitted }, "Flagged stale DHCP reservations");
+      }
+    });
   } catch (err) {
     logger.error(err, "Error running stale-reservation flag job");
   }

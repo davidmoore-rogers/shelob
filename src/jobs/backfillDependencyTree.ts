@@ -19,22 +19,25 @@
 
 import { logger } from "../utils/logger.js";
 import { recomputeDependencyTree } from "../services/dependencyTreeService.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 async function backfillDependencyTree(): Promise<void> {
   const start = Date.now();
   try {
-    const result = await recomputeDependencyTree();
-    if (result.scoped > 0) {
-      logger.info(
-        {
-          assets:        result.scoped,
-          edges:         result.edgesWritten,
-          unresolved:    result.unresolved,
-          elapsedMs:     Date.now() - start,
-        },
-        "Backfilled dependency tree on startup",
-      );
-    }
+    await runInstrumentedJob("backfillDependencyTree", async () => {
+      const result = await recomputeDependencyTree();
+      if (result.scoped > 0) {
+        logger.info(
+          {
+            assets:        result.scoped,
+            edges:         result.edgesWritten,
+            unresolved:    result.unresolved,
+            elapsedMs:     Date.now() - start,
+          },
+          "Backfilled dependency tree on startup",
+        );
+      }
+    });
   } catch (err: any) {
     logger.error({ err: err?.message ?? String(err) }, "Dependency-tree backfill failed (next discovery cycle will retry)");
   }

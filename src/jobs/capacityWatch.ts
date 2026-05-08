@@ -13,27 +13,50 @@
  * where the DB is on the verge of dying and the UI is moments from
  * becoming unreachable.
  *
- * Best-effort. The legacy `pgTuningNeeded` / `ramInsufficient` signals
- * are computed from a slim probe rather than the full pg-settings query
- * the route does — the job's value is in catching disk + autovacuum
- * transitions, not in re-running the tuning advice on a timer.
+ * Best-effort. The `pgTuningNeeded` / `ramInsufficient` inputs to the
+ * snapshot are passed in as false here rather than re-running the full
+ * pg-settings query — the job's value is in catching disk + autovacuum
+ * transitions out-of-band, not in re-running the tuning advice on a timer.
+ * The route handler runs the full computation when an admin loads the
+ * Maintenance tab, so the snapshot stays accurate on the surface that
+ * actually displays the reasons.
  *
  * Import this module from src/app.ts to activate it.
  */
 
 import { logger } from "../utils/logger.js";
 import { getCapacitySnapshot, recordCapacityTransition } from "../services/capacityService.js";
+import { setDbPoolGauges, setCapacityGauges } from "../metrics.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 async function runCapacityWatch(): Promise<void> {
   try {
-    // The job doesn't probe pg_settings, so leave both legacy signals false.
-    // Disk + autovacuum + projected-size transitions are still caught — and
-    // those are the ones operators actually need to hear about between
-    // page loads. The full route still surfaces pgTuningNeeded for admins.
-    const snap = await getCapacitySnapshot({ ramInsufficient: false, pgTuningNeeded: false });
-    await recordCapacityTransition(snap);
+    await runInstrumentedJob("capacityWatch", async () => {
+      // The job doesn't probe pg_settings, so leave both legacy signals false.
+      // Disk + autovacuum + projected-size transitions are still caught — and
+      // those are the ones operators actually need to hear about between
+      // page loads. The full route still surfaces pgTuningNeeded for admins.
+      const snap = await getCapacitySnapshot({ ramInsufficient: false, pgTuningNeeded: false });
+      await recordCapacityTransition(snap);
+      setDbPoolGauges(snap.database.connectionPool);
+      setCapacityGauges({
+        severity: snap.severity,
+        volumes: snap.appHost.volumes.map(v => ({
+          volume: v.paths[0] ?? "(unknown)",
+          roles: v.roles.join(","),
+          freeBytes: v.freeBytes,
+          totalBytes: v.totalBytes,
+        })),
+        sampleTables: snap.database.sampleTables.map(t => ({
+          table: t.name,
+          deadTupRatio: t.deadTupRatio,
+        })),
+        databaseSizeBytes: snap.database.sizeBytes,
+        steadyStateSizeBytes: snap.workload.steadyStateSizeBytes,
+      });
+    });
   } catch (err: any) {
     logger.debug({ err: err?.message }, "capacityWatch job failed (non-fatal)");
   }

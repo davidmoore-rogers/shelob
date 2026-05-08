@@ -30,9 +30,11 @@
 
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 (async () => {
   try {
+    await runInstrumentedJob("fixInfraAssetTypes", async () => {
     const fixOne = async (
       sourceKind: "fortiswitch" | "fortiap",
       targetType: "switch" | "access_point",
@@ -80,6 +82,7 @@ import { prisma } from "../db.js";
         "Fixed infrastructure assetType + swept stale fortigate-endpoint sources",
       );
     }
+    });
   } catch (err) {
     logger.error({ err }, "fixInfraAssetTypes failed (will retry next boot)");
   }

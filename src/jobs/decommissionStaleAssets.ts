@@ -12,11 +12,13 @@ import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 import { getAssetDecommissionSettings } from "../services/eventArchiveService.js";
 import { logEvent } from "../api/routes/events.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 async function decommissionStaleAssets(): Promise<void> {
   try {
+    await runInstrumentedJob("decommissionStaleAssets", async () => {
     const { inactivityMonths } = await getAssetDecommissionSettings();
     if (inactivityMonths <= 0) return;
 
@@ -55,6 +57,7 @@ async function decommissionStaleAssets(): Promise<void> {
         message: `Asset "${a.hostname || a.ipAddress || "unknown"}" auto-decommissioned after ${inactivityMonths} month(s) of inactivity`,
       });
     }
+    });
   } catch (err) {
     logger.error(err, "Error running asset auto-decommission job");
   }

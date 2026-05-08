@@ -19,6 +19,7 @@
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 import { deriveAssetSources, type AssetSnapshot } from "../utils/assetSourceDerivation.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const PAGE_SIZE = 500;
 
@@ -30,6 +31,7 @@ async function backfillAssetSources(): Promise<void> {
   const start = Date.now();
 
   try {
+    await runInstrumentedJob("backfillAssetSources", async () => {
     while (true) {
       const rows = await prisma.asset.findMany({
         skip: page * PAGE_SIZE,
@@ -148,6 +150,7 @@ async function backfillAssetSources(): Promise<void> {
         "Backfilled AssetSource rows from legacy tag conventions",
       );
     }
+    });
   } catch (err) {
     logger.error({ err }, "AssetSource backfill failed (writes will continue without phase-1 backfill)");
   }

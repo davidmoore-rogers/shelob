@@ -111,6 +111,133 @@ const fmgWorkerInflight = new Gauge({
   registers: [registry],
 });
 
+// ─── Capacity & connection pool (sourced from capacityService snapshots) ───
+
+const dbPoolInUse = new Gauge({
+  name: "polaris_db_pool_in_use",
+  help: "Current active connections from this app to PostgreSQL, sampled from pg_stat_activity at every capacityWatch tick (10 min) and on every Maintenance-tab fetch.",
+  registers: [registry],
+});
+
+const dbPoolPeakObserved = new Gauge({
+  name: "polaris_db_pool_peak_observed",
+  help: "Highest pg_stat_activity count this process has seen since boot. Module-local high-water mark; resets on restart.",
+  registers: [registry],
+});
+
+const dbPoolPolarisCapacity = new Gauge({
+  name: "polaris_db_pool_polaris_capacity",
+  help: "Combined Polaris-owned connection capacity = DATABASE_POOL_SIZE (Prisma) + POLARIS_PGBOSS_POOL_SIZE (pg-boss, if pg-boss mode is active). The ceiling above which the app stalls at pool acquisition.",
+  registers: [registry],
+});
+
+const dbPoolMax = new Gauge({
+  name: "polaris_db_pool_max",
+  help: "PostgreSQL `SHOW max_connections` — the server-side ceiling shared with every other connection holder on the cluster.",
+  registers: [registry],
+});
+
+const capacitySeverity = new Gauge({
+  name: "polaris_capacity_severity",
+  help: "Overall capacity severity: 0=ok, 1=watch, 2=amber, 3=red. Mirrors the Maintenance-tab pill and the sidebar critical-alert state.",
+  registers: [registry],
+});
+
+const diskFreeRatio = new Gauge({
+  name: "polaris_disk_free_ratio",
+  help: "Free-space ratio (0..1) per filesystem Polaris/Postgres write to. Volumes are pre-deduped by stat.dev so a single-LV install shows one entry. The `roles` label is comma-joined from {app, state, backups, db}.",
+  labelNames: ["volume", "roles"] as const,
+  registers: [registry],
+});
+
+const dbDeadTupleRatio = new Gauge({
+  name: "polaris_db_dead_tuple_ratio",
+  help: "Dead-tuple ratio (0..1) per monitored sample table. Sourced from pg_class.n_dead_tup / (n_live_tup + n_dead_tup). High values indicate autovacuum is falling behind the insert rate.",
+  labelNames: ["table"] as const,
+  registers: [registry],
+});
+
+const dbSizeBytes = new Gauge({
+  name: "polaris_db_size_bytes",
+  help: "Total Polaris database size in bytes (pg_database_size).",
+  registers: [registry],
+});
+
+const dbSteadyStateSizeBytes = new Gauge({
+  name: "polaris_db_steady_state_size_bytes",
+  help: "Projected steady-state DB size at current cadences, retention, and monitored asset count — what the database will grow to if nothing changes. Computed by capacityService from per-table row rates × retention.",
+  registers: [registry],
+});
+
+// ─── Pg-boss job age (oldest waiting job per queue × state) ───────────────
+
+const pgbossOldestJobAge = new Gauge({
+  name: "polaris_pgboss_oldest_job_age_seconds",
+  help: "Age in seconds of the oldest pg-boss job in this queue × state. `state` is 'created' (queued, not yet picked up) or 'active' (being processed). Refreshed every 15s alongside polaris_pgboss_queue_jobs. Pg-boss mode only — stays at 0 in cursor mode.",
+  labelNames: ["queue", "state"] as const,
+  registers: [registry],
+});
+
+// ─── Discovery duration ───────────────────────────────────────────────────
+
+const discoveryDuration = new Histogram({
+  name: "polaris_discovery_duration_seconds",
+  help: "Wall-clock duration of an end-to-end discovery run, by integration type. Recorded once per completed run alongside the existing recordSample() that feeds the slow-run baseline.",
+  labelNames: ["integration_type"] as const,
+  buckets: [1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600],
+  registers: [registry],
+});
+
+const discoveryTotal = new Counter({
+  name: "polaris_discovery_total",
+  help: "Number of discovery runs by integration type and outcome (success | failure | aborted).",
+  labelNames: ["integration_type", "outcome"] as const,
+  registers: [registry],
+});
+
+// ─── Sample-table write duration ─────────────────────────────────────────
+
+const sampleWriteDuration = new Histogram({
+  name: "polaris_sample_write_duration_seconds",
+  help: "Wall-clock duration of a single bulk write into a monitor sample table. Splits DB-write cost out of the broader monitor work duration so a slow autovacuum / index bloat / lock contention is visible separately from network probe time.",
+  labelNames: ["table"] as const,
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.5, 1, 5],
+  registers: [registry],
+});
+
+// ─── HTTP server ──────────────────────────────────────────────────────────
+
+const httpRequestDuration = new Histogram({
+  name: "polaris_http_request_duration_seconds",
+  help: "HTTP request latency. `route` is the matched Express route template (e.g. /api/v1/assets/:id) so cardinality stays bounded; unmatched paths roll up to `unmatched`. `status_class` is one of 2xx / 3xx / 4xx / 5xx. /metrics and /health are excluded.",
+  labelNames: ["method", "route", "status_class"] as const,
+  buckets: [0.005, 0.025, 0.1, 0.5, 1, 5],
+  registers: [registry],
+});
+
+const httpInFlight = new Gauge({
+  name: "polaris_http_in_flight",
+  help: "Number of HTTP requests currently being handled. Useful for spotting handler backpressure when the DB pool saturates or a route hangs.",
+  registers: [registry],
+});
+
+// ─── Periodic-job execution ───────────────────────────────────────────────
+
+const jobDuration = new Histogram({
+  name: "polaris_job_duration_seconds",
+  help: "Wall-clock duration of one tick of a scheduled background job. `job` label is the job's stable identifier (e.g. dependencyReconciler, capacityWatch, monitorAssets.probe). Lets you see when a tick starts taking longer than its interval — a lagging-job signal.",
+  labelNames: ["job"] as const,
+  buckets: [0.05, 0.5, 1, 5, 30, 60, 300, 900],
+  registers: [registry],
+});
+
+const jobTotal = new Counter({
+  name: "polaris_job_total",
+  help: "Number of scheduled-job tick executions by job and outcome (success | failure).",
+  labelNames: ["job", "outcome"] as const,
+  registers: [registry],
+});
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 export type Cadence = "probe" | "telemetry" | "systemInfo" | "fastFiltered";
@@ -172,6 +299,123 @@ export function setFmgWorkerQueueDepth(integrationId: string, depth: number): vo
 
 export function setFmgWorkerInflight(integrationId: string, value: 0 | 1): void {
   fmgWorkerInflight.set({ integrationId }, value);
+}
+
+export type Severity = "ok" | "watch" | "amber" | "red";
+const SEVERITY_VALUES: Record<Severity, number> = { ok: 0, watch: 1, amber: 2, red: 3 };
+
+export interface DbPoolGauges {
+  currentInUse: number;
+  peakObserved: number;
+  prismaPoolSize: number;
+  pgbossPoolSize: number | null;
+  maxConnections: number;
+}
+
+export function setDbPoolGauges(p: DbPoolGauges): void {
+  dbPoolInUse.set(p.currentInUse);
+  dbPoolPeakObserved.set(p.peakObserved);
+  dbPoolPolarisCapacity.set(p.prismaPoolSize + (p.pgbossPoolSize ?? 0));
+  dbPoolMax.set(p.maxConnections);
+}
+
+export interface CapacityVolumeGauge {
+  /** Stable label — first path resolved to this filesystem. */
+  volume: string;
+  /** Comma-joined role names (app, state, backups, db). */
+  roles: string;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+export interface CapacitySampleTableGauge {
+  table: string;
+  deadTupRatio: number;
+}
+
+export interface CapacityGauges {
+  severity: Severity;
+  volumes: CapacityVolumeGauge[];
+  sampleTables: CapacitySampleTableGauge[];
+  databaseSizeBytes: number;
+  steadyStateSizeBytes: number;
+}
+
+export function setCapacityGauges(c: CapacityGauges): void {
+  capacitySeverity.set(SEVERITY_VALUES[c.severity]);
+  // Reset volume + table gauges before re-stamping. Volumes come and go when
+  // operators add/remove mounts; sample tables can appear after a Timescale
+  // migration — clearing leaves no orphan series with stale values.
+  diskFreeRatio.reset();
+  for (const v of c.volumes) {
+    const ratio = v.totalBytes > 0 ? v.freeBytes / v.totalBytes : 0;
+    diskFreeRatio.set({ volume: v.volume, roles: v.roles }, ratio);
+  }
+  dbDeadTupleRatio.reset();
+  for (const t of c.sampleTables) {
+    dbDeadTupleRatio.set({ table: t.table }, t.deadTupRatio);
+  }
+  dbSizeBytes.set(c.databaseSizeBytes);
+  dbSteadyStateSizeBytes.set(c.steadyStateSizeBytes);
+}
+
+export function setPgbossJobAge(queue: string, state: string, ageSeconds: number): void {
+  pgbossOldestJobAge.set({ queue, state }, ageSeconds);
+}
+
+export type DiscoveryOutcome = "success" | "failure" | "aborted";
+
+export function recordDiscovery(
+  integrationType: string,
+  durationSeconds: number,
+  outcome: DiscoveryOutcome,
+): void {
+  // Only record duration on success — failures/aborts have wildly different
+  // durations and would skew the histogram. Counters fire for every outcome.
+  if (outcome === "success" && Number.isFinite(durationSeconds) && durationSeconds >= 0) {
+    discoveryDuration.observe({ integration_type: integrationType }, durationSeconds);
+  }
+  discoveryTotal.inc({ integration_type: integrationType, outcome });
+}
+
+export function startSampleWriteTimer(table: string): () => number {
+  return sampleWriteDuration.startTimer({ table });
+}
+
+export type StatusClass = "2xx" | "3xx" | "4xx" | "5xx";
+
+export function statusToClass(status: number): StatusClass {
+  if (status >= 500) return "5xx";
+  if (status >= 400) return "4xx";
+  if (status >= 300) return "3xx";
+  return "2xx";
+}
+
+export function startHttpRequestTimer(): (
+  method: string,
+  route: string,
+  statusClass: StatusClass,
+) => number {
+  const end = httpRequestDuration.startTimer();
+  return (method, route, statusClass) => end({ method, route, status_class: statusClass });
+}
+
+export function incHttpInFlight(): void {
+  httpInFlight.inc();
+}
+
+export function decHttpInFlight(): void {
+  httpInFlight.dec();
+}
+
+export type JobOutcome = "success" | "failure";
+
+export function startJobTimer(job: string): () => number {
+  return jobDuration.startTimer({ job });
+}
+
+export function recordJobOutcome(job: string, outcome: JobOutcome): void {
+  jobTotal.inc({ job, outcome });
 }
 
 export async function renderMetrics(): Promise<{ contentType: string; body: string }> {

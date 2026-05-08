@@ -10,15 +10,18 @@
 
 import { expireStaleReservations } from "../services/reservationService.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
 async function runExpiry(): Promise<void> {
   try {
-    const count = await expireStaleReservations();
-    if (count > 0) {
-      logger.info({ count }, "Expired stale reservations");
-    }
+    await runInstrumentedJob("expireReservations", async () => {
+      const count = await expireStaleReservations();
+      if (count > 0) {
+        logger.info({ count }, "Expired stale reservations");
+      }
+    });
   } catch (err) {
     logger.error(err, "Error running reservation expiry job");
   }

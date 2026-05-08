@@ -16,12 +16,15 @@
 
 import { checkForSlowRuns } from "../api/routes/integrations.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 const INTERVAL_MS = 30 * 1000;
 
 async function tick(): Promise<void> {
   try {
-    await checkForSlowRuns();
+    await runInstrumentedJob("discoverySlowCheck", async () => {
+      await checkForSlowRuns();
+    });
   } catch (err) {
     logger.error(err, "Discovery slow-check job failed");
   }

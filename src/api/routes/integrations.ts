@@ -21,6 +21,7 @@ import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
+import { recordDiscovery } from "../../metrics.js";
 import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
 import { recomputeDependencyTree } from "../../services/dependencyTreeService.js";
@@ -1398,6 +1399,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       if (ac.signal.aborted) {
         const abortSuffix = assetsOnly ? "" : " (stale-subnet deprecation skipped)";
         logEvent({ action: "integration.discover.aborted", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "warning", message: `${label} ${kindLabel} aborted for "${integrationName}" — ${syncTotals.created.length} created, ${syncTotals.updated.length} updated, ${syncTotals.skipped.length} skipped${abortSuffix}` });
+        recordDiscovery(integrationType, (Date.now() - runStartedAt) / 1000, "aborted");
       } else {
         const deprecatedSuffix = assetsOnly ? "" : `, ${syncTotals.deprecated.length} deprecated`;
         const decomSwSuffix = syncTotals.decommissionedSwitches.length > 0 ? `, ${syncTotals.decommissionedSwitches.length} FortiSwitch(es) decommissioned` : "";
@@ -1407,11 +1409,17 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         // errors are intentionally not recorded — a failed run would poison
         // the rolling average used to compute the "slow" threshold.
         recordSample(integrationId, Date.now() - runStartedAt).catch(() => {});
+        recordDiscovery(integrationType, (Date.now() - runStartedAt) / 1000, "success");
       }
       }); // end withIntegrationCtx
     } catch (err: any) {
       if (err.name !== "AbortError") {
         logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `${label} ${kindLabel} failed for "${integrationName}": ${err.message || "Unknown error"}` });
+        recordDiscovery(integrationType, (Date.now() - runStartedAt) / 1000, "failure");
+      } else {
+        // AbortError caught here means the abort raced past the inner
+        // ac.signal.aborted branch above. Count it the same way.
+        recordDiscovery(integrationType, (Date.now() - runStartedAt) / 1000, "aborted");
       }
     } finally {
       activeDiscovery.delete(integrationId);

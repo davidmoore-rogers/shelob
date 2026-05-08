@@ -21,9 +21,11 @@
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
+import { runInstrumentedJob } from "./_metrics.js";
 
 async function resolveStaleReservationConflicts(): Promise<void> {
   try {
+    await runInstrumentedJob("resolveStaleReservationConflicts", async () => {
     const candidates = await prisma.conflict.findMany({
       where: { status: "pending", entityType: "reservation" },
       include: {
@@ -65,6 +67,7 @@ async function resolveStaleReservationConflicts(): Promise<void> {
         "Auto-resolved stale reservation conflicts at startup",
       );
     }
+    });
   } catch (err) {
     logger.error(err, "Error running resolveStaleReservationConflicts startup job");
   }
