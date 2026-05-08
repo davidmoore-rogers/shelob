@@ -3413,7 +3413,14 @@ async function openSensorDetailPanel(asset, sensorName) {
     { value: "24h", label: "24h" },
     { value: "7d",  label: "7d" },
     { value: "30d", label: "30d" },
+    { value: "custom", label: "Custom…", id: "btn-sensor-custom" },
   ], "assetSensor", "1h");
+  var customPanel =
+    '<div id="sensor-custom-panel" style="display:none;align-items:center;gap:6px;margin:0.5rem 0;padding:0.5rem;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;font-size:0.85rem">' +
+      '<label style="display:flex;align-items:center;gap:4px">From <input type="datetime-local" id="sensor-custom-from" class="form-input" style="padding:2px 6px"></label>' +
+      '<label style="display:flex;align-items:center;gap:4px">To <input type="datetime-local" id="sensor-custom-to" class="form-input" style="padding:2px 6px"></label>' +
+      '<button class="btn btn-sm btn-primary" id="btn-sensor-custom-apply">Apply</button>' +
+    '</div>';
 
   // Temperature samples are written by collectTelemetry on the same cadence as
   // CPU/memory, so the section badge tracks the asset's resolved telemetry
@@ -3429,6 +3436,7 @@ async function openSensorDetailPanel(asset, sensorName) {
         '</div>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
+      customPanel +
       '<div id="sensor-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="sensor-chart" class="sensor-chart-box"></div>' +
     '</div>';
@@ -3454,12 +3462,41 @@ async function openSensorDetailPanel(asset, sensorName) {
   document.querySelectorAll(".sensor-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
+      var panel = document.getElementById("sensor-custom-panel");
+      if (range === "custom") {
+        if (!panel) return;
+        var willOpen = panel.style.display === "none";
+        panel.style.display = willOpen ? "flex" : "none";
+        if (willOpen) {
+          var toInput   = document.getElementById("sensor-custom-to");
+          var fromInput = document.getElementById("sensor-custom-from");
+          if (toInput && !toInput.value) toInput.value = _toLocalDatetimeInput(new Date());
+          if (fromInput && !fromInput.value) fromInput.value = _toLocalDatetimeInput(new Date(Date.now() - 24 * 3600 * 1000));
+        }
+        return;
+      }
+      if (panel) panel.style.display = "none";
       document.querySelectorAll(".sensor-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
       b.classList.remove("btn-secondary"); b.classList.add("btn-primary");
       _setChartRangePref("assetSensor", range);
       _loadSensorHistoryFor(asset.id, sensorName, range);
     });
   });
+  var sensorCustomApply = document.getElementById("btn-sensor-custom-apply");
+  if (sensorCustomApply) {
+    sensorCustomApply.addEventListener("click", function () {
+      var fromInput = document.getElementById("sensor-custom-from");
+      var toInput   = document.getElementById("sensor-custom-to");
+      if (!fromInput.value || !toInput.value) { showToast("Enter both From and To", "error"); return; }
+      var fromIso = new Date(fromInput.value).toISOString();
+      var toIso   = new Date(toInput.value).toISOString();
+      if (new Date(fromIso) >= new Date(toIso)) { showToast("From must be before To", "error"); return; }
+      document.querySelectorAll(".sensor-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
+      var customBtn = document.getElementById("btn-sensor-custom");
+      if (customBtn) { customBtn.classList.remove("btn-secondary"); customBtn.classList.add("btn-primary"); }
+      _loadSensorHistoryFor(asset.id, sensorName, { from: fromIso, to: toIso });
+    });
+  }
 }
 
 async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
@@ -3475,9 +3512,11 @@ async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
   }
   var panelBody = silent ? document.getElementById("sensor-panel-body") : null;
   var savedScroll = panelBody ? panelBody.scrollTop : 0;
-  var resolvedRange = range || "1h";
+  // Accept range as a string or `{from, to}` object (canonical convention).
+  var opts = (typeof range === "string" || !range) ? { range: range || "1h" } : range;
+  opts.sensorName = sensorName;
   try {
-    var data = await api.assets.temperatureHistory(assetId, { sensorName: sensorName, range: resolvedRange });
+    var data = await api.assets.temperatureHistory(assetId, opts);
     var samples = (data.samples || []).filter(function (s) { return typeof s.celsius === "number"; });
     if (stats) {
       var st = data.stats || {};
@@ -3492,9 +3531,17 @@ async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
       until:   data.until,
       subject: sensorName,
     });
-    // Stash the active range on the chart so silent ticks / probe-now refetch
-    // the same view (canonical convention from primaries.md).
-    chartEl.dataset.range = resolvedRange;
+    // Stash the active selection on the chart so silent ticks / probe-now
+    // refetch the same view (canonical convention from primaries.md).
+    if (opts.from && opts.to) {
+      chartEl.dataset.from = opts.from;
+      chartEl.dataset.to   = opts.to;
+      delete chartEl.dataset.range;
+    } else {
+      chartEl.dataset.range = opts.range || "1h";
+      delete chartEl.dataset.from;
+      delete chartEl.dataset.to;
+    }
   } catch (err) {
     if (!silent) {
       chartEl.textContent = "Error: " + (err.message || "failed to load");
@@ -3508,6 +3555,8 @@ async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
       if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
     });
   }
+  // Custom date ranges are fixed historical windows — do not auto-refresh.
+  if (opts.from && opts.to) return;
   // Schedule next auto-refresh on the resolved telemetry cadence — temperature
   // samples are written by collectTelemetry, not the response-time probe.
   var settings = _monitorSettingsCache || {};
@@ -5153,7 +5202,14 @@ async function openInterfaceDetailPanel(asset, ifName) {
     { value: "24h", label: "24h" },
     { value: "7d",  label: "7d" },
     { value: "30d", label: "30d" },
+    { value: "custom", label: "Custom…", id: "btn-iface-custom" },
   ], "assetInterface", "1h");
+  var ifaceCustomPanel =
+    '<div id="iface-custom-panel" style="display:none;align-items:center;gap:6px;margin:0.5rem 0;padding:0.5rem;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;font-size:0.85rem">' +
+      '<label style="display:flex;align-items:center;gap:4px">From <input type="datetime-local" id="iface-custom-from" class="form-input" style="padding:2px 6px"></label>' +
+      '<label style="display:flex;align-items:center;gap:4px">To <input type="datetime-local" id="iface-custom-to" class="form-input" style="padding:2px 6px"></label>' +
+      '<button class="btn btn-sm btn-primary" id="btn-iface-custom-apply">Apply</button>' +
+    '</div>';
 
   var canEditComment = canManageAssets();
   bodyEl.innerHTML =
@@ -5184,6 +5240,7 @@ async function openInterfaceDetailPanel(asset, ifName) {
         '</div>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
+      ifaceCustomPanel +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Throughput (bps)</h5>' +
       '<div id="iface-tput-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="iface-tput-chart" class="iface-chart-box"></div>' +
@@ -5210,12 +5267,41 @@ async function openInterfaceDetailPanel(asset, ifName) {
   document.querySelectorAll(".iface-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
+      var panel = document.getElementById("iface-custom-panel");
+      if (range === "custom") {
+        if (!panel) return;
+        var willOpen = panel.style.display === "none";
+        panel.style.display = willOpen ? "flex" : "none";
+        if (willOpen) {
+          var toInput   = document.getElementById("iface-custom-to");
+          var fromInput = document.getElementById("iface-custom-from");
+          if (toInput && !toInput.value) toInput.value = _toLocalDatetimeInput(new Date());
+          if (fromInput && !fromInput.value) fromInput.value = _toLocalDatetimeInput(new Date(Date.now() - 24 * 3600 * 1000));
+        }
+        return;
+      }
+      if (panel) panel.style.display = "none";
       document.querySelectorAll(".iface-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
       b.classList.remove("btn-secondary"); b.classList.add("btn-primary");
       _setChartRangePref("assetInterface", range);
       _loadInterfaceHistoryFor(asset.id, ifName, range);
     });
   });
+  var ifaceCustomApply = document.getElementById("btn-iface-custom-apply");
+  if (ifaceCustomApply) {
+    ifaceCustomApply.addEventListener("click", function () {
+      var fromInput = document.getElementById("iface-custom-from");
+      var toInput   = document.getElementById("iface-custom-to");
+      if (!fromInput.value || !toInput.value) { showToast("Enter both From and To", "error"); return; }
+      var fromIso = new Date(fromInput.value).toISOString();
+      var toIso   = new Date(toInput.value).toISOString();
+      if (new Date(fromIso) >= new Date(toIso)) { showToast("From must be before To", "error"); return; }
+      document.querySelectorAll(".iface-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
+      var customBtn = document.getElementById("btn-iface-custom");
+      if (customBtn) { customBtn.classList.remove("btn-secondary"); customBtn.classList.add("btn-primary"); }
+      _loadInterfaceHistoryFor(asset.id, ifName, { from: fromIso, to: toIso });
+    });
+  }
 }
 
 async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
@@ -5234,9 +5320,10 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   }
   var panelBody = silent ? document.getElementById("iface-panel-body") : null;
   var savedScroll = panelBody ? panelBody.scrollTop : 0;
-  var resolvedRange = range || "1h";
+  // Accept range as a string or `{from, to}` object (canonical convention).
+  var opts = (typeof range === "string" || !range) ? { range: range || "1h" } : range;
   try {
-    var data = await api.assets.interfaceHistory(assetId, ifName, resolvedRange);
+    var data = await api.assets.interfaceHistory(assetId, ifName, opts);
     var derived = _derivePerIntervalSeries(data.samples || []);
     _renderIfaceThroughputStats(tputStats, data.samples || [], derived);
     _renderIfaceErrorStats(errStats, data.samples || [], derived);
@@ -5251,10 +5338,17 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
     var ifaceOpts = { since: data.since, until: data.until, subject: ifName };
     _renderIfaceThroughputChart(tputEl, derived, ifaceOpts);
     _renderIfaceErrorChart(errEl, derived, ifaceOpts);
-    // Stash the active range on each chart container so silent ticks /
+    // Stash the active selection on each chart container so silent ticks /
     // probe-now refetch the same view (canonical convention).
-    tputEl.dataset.range = resolvedRange;
-    errEl.dataset.range  = resolvedRange;
+    if (opts.from && opts.to) {
+      tputEl.dataset.from = errEl.dataset.from = opts.from;
+      tputEl.dataset.to   = errEl.dataset.to   = opts.to;
+      delete tputEl.dataset.range; delete errEl.dataset.range;
+    } else {
+      tputEl.dataset.range = errEl.dataset.range = opts.range || "1h";
+      delete tputEl.dataset.from; delete errEl.dataset.from;
+      delete tputEl.dataset.to;   delete errEl.dataset.to;
+    }
   } catch (err) {
     if (!silent) {
       tputEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
@@ -5269,6 +5363,8 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
       if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
     });
   }
+  // Custom date ranges are fixed historical windows — do not auto-refresh.
+  if (opts.from && opts.to) return;
   // Schedule next auto-refresh on the response-time cadence — pinned interfaces
   // ride that cadence on the backend (collectInterfacesFiltered).
   var settings = _monitorSettingsCache || {};
@@ -5783,7 +5879,14 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
     { value: "24h", label: "24h" },
     { value: "7d",  label: "7d"  },
     { value: "30d", label: "30d" },
+    { value: "custom", label: "Custom…", id: "btn-ipsec-custom" },
   ], "assetIpsec", "1h");
+  var ipsecCustomPanel =
+    '<div id="ipsec-custom-panel" style="display:none;align-items:center;gap:6px;margin:0.5rem 0;padding:0.5rem;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;font-size:0.85rem">' +
+      '<label style="display:flex;align-items:center;gap:4px">From <input type="datetime-local" id="ipsec-custom-from" class="form-input" style="padding:2px 6px"></label>' +
+      '<label style="display:flex;align-items:center;gap:4px">To <input type="datetime-local" id="ipsec-custom-to" class="form-input" style="padding:2px 6px"></label>' +
+      '<button class="btn btn-sm btn-primary" id="btn-ipsec-custom-apply">Apply</button>' +
+    '</div>';
 
   // IPsec rides the FortiOS REST interfaces stream — even when the operator
   // routes Interfaces to SNMP, IPsec stays on REST since SNMP has no
@@ -5800,6 +5903,7 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
         '</div>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
+      ipsecCustomPanel +
       '<div id="ipsec-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Status</h5>' +
       '<div id="ipsec-status-chart" class="ipsec-chart-box"></div>' +
@@ -5827,12 +5931,41 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
   document.querySelectorAll(".ipsec-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
+      var panel = document.getElementById("ipsec-custom-panel");
+      if (range === "custom") {
+        if (!panel) return;
+        var willOpen = panel.style.display === "none";
+        panel.style.display = willOpen ? "flex" : "none";
+        if (willOpen) {
+          var toInput   = document.getElementById("ipsec-custom-to");
+          var fromInput = document.getElementById("ipsec-custom-from");
+          if (toInput && !toInput.value) toInput.value = _toLocalDatetimeInput(new Date());
+          if (fromInput && !fromInput.value) fromInput.value = _toLocalDatetimeInput(new Date(Date.now() - 24 * 3600 * 1000));
+        }
+        return;
+      }
+      if (panel) panel.style.display = "none";
       document.querySelectorAll(".ipsec-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
       b.classList.remove("btn-secondary"); b.classList.add("btn-primary");
       _setChartRangePref("assetIpsec", range);
       _loadIpsecHistoryFor(asset.id, tunnelName, range);
     });
   });
+  var ipsecCustomApply = document.getElementById("btn-ipsec-custom-apply");
+  if (ipsecCustomApply) {
+    ipsecCustomApply.addEventListener("click", function () {
+      var fromInput = document.getElementById("ipsec-custom-from");
+      var toInput   = document.getElementById("ipsec-custom-to");
+      if (!fromInput.value || !toInput.value) { showToast("Enter both From and To", "error"); return; }
+      var fromIso = new Date(fromInput.value).toISOString();
+      var toIso   = new Date(toInput.value).toISOString();
+      if (new Date(fromIso) >= new Date(toIso)) { showToast("From must be before To", "error"); return; }
+      document.querySelectorAll(".ipsec-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
+      var customBtn = document.getElementById("btn-ipsec-custom");
+      if (customBtn) { customBtn.classList.remove("btn-secondary"); customBtn.classList.add("btn-primary"); }
+      _loadIpsecHistoryFor(asset.id, tunnelName, { from: fromIso, to: toIso });
+    });
+  }
 }
 
 async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
@@ -5850,9 +5983,10 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
   }
   var panelBody = silent ? document.getElementById("ipsec-panel-body") : null;
   var savedScroll = panelBody ? panelBody.scrollTop : 0;
-  var resolvedRange = range || "1h";
+  // Accept range as a string or `{from, to}` object (canonical convention).
+  var opts = (typeof range === "string" || !range) ? { range: range || "1h" } : range;
   try {
-    var data = await api.assets.ipsecHistory(assetId, tunnelName, resolvedRange);
+    var data = await api.assets.ipsecHistory(assetId, tunnelName, opts);
     var samples = data.samples || [];
     var derived = _deriveIpsecThroughput(samples);
     _renderIpsecStats(stats, samples, derived);
@@ -5860,9 +5994,15 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
     _renderIpsecStatusChart(statusEl, samples, ipsecOpts);
     _renderIpsecBpsChart(inEl,  derived, "in",  ipsecOpts);
     _renderIpsecBpsChart(outEl, derived, "out", ipsecOpts);
-    statusEl.dataset.range = resolvedRange;
-    inEl.dataset.range     = resolvedRange;
-    outEl.dataset.range    = resolvedRange;
+    if (opts.from && opts.to) {
+      statusEl.dataset.from = inEl.dataset.from = outEl.dataset.from = opts.from;
+      statusEl.dataset.to   = inEl.dataset.to   = outEl.dataset.to   = opts.to;
+      delete statusEl.dataset.range; delete inEl.dataset.range; delete outEl.dataset.range;
+    } else {
+      statusEl.dataset.range = inEl.dataset.range = outEl.dataset.range = opts.range || "1h";
+      delete statusEl.dataset.from; delete inEl.dataset.from; delete outEl.dataset.from;
+      delete statusEl.dataset.to;   delete inEl.dataset.to;   delete outEl.dataset.to;
+    }
   } catch (err) {
     if (!silent) {
       statusEl.textContent = inEl.textContent = outEl.textContent = "Error: " + (err.message || "failed to load");
@@ -5876,6 +6016,8 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
       if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
     });
   }
+  // Custom date ranges are fixed historical windows — do not auto-refresh.
+  if (opts.from && opts.to) return;
   // Schedule next auto-refresh on the response-time cadence — pinned tunnels
   // ride that cadence on the backend (collectFastFiltered).
   var settings = _monitorSettingsCache || {};
@@ -6156,7 +6298,14 @@ async function openStorageDetailPanel(asset, mountPath) {
     { value: "24h", label: "24h" },
     { value: "7d",  label: "7d" },
     { value: "30d", label: "30d" },
+    { value: "custom", label: "Custom…", id: "btn-storage-custom" },
   ], "assetStorage", "1h");
+  var storageCustomPanel =
+    '<div id="storage-custom-panel" style="display:none;align-items:center;gap:6px;margin:0.5rem 0;padding:0.5rem;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;font-size:0.85rem">' +
+      '<label style="display:flex;align-items:center;gap:4px">From <input type="datetime-local" id="storage-custom-from" class="form-input" style="padding:2px 6px"></label>' +
+      '<label style="display:flex;align-items:center;gap:4px">To <input type="datetime-local" id="storage-custom-to" class="form-input" style="padding:2px 6px"></label>' +
+      '<button class="btn btn-sm btn-primary" id="btn-storage-custom-apply">Apply</button>' +
+    '</div>';
 
   bodyEl.innerHTML =
     '<div style="padding:1rem 1.25rem">' +
@@ -6164,6 +6313,7 @@ async function openStorageDetailPanel(asset, mountPath) {
         '<h4 style="margin:0">Usage history</h4>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
+      storageCustomPanel +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Used vs total (bytes)</h5>' +
       '<div id="storage-bytes-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
       '<div id="storage-bytes-chart" class="storage-chart-box"></div>' +
@@ -6188,12 +6338,41 @@ async function openStorageDetailPanel(asset, mountPath) {
   document.querySelectorAll(".storage-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
+      var panel = document.getElementById("storage-custom-panel");
+      if (range === "custom") {
+        if (!panel) return;
+        var willOpen = panel.style.display === "none";
+        panel.style.display = willOpen ? "flex" : "none";
+        if (willOpen) {
+          var toInput   = document.getElementById("storage-custom-to");
+          var fromInput = document.getElementById("storage-custom-from");
+          if (toInput && !toInput.value) toInput.value = _toLocalDatetimeInput(new Date());
+          if (fromInput && !fromInput.value) fromInput.value = _toLocalDatetimeInput(new Date(Date.now() - 24 * 3600 * 1000));
+        }
+        return;
+      }
+      if (panel) panel.style.display = "none";
       document.querySelectorAll(".storage-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
       b.classList.remove("btn-secondary"); b.classList.add("btn-primary");
       _setChartRangePref("assetStorage", range);
       _loadStorageHistoryFor(asset.id, mountPath, range);
     });
   });
+  var storageCustomApply = document.getElementById("btn-storage-custom-apply");
+  if (storageCustomApply) {
+    storageCustomApply.addEventListener("click", function () {
+      var fromInput = document.getElementById("storage-custom-from");
+      var toInput   = document.getElementById("storage-custom-to");
+      if (!fromInput.value || !toInput.value) { showToast("Enter both From and To", "error"); return; }
+      var fromIso = new Date(fromInput.value).toISOString();
+      var toIso   = new Date(toInput.value).toISOString();
+      if (new Date(fromIso) >= new Date(toIso)) { showToast("From must be before To", "error"); return; }
+      document.querySelectorAll(".storage-range-btn").forEach(function (x) { x.classList.remove("btn-primary"); x.classList.add("btn-secondary"); });
+      var customBtn = document.getElementById("btn-storage-custom");
+      if (customBtn) { customBtn.classList.remove("btn-secondary"); customBtn.classList.add("btn-primary"); }
+      _loadStorageHistoryFor(asset.id, mountPath, { from: fromIso, to: toIso });
+    });
+  }
 }
 
 async function _loadStorageHistoryFor(assetId, mountPath, range) {
@@ -6205,14 +6384,16 @@ async function _loadStorageHistoryFor(assetId, mountPath, range) {
   bytesEl.textContent = pctEl.textContent = "Loading samples…";
   if (bytesStats) bytesStats.textContent = "Loading…";
   if (pctStats)   pctStats.textContent   = "Loading…";
+  // Accept range as a string or `{from, to}` object (canonical convention).
+  var reqOpts = (typeof range === "string" || !range) ? { range: range || "1h" } : range;
   try {
-    var data = await api.assets.storageHistory(assetId, mountPath, range || "1h");
+    var data = await api.assets.storageHistory(assetId, mountPath, reqOpts);
     var samples = (data && data.samples) || [];
     _renderStorageBytesStats(bytesStats, samples);
     _renderStoragePctStats(pctStats, samples);
-    var opts = { since: data.since, until: data.until, subject: mountPath };
-    _renderStorageBytesChart(bytesEl, samples, opts);
-    _renderStoragePctChart(pctEl, samples, opts);
+    var renderOpts = { since: data.since, until: data.until, subject: mountPath };
+    _renderStorageBytesChart(bytesEl, samples, renderOpts);
+    _renderStoragePctChart(pctEl, samples, renderOpts);
   } catch (err) {
     bytesEl.textContent = pctEl.textContent = "Error: " + (err.message || "failed to load");
     if (bytesStats) bytesStats.textContent = "";
