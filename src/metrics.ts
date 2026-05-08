@@ -286,11 +286,16 @@ export function recordQueueMode(mode: string): void {
   monitorQueueModeGauge.set({ mode }, 1);
 }
 
-export function setMonitorWorkers(counts: Record<Cadence, number>): void {
+export function setMonitorWorkers(
+  counts: Record<Cadence, number> & { floating?: number },
+): void {
   monitorWorkers.set({ queue: "probe" },        counts.probe);
   monitorWorkers.set({ queue: "fastFiltered" }, counts.fastFiltered);
   monitorWorkers.set({ queue: "telemetry" },    counts.telemetry);
   monitorWorkers.set({ queue: "systemInfo" },   counts.systemInfo);
+  if (counts.floating !== undefined) {
+    monitorWorkers.set({ queue: "floating" }, counts.floating);
+  }
 }
 
 export function setFmgWorkerQueueDepth(integrationId: string, depth: number): void {

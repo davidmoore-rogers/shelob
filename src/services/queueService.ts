@@ -152,6 +152,30 @@ interface MonitorJobPayload {
 let bossInstance: PgBossType | null = null;
 let metricsRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
+// ─── Floating workers ───────────────────────────────────────────────────────
+//
+// Dedicated `boss.work()` subscriptions own a fixed slice of capacity per
+// queue. With four queues at flat localConcurrency, idle slots on quiet
+// queues (probe drains fast, fastFiltered is usually empty) sit unused
+// while telemetry / systemInfo backlog. The floating loop polls all four
+// queues in priority order via `boss.fetch()` so that idle capacity flows
+// to wherever the work actually is. Total max-concurrent (dedicated +
+// floating) is bounded so the DB pool ceiling stays the same.
+//
+// `floatingInFlight` is a soft counter — it counts dispatched jobs whose
+// dispatchFloatingJob promise hasn't resolved. The loop pauses fetching
+// once it hits `maxFloat`. `floatingLoopRunning` is the shutdown signal
+// flipped by stopPgbossWorkers.
+
+let floatingInFlight = 0;
+let floatingLoopRunning = false;
+
+const FLOAT_PRIORITY: MonitorCadence[] = ["probe", "fastFiltered", "telemetry", "systemInfo"];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ─── Stalled-worker watchdog ─────────────────────────────────────────────────
 //
 // pg-boss workers stop consuming when the internal polling timer crashes on a
@@ -177,6 +201,8 @@ async function attemptWorkerRecovery(): Promise<void> {
   recovering = true;
   try {
     logger.warn("pg-boss workers stalled; attempting auto-recovery (stop → start)");
+    // Stop the floating loop so the next startPgbossWorkers can re-start it.
+    floatingLoopRunning = false;
     // Clear the metrics interval so startPgbossWorkers won't create a duplicate.
     if (metricsRefreshInterval !== null) {
       clearInterval(metricsRefreshInterval);
@@ -294,26 +320,20 @@ function resolveEnvInt(envName: string, fallback: number): number {
  * Default worker counts when pg-boss is the active queue. Sized for the
  * "you flipped this on because the cursor queue can't keep up" case, not
  * the small-fleet case (small fleets stay on cursor). Operators can override
- * via env var when benchmarking warrants — particularly on hosts with many
- * cores or DBs with high `max_connections`.
+ * via env var when benchmarking warrants.
  *
- * The four cadences default to the same `max(16, min(64, cpus().length × 4))`
- * — enough headroom that an 8-core box gets 32 workers per queue, and bigger
- * hosts cap at 64 so the combined Polaris connection pool stays well below
- * a default Postgres `max_connections=100`. The work is I/O-bound across the
- * board (one or more SNMP / REST round-trips per job, no heavy CPU) so each
- * worker spends ~95% of its time blocked on the network — fewer workers
- * leaves cores idle. Earlier defaults of `max(8, N×2)` were overcautious
- * for I/O-bound work; the cap protects boxes with many cores from running
- * the connection pool dry.
+ * Architecture: 24 dedicated workers per queue (4 × 24 = 96 slots) plus a
+ * floating pool of 32 workers that polls all four queues in priority order.
+ * Total ceiling 128 — same as the previous 32×4 — but the floating pool
+ * shifts to wherever the backlog is, so a chronically-busy queue
+ * (telemetry / systemInfo on big fleets) gets effective ~56 workers when
+ * it needs them, while quiet queues (fastFiltered) don't waste capacity.
  *
- *   POLARIS_MONITOR_PROBE_WORKERS    localConcurrency for probe queue        (default max(16, min(64, N×4)))
- *   POLARIS_MONITOR_FAST_WORKERS     localConcurrency for fastFiltered queue (default max(16, min(64, N×4)))
- *   POLARIS_MONITOR_HEAVY_WORKERS    localConcurrency for telemetry + systemInfo queues (default max(16, min(64, N×4)) each)
+ *   POLARIS_MONITOR_PROBE_WORKERS    dedicated workers for probe queue          (default 24)
+ *   POLARIS_MONITOR_FAST_WORKERS     dedicated workers for fastFiltered queue   (default 24)
+ *   POLARIS_MONITOR_HEAVY_WORKERS    dedicated workers for telemetry + systemInfo queues (default 24 each)
+ *   POLARIS_MONITOR_FLOATING_WORKERS floating pool that polls all queues       (default 32)
  */
-function workerSize(envName: string, fallback: number): number {
-  return resolveEnvInt(envName, fallback);
-}
 
 /**
  * Boot pg-boss and register the four monitor cadence queues. No-op when
@@ -392,22 +412,24 @@ export async function startPgbossWorkers(): Promise<void> {
 
   // pg-boss v12 renamed the concurrency knobs. `localConcurrency` is the
   // total number of jobs this node will process in parallel for the queue
-  // (replaces v11's teamSize × teamConcurrency product). Defaults below are
-  // sized for "operator deliberately switched to pg-boss because cursor
-  // can't keep up" — small fleets stay on cursor where these don't apply.
-  const defaultWorkers = Math.max(16, Math.min(64, cpus().length * 4));
-  const probeWorkers = workerSize("POLARIS_MONITOR_PROBE_WORKERS", defaultWorkers);
-  const fastWorkers  = workerSize("POLARIS_MONITOR_FAST_WORKERS",  defaultWorkers);
-  const heavyWorkers = workerSize("POLARIS_MONITOR_HEAVY_WORKERS", defaultWorkers);
+  // (replaces v11's teamSize × teamConcurrency product). Defaults are flat
+  // 24 per queue; the per-queue baseline is supplemented by a floating pool
+  // (default 32) that polls all four queues in priority order so idle
+  // capacity follows the actual backlog. See the workerSize comment above.
+  const probeWorkers    = resolveEnvInt("POLARIS_MONITOR_PROBE_WORKERS", 24);
+  const fastWorkers     = resolveEnvInt("POLARIS_MONITOR_FAST_WORKERS",  24);
+  const heavyWorkers    = resolveEnvInt("POLARIS_MONITOR_HEAVY_WORKERS", 24);
+  const floatingWorkers = resolveEnvInt("POLARIS_MONITOR_FLOATING_WORKERS", 32);
   setMonitorWorkers({
     probe:        probeWorkers,
     fastFiltered: fastWorkers,
     telemetry:    heavyWorkers,
     systemInfo:   heavyWorkers,
+    floating:     floatingWorkers,
   });
   logger.info(
     {
-      probeWorkers, fastWorkers, heavyWorkers, cores: cpus().length,
+      probeWorkers, fastWorkers, heavyWorkers, floatingWorkers, cores: cpus().length,
     },
     "pg-boss workers configured",
   );
@@ -438,12 +460,100 @@ export async function startPgbossWorkers(): Promise<void> {
   });
 
   bossInstance = boss;
+
+  // Floating pool: fire-and-forget. Loop self-manages via floatingLoopRunning.
+  void startFloatingWorkers(boss, floatingWorkers);
+
   void refreshPgbossMetrics();
   metricsRefreshInterval = setInterval(() => { void refreshPgbossMetrics(); }, 15_000);
   logger.info(
-    { probeWorkers, fastWorkers, heavyWorkers },
+    { probeWorkers, fastWorkers, heavyWorkers, floatingWorkers },
     "pg-boss queue workers started",
   );
+}
+
+/**
+ * Floating worker loop. One async function in the foreground polling all
+ * four queues with `boss.fetch()`; each fetched job is dispatched to its
+ * cadence's runner and counted against `floatingInFlight` until the
+ * dispatch promise resolves. When `floatingInFlight >= maxFloat`, the loop
+ * sleeps briefly and retries — the cap bounds total floating concurrency
+ * regardless of how fast jobs arrive.
+ *
+ * Priority order matters because `boss.fetch()` is per-queue: the loop
+ * always tries probe first, then fastFiltered, then telemetry, then
+ * systemInfo. Whichever queue has work first wins the slot. Sleep
+ * intervals are tuned for "common case is empty" — 500 ms idle wait keeps
+ * the polling load on Postgres modest while still picking up bursts within
+ * a single probe cadence.
+ *
+ * Singleton-key dedup at the publish layer means a floating worker can
+ * never collide with a dedicated worker on the same (assetId, cadence) —
+ * pg-boss already coalesces those into one in-flight job.
+ */
+async function startFloatingWorkers(boss: PgBossType, maxFloat: number): Promise<void> {
+  if (maxFloat <= 0) {
+    logger.info("floating worker pool disabled (POLARIS_MONITOR_FLOATING_WORKERS=0)");
+    return;
+  }
+  floatingLoopRunning = true;
+  logger.info({ maxFloat }, "floating worker loop started");
+  while (floatingLoopRunning) {
+    if (floatingInFlight >= maxFloat) {
+      await sleep(100);
+      continue;
+    }
+
+    let job: PgBossJob<MonitorJobPayload> | null = null;
+    let pickedCadence: MonitorCadence | null = null;
+    try {
+      for (const cadence of FLOAT_PRIORITY) {
+        const batch = await boss.fetch<MonitorJobPayload>(QUEUE_NAMES[cadence]);
+        if (batch && batch.length > 0) {
+          job = batch[0];
+          pickedCadence = cadence;
+          break;
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "floating worker fetch failed");
+      await sleep(1_000);
+      continue;
+    }
+
+    if (!job || !pickedCadence) {
+      await sleep(500);
+      continue;
+    }
+
+    floatingInFlight++;
+    void dispatchFloatingJob(boss, job, pickedCadence).finally(() => { floatingInFlight--; });
+  }
+  logger.info("floating worker loop stopped");
+}
+
+async function dispatchFloatingJob(
+  boss: PgBossType,
+  job: PgBossJob<MonitorJobPayload>,
+  cadence: MonitorCadence,
+): Promise<void> {
+  const queueName = QUEUE_NAMES[cadence];
+  const { assetId, transport } = job.data;
+  try {
+    switch (cadence) {
+      case "probe":        await runProbeFor(assetId, transport ?? "unknown"); break;
+      case "fastFiltered": await runFastFilteredFor(assetId);                  break;
+      case "telemetry":    await runTelemetryFor(assetId);                     break;
+      case "systemInfo":   await runSystemInfoFor(assetId);                    break;
+    }
+    await boss.complete(queueName, job.id);
+  } catch (err) {
+    try {
+      await boss.fail(queueName, job.id, { message: err instanceof Error ? err.message : String(err) });
+    } catch (failErr) {
+      logger.debug({ failErr, jobId: job.id, cadence }, "floating worker fail() reporting failed");
+    }
+  }
 }
 
 /**
@@ -483,6 +593,9 @@ export async function publishMonitorJob(
  */
 export async function stopPgbossWorkers(): Promise<void> {
   if (!bossInstance) return;
+  // Signal the floating loop to exit on its next iteration. Any in-flight
+  // dispatched jobs continue under boss.stop's graceful drain below.
+  floatingLoopRunning = false;
   if (metricsRefreshInterval !== null) {
     clearInterval(metricsRefreshInterval);
     metricsRefreshInterval = null;
