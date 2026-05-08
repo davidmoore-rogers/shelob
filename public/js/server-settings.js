@@ -50,34 +50,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   loadIdentificationTab();
-  checkRamBanner();
 });
-
-function checkRamBanner() {
-  if (typeof api === "undefined" || !api.serverSettings) return;
-  // pg-tuning is admin-only; assets-admin reaching this page won't pass
-  // the backend guard, so the call would just spam a 403 in the console.
-  if (typeof isAdmin === "function" && !isAdmin()) return;
-  api.serverSettings.getPgTuning().then(function (data) {
-    var banner = document.getElementById("ram-insufficient-banner");
-    if (!banner) return;
-    if (!data.ramInsufficient) {
-      localStorage.removeItem("polaris_ram_dismissed");
-      banner.style.display = "none";
-      return;
-    }
-    // Show persistent banner on this page whether or not it was dismissed from the sidebar
-    banner.className = "ram-banner";
-    banner.innerHTML =
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ram-banner-icon"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
-      '<div class="ram-banner-body">' +
-        '<div class="ram-banner-title">Insufficient RAM — Add Memory</div>' +
-        'This server has <strong>' + data.currentRamGb + ' GB</strong> of RAM. The current database size requires at least <strong>' + data.recommendedRamGb + ' GB</strong> for reliable performance. ' +
-        'This notice will clear automatically once sufficient RAM is detected or the database shrinks below the threshold.' +
-      '</div>';
-    banner.style.display = "flex";
-  }).catch(function () { /* non-critical */ });
-}
 
 // ─── NTP Tab ────────────────────────────────────────────────────────────────
 
@@ -1112,28 +1085,52 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
       '</div>'
     : '';
 
-  // Reasons section — list each issue with severity + suggestion
+  // Reasons section — list each issue with severity + suggestion. When the
+  // list is empty we still render a single subdued "all checks passed" row
+  // so an operator sees evidence of work rather than a silent void.
   var reasonsHtml = "";
-  if (capacity.reasons && capacity.reasons.length > 0) {
+  if (!capacity.reasons || capacity.reasons.length === 0) {
+    reasonsHtml =
+      '<div class="capacity-reasons">' +
+        '<div class="capacity-reason capacity-reason-ok">' +
+          '<div class="capacity-reason-head">' +
+            '<span class="capacity-pill capacity-pill-ok capacity-pill-sm">OK</span>' +
+            '<span class="capacity-reason-msg">All capacity checks passed' +
+              (capacity.computedAt ? ' at ' + escapeHtml(capacity.computedAt) : '') +
+            '.</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+  } else if (capacity.reasons && capacity.reasons.length > 0) {
     reasonsHtml =
       '<div class="capacity-reasons">' +
         capacity.reasons.map(function (r) {
           var extra = r.code === "pg_tuning_needed" ? pgSettingsRowsHtml : "";
-          // pgboss_recommended → Enable button (writes Setting=pgboss)
-          // pgboss_pending     → Cancel button (writes Setting back to active)
-          // Both confirm via showConfirm() in the click handler.
+          // pgboss_recommended  → Enable button (writes Setting=pgboss); same
+          // pgboss_overdue      →   action, just amber-tier severity past 5000 assets.
+          // pgboss_pending      → Cancel button (writes Setting back to active)
+          // metrics_token_unset → Generate token (writes METRICS_TOKEN into .env)
+          // health_token_unset  → Generate token (writes HEALTH_TOKEN into .env)
+          // pgboss actions confirm via showConfirm() in the click handler.
           var action = "";
-          if (r.code === "pgboss_recommended") {
+          if (r.code === "pgboss_recommended" || r.code === "pgboss_overdue") {
             action = '<button class="btn btn-sm btn-primary capacity-action" data-action="enable-pgboss" style="margin-top:0.5rem">Enable on next restart</button>';
           } else if (r.code === "pgboss_pending") {
             var queueState = (capacity.database && capacity.database.queue) || {};
             var revertTo = queueState.active || "cursor";
             action = '<button class="btn btn-sm btn-secondary capacity-action" data-action="cancel-pgboss" data-revert-to="' + escapeHtml(revertTo) + '" style="margin-top:0.5rem">Cancel — stay on ' + escapeHtml(revertTo) + '</button>';
+          } else if (r.code === "metrics_token_unset") {
+            action = '<button class="btn btn-sm btn-primary capacity-action" data-action="generate-token" data-which="metrics" style="margin-top:0.5rem">Generate token</button>';
+          } else if (r.code === "health_token_unset") {
+            action = '<button class="btn btn-sm btn-primary capacity-action" data-action="generate-token" data-which="health" style="margin-top:0.5rem">Generate token</button>';
           }
+          var rowPillLabel = r.severity === "red" ? "Critical"
+            : r.severity === "watch" ? "Watch"
+            : "Warning";
           return '<div class="capacity-reason capacity-reason-' + r.severity + '">' +
             '<div class="capacity-reason-head">' +
               '<span class="capacity-pill capacity-pill-' + r.severity + ' capacity-pill-sm">' +
-                (r.severity === "red" ? "Critical" : "Warning") +
+                rowPillLabel +
               '</span>' +
               '<span class="capacity-reason-msg">' + escapeHtml(r.message) + '</span>' +
             '</div>' +
@@ -1493,6 +1490,25 @@ function initCapacityActions() {
         showToast("Could not save: " + (err && err.message ? err.message : "unknown error"), "error");
         btn.disabled = false;
         btn.textContent = "Cancel — stay on " + revertTo;
+      }
+    });
+  });
+
+  card.querySelectorAll('button[data-action="generate-token"]').forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var which = btn.getAttribute("data-which");
+      if (which !== "metrics" && which !== "health") return;
+      btn.disabled = true;
+      btn.textContent = "Generating...";
+      try {
+        await api.serverSettings.generateSecurityToken(which);
+        showToast("Token written to .env — gate is active immediately", "success");
+        _dbLoaded = false;
+        loadDatabaseInfo();
+      } catch (err) {
+        showToast("Could not generate token: " + (err && err.message ? err.message : "unknown error"), "error");
+        btn.disabled = false;
+        btn.textContent = "Generate token";
       }
     });
   });

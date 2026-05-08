@@ -26,7 +26,7 @@
  *            volume, autovacuum stale >7d on a populated sample table,
  *            projected size > 8× host RAM
  *   amber  — disk 10–20% on any volume, dead-tup >20%, projected > 4× RAM,
- *            legacy ramInsufficient/pgTuningNeeded signals
+ *            ramInsufficient, pgTuningNeeded
  *   watch  — disk 20–30% on any volume. Drives the transition Event to
  *            syslog/SFTP archival but NOT the navbar banner — gives ops a
  *            "you have weeks, not minutes" signal before amber.
@@ -550,7 +550,7 @@ function computeReasons(
   } else if (dbVolume && snap.workload.steadyStateSizeBytes > dbVolume.freeBytes * 0.75) {
     reasons.push({
       severity: "amber",
-      code: "projected_exceeds_disk",
+      code: "projected_approaches_disk",
       message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) will consume more than 75% of free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
       suggestion: "Consider reducing sample retention or expanding the database volume before it fills.",
     });
@@ -559,8 +559,14 @@ function computeReasons(
   // Stale autovacuum on a populated sample table — bloat will keep growing.
   // Collapsed into a single reason listing every affected table so an install
   // with several bloated sample tables doesn't render the same advice 3-5
-  // times stacked vertically.
+  // times stacked vertically. TimescaleDB hypertables are exempted: their
+  // chunks are append-only and become immutable once the compression policy
+  // runs (default: 7 days), so the parent table legitimately won't autovacuum
+  // and would trip this red rule permanently. The amber `autovacuum_lag`
+  // rule (dead-tup ratio) below is the real signal for those tables.
+  const tsHypertables = new Set(snap.database.timescale?.hypertableTables ?? []);
   const staleTables = snap.database.sampleTables.filter((t) => {
+    if (tsHypertables.has(t.name)) return false;
     if (!t.lastAutovacuum || t.rows <= 1000) return false;
     return Date.now() - new Date(t.lastAutovacuum).getTime() > 7 * 86400 * 1000;
   });
@@ -616,14 +622,18 @@ function computeReasons(
     });
   }
 
-  // ── Watch: pg-boss state ─────────────────────────────────────────────────
-  // Two mutually-exclusive states surface a queue-mode signal:
-  //   - "pending": operator already clicked Enable; persisted setting differs
-  //     from the running mode. Show what's pending + a Cancel button so the
-  //     change can be undone before restart if it was a mistake.
-  //   - "recommended": fleet has crossed ~500 monitored assets and the
-  //     operator is still on cursor (no pending change). Suggest switching.
-  // Both run only when pg-boss is installed (no actionable advice otherwise).
+  // ── pg-boss state ────────────────────────────────────────────────────────
+  // Three mutually-exclusive states surface a queue-mode signal:
+  //   - "pending"     (watch): operator already clicked Enable; persisted
+  //     setting differs from the running mode. Show what's pending + a Cancel
+  //     button so the change can be undone before restart if it was a mistake.
+  //   - "recommended" (watch): fleet has crossed ~500 monitored assets and the
+  //     operator is still on cursor. Cursor still works fine in this band; the
+  //     suggestion is opportunistic.
+  //   - "overdue"     (amber): fleet is well past 5000 — pg-boss is the right
+  //     answer and cursor will degrade noticeably. Drives Maintenance-tab
+  //     attention, not just an informational hint.
+  // All three run only when pg-boss is installed (no actionable advice otherwise).
   if (snap.database.queue.pgbossInstalled) {
     const { active, persisted } = snap.database.queue;
     if (active !== persisted) {
@@ -633,19 +643,30 @@ function computeReasons(
         message: `Monitor queue switch to ${persisted} is pending — takes effect on the next application restart.`,
         suggestion: `If this was clicked by mistake, cancel below to keep using ${active}.`,
       });
-    } else {
+    } else if (active === "cursor") {
       const PGBOSS_RECOMMEND_ASSETS = 500;
-      if (active === "cursor" && snap.workload.monitoredAssetCount > PGBOSS_RECOMMEND_ASSETS) {
+      const PGBOSS_OVERDUE_ASSETS = 5000;
+      const count = snap.workload.monitoredAssetCount;
+      if (count > PGBOSS_RECOMMEND_ASSETS) {
         const ctx = getDeploymentContext();
         const suggestion = !ctx.dbIsLocal
           ? "Click Enable on next restart to switch. pg-boss creates its own tables in the polaris database — confirm your DB role has CREATE TABLE permission with your DBA before flipping."
           : "Click Enable on next restart to switch. After the next application restart Polaris will use the pg-boss queue with per-cadence worker pools.";
-        reasons.push({
-          severity: "watch",
-          code: "pgboss_recommended",
-          message: `Monitoring ${snap.workload.monitoredAssetCount} assets on the cursor queue. pg-boss has structural per-cadence isolation that scales further.`,
-          suggestion,
-        });
+        if (count > PGBOSS_OVERDUE_ASSETS) {
+          reasons.push({
+            severity: "amber",
+            code: "pgboss_overdue",
+            message: `Monitoring ${count} assets on the cursor queue is well past the comfortable cursor-mode size. pg-boss queue is the recommended fit at this scale.`,
+            suggestion,
+          });
+        } else {
+          reasons.push({
+            severity: "watch",
+            code: "pgboss_recommended",
+            message: `Monitoring ${count} assets on the cursor queue. pg-boss has structural per-cadence isolation that scales further.`,
+            suggestion,
+          });
+        }
       }
     }
   }
@@ -724,8 +745,12 @@ function computeReasons(
         `). PostgreSQL max_connections is ${pool.maxConnections} with ` +
         `${pool.maxConnections - pool.peakObserved} free.`,
       suggestion:
-        `Add to .env: ${envLines}. Restart polaris to apply. ` +
-        `No PostgreSQL changes needed — peak stays well under max_connections.`,
+        `High pool utilization can mean genuine demand or slow holders. ` +
+        `If pg_stat_activity during peak shows mostly active workers running a healthy mix, ` +
+        `bumping the pool to add buffer is a low-risk fix since Postgres has headroom — ` +
+        `set ${envLines} in .env and restart Polaris. ` +
+        `If you see many rows stuck in idle in transaction or the same slow query, ` +
+        `fixing the holders is the better answer than enlarging the pool.`,
     });
   }
 
@@ -749,10 +774,9 @@ function computeReasons(
         "fleet size, monitored asset health, monitor pass duration, and queue " +
         "depth — useful recon for an attacker if Polaris is publicly reachable.",
       suggestion:
-        "Set METRICS_TOKEN=<random-hex> in .env (generate with " +
-        "`openssl rand -hex 32`) and restart Polaris. Update your Prometheus " +
-        "scrape config to send `Authorization: Bearer <token>` — see " +
-        "docs/grafana/README.md.",
+        "Click Generate token to write METRICS_TOKEN into .env (the gate takes " +
+        "effect immediately — no restart). Then update your Prometheus scrape " +
+        "config to send `Authorization: Bearer <token>` — see docs/grafana/README.md.",
     });
   }
   if (!process.env.HEALTH_TOKEN || process.env.HEALTH_TOKEN.trim() === "") {
@@ -763,13 +787,14 @@ function computeReasons(
         "/health is reachable without authentication. The leak is small " +
         "(just 'the app is up') but the gate is trivial to enable.",
       suggestion:
-        "Set HEALTH_TOKEN=<random-hex> in .env (generate with " +
-        "`openssl rand -hex 32`) and restart Polaris. Configure your " +
-        "monitoring system to send `Authorization: Bearer <token>`.",
+        "Click Generate token to write HEALTH_TOKEN into .env (the gate takes " +
+        "effect immediately — no restart). Then configure your monitoring system " +
+        "to send `Authorization: Bearer <token>`.",
     });
   }
 
-  // Carry forward the legacy RAM-insufficient and PG-tuning signals as amber.
+  // RAM-insufficient and PG-tuning are amber card reasons — the route handler
+  // computes the inputs and passes them in here.
   if (ramInsufficient) {
     reasons.push({
       severity: "amber",

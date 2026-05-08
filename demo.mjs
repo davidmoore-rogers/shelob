@@ -1226,7 +1226,6 @@ let LDAP_SETTINGS = {
 const TAG_COLORS = ["#4fc3f7","#4ade80","#f59e0b","#f472b6","#a78bfa","#fb923c","#38bdf8","#34d399","#e879f9","#facc15","#f87171","#2dd4bf","#818cf8","#c084fc"];
 function randomTagColor() { return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]; }
 
-let PG_TUNING_SNOOZE = { until: null };
 
 let DEMO_UPDATE_STATUS = { state: "idle" };
 
@@ -3733,13 +3732,6 @@ async function routeAPI(method, path, params, body, res, req) {
 
   // Server Settings — PostgreSQL Tuning Check
   if (path === "/api/v1/server-settings/pg-tuning" && method === "GET") {
-    const thresholds = { assets: 160, subnets: 1600, reservations: 160000 };
-    // Demo uses mock counts above thresholds to showcase the alert
-    const counts = { assets: 185, subnets: 1820, reservations: 12400 };
-    const triggered = ["assets", "subnets"];
-
-    const isSnoozed = PG_TUNING_SNOOZE.until && new Date(PG_TUNING_SNOOZE.until) > new Date();
-
     // Mock PG settings that are below recommended (for demo)
     const settings = [
       { name: "shared_buffers",      current: "128MB",  recommended: "2GB",  ok: false },
@@ -3748,20 +3740,16 @@ async function routeAPI(method, path, params, body, res, req) {
       { name: "random_page_cost",    current: "4",      recommended: "1.1",  ok: false },
     ];
 
-    return json(res, {
-      needed: true,
-      triggered,
-      counts,
-      thresholds,
-      settings,
-      snoozedUntil: isSnoozed ? PG_TUNING_SNOOZE.until : null,
-    });
+    return json(res, { settings, pgConfigFile: "/etc/postgresql/15/main/postgresql.conf" });
   }
 
-  if (path === "/api/v1/server-settings/pg-tuning/snooze" && method === "POST") {
-    const days = Math.min(30, Math.max(1, parseInt(body?.days, 10) || 7));
-    PG_TUNING_SNOOZE.until = new Date(Date.now() + days * 86400000).toISOString();
-    return json(res, { ok: true, snoozedUntil: PG_TUNING_SNOOZE.until });
+  if (path === "/api/v1/server-settings/security-tokens/generate" && method === "POST") {
+    const which = body?.which;
+    if (which !== "metrics" && which !== "health") {
+      return json(res, { error: "which must be 'metrics' or 'health'" }, 400);
+    }
+    const key = which === "metrics" ? "METRICS_TOKEN" : "HEALTH_TOKEN";
+    return json(res, { ok: true, key });
   }
 
   // Server Settings — Application Updates

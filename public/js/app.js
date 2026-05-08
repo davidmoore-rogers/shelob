@@ -136,8 +136,6 @@ function renderNav() {
     <div style="margin-top:auto">
       <div id="query-status" class="query-status" style="display:none"></div>
       <div id="capacity-critical-alert" class="capacity-critical-alert" style="display:none"></div>
-      <div id="pg-tuning-alert" class="pg-tuning-alert" style="display:none"></div>
-      <div id="ram-warning-alert" class="ram-warning-alert" style="display:none"></div>
       ${(isAdmin() || canManageAssets()) ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
         <a href="/server-settings.html" class="sidebar-bottom-link${current === '/server-settings.html' ? ' active' : ''}">${ICONS.settings}<span>Server Settings</span></a>
       </div>` : ''}
@@ -1394,12 +1392,12 @@ function _resetAutoLogoutTimer() {
   }, _autoLogoutMs);
 }
 
-// ─── Capacity Alerts (sidebar) ────────────────────────────────────────────────
+// ─── Capacity Critical Alert (sidebar) ────────────────────────────────────────
 
 // Renders the non-dismissible critical alert when capacity.severity === "red".
-// The amber pg-tuning + ram-warning alerts below remain snoozable/dismissible;
-// red is a capacity emergency (disk near full, autovacuum stalled, projected
-// DB size > 8x host RAM) and must not be silenceable from the UI.
+// Red is a capacity emergency (disk near full, autovacuum stalled, projected
+// DB size > 8x host RAM) and must not be silenceable from the UI. Amber and
+// watch reasons live on the Database card under Server Settings → Maintenance.
 function renderCapacityCriticalAlert(capacity) {
   var el = document.getElementById("capacity-critical-alert");
   if (!el) return;
@@ -1436,96 +1434,13 @@ function renderCapacityCriticalAlert(capacity) {
   el.style.display = "block";
 }
 
-// ─── PostgreSQL Tuning Alert ──────────────────────────────────────────────────
-
-function checkPgTuning() {
+// Polls /pg-tuning at page load to feed the capacity critical alert. Amber and
+// watch reasons (pg_tuning_needed, ram_insufficient, db_pool_undersized, …)
+// surface on the Database card; only red drives this sidebar alert.
+function checkCapacity() {
   if (!isAdmin()) return;
   api.serverSettings.getPgTuning().then(function (data) {
-    // ── Capacity critical (red) alert — non-dismissible ───────────────────
-    // This runs first and unconditionally so a critical condition surfaces
-    // even when pg-tuning isn't "needed" or has been snoozed.
     renderCapacityCriticalAlert(data && data.capacity);
-
-    var container = document.getElementById("pg-tuning-alert");
-    if (!container) return;
-
-    if (!data.needed || data.snoozedUntil) {
-      container.style.display = "none";
-      return;
-    }
-
-    var badSettings = (data.settings || []).filter(function (s) { return !s.ok; });
-    if (!badSettings.length) {
-      container.style.display = "none";
-      return;
-    }
-
-    var triggeredText = data.triggered.map(function (t) {
-      var count = data.counts[t] || 0;
-      var threshold = data.thresholds[t] || 0;
-      return t + " (" + count.toLocaleString() + "/" + threshold.toLocaleString() + ")";
-    }).join(", ");
-
-    var settingsRows = badSettings.map(function (s) {
-      return '<div class="pg-tuning-row">' +
-        '<span class="pg-tuning-param">' + escapeHtml(s.name) + '</span>' +
-        '<span class="pg-tuning-values">' + escapeHtml(s.current) + ' &rarr; ' + escapeHtml(s.recommended) + '</span>' +
-      '</div>';
-    }).join("");
-
-    container.innerHTML =
-      '<div class="pg-tuning-header">' +
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pg-tuning-icon"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
-        '<span>PostgreSQL Tuning</span>' +
-      '</div>' +
-      '<div class="pg-tuning-body">' +
-        '<p class="pg-tuning-text">Scale threshold reached for ' + triggeredText + '. Recommended PostgreSQL tuning:</p>' +
-        settingsRows +
-      '</div>' +
-      '<div class="pg-tuning-actions">' +
-        '<button class="btn btn-sm btn-secondary" id="pg-tuning-snooze">Snooze 7d</button>' +
-      '</div>';
-
-    container.style.display = "block";
-
-    document.getElementById("pg-tuning-snooze").addEventListener("click", function () {
-      api.serverSettings.snoozePgTuning(7).then(function () {
-        container.style.display = "none";
-        showToast("Alert snoozed for 7 days", "success");
-      }).catch(function () {
-        showToast("Failed to snooze alert", "error");
-      });
-    });
-
-    // ── RAM insufficient warning ──────────────────────────────────────────────
-    var ramContainer = document.getElementById("ram-warning-alert");
-    if (ramContainer) {
-      if (!data.ramInsufficient) {
-        // RAM is now adequate — clear any prior dismissal so warning reappears if load grows again
-        localStorage.removeItem("polaris_ram_dismissed");
-        ramContainer.style.display = "none";
-      } else if (localStorage.getItem("polaris_ram_dismissed")) {
-        ramContainer.style.display = "none";
-      } else {
-        ramContainer.innerHTML =
-          '<div class="pg-tuning-header">' +
-            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="pg-tuning-icon"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
-            '<span>Insufficient RAM</span>' +
-          '</div>' +
-          '<div class="pg-tuning-body">' +
-            '<p class="pg-tuning-text">This server has ' + data.currentRamGb + ' GB RAM. At least ' + data.recommendedRamGb + ' GB is recommended for the current database size.</p>' +
-          '</div>' +
-          '<div class="pg-tuning-actions">' +
-            '<button class="btn btn-sm btn-secondary" id="ram-warning-dismiss">Dismiss</button>' +
-          '</div>';
-        ramContainer.style.display = "block";
-
-        document.getElementById("ram-warning-dismiss").addEventListener("click", function () {
-          localStorage.setItem("polaris_ram_dismissed", "1");
-          ramContainer.style.display = "none";
-        });
-      }
-    }
   }).catch(function () {
     // Silently ignore — non-critical check
   });
@@ -1591,7 +1506,7 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   fetchBranding();
   initAutoLogout();
-  checkPgTuning();
+  checkCapacity();
 
   // Let each page's own DOMContentLoaded handler finish first, then consume
   // any #view=<type>:<id> or #ip=... hash a search click-through left us.

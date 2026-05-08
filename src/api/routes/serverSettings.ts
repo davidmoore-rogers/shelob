@@ -35,6 +35,7 @@ import { getDnsSettings, updateDnsSettings, createResolver } from "../../service
 import type { DnsSettings } from "../../services/dnsService.js";
 import { getOuiStatus, refreshOuiDatabase, getOuiOverrides, setOuiOverride, deleteOuiOverride } from "../../services/ouiService.js";
 import { logEvent } from "./events.js";
+import { setEnvVar } from "../../utils/envFile.js";
 import {
   checkForUpdates,
   applyUpdate,
@@ -862,21 +863,15 @@ router.get("/pg-tuning", async (_req, res, next) => {
     if (!triggered.length) {
       const capacity = await getCapacitySnapshot({ ramInsufficient: false, pgTuningNeeded: false });
       void recordCapacityTransition(capacity);
-      return res.json({ needed: false, triggered: [], settings: [], snoozedUntil: null, capacity });
+      return res.json({ settings: [], pgConfigFile: null, capacity });
     }
 
-    // 2. Check snooze state
-    const snoozeRow = await prisma.setting.findUnique({ where: { key: "pg_tuning_snooze" } });
-    const snoozedUntil = (snoozeRow?.value as any)?.until || null;
-    const isSnoozed = snoozedUntil && new Date(snoozedUntil) > new Date();
-
-    // 3. Query current PostgreSQL settings
+    // 2. Query current PostgreSQL settings
     const pgSettings = await prisma.$queryRawUnsafe<{ name: string; setting: string; unit: string | null }[]>(
       `SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost', 'config_file')`
     );
     const pgConfigFile = pgSettings.find((s) => s.name === "config_file")?.setting || null;
 
-    const counts = { assets: assetCount, subnets: subnetCount, reservations: reservationCount };
     const dbSizeResult = await prisma.$queryRawUnsafe<{ size: bigint }[]>(
       "SELECT pg_database_size(current_database()) AS size"
     );
@@ -928,8 +923,9 @@ router.get("/pg-tuning", async (_req, res, next) => {
 
     // Layer the capacity snapshot on top so callers get a single source of
     // truth for severity, reasons, host stats, sample-table breakdown, and
-    // steady-state size projection. The legacy fields above are preserved
-    // for backwards compatibility.
+    // steady-state size projection. The card consumes `settings` + `pgConfigFile`
+    // alongside `capacity` to render the inline pg-tuning rows under the
+    // `pg_tuning_needed` reason.
     const capacity = await getCapacitySnapshot({ ramInsufficient, pgTuningNeeded });
 
     // Best-effort transition Event so a flip into watch/amber/red flows out
@@ -939,34 +935,7 @@ router.get("/pg-tuning", async (_req, res, next) => {
     // already looking and we want the audit trail in real time."
     void recordCapacityTransition(capacity);
 
-    res.json({
-      needed: pgTuningNeeded,
-      triggered,
-      counts,
-      thresholds: PG_TUNING_THRESHOLDS,
-      settings,
-      pgConfigFile,
-      snoozedUntil: isSnoozed ? snoozedUntil : null,
-      ramInsufficient,
-      currentRamGb,
-      recommendedRamGb,
-      capacity,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post("/pg-tuning/snooze", async (req, res, next) => {
-  try {
-    const days = Math.min(30, Math.max(1, parseInt(req.body?.days, 10) || 7));
-    const until = new Date(Date.now() + days * 86400000).toISOString();
-    await prisma.setting.upsert({
-      where: { key: "pg_tuning_snooze" },
-      update: { value: { until } },
-      create: { key: "pg_tuning_snooze", value: { until } },
-    });
-    res.json({ ok: true, snoozedUntil: until });
+    res.json({ settings, pgConfigFile, capacity });
   } catch (err) {
     next(err);
   }
@@ -1020,6 +989,36 @@ router.post("/queue-mode", async (req, res, next) => {
       active: getBootTimeMode(),
       restartRequired: getBootTimeMode() !== requested,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Bearer-token generation for /metrics and /health ─────────────────────
+//
+// Driven by [Generate token] buttons on the `metrics_token_unset` and
+// `health_token_unset` capacity reasons. Writes a fresh 32-byte hex value
+// into .env and stamps process.env so the gate takes effect without a
+// restart. Admin-only by virtue of the parent /server-settings guard.
+router.post("/security-tokens/generate", async (req, res, next) => {
+  try {
+    const which = req.body?.which;
+    if (which !== "metrics" && which !== "health") {
+      throw new AppError(400, "which must be 'metrics' or 'health'");
+    }
+    const key = which === "metrics" ? "METRICS_TOKEN" : "HEALTH_TOKEN";
+    const value = randomBytes(32).toString("hex");
+    setEnvVar(key, value);
+    process.env[key] = value;
+    await logEvent({
+      level: "info",
+      action: "server.security_token.generated",
+      resourceType: "setting",
+      resourceName: key,
+      actor: req.session?.username,
+      message: `Bearer token generated for ${which === "metrics" ? "/metrics" : "/health"}`,
+    });
+    res.json({ ok: true, key });
   } catch (err) {
     next(err);
   }

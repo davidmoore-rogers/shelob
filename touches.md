@@ -588,10 +588,11 @@ Listed alphabetically.
 
 **Cross-service deps:** `monitoringService` (cadences, retention), `timescaleService` (hypertable check), `queueService` (pg-boss installed, boot/persisted mode), `deploymentContext` (DB co-location).
 
-**Used by:** `src/jobs/capacityWatch.ts:35,36 — 10-min capacity check + Event emission`; `src/api/routes/serverSettings.ts:963,964,1033,1040 — pg-tuning endpoint snapshots + transitions`. ~4 call sites.
+**Used by:** `src/jobs/capacityWatch.ts — 10-min capacity check + Event emission`; `src/api/routes/serverSettings.ts:864,865,929,936 — pg-tuning endpoint snapshots + transitions`. ~4 call sites.
 
 **Invariants:**
-- Severity tiers: **red** = disk <10%, DB >50% of free disk, stale autovacuum >7d on sample table, projected >8× RAM; **amber** = disk 10–20%, projected >4× RAM, legacy signals; **watch** = disk 20–30% (Event-only, no navbar banner); **ok** = none.
+- Severity tiers: **red** = disk <10%, DB >50% of free disk, stale autovacuum >7d on sample table (Timescale hypertables exempt — append-only chunks legitimately don't autovacuum), projected >8× RAM; **amber** = disk 10–20%, projected >4× RAM, dead-tup >20%, ramInsufficient, pgTuningNeeded, pgboss_overdue (>5000 monitored assets on cursor); **watch** = disk 20–30%, pgboss_recommended (>500 assets on cursor), pgboss_pending, db_pool_undersized (>=80% of pool capacity AND <70% of max_connections), timescale_recommended (sample tables >1 GB, extension not installed), metrics_token_unset, health_token_unset; **ok** = none.
+- Reason codes are unique per condition — `projected_exceeds_disk` (red, projected > free disk on DB volume) and `projected_approaches_disk` (amber, >75% of free disk) deliberately use different codes so transition Events stay distinguishable.
 - Volumes deduped by `stat.dev` so single-LV box = one entry, STIG RHEL with separate /var = two.
 - Steady-state projection = base DB size – current sample table bytes + projected sample bytes (per monitored asset × rows/day/asset × retention × bytes/row).
 - Sample table rows-per-asset-per-day: conservative defaults (e.g., asset_monitor_samples = 86400/intervalSeconds) when no samples yet.

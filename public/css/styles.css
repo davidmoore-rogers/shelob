@@ -396,14 +396,7 @@ code {
   background: rgba(255,23,68,0.15);
 }
 
-/* ─── PostgreSQL Tuning Alert ────────────────────────────────────────────── */
-.pg-tuning-alert {
-  padding: 0.5rem 0.75rem;
-  margin: 0.5rem 0.5rem 0;
-  border: 1px solid rgba(255,214,0,0.30);
-  border-radius: var(--radius-md);
-  background: rgba(255,214,0,0.06);
-}
+/* ─── Capacity reason building blocks (shared by sidebar critical alert + inline pg-tuning rows on the card) ── */
 .pg-tuning-header {
   display: flex;
   align-items: center;
@@ -449,73 +442,8 @@ code {
   display: flex;
   justify-content: flex-end;
 }
-[data-theme="light"] .pg-tuning-alert {
-  border-color: rgba(245,127,23,0.30);
-  background: rgba(245,127,23,0.06);
-}
 [data-theme="light"] .pg-tuning-header { color: var(--color-warning); }
 [data-theme="light"] .pg-tuning-values { color: var(--color-warning); }
-
-/* ─── RAM Insufficient Alert (sidebar) ─────────────────────────────────────── */
-.ram-warning-alert {
-  padding: 0.5rem 0.75rem;
-  margin: 0.5rem 0.5rem 0;
-  border: 1px solid rgba(239,83,80,0.35);
-  border-radius: var(--radius-md);
-  background: rgba(239,83,80,0.07);
-}
-.ram-warning-alert .pg-tuning-header { color: var(--color-danger); }
-.ram-warning-alert .pg-tuning-values { color: var(--color-danger); }
-[data-theme="light"] .ram-warning-alert {
-  border-color: rgba(198,40,40,0.30);
-  background: rgba(198,40,40,0.06);
-}
-
-/* ─── RAM Insufficient Banner (server settings page) ───────────────────────── */
-.ram-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1.25rem;
-  border: 1px solid rgba(239,83,80,0.35);
-  border-radius: var(--radius-md);
-  background: rgba(239,83,80,0.07);
-  font-size: 0.85rem;
-  color: var(--color-text-primary);
-  line-height: 1.45;
-}
-.ram-banner-icon {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-  margin-top: 1px;
-  color: var(--color-danger);
-}
-.ram-banner-body { flex: 1; }
-.ram-banner-title {
-  font-weight: 600;
-  color: var(--color-danger);
-  margin-bottom: 2px;
-}
-[data-theme="light"] .ram-banner {
-  border-color: rgba(198,40,40,0.30);
-  background: rgba(198,40,40,0.06);
-}
-
-/* Warning variant — reuses .ram-banner layout with amber/yellow tones. */
-.ram-banner.ram-banner--warning {
-  border-color: rgba(255,214,0,0.35);
-  background: rgba(255,214,0,0.07);
-}
-.ram-banner.ram-banner--warning .ram-banner-icon,
-.ram-banner.ram-banner--warning .ram-banner-title {
-  color: var(--color-warning);
-}
-[data-theme="light"] .ram-banner.ram-banner--warning {
-  border-color: rgba(245,127,23,0.35);
-  background: rgba(245,127,23,0.08);
-}
 
 /* ─── Capacity Critical Alert (sidebar, non-dismissible) ───────────────────── */
 .capacity-critical-alert {
@@ -591,9 +519,11 @@ code {
   border: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
 }
+.capacity-reason-ok    { border-color: rgba(46,204,113,0.30); background: rgba(46,204,113,0.05); }
 .capacity-reason-watch { border-color: rgba(79,195,247,0.35); background: rgba(79,195,247,0.06); }
 .capacity-reason-amber { border-color: rgba(255,214,0,0.35);  background: rgba(255,214,0,0.06); }
 .capacity-reason-red   { border-color: rgba(239,83,80,0.40);  background: rgba(239,83,80,0.07); }
+[data-theme="light"] .capacity-reason-ok    { border-color: rgba(39,174,96,0.30);   background: rgba(39,174,96,0.05); }
 [data-theme="light"] .capacity-reason-watch { border-color: rgba(2,136,209,0.30);  background: rgba(2,136,209,0.06); }
 [data-theme="light"] .capacity-reason-amber { border-color: rgba(245,127,23,0.30); background: rgba(245,127,23,0.06); }
 [data-theme="light"] .capacity-reason-red   { border-color: rgba(198,40,40,0.30);  background: rgba(198,40,40,0.06); }
