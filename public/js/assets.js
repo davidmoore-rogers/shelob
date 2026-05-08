@@ -8686,7 +8686,7 @@ async function _monsetSaveManual() {
 
 function _monsetOverridesSectionHTML(rows) {
   var rowHTML = rows.length === 0
-    ? '<tr><td colspan="4" class="empty-state" style="text-align:center;padding:1rem">No class overrides configured.</td></tr>'
+    ? '<tr><td colspan="3" class="empty-state" style="text-align:center;padding:1rem">No class overrides configured.</td></tr>'
     : rows.map(function (o) {
         var sourceLabel = o.integration
           ? escapeHtml(o.integration.name) + ' <span class="hint" style="opacity:0.65">(' + escapeHtml(o.integration.type) + ')</span>'
@@ -8695,7 +8695,6 @@ function _monsetOverridesSectionHTML(rows) {
         return '<tr>' +
           '<td>' + escapeHtml(classLabel) + '</td>' +
           '<td>' + sourceLabel + '</td>' +
-          '<td><span class="hint" style="font-size:0.78rem;color:var(--color-text-tertiary)">' + escapeHtml(_monsetOverrideSummary(o)) + '</span></td>' +
           '<td class="actions" style="white-space:nowrap">' +
             '<button class="btn btn-sm btn-secondary" data-edit-override="' + escapeHtml(o.id) + '">Edit</button> ' +
             '<button class="btn btn-sm btn-danger"    data-delete-override="' + escapeHtml(o.id) + '">Delete</button>' +
@@ -8712,7 +8711,6 @@ function _monsetOverridesSectionHTML(rows) {
       '<thead><tr>' +
         '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--color-border)">Class</th>' +
         '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--color-border)">Asset Source</th>' +
-        '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--color-border)">Overrides</th>' +
         '<th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--color-border)">Actions</th>' +
       '</tr></thead>' +
       '<tbody id="monset-overrides-tbody">' + rowHTML + '</tbody>' +
@@ -8757,7 +8755,7 @@ function _monsetOpenOverrideEditor(existing) {
       var sel = (existing && existing.integrationId === intg.id) ? " selected" : "";
       return '<option value="' + escapeHtml(intg.id) + '" data-type="' + escapeHtml(intg.type) + '"' + sel + '>' + escapeHtml(intg.name) + ' (' + escapeHtml(intg.type) + ')</option>';
     }).join("");
-  var v = existing || {};
+  var v = existing || Object.assign({}, MON_TIER_DEFAULTS);
   // Initial source kind: if editing, use the row's integration type;
   // otherwise default to manual (matches the default-selected source option).
   var initialSourceKind = (existing && existing.integration && existing.integration.type) || "manual";
