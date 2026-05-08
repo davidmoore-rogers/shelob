@@ -3,6 +3,20 @@
  */
 
 document.addEventListener("DOMContentLoaded", function () {
+  // Page-level access widening: admin sees every tab; assets-admin sees only
+  // the Identification tab (and only the MIB Database card within it) so the
+  // MIB-aware browse + walk surface is reachable without giving them the
+  // rest of Server Settings. Backend guards on /server-settings/mibs/* are
+  // the source of truth — this is just UX hide.
+  if (typeof isAdmin === "function" && !isAdmin()) {
+    document.querySelectorAll("#settings-tabs .page-tab").forEach(function (t) {
+      if (t.getAttribute("data-tab") !== "identification") t.style.display = "none";
+    });
+    document.querySelectorAll(".page-tab-panel").forEach(function (p) {
+      if (p.id !== "tab-identification") p.style.display = "none";
+    });
+  }
+
   // Tab switching
   document.querySelectorAll("#settings-tabs .page-tab").forEach(function (tab) {
     tab.addEventListener("click", function () {
@@ -41,6 +55,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
 function checkRamBanner() {
   if (typeof api === "undefined" || !api.serverSettings) return;
+  // pg-tuning is admin-only; assets-admin reaching this page won't pass
+  // the backend guard, so the call would just spam a 403 in the console.
+  if (typeof isAdmin === "function" && !isAdmin()) return;
   api.serverSettings.getPgTuning().then(function (data) {
     var banner = document.getElementById("ram-insufficient-banner");
     if (!banner) return;
@@ -2586,6 +2603,27 @@ async function loadIdentificationTab() {
   var container = document.getElementById("tab-identification");
   container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading...</p></div>';
 
+  // Assets-admin only loads the MIB-related endpoints (the only ones the
+  // backend opens to them). The admin-only endpoints below would 403 and
+  // reject the whole Promise.all, leaving the page stuck on "Loading…".
+  if (typeof isAdmin === "function" && !isAdmin()) {
+    try {
+      var mibResults = await Promise.all([
+        api.serverSettings.listMibs().catch(function () { return []; }),
+        api.serverSettings.getMibFacets().catch(function () { return { manufacturers: [], modelsByManufacturer: {} }; }),
+        api.serverSettings.getMibProfileStatus().catch(function () { return []; }),
+      ]);
+      _mibsData = mibResults[0] || [];
+      _mibFacets = mibResults[1] || { manufacturers: [], modelsByManufacturer: {} };
+      _mibProfileStatus = mibResults[2] || [];
+      _tagsLoaded = true;
+      renderIdentificationTab();
+    } catch (err) {
+      container.innerHTML = '<div class="settings-card"><p style="color:var(--color-danger)">' + escapeHtml(err.message || "Failed to load") + '</p></div>';
+    }
+    return;
+  }
+
   try {
     var results = await Promise.all([
       api.serverSettings.listTags(),
@@ -2627,6 +2665,17 @@ function _currentCategories() {
 function renderIdentificationTab() {
   var container = document.getElementById("tab-identification");
   var html = '';
+
+  // Assets-admin reaches this page only to use the MIB browse + walk
+  // surface — render just the MIB Database card and skip everything else.
+  // Backend guards on /server-settings/* are the source of truth; this is
+  // purely UX. Admin path falls through to the full multi-card view.
+  if (typeof isAdmin === "function" && !isAdmin()) {
+    html += mibCardHTML();
+    container.innerHTML = html;
+    wireMibControls();
+    return;
+  }
 
   // ── 1. DNS Configuration ──
   html += dnsCardsHTML();
@@ -3116,8 +3165,11 @@ function mibCardHTML() {
         '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(sizeKb) + '</td>' +
         '<td style="font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(formatDate(m.uploadedAt)) + '</td>' +
         '<td class="actions" style="white-space:nowrap">' +
+          '<button class="btn btn-sm btn-primary mib-browse" data-id="' + escapeHtml(m.id) + '" data-name="' + escapeHtml(m.moduleName) + '">Browse</button> ' +
           '<a class="btn btn-sm btn-secondary" href="' + api.serverSettings.downloadMibUrl(m.id) + '" download="' + escapeHtml(m.filename) + '">Download</a> ' +
-          '<button class="btn btn-sm btn-danger mib-del" data-id="' + escapeHtml(m.id) + '" data-name="' + escapeHtml(m.moduleName) + '">Del</button>' +
+          (isAdmin()
+            ? '<button class="btn btn-sm btn-danger mib-del" data-id="' + escapeHtml(m.id) + '" data-name="' + escapeHtml(m.moduleName) + '">Del</button>'
+            : '') +
         '</td>' +
       '</tr>';
     });
@@ -3128,7 +3180,12 @@ function mibCardHTML() {
     html += '<p class="empty-state" style="margin-bottom:1rem">No MIBs match the current filter.</p>';
   }
 
-  // Upload form
+  // Upload form (admin only — assets-admin can browse + walk but not edit)
+  if (!isAdmin()) {
+    html += '</div>';
+    return html;
+  }
+
   var mfrListId = "mib-mfr-datalist";
   var modelListId = "mib-model-datalist";
   var mfrOpts = (_mibFacets.manufacturers || []).map(function (m) { return '<option value="' + escapeHtml(m) + '"></option>'; }).join("");
@@ -3234,6 +3291,12 @@ function wireMibControls() {
       deleteMibUI(b.getAttribute("data-id"), b.getAttribute("data-name"));
     });
   });
+
+  document.querySelectorAll(".mib-browse").forEach(function (b) {
+    b.addEventListener("click", function () {
+      openMibBrowseModal(b.getAttribute("data-id"), b.getAttribute("data-name"));
+    });
+  });
 }
 
 async function uploadMibUI() {
@@ -3298,6 +3361,536 @@ async function deleteMibUI(id, name) {
   } catch (err) {
     showToast(err.message, "error");
   }
+}
+
+// ─── MIB Browse modal ─────────────────────────────────────────────────────
+//
+// Two-pane modal: left = collapsible sections (Tables, Scalars / Other);
+// right = selected object detail + "Walk on asset…" pivot. Walk results
+// render scalars as a flat list and tables as a 2D table with column
+// headers from the MIB and rows keyed by the SMI INDEX. Symbolic + decoded
+// values (INTEGER enums → up(1), TimeTicks → human duration) come from
+// the server — the client just renders.
+
+var _mibBrowseState = null; // { mibId, structure, selectedSymbol, walkOpen, asset, credentialId }
+
+async function openMibBrowseModal(mibId, moduleName) {
+  // Open shell with a loading state so the modal feels responsive even
+  // while the structured parse + OID resolution roll back.
+  var title = "Browse MIB" + (moduleName ? " — " + moduleName : "");
+  openModal(title, '<p class="empty-state">Loading MIB structure…</p>', '<button class="btn btn-secondary" onclick="closeModal()">Close</button>', { xl: true });
+
+  var structure;
+  try {
+    structure = await api.serverSettings.getMibStructure(mibId);
+  } catch (err) {
+    var msg = '<p style="color:var(--color-danger)">' + escapeHtml(err.message || "Failed to load MIB structure") + '</p>';
+    document.querySelector(".modal-body").innerHTML = msg;
+    return;
+  }
+
+  _mibBrowseState = {
+    mibId: mibId,
+    moduleName: structure.moduleName || moduleName,
+    structure: structure,
+    selectedSymbol: null,
+    asset: null,
+    credentialId: null,
+  };
+
+  renderMibBrowseModal();
+}
+
+function renderMibBrowseModal() {
+  var s = _mibBrowseState;
+  if (!s) return;
+  var st = s.structure;
+
+  var unresolvedNote = "";
+  if (st.unresolvedCount > 0) {
+    unresolvedNote =
+      '<div style="margin:0 0 0.5rem;padding:0.5rem 0.75rem;border:1px solid var(--color-warning,#d97706);border-radius:4px;background:rgba(217,119,6,0.06);font-size:0.82rem">' +
+        '<b>' + st.unresolvedCount + '</b> symbol' + (st.unresolvedCount === 1 ? '' : 's') + ' could not be resolved to a numeric OID — likely a missing IMPORTS dependency.' +
+        (Array.isArray(st.imports) && st.imports.length > 0
+          ? ' This MIB imports from: ' + st.imports.map(escapeHtml).join(", ")
+          : '') +
+      '</div>';
+  }
+
+  var leftPane =
+    unresolvedNote +
+    _mibBrowseTablesSection(st) +
+    _mibBrowseScalarsSection(st);
+
+  var rightPane = _mibBrowseDetailPane();
+
+  var body =
+    '<div style="display:grid;grid-template-columns:minmax(280px,38%) 1fr;gap:1rem;min-height:60vh;max-height:70vh">' +
+      '<div id="mib-browse-left" style="overflow:auto;border-right:1px solid var(--color-border);padding-right:0.75rem">' + leftPane + '</div>' +
+      '<div id="mib-browse-right" style="overflow:auto">' + rightPane + '</div>' +
+    '</div>';
+
+  var footer = '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
+  openModal("Browse MIB — " + (s.moduleName || ""), body, footer, { xl: true });
+
+  // Wire object selection
+  document.querySelectorAll(".mib-browse-symbol").forEach(function (el) {
+    el.addEventListener("click", function () {
+      var name = el.getAttribute("data-name");
+      _mibBrowseState.selectedSymbol = name;
+      renderMibBrowseModal();
+    });
+  });
+
+  // Wire collapsibles
+  document.querySelectorAll(".mib-browse-section-toggle").forEach(function (h) {
+    h.addEventListener("click", function () {
+      var sec = h.parentElement;
+      sec.classList.toggle("collapsed");
+      var caret = h.querySelector(".caret");
+      if (caret) caret.textContent = sec.classList.contains("collapsed") ? "▸" : "▾";
+    });
+  });
+
+  // Wire "Walk on asset…" if visible
+  var walkBtn = document.getElementById("btn-mib-walk-open");
+  if (walkBtn) walkBtn.addEventListener("click", _mibBrowseOpenWalk);
+}
+
+function _mibBrowseTablesSection(st) {
+  if (!st.tables || st.tables.length === 0) return "";
+  var rows = st.tables.map(function (t) {
+    var colCount = t.columns ? t.columns.length : 0;
+    return '<div class="mib-browse-symbol" data-name="' + escapeHtml(t.name) + '" style="padding:0.4rem 0.5rem;cursor:pointer;border-radius:4px;font-family:var(--font-mono)">' +
+      escapeHtml(t.name) +
+      ' <span style="color:var(--color-text-tertiary);font-size:0.78rem;font-family:inherit;margin-left:0.25rem">(' + colCount + ' col' + (colCount === 1 ? '' : 's') + ')</span>' +
+    '</div>';
+  }).join("");
+  return _mibBrowseSection("Tables", rows, false);
+}
+
+function _mibBrowseScalarsSection(st) {
+  // Anything not a known table column or table-row entry goes here.
+  var tableColumns = new Set();
+  var tableRows = new Set();
+  (st.tables || []).forEach(function (t) {
+    tableRows.add(t.rowSymbol);
+    (t.columns || []).forEach(function (c) { tableColumns.add(c); });
+  });
+  // Surface every other symbol — scalars + group nodes (OBJECT IDENTIFIER
+  // shorthand) all belong here. Filter out the table objects themselves
+  // (they appear in the Tables section already).
+  var tableNames = new Set((st.tables || []).map(function (t) { return t.name; }));
+  var rows = (st.symbols || [])
+    .filter(function (s) {
+      return !tableColumns.has(s.name) && !tableRows.has(s.name) && !tableNames.has(s.name);
+    })
+    .map(function (s) {
+      var typeBadge = s.baseType && s.baseType !== "OTHER" && s.baseType !== "OBJECT IDENTIFIER"
+        ? ' <span style="color:var(--color-text-tertiary);font-size:0.78rem;font-family:inherit;margin-left:0.25rem">' + escapeHtml(s.baseType) + '</span>'
+        : '';
+      var unresolved = s.fullOid === null
+        ? ' <span style="color:var(--color-warning,#d97706);font-size:0.78rem;font-family:inherit;margin-left:0.25rem">(unresolved)</span>'
+        : '';
+      return '<div class="mib-browse-symbol" data-name="' + escapeHtml(s.name) + '" style="padding:0.4rem 0.5rem;cursor:pointer;border-radius:4px;font-family:var(--font-mono)">' +
+        escapeHtml(s.name) + typeBadge + unresolved +
+      '</div>';
+    }).join("");
+  if (!rows) return "";
+  return _mibBrowseSection("Scalars / Other", rows, false);
+}
+
+function _mibBrowseSection(title, innerHTML, startCollapsed) {
+  return '<div class="mib-browse-section' + (startCollapsed ? ' collapsed' : '') + '" style="margin-bottom:0.75rem">' +
+    '<h5 class="mib-browse-section-toggle" style="margin:0 0 0.25rem;font-size:0.85rem;font-weight:600;cursor:pointer;user-select:none;padding:0.35rem 0.5rem;background:var(--color-surface-alt,rgba(127,127,127,0.05));border-radius:4px">' +
+      '<span class="caret" style="display:inline-block;width:1em">' + (startCollapsed ? '▸' : '▾') + '</span>' +
+      escapeHtml(title) +
+    '</h5>' +
+    '<div class="mib-browse-section-body">' + innerHTML + '</div>' +
+  '</div>';
+}
+
+function _mibBrowseDetailPane() {
+  var s = _mibBrowseState;
+  if (!s) return "";
+  var st = s.structure;
+  if (!s.selectedSymbol) {
+    return '<p class="empty-state" style="margin-top:1rem">Pick an object on the left to see its details and run a walk.</p>';
+  }
+
+  // The selected entry is either a top-level symbol OR a MibTable. Tables
+  // live in their own array; everything else lives in symbols. Detail
+  // rendering differs slightly between them.
+  var table = (st.tables || []).find(function (t) { return t.name === s.selectedSymbol; });
+  if (table) return _mibBrowseTableDetail(table, st);
+  var sym = (st.symbols || []).find(function (x) { return x.name === s.selectedSymbol; });
+  if (!sym) return '<p class="empty-state">Symbol not found.</p>';
+  return _mibBrowseScalarDetail(sym);
+}
+
+function _mibBrowseScalarDetail(sym) {
+  var rows = [
+    ["OID", sym.fullOid ? sym.fullOid : '<span style="color:var(--color-warning,#d97706)">unresolved</span>'],
+    ["Kind", sym.kind || ""],
+    ["Syntax", sym.syntax ? escapeHtml(sym.syntax) : "—"],
+    ["Base type", sym.baseType || ""],
+    ["Access", sym.access || "—"],
+    ["Status", sym.status || "—"],
+  ];
+  var rowsHtml = rows.map(function (r) {
+    return '<tr><th style="text-align:left;padding:0.25rem 0.75rem 0.25rem 0;font-weight:500;color:var(--color-text-secondary);width:8rem">' + escapeHtml(r[0]) + '</th>' +
+      '<td class="mono" style="padding:0.25rem 0;font-size:0.85rem">' + r[1] + '</td></tr>';
+  }).join("");
+
+  var enumHtml = "";
+  if (sym.enumValues && sym.enumValues.length > 0) {
+    enumHtml = '<div style="margin-top:0.75rem"><b style="font-size:0.85rem">Enum values</b>' +
+      '<table class="ip-table" style="margin-top:0.25rem;font-size:0.85rem">' +
+        '<thead><tr><th>Label</th><th style="width:80px;text-align:right">Value</th></tr></thead>' +
+        '<tbody>' +
+          sym.enumValues.map(function (e) {
+            return '<tr><td class="mono">' + escapeHtml(e.label) + '</td><td style="text-align:right">' + e.value + '</td></tr>';
+          }).join("") +
+        '</tbody>' +
+      '</table></div>';
+  }
+
+  var descHtml = sym.description
+    ? '<div style="margin-top:0.75rem"><b style="font-size:0.85rem">Description</b><p style="font-size:0.85rem;color:var(--color-text-secondary);margin:0.25rem 0 0;white-space:pre-wrap">' + escapeHtml(sym.description) + '</p></div>'
+    : "";
+
+  var canWalk = sym.fullOid && (sym.access === "read-only" || sym.access === "read-write" || sym.access === "read-create");
+  var walkBtn = canWalk
+    ? '<button class="btn btn-primary" id="btn-mib-walk-open" style="margin-top:1rem">Walk on asset…</button>'
+    : '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin-top:1rem">' +
+        (sym.fullOid ? 'Not a readable object — only read-only / read-write / read-create symbols can be walked.' : 'Cannot walk — OID is unresolved.') +
+      '</p>';
+
+  return '<h4 style="margin:0 0 0.5rem;font-family:var(--font-mono)">' + escapeHtml(sym.name) + '</h4>' +
+    '<table style="font-size:0.82rem;width:100%"><tbody>' + rowsHtml + '</tbody></table>' +
+    enumHtml + descHtml +
+    walkBtn +
+    _mibBrowseWalkPanel();
+}
+
+function _mibBrowseTableDetail(table, st) {
+  // Pick the first column with read access as the default walk target,
+  // since the table object itself is `not-accessible` (it can't be GET'd).
+  var firstReadable = (table.columns || [])
+    .map(function (col) { return (st.symbols || []).find(function (s) { return s.name === col; }); })
+    .find(function (s) {
+      return s && s.fullOid && (s.access === "read-only" || s.access === "read-write" || s.access === "read-create");
+    });
+
+  var colsHtml = (table.columns || []).map(function (col) {
+    var sym = (st.symbols || []).find(function (x) { return x.name === col; });
+    var typeBadge = sym && sym.baseType && sym.baseType !== "OTHER" ? sym.baseType : "—";
+    var enumBadge = sym && sym.enumValues && sym.enumValues.length > 0 ? ' enum(' + sym.enumValues.length + ')' : '';
+    return '<tr><td class="mono mib-browse-symbol" data-name="' + escapeHtml(col) + '" style="padding:0.25rem 0.5rem;cursor:pointer">' + escapeHtml(col) + '</td>' +
+      '<td style="padding:0.25rem 0.5rem;color:var(--color-text-secondary);font-size:0.82rem">' + escapeHtml(typeBadge) + escapeHtml(enumBadge) + '</td></tr>';
+  }).join("");
+
+  // For a table, the operator typically wants to walk the WHOLE table, so
+  // we make the Walk button target the first readable column. The walk
+  // endpoint then groups the multi-column results back into a 2D table.
+  // (Walking the table object itself works too — the response gets matched
+  // against every column. But not-accessible parents sometimes confuse
+  // certain SNMP agents, so we lean on the first column.)
+  var walkBtn = "";
+  if (firstReadable) {
+    walkBtn =
+      '<button class="btn btn-primary" id="btn-mib-walk-open" data-target="' + escapeHtml(firstReadable.name) + '" style="margin-top:1rem">Walk this table on asset…</button>' +
+      '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.5rem 0 0">Walks <b>' + escapeHtml(firstReadable.name) + '</b> as the table entry — results are grouped into a 2D table by the SMI <code>INDEX</code>.</p>';
+  } else {
+    walkBtn = '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin-top:1rem">No readable columns — table cannot be walked.</p>';
+  }
+
+  var indexHtml = (table.indexNames && table.indexNames.length > 0)
+    ? '<div style="margin-top:0.5rem;font-size:0.85rem"><b>INDEX:</b> <span class="mono">' + table.indexNames.map(escapeHtml).join(", ") + '</span></div>'
+    : "";
+
+  var descHtml = table.description
+    ? '<div style="margin-top:0.5rem"><b style="font-size:0.85rem">Description</b><p style="font-size:0.85rem;color:var(--color-text-secondary);margin:0.25rem 0 0;white-space:pre-wrap">' + escapeHtml(table.description) + '</p></div>'
+    : "";
+
+  return '<h4 style="margin:0 0 0.5rem;font-family:var(--font-mono)">' + escapeHtml(table.name) +
+    ' <span style="font-family:inherit;font-size:0.85rem;color:var(--color-text-tertiary);font-weight:400">(SMI table)</span></h4>' +
+    indexHtml + descHtml +
+    '<div style="margin-top:0.75rem"><b style="font-size:0.85rem">Columns (click to view)</b>' +
+      '<table class="ip-table" style="margin-top:0.25rem;font-size:0.85rem"><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>' + colsHtml + '</tbody></table>' +
+    '</div>' +
+    walkBtn +
+    _mibBrowseWalkPanel();
+}
+
+function _mibBrowseWalkPanel() {
+  // A persistent slot at the bottom of the right pane that the walk pivot
+  // populates inline. Keeps the asset picker + results visible alongside
+  // the symbol detail without opening a second modal.
+  return '<div id="mib-walk-panel" style="margin-top:1.25rem;display:none;border-top:1px solid var(--color-border);padding-top:0.75rem"></div>';
+}
+
+function _mibBrowseOpenWalk(ev) {
+  // The button on a table-detail view stamps `data-target` with a column
+  // symbol name. Scalar-detail views walk the selected symbol directly.
+  var btn = ev && ev.currentTarget ? ev.currentTarget : null;
+  var targetName = btn && btn.getAttribute("data-target");
+  var symbolName = targetName || _mibBrowseState.selectedSymbol;
+
+  var panel = document.getElementById("mib-walk-panel");
+  if (!panel) return;
+  panel.style.display = "block";
+  panel.innerHTML =
+    '<h5 style="margin:0 0 0.5rem">Walk <span class="mono">' + escapeHtml(symbolName) + '</span></h5>' +
+    '<div class="form-group" style="margin-bottom:0.5rem">' +
+      '<label style="font-size:0.78rem;font-weight:500">Search asset</label>' +
+      '<input type="search" id="f-mib-walk-search" autocomplete="off" spellcheck="false" placeholder="hostname, IP, or MAC (min 2 chars)">' +
+      '<div id="f-mib-walk-results" style="margin-top:0.25rem;max-height:200px;overflow:auto;border:1px solid var(--color-border);border-radius:4px;display:none"></div>' +
+    '</div>' +
+    '<div id="f-mib-walk-selected" style="display:none;padding:0.5rem 0.6rem;border:1px solid var(--color-border);border-radius:4px;margin-bottom:0.5rem;background:var(--color-surface-alt,rgba(127,127,127,0.05))"></div>' +
+    '<div class="form-group" style="margin-bottom:0.5rem">' +
+      '<label style="font-size:0.78rem;font-weight:500">SNMP credential</label>' +
+      '<select id="f-mib-walk-cred" disabled><option value="">Loading credentials…</option></select>' +
+    '</div>' +
+    '<div style="display:flex;gap:0.5rem;align-items:center">' +
+      '<button class="btn btn-primary" id="btn-mib-walk-run" disabled>Run Walk</button>' +
+      '<span id="mib-walk-status" style="font-size:0.82rem;color:var(--color-text-secondary)"></span>' +
+    '</div>' +
+    '<div id="mib-walk-result" style="margin-top:0.75rem"></div>';
+
+  _wireMibWalkPanel(symbolName);
+
+  // Auto-scroll the panel into view
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function _wireMibWalkPanel(symbolName) {
+  var selectedAsset = null;
+  var searchTimer = null;
+  var lastQuery = "";
+
+  var searchInput = document.getElementById("f-mib-walk-search");
+  var resultsBox  = document.getElementById("f-mib-walk-results");
+  var selectedBox = document.getElementById("f-mib-walk-selected");
+  var credSelect  = document.getElementById("f-mib-walk-cred");
+  var runBtn      = document.getElementById("btn-mib-walk-run");
+  var statusEl    = document.getElementById("mib-walk-status");
+  var resultBox   = document.getElementById("mib-walk-result");
+
+  // Load SNMP credentials from the shared list
+  api.credentials.list().then(function (creds) {
+    var snmp = (creds || []).filter(function (c) { return c.type === "snmp"; });
+    if (snmp.length === 0) {
+      credSelect.innerHTML = '<option value="">No SNMP credentials configured</option>';
+      credSelect.disabled = true;
+      return;
+    }
+    credSelect.innerHTML =
+      '<option value="">Select a credential…</option>' +
+      snmp.map(function (c) {
+        return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
+      }).join("");
+    credSelect.disabled = false;
+  }).catch(function () {
+    credSelect.innerHTML = '<option value="">Failed to load credentials</option>';
+  });
+
+  function refreshRunState() {
+    runBtn.disabled = !(selectedAsset && credSelect.value);
+  }
+  credSelect.addEventListener("change", refreshRunState);
+
+  function setSelected(hit) {
+    selectedAsset = hit;
+    if (!hit) {
+      selectedBox.style.display = "none";
+      runBtn.disabled = true;
+      return;
+    }
+    selectedBox.innerHTML =
+      '<div style="font-weight:600">' + escapeHtml(hit.title || "asset") + '</div>' +
+      (hit.subtitle ? '<div style="font-size:0.8rem;color:var(--color-text-secondary)">' + escapeHtml(hit.subtitle) + '</div>' : '');
+    selectedBox.style.display = "block";
+    resultsBox.style.display = "none";
+    resultsBox.innerHTML = "";
+    searchInput.value = hit.title || "";
+    refreshRunState();
+  }
+
+  function renderHits(hits) {
+    if (!hits.length) {
+      resultsBox.innerHTML = '<div style="padding:0.5rem;color:var(--color-text-secondary);font-size:0.85rem">No asset matches.</div>';
+      resultsBox.style.display = "block";
+      return;
+    }
+    resultsBox.innerHTML = hits.map(function (h, idx) {
+      return '<div class="mib-walk-hit" data-idx="' + idx + '" style="padding:0.4rem 0.6rem;cursor:pointer;border-bottom:1px solid var(--color-border)">' +
+        '<div style="font-weight:600">' + escapeHtml(h.title || "asset") + '</div>' +
+        (h.subtitle ? '<div style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(h.subtitle) + '</div>' : '') +
+      '</div>';
+    }).join("");
+    resultsBox.style.display = "block";
+    resultsBox.querySelectorAll(".mib-walk-hit").forEach(function (el) {
+      el.addEventListener("click", function () {
+        var idx = Number(el.getAttribute("data-idx"));
+        setSelected(hits[idx]);
+      });
+    });
+  }
+
+  searchInput.addEventListener("input", function () {
+    var q = searchInput.value.trim();
+    if (selectedAsset && q !== (selectedAsset.title || "")) {
+      selectedAsset = null;
+      selectedBox.style.display = "none";
+      refreshRunState();
+    }
+    clearTimeout(searchTimer);
+    if (q.length < 2) {
+      resultsBox.style.display = "none";
+      resultsBox.innerHTML = "";
+      lastQuery = "";
+      return;
+    }
+    searchTimer = setTimeout(async function () {
+      lastQuery = q;
+      try {
+        var results = await api.assets.list({ search: q, limit: 25 });
+        if (q !== lastQuery) return;
+        var hits = (results.assets || []).map(function (a) {
+          var vendorModel = [a.manufacturer, a.model].filter(Boolean).join(" ");
+          var bits = [a.ipAddress, a.macAddress, vendorModel].filter(Boolean);
+          return { id: a.id, title: a.hostname || a.assetTag || "asset", subtitle: bits.join(" — ") || a.assetType };
+        });
+        renderHits(hits);
+      } catch (err) {
+        resultsBox.innerHTML = '<div style="padding:0.5rem;color:var(--color-danger);font-size:0.85rem">Search failed: ' + escapeHtml(err.message || "") + '</div>';
+        resultsBox.style.display = "block";
+      }
+    }, 180);
+  });
+
+  runBtn.addEventListener("click", async function () {
+    if (!selectedAsset || !credSelect.value) return;
+    runBtn.disabled = true;
+    statusEl.textContent = "Walking…";
+    resultBox.innerHTML = "";
+    try {
+      var result = await api.serverSettings.walkMib(_mibBrowseState.mibId, {
+        assetId: selectedAsset.id,
+        credentialId: credSelect.value,
+        objectName: symbolName,
+      });
+      statusEl.textContent =
+        result.rowCount + " row" + (result.rowCount === 1 ? '' : 's') +
+        ' in ' + result.durationMs + ' ms' +
+        (result.truncated ? ' (truncated)' : '');
+      resultBox.innerHTML = _renderMibWalkResult(result);
+      _wireMibWalkCopy(result);
+    } catch (err) {
+      statusEl.textContent = "";
+      resultBox.innerHTML = '<div style="padding:0.5rem 0.75rem;border:1px solid var(--color-danger);border-radius:4px;color:var(--color-danger);font-size:0.85rem">' + escapeHtml(err.message || "Walk failed") + '</div>';
+    } finally {
+      refreshRunState();
+    }
+  });
+
+  setTimeout(function () { searchInput.focus(); }, 50);
+}
+
+function _renderMibWalkResult(result) {
+  if (!result || !result.kind) return "";
+  var mismatchBanner = "";
+  if (result.rowCount > 0 && result.decodedCount * 2 < result.rowCount) {
+    var pct = Math.round((result.decodedCount / result.rowCount) * 100);
+    mismatchBanner =
+      '<div style="margin-bottom:0.5rem;padding:0.5rem 0.75rem;border:1px solid var(--color-warning,#d97706);border-radius:4px;background:rgba(217,119,6,0.06);font-size:0.82rem">' +
+        'Decoded ' + result.decodedCount + ' / ' + result.rowCount + ' rows (' + pct + '%). This MIB may not match the asset\'s manufacturer.' +
+      '</div>';
+  }
+
+  if (result.kind === "table" && result.table) {
+    var t = result.table;
+    var thead =
+      '<thead><tr>' +
+        (t.indexNames && t.indexNames.length > 0
+          ? '<th style="font-family:var(--font-mono)">' + t.indexNames.map(escapeHtml).join(", ") + '</th>'
+          : '<th style="font-family:var(--font-mono)">index</th>') +
+        t.columns.map(function (c) { return '<th style="font-family:var(--font-mono)">' + escapeHtml(c) + '</th>'; }).join("") +
+      '</tr></thead>';
+    var tbody = '<tbody>' + t.rows.map(function (row) {
+      var cells = t.columns.map(function (col) {
+        var c = row.cells[col];
+        if (!c) return '<td style="color:var(--color-text-tertiary)">—</td>';
+        var title = c.decoded !== c.raw ? ' title="raw: ' + escapeHtml(c.raw) + '"' : '';
+        return '<td' + title + '>' + escapeHtml(c.decoded) + '</td>';
+      }).join("");
+      return '<tr><td class="mono">' + escapeHtml(row.index) + '</td>' + cells + '</tr>';
+    }).join("") + '</tbody>';
+    return mismatchBanner +
+      '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">' +
+        '<button class="btn btn-sm btn-secondary" id="btn-mib-walk-copy">Copy results</button>' +
+        '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">Hover any cell for the raw value.</span>' +
+      '</div>' +
+      '<div style="overflow-x:auto"><table class="ip-table" style="font-size:0.82rem">' + thead + tbody + '</table></div>';
+  }
+
+  // Scalars
+  var entries = result.entries || [];
+  if (entries.length === 0) {
+    return '<p class="empty-state">No rows returned.</p>';
+  }
+  var rows = entries.map(function (e) {
+    var label = e.symbol ? e.symbol + (e.suffix ? '.' + e.suffix : '') : e.oid;
+    var decoded = e.decoded;
+    var raw = e.raw;
+    var rawNote = decoded !== raw ? ' <span style="color:var(--color-text-tertiary);font-size:0.78rem">(' + escapeHtml(raw) + ')</span>' : '';
+    return '<tr>' +
+      '<td class="mono" style="font-size:0.85rem">' + escapeHtml(label) + '</td>' +
+      '<td>' + escapeHtml(decoded) + rawNote + '</td>' +
+      '<td style="color:var(--color-text-tertiary);font-size:0.78rem">' + escapeHtml(e.baseType || "") + '</td>' +
+    '</tr>';
+  }).join("");
+
+  return mismatchBanner +
+    '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">' +
+      '<button class="btn btn-sm btn-secondary" id="btn-mib-walk-copy">Copy results</button>' +
+    '</div>' +
+    '<table class="ip-table" style="font-size:0.85rem">' +
+      '<thead><tr><th>Object</th><th>Value</th><th>Type</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+    '</table>';
+}
+
+function _wireMibWalkCopy(result) {
+  var btn = document.getElementById("btn-mib-walk-copy");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    var text;
+    if (result.kind === "table" && result.table) {
+      var t = result.table;
+      var headers = ["index"].concat(t.columns).join("\t");
+      var lines = t.rows.map(function (row) {
+        return [row.index].concat(t.columns.map(function (col) {
+          return row.cells[col] ? row.cells[col].decoded : "";
+        })).join("\t");
+      });
+      text = headers + "\n" + lines.join("\n");
+    } else {
+      var entries = result.entries || [];
+      text = entries.map(function (e) {
+        var label = e.symbol ? e.symbol + (e.suffix ? '.' + e.suffix : '') : e.oid;
+        return label + "\t" + e.decoded + "\t" + (e.baseType || "");
+      }).join("\n");
+    }
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(function () {
+        showToast("Walk results copied", "success");
+      }).catch(function () {
+        showToast("Copy failed — select and copy by hand", "error");
+      });
+    }
+  });
 }
 
 // ─── Device Icons ──────────────────────────────────────────────────────────

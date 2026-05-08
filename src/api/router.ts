@@ -14,6 +14,7 @@ import assetsRouter from "./routes/assets.js";
 import eventsRouter from "./routes/events.js";
 import conflictsRouter from "./routes/conflicts.js";
 import serverSettingsRouter from "./routes/serverSettings.js";
+import mibsRouter from "./routes/mibs.js";
 import deviceIconsRouter from "./routes/deviceIcons.js";
 import searchRouter from "./routes/search.js";
 import mapRouter from "./routes/map.js";
@@ -69,6 +70,13 @@ router.use("/manufacturer-aliases", requireAdmin, manufacturerAliasesRouter);
 // need them); writes guarded per-route by requireAssetsAdmin.
 router.use("/monitor-settings", monitorSettingsRouter);
 router.use("/api-tokens", requireAdmin, apiTokensRouter);
+// MIBs surface mounted BEFORE /server-settings so its per-route guards
+// (admin OR assets-admin on reads, admin-only on writes) take precedence
+// over the blanket requireAdmin on the rest of /server-settings. Express
+// first-match routing handles the rest — any path under /server-settings
+// that doesn't start with /server-settings/mibs falls through to the
+// admin-only serverSettingsRouter below.
+router.use("/server-settings/mibs", mibsRouter);
 router.use("/server-settings", requireAdmin, serverSettingsRouter);
 // device-icons applies its own per-route guards (admin for CRUD, auth for image-serve)
 router.use("/device-icons", deviceIconsRouter);

@@ -959,26 +959,28 @@ Listed alphabetically.
 
 ## services/mibService.ts
 
-**What it owns:** Parsing, validation, and CRUD for uploaded SNMP MIB modules with SMI parser gate (rejects binaries, 1MB cap) and per-(manufacturer, model, moduleName) uniqueness enforcement.
+**What it owns:** Parsing, validation, and CRUD for uploaded SNMP MIB modules. The light validator (`parseMib`) gates uploads (1MB cap, rejects binaries, extracts moduleName + IMPORTS). The heavier peer (`parseMibStructured`) drives the Browse + MIB-aware Walk surface — extracts SYNTAX, INTEGER enum value labels, ACCESS, STATUS, DESCRIPTION, INDEX clauses, and SEQUENCE OF table structure. Per-(manufacturer, model, moduleName) uniqueness is enforced at create.
 
-**Public API:** `parseMib`, `listMibs`, `getMib`, `createMib`, `deleteMib`, `getMibFacets`, `getProfileStatus`, `ParsedMib`, `MibSummary`, `MibFilter`, `CreateMibInput`, `ProfileStatus`, `ProfileSymbolStatus`.
+**Public API:** `parseMib`, `parseMibStructured`, `listMibs`, `getMib`, `createMib`, `deleteMib`, `getMibFacets`, `getProfileStatus`, `ParsedMib`, `ParsedMibStructured`, `MibSymbol`, `MibTable`, `MibBaseType`, `MibAccess`, `MibStatus`, `MibSymbolKind`, `MibEnumValue`, `MibSummary`, `MibFilter`, `CreateMibInput`, `ProfileStatus`, `ProfileSymbolStatus`.
 
-**Cross-service deps:** `oidRegistry` (refreshRegistry), `vendorTelemetryProfiles` (VENDOR_TELEMETRY_PROFILES).
+**Cross-service deps:** `oidRegistry` (refreshRegistry, resolveSymbolAtVendorScope, listModelOverrides), `vendorTelemetryProfiles` (VENDOR_TELEMETRY_PROFILES), `mibParserUtils` (stripComments).
 
-**Used by:** `src/api/routes/serverSettings.ts:38 — MIB upload form & database view`, `src/services/oidRegistry.ts:17 — called by mibService for registry refresh`, `src/services/monitoringService.ts — via oidRegistry for vendor profile matching`.
+**Used by:** `src/api/routes/mibs.ts — list/get/upload/delete + Browse `/structure` + MIB-aware `/walk``, `src/services/oidRegistry.ts:17 — refreshes the symbol table on create/delete`, `src/services/monitoringService.ts — via oidRegistry for vendor profile matching`.
 
 **Invariants:**
 - SMI parser validates UTF-8 text only (rejects NUL and control chars <0x20 except tab/CR/LF).
 - Module header required: `<NAME> DEFINITIONS ::= BEGIN`; footer required: `END`.
 - Duplicate check on (manufacturer, model, moduleName) tuple catches generics via explicit query (NULL handling).
 - Successful create/delete always refreshes oidRegistry immediately.
+- `parseMibStructured` is a peer of `parseMib`, NOT a superset call. A regression in the structured parser must not be reachable from the upload hot path. Per-symbol parse failures degrade fields to null rather than dropping symbols.
 
 **When changing this:**
 - Verify `createMib` duplicate-check logic handles NULL fields in your test data.
 - Confirm `parseMib` rejects binary/non-text files (test with fixture files).
 - Run `getProfileStatus()` against your vendor MIBs to ensure symbol resolution still works.
 - Update `DEFAULT_ALIASES` in `manufacturerAliasService.ts` if adding new vendor facets.
-- Check `src/api/routes/serverSettings.ts` for upload endpoint compliance.
+- Check `src/api/routes/mibs.ts` (NOT `serverSettings.ts`) for upload/list/delete endpoint compliance — the MIB routes were extracted there to take precedence over `/server-settings`'s blanket `requireAdmin`.
+- Re-run `tests/unit/mibParseStructured.test.ts` — covers IF-MIB-style table detection, INTEGER enum extraction, multi-line DESCRIPTION, embedded `""` quote escapes, and comment-tolerant enum bodies.
 
 ---
 
@@ -1013,11 +1015,11 @@ Listed alphabetically.
 
 **What it owns:** Per-asset scoped OID symbol resolution from MIBs (device → vendor → generic → seed), layered SCOPED symbol caching with per-symbol provenance, and lazy cache warmup at app startup.
 
-**Public API:** `resolveOid`, `resolveOidSync`, `ensureRegistryLoaded`, `refreshRegistry`, `resolveSymbolAtVendorScope`, `listModelOverrides`, `getMibSymbolCount`, `parseObjectAssignments`, `ResolveScope`, `SymbolStatus`.
+**Public API:** `resolveOid`, `resolveOidSync`, `ensureRegistryLoaded`, `refreshRegistry`, `resolveSymbolAtVendorScope`, `listModelOverrides`, `getMibSymbolCount`, `resolveSymbolsForMib`, `resolveSymbolForMib`, `parseObjectAssignments`, `ResolveScope`, `SymbolStatus`.
 
-**Cross-service deps:** `mibService` (via import in mibService for refreshRegistry calls).
+**Cross-service deps:** `mibService` (via import in mibService for refreshRegistry calls), `mibParserUtils` (stripComments).
 
-**Used by:** `src/app.ts:46 — startup warmup`, `src/services/monitoringService.ts:43 — telemetry probe resolution`, `src/services/mibService.ts:17 — profile status introspection`.
+**Used by:** `src/app.ts:46 — startup warmup`, `src/services/monitoringService.ts:43 — telemetry probe resolution`, `src/services/mibService.ts:17 — profile status introspection`, `src/api/routes/mibs.ts — Browse modal OID resolution + MIB-aware walk symbol → numeric OID lookup`.
 
 **Invariants:**
 - Resolution is scoped per (manufacturer, model) tuple; both cached and layer-resolved case-insensitively.

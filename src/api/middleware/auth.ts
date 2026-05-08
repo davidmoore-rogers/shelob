@@ -44,6 +44,18 @@ export function requireAssetsAdmin(req: Request, _res: Response, next: NextFunct
   next(new AppError(403, "Forbidden — assets admin access required"));
 }
 
+// Same allowlist as `requireAssetsAdmin`, named after the surface that asks
+// for it: the MIB Database browse + walk endpoints are reachable to admin
+// AND to assets-admin so the team that owns asset onboarding can use the
+// MIB-aware walk without an admin in the loop. Distinct identity is kept
+// to make the call sites self-documenting at a grep.
+export function requireAdminOrAssetsAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (req.session?.role === "admin" || req.session?.role === "assetsadmin") {
+    return next();
+  }
+  next(new AppError(403, "Forbidden — admin or assets admin access required"));
+}
+
 // Allows any authenticated role except `readonly`. Used on write routes that
 // regular users are allowed to perform (create subnet/reservation, edit/delete
 // their own records).

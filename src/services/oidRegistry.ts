@@ -29,6 +29,7 @@
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
+import { stripComments } from "./mibParserUtils.js";
 
 // ─── Seed ──────────────────────────────────────────────────────────────────
 //
@@ -87,48 +88,6 @@ interface ParsedAssignment {
 
 const ASSIGNMENT_RE =
   /\b([a-z][\w-]*)\s+(?:OBJECT-TYPE|OBJECT\s+IDENTIFIER|MODULE-IDENTITY|OBJECT-IDENTITY|NOTIFICATION-TYPE|OBJECT-GROUP|NOTIFICATION-GROUP|MODULE-COMPLIANCE)\b[\s\S]*?::=\s*\{\s*([^{}]+?)\s*\}/g;
-
-// Strip ASN.1 comments. Duplicated from mibService.ts to keep this module
-// independent and avoid a circular import.
-function stripComments(text: string): string {
-  let out = "";
-  let i = 0;
-  const n = text.length;
-  while (i < n) {
-    const ch = text[i];
-    if (ch === '"') {
-      out += ch;
-      i++;
-      while (i < n && text[i] !== '"') {
-        out += text[i];
-        i++;
-      }
-      if (i < n) {
-        out += text[i];
-        i++;
-      }
-      continue;
-    }
-    if (ch === "-" && text[i + 1] === "-") {
-      out += "  ";
-      i += 2;
-      while (i < n) {
-        if (text[i] === "\n" || text[i] === "\r") break;
-        if (text[i] === "-" && text[i + 1] === "-") {
-          out += "  ";
-          i += 2;
-          break;
-        }
-        out += text[i] === "\t" ? "\t" : " ";
-        i++;
-      }
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
 
 export function parseObjectAssignments(rawText: string): ParsedAssignment[] {
   const stripped = stripComments(rawText);
@@ -438,4 +397,57 @@ export async function getMibSymbolCount(mibId: string): Promise<number> {
     : {};
   const numeric = getScopeMap(scope.manufacturer, scope.model);
   return mib.entries.filter((e) => numeric.has(e.name)).length;
+}
+
+/**
+ * Resolve every symbol declared by the given MIB to its numeric OID at the
+ * MIB's natural scope (its own manufacturer + model layer, falling back to
+ * vendor-only and generic layers as `getScopeMap` does for any probe).
+ *
+ * Used by the `/server-settings/mibs/:id/structure` browse endpoint and by
+ * the MIB-aware walk endpoint to map an operator-selected symbol back to a
+ * numeric OID for `snmpWalkRaw`. Symbols whose dependencies are not present
+ * (a missing IMPORTS dependency, e.g. CISCO-PROCESS-MIB importing
+ * `entPhysicalIndex` from an un-uploaded ENTITY-MIB) return `null` rather
+ * than throwing, so the UI can render them with a "(unresolved)" hint.
+ *
+ * Returns null when the MIB row id doesn't exist in the registry.
+ */
+export async function resolveSymbolsForMib(
+  mibId: string,
+): Promise<Map<string, string | null> | null> {
+  await ensureLoaded();
+  if (!_mibs) return null;
+  const mib = _mibs.find((m) => m.id === mibId);
+  if (!mib) return null;
+  const scope = mib.manufacturer
+    ? { manufacturer: mib.manufacturer, model: mib.model }
+    : {};
+  const numeric = getScopeMap(scope.manufacturer, scope.model);
+  const out = new Map<string, string | null>();
+  for (const entry of mib.entries) {
+    const resolved = numeric.get(entry.name);
+    out.set(entry.name, resolved?.oid ?? null);
+  }
+  return out;
+}
+
+/**
+ * Resolve a single symbol against an explicit MIB's natural scope. Same
+ * fallback chain as `resolveSymbolsForMib`. Returns null when the MIB id
+ * doesn't exist or the symbol can't be resolved at this scope.
+ *
+ * Used by the MIB-aware walk endpoint when the operator picks an object
+ * by name from the browse modal — we resolve the name through the MIB's
+ * own scope rather than the asset's scope (the operator chose THIS MIB
+ * deliberately; resolving against e.g. a Catalyst's scope when the MIB is
+ * Fortinet would silently miss the symbol).
+ */
+export async function resolveSymbolForMib(
+  mibId: string,
+  name: string,
+): Promise<string | null> {
+  const map = await resolveSymbolsForMib(mibId);
+  if (!map) return null;
+  return map.get(name) ?? null;
 }

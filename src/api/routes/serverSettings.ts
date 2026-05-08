@@ -34,14 +34,6 @@ import {
 import { getDnsSettings, updateDnsSettings, createResolver } from "../../services/dnsService.js";
 import type { DnsSettings } from "../../services/dnsService.js";
 import { getOuiStatus, refreshOuiDatabase, getOuiOverrides, setOuiOverride, deleteOuiOverride } from "../../services/ouiService.js";
-import {
-  listMibs,
-  getMib,
-  createMib,
-  deleteMib,
-  getMibFacets,
-  getProfileStatus,
-} from "../../services/mibService.js";
 import { logEvent } from "./events.js";
 import {
   checkForUpdates,
@@ -769,105 +761,13 @@ router.delete("/oui/overrides/:prefix", async (req, res, next) => {
   }
 });
 
-// ─── MIB Database ──────────────────────────────────────────────────────────
-
-router.get("/mibs/facets", async (_req, res, next) => {
-  try {
-    res.json(await getMibFacets());
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get("/mibs/profile-status", async (_req, res, next) => {
-  try {
-    res.json(await getProfileStatus());
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get("/mibs", async (req, res, next) => {
-  try {
-    const scopeRaw = typeof req.query.scope === "string" ? req.query.scope : "all";
-    const scope: "all" | "device" | "generic" =
-      scopeRaw === "device" || scopeRaw === "generic" ? scopeRaw : "all";
-    const manufacturer = typeof req.query.manufacturer === "string" && req.query.manufacturer.trim()
-      ? req.query.manufacturer.trim()
-      : undefined;
-    const model = typeof req.query.model === "string" && req.query.model.trim()
-      ? req.query.model.trim()
-      : undefined;
-    res.json(await listMibs({ manufacturer, model, scope }));
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get("/mibs/:id/download", async (req, res, next) => {
-  try {
-    const row = await getMib(req.params.id);
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${row.filename.replace(/[^A-Za-z0-9._-]/g, "_")}"`);
-    res.send(row.contents);
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.get("/mibs/:id", async (req, res, next) => {
-  try {
-    res.json(await getMib(req.params.id));
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post("/mibs", upload.single("file"), async (req, res, next) => {
-  try {
-    if (!req.file) throw new AppError(400, "No MIB file uploaded");
-    const text = req.file.buffer.toString("utf-8");
-    const created = await createMib({
-      filename: req.file.originalname,
-      contents: text,
-      manufacturer: typeof req.body?.manufacturer === "string" ? req.body.manufacturer : null,
-      model: typeof req.body?.model === "string" ? req.body.model : null,
-      notes: typeof req.body?.notes === "string" ? req.body.notes : null,
-      uploadedBy: req.session?.username ?? null,
-    });
-    logEvent({
-      action: "mib.uploaded",
-      actor: req.session?.username,
-      resourceType: "mib",
-      resourceId: created.id,
-      resourceName: created.moduleName,
-      message:
-        `Uploaded MIB ${created.moduleName}` +
-        (created.manufacturer ? ` for ${created.manufacturer}${created.model ? ` ${created.model}` : ""}` : " (generic)"),
-    });
-    res.status(201).json(created);
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.delete("/mibs/:id", async (req, res, next) => {
-  try {
-    const row = await getMib(req.params.id);
-    await deleteMib(req.params.id);
-    logEvent({
-      action: "mib.deleted",
-      actor: req.session?.username,
-      resourceType: "mib",
-      resourceId: row.id,
-      resourceName: row.moduleName,
-      message: `Deleted MIB ${row.moduleName}`,
-    });
-    res.status(204).send();
-  } catch (err) {
-    next(err);
-  }
-});
+// ─── MIB Database ─────────────────────────────────────────────────────────
+//
+// MIB browse + walk routes have moved to src/api/routes/mibs.ts so they can
+// be mounted under /server-settings/mibs with a more permissive guard
+// (admin OR assets-admin on reads) than the rest of /server-settings, which
+// stays admin-only. See router.ts for the mount order — the mibs router is
+// matched FIRST for paths starting with /server-settings/mibs.
 
 // ─── PostgreSQL Tuning Check ───────────────────────────────────────────────
 

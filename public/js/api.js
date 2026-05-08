@@ -482,6 +482,13 @@ const api = {
     },
     deleteMib: (id) => request("DELETE", `/server-settings/mibs/${id}`),
     downloadMibUrl: (id) => API_BASE + "/server-settings/mibs/" + encodeURIComponent(id) + "/download",
+    // MIB Browse modal — structured object tree for one MIB. Result is a
+    // ParsedMibStructured shape: moduleName, imports[], symbols[], tables[].
+    getMibStructure: (id) => request("GET", `/server-settings/mibs/${id}/structure`),
+    // MIB-aware walk — body { assetId, credentialId, objectName, maxRows? }
+    // Returns either { kind: "scalars", entries: [...] } or
+    // { kind: "table", table: { columns, rows: [{ index, cells }] }, ... }.
+    walkMib: (id, body) => request("POST", `/server-settings/mibs/${id}/walk`, body),
     listManufacturerAliases:   ()      => request("GET",    "/manufacturer-aliases"),
     createManufacturerAlias:   (body)  => request("POST",   "/manufacturer-aliases", body),
     updateManufacturerAlias:   (id, b) => request("PUT",    `/manufacturer-aliases/${encodeURIComponent(id)}`, b),

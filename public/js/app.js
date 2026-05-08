@@ -138,10 +138,10 @@ function renderNav() {
       <div id="capacity-critical-alert" class="capacity-critical-alert" style="display:none"></div>
       <div id="pg-tuning-alert" class="pg-tuning-alert" style="display:none"></div>
       <div id="ram-warning-alert" class="ram-warning-alert" style="display:none"></div>
-      ${isAdmin() ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
+      ${(isAdmin() || canManageAssets()) ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
         <a href="/server-settings.html" class="sidebar-bottom-link${current === '/server-settings.html' ? ' active' : ''}">${ICONS.settings}<span>Server Settings</span></a>
       </div>` : ''}
-      <div style="padding:${isAdmin() ? '0.25rem' : '0.5rem'} 0.5rem 0;${isAdmin() ? '' : 'border-top:1px solid var(--color-border-light);'}">
+      <div style="padding:${(isAdmin() || canManageAssets()) ? '0.25rem' : '0.5rem'} 0.5rem 0;${(isAdmin() || canManageAssets()) ? '' : 'border-top:1px solid var(--color-border-light);'}">
         <button id="btn-theme-toggle" class="theme-toggle">${_getCurrentTheme() === 'dark' ? _sunIcon() : _moonIcon()}<span>${_getCurrentTheme() === 'dark' ? 'Light Mode' : 'Dark Mode'}</span></button>
       </div>
       <div style="padding:0.25rem 0.5rem 0.75rem">
