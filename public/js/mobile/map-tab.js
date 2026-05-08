@@ -52,15 +52,15 @@
   // toggled on. Kept module-local — no external file fetch.
   var STICK_FIGURE_SVG = ''
     + '<svg viewBox="0 0 40 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-    +   '<ellipse class="hat" cx="20" cy="8" rx="9" ry="7"/>'
-    +   '<rect class="hat" x="8" y="8" width="24" height="2.5" rx="1"/>'
-    +   '<line class="hat-stripe" x1="20" y1="2" x2="20" y2="8"/>'
     +   '<circle class="face" cx="20" cy="18" r="5"/>'
     +   '<line class="stroke spine" x1="20" y1="23" x2="20" y2="38"/>'
     +   '<line class="stroke arm arm-l" x1="20" y1="27" x2="13" y2="35"/>'
     +   '<line class="stroke arm arm-r" x1="20" y1="27" x2="27" y2="35"/>'
     +   '<line class="stroke leg leg-l" x1="20" y1="38" x2="14" y2="50"/>'
     +   '<line class="stroke leg leg-r" x1="20" y1="38" x2="26" y2="50"/>'
+    +   '<path class="hat" d="M 13,18 A 7,7 0 0 0 27,18 Z"/>'
+    +   '<rect class="hat" x="10" y="17" width="20" height="2.5" rx="1.25"/>'
+    +   '<line class="hat-stripe" x1="20" y1="11" x2="20" y2="17"/>'
     + '</svg>';
 
   // ─── Lazy loaders ──────────────────────────────────────────────────────

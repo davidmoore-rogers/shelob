@@ -207,6 +207,9 @@
     row("Department", asset.department);
     row("Assigned to", asset.assignedTo);
     row("Last seen", formatTimeAgo(asset.lastSeen));
+    row("Last seen port", asset.lastSeenSwitch
+      ? '<span class="mono">' + escapeHtml(asset.lastSeenSwitch) + '</span>'
+      : null);
     row("Acquired", formatDate(asset.acquiredAt));
 
     if (rows.length === 0) {

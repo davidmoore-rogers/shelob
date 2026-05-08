@@ -54,7 +54,7 @@
   // the user sees the answer they were typing toward at the top of the
   // list. IPs is first because typing an IP is the strongest signal
   // ("the user knows the exact IP and wants to see what's there").
-  var SEARCH_GROUP_ORDER = ["ips", "assets", "sites", "subnets", "reservations", "blocks"];
+  var SEARCH_GROUP_ORDER = ["sites", "ips", "assets", "subnets", "reservations", "blocks"];
 
   var SEARCH_GROUP_META = {
     ips:           { label: "IP addresses",  icon: "#i-router",   leading: "tonal" },

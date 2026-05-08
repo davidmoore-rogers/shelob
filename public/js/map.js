@@ -363,12 +363,12 @@
         // input to exist + the topology data to load before populating
         // it. Bounded retry loop keeps this from hanging.
         var tries = 0;
-        var iv = setInterval(function () {
+        var iv = setInterval(async function () {
           tries++;
           var input = document.getElementById("topology-search-input");
           if (input && topoState.data) {
             input.value = focusQuery;
-            runTopologySearch(focusQuery);
+            await runTopologySearch(focusQuery, true);
             clearInterval(iv);
           } else if (tries > 40) { // ~4s max
             clearInterval(iv);
@@ -596,7 +596,7 @@
     });
   }
 
-  async function runTopologySearch(q) {
+  async function runTopologySearch(q, autoSelect) {
     if (!topoState.siteId) return;
     try {
       var resp = await api.map.topologySearch(topoState.siteId, q);
@@ -604,6 +604,9 @@
       topoSuggestState.index = topoSuggestState.items.length > 0 ? 0 : -1;
       topoSuggestState.open = true;
       paintTopologySearchResults();
+      if (autoSelect && topoSuggestState.items.length > 0) {
+        handleTopologySearchPick(topoSuggestState.items[0]);
+      }
     } catch (err) {
       topoSuggestState.items = [];
       topoSuggestState.index = -1;

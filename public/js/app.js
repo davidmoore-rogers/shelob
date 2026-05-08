@@ -339,7 +339,15 @@ async function _performSearch(q) {
 function _renderSearchDropdown(results) {
   var dropdown = document.getElementById("global-search-dropdown");
   var sites = results.sites || [];
-  var total = results.blocks.length + results.subnets.length + results.reservations.length + results.assets.length + results.ips.length + sites.length;
+  var endpointMapHits = (results.assets || [])
+    .filter(function (h) { return h.context && h.context.siteId; })
+    .map(function (h) {
+      return Object.assign({}, h, {
+        context: Object.assign({}, h.context, { mapEntry: true }),
+      });
+    });
+  var allSites = sites.concat(endpointMapHits);
+  var total = results.blocks.length + results.subnets.length + results.reservations.length + results.assets.length + results.ips.length + allSites.length;
   if (total === 0) {
     dropdown.innerHTML = '<div class="global-search-empty">No matches for "' + escapeHtml(results.query) + '"</div>';
     dropdown.style.display = "block";
@@ -368,7 +376,7 @@ function _renderSearchDropdown(results) {
     { key: "subnets",      label: "Networks",    hits: results.subnets },
     { key: "reservations", label: "Reservations", hits: results.reservations },
     { key: "assets",       label: "Assets",      hits: results.assets },
-    { key: "sites",        label: "Device Map",  hits: sites },
+    { key: "sites",        label: "Device Map",  hits: allSites },
   ];
   var pinned = _searchSectionForCurrentPage();
   if (pinned) {
@@ -468,24 +476,18 @@ function _searchTargetFor(hit) {
   }
   if (hit.type === "asset") {
     var ctx = hit.context || {};
-    // If the asset has a known origin FortiGate (DHCP-sighted or
-    // learned-location-matched, AND that FortiGate is pinned on the
-    // map), open the FortiGate's topology modal and surface this
-    // endpoint via the modal's site-scoped search. That gives the
-    // operator the connectivity view they're after — "this workstation
-    // plugs in here" — instead of just the asset-details page.
-    if (ctx.siteId && window.location.pathname === "/map.html" &&
-        typeof window.polarisMapOpenSiteTopology === "function") {
-      var focusQuery = ctx.focusHostname || ctx.focusIpAddress || ctx.focusMacAddress || null;
-      return {
-        page: "/map.html",
-        hash: "",
-        handler: function () { window.polarisMapOpenSiteTopology(ctx.siteId, focusQuery); },
-      };
-    }
-    if (ctx.siteId) {
-      // Same intent, but the operator clicked from another page — go
-      // to the map page with the right hash.
+    // Virtual Device Map entry (mapEntry flag set by _renderSearchDropdown) —
+    // open the FortiGate's topology modal focused on this endpoint.
+    if (ctx.mapEntry) {
+      if (window.location.pathname === "/map.html" &&
+          typeof window.polarisMapOpenSiteTopology === "function") {
+        var focusQuery = ctx.focusHostname || ctx.focusIpAddress || ctx.focusMacAddress || null;
+        return {
+          page: "/map.html",
+          hash: "",
+          handler: function () { window.polarisMapOpenSiteTopology(ctx.siteId, focusQuery); },
+        };
+      }
       var qHashFocus = ctx.focusHostname || ctx.focusIpAddress || ctx.focusMacAddress || "";
       var hash = "#site=" + encodeURIComponent(ctx.siteId) + "&topology=1" +
         (qHashFocus ? "&q=" + encodeURIComponent(qHashFocus) : "");
@@ -499,11 +501,8 @@ function _searchTargetFor(hit) {
         },
       };
     }
-    // Map-page intercept for asset hits without an origin FortiGate:
-    // pan-to if it's a site marker, otherwise fall through to the
-    // asset-details route. Preserves the existing map-page behavior
-    // for FortiGates that somehow weren't classified as sites
-    // (shouldn't happen post-Phase-4, but kept defensively).
+    // Regular asset click — pan-to on map page if it's a pinned marker,
+    // otherwise open the asset details page.
     if (window.location.pathname === "/map.html" &&
         typeof window.polarisMapPanToAsset === "function") {
       return {

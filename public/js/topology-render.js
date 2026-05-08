@@ -279,11 +279,11 @@
       });
       style.push({
         selector: 'node.dimmed',
-        style: { opacity: 0.18, "text-opacity": 0.25 },
+        style: { display: 'none' },
       });
       style.push({
         selector: 'edge.dimmed',
-        style: { opacity: 0.12, "text-opacity": 0.18 },
+        style: { display: 'none' },
       });
     }
 

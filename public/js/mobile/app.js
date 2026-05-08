@@ -56,8 +56,12 @@ window.PolarisTheme = {
     app.innerHTML = '<div class="loading-screen"><div class="spinner"></div></div>';
 
     var user = null;
+    var bootError = null;
     try {
-      var res = await fetch("/api/v1/auth/me");
+      var bootController = new AbortController();
+      var bootTimeout = setTimeout(function () { bootController.abort(); }, 10000);
+      var res = await fetch("/api/v1/auth/me", { signal: bootController.signal });
+      clearTimeout(bootTimeout);
       if (res.ok) {
         var data = await res.json();
         // /auth/me returns { authenticated, username, role, authProvider } —
@@ -72,7 +76,28 @@ window.PolarisTheme = {
           };
         }
       }
-    } catch (_) {}
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        bootError = "Connection timed out. Check your network and tap Retry.";
+      } else if (err && err.message) {
+        bootError = "Could not reach server: " + err.message + ". Tap Retry.";
+      }
+    }
+
+    if (bootError) {
+      app.innerHTML = ''
+        + '<div class="empty-state" style="padding-top:64px;">'
+        + '  <div class="icon" style="background:var(--md-error-container);color:var(--md-on-error-container);">'
+        + '    <svg viewBox="0 0 24 24"><use href="#i-warn"/></svg>'
+        + '  </div>'
+        + '  <div class="ttl">Unable to connect</div>'
+        + '  <div class="desc">' + bootError + '</div>'
+        + '  <button class="btn-filled" style="margin-top:24px;" id="boot-retry-btn">Retry</button>'
+        + '</div>';
+      var retryBtn = document.getElementById("boot-retry-btn");
+      if (retryBtn) retryBtn.addEventListener("click", function () { boot(); });
+      return;
+    }
 
     if (!user) {
       currentUser = null;
