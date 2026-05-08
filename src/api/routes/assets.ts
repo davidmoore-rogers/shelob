@@ -29,6 +29,7 @@ import {
 } from "../../services/monitoringService.js";
 import { getCredential } from "../../services/credentialService.js";
 import { resolveConnectionPath } from "../../services/connectionPathService.js";
+import { propagateAfterStatusChange } from "../../services/dependencyTreeService.js";
 import {
   type PollingMethod,
   assetSourceKindFromIntegrationType,
@@ -311,6 +312,7 @@ router.get("/", async (req, res, next) => {
           discoveredByIntegrationId: true,
           dependencyLayer: true,
           dependencySuppressed: true,
+          dependencyTestUntil: true,
         },
       }),
       prisma.asset.count({ where }),
@@ -2119,6 +2121,8 @@ router.get("/:id/dependencies", async (req, res, next) => {
         dependencyLayer: true,
         dependencySuppressed: true,
         dependencySuppressedAt: true,
+        dependencyTestUntil: true,
+        dependencyTestStartedBy: true,
       },
     });
     if (!asset) throw new AppError(404, "Asset not found");
@@ -2134,6 +2138,7 @@ router.get("/:id/dependencies", async (req, res, next) => {
             dependencyLayer: true,
             monitorStatus: true,
             monitored: true,
+            dependencyTestUntil: true,
           },
         },
       },
@@ -2145,12 +2150,13 @@ router.get("/:id/dependencies", async (req, res, next) => {
         id: r.id,
         parent: r.parent
           ? {
-              id:               r.parent.id,
-              hostname:         r.parent.hostname,
-              assetType:        r.parent.assetType,
-              dependencyLayer:  r.parent.dependencyLayer,
-              monitorStatus:    r.parent.monitorStatus,
-              monitored:        r.parent.monitored,
+              id:                  r.parent.id,
+              hostname:            r.parent.hostname,
+              assetType:           r.parent.assetType,
+              dependencyLayer:     r.parent.dependencyLayer,
+              monitorStatus:       r.parent.monitorStatus,
+              monitored:           r.parent.monitored,
+              dependencyTestUntil: r.parent.dependencyTestUntil,
             }
           : null,
         source:      r.source,
@@ -2182,6 +2188,7 @@ router.get("/:id/dependencies", async (req, res, next) => {
             monitorStatus: true,
             monitored: true,
             dependencySuppressed: true,
+            dependencyTestUntil: true,
           },
         },
       },
@@ -2215,6 +2222,7 @@ router.get("/:id/dependencies", async (req, res, next) => {
         monitorStatus:       r.asset.monitorStatus,
         monitored:           r.asset.monitored,
         dependencySuppressed: r.asset.dependencySuppressed,
+        dependencyTestUntil: r.asset.dependencyTestUntil,
         source:              r.source,
         detectedVia:         r.detectedVia,
       });
@@ -2230,12 +2238,14 @@ router.get("/:id/dependencies", async (req, res, next) => {
 
     res.json({
       asset: {
-        id:                     asset.id,
-        hostname:               asset.hostname,
-        assetType:              asset.assetType,
-        dependencyLayer:        asset.dependencyLayer,
-        dependencySuppressed:   asset.dependencySuppressed,
-        dependencySuppressedAt: asset.dependencySuppressedAt,
+        id:                      asset.id,
+        hostname:                asset.hostname,
+        assetType:               asset.assetType,
+        dependencyLayer:         asset.dependencyLayer,
+        dependencySuppressed:    asset.dependencySuppressed,
+        dependencySuppressedAt:  asset.dependencySuppressedAt,
+        dependencyTestUntil:     asset.dependencyTestUntil,
+        dependencyTestStartedBy: asset.dependencyTestStartedBy,
       },
       effectiveParents,
       computedParents,
@@ -2380,6 +2390,111 @@ router.delete("/:id/dependencies/override", requireAdmin, async (req, res, next)
     }
 
     res.json({ ok: true, removed: result.count });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Dependency Test (admin-only simulation) ────────────────────────────────
+//
+// Admin-only "simulate this asset going down to see how children react."
+// Sets Asset.dependencyTestUntil to a TTL deadline; the dependency reconciler
+// then treats the asset as confirmed-down for child suppression evaluation.
+// Real probes keep running and updating monitorStatus / lastResponseTimeMs
+// normally — this is a what-if overlay, not a probe pause. Auto-expires at
+// the deadline; reconciler clears the field and writes
+// `asset.dependency_test.expired`. Manual clear via DELETE writes
+// `asset.dependency_test.cleared`.
+//
+// Strictly admin-only — assets-admin and network-admin do NOT have access.
+// The simulation can briefly mask a real outage (any monitored child of the
+// test target gets marked dependencySuppressed even if it's also genuinely
+// failing), so we keep the privilege narrow.
+
+const dependencyTestSchema = z.object({
+  durationMinutes: z.number().int().min(1).max(240).default(30),
+});
+
+router.post("/:id/dependency-test", requireAdmin, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const { durationMinutes } = dependencyTestSchema.parse(req.body ?? {});
+
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { id: true, hostname: true, assetType: true },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    // Only Fortinet infra assets sit in the dependency tree. Refusing the
+    // call on workstations / printers / etc. surfaces the misconception
+    // early instead of letting the operator wait for a no-op.
+    if (!["firewall", "switch", "access_point"].includes(asset.assetType)) {
+      throw new AppError(400, "Dependency Test only applies to firewall / switch / access_point assets");
+    }
+
+    const until = new Date(Date.now() + durationMinutes * 60_000);
+    const startedBy = req.session?.username || "unknown";
+
+    await prisma.asset.update({
+      where: { id },
+      data:  { dependencyTestUntil: until, dependencyTestStartedBy: startedBy },
+    });
+
+    // Fire the reconciler so children flip to dependencySuppressed within
+    // this request rather than waiting up to 60 s for the next tick. Same
+    // hook the probe-result path uses for genuine status changes.
+    await propagateAfterStatusChange(id);
+
+    logEvent({
+      action:       "asset.dependency_test.started",
+      resourceType: "asset",
+      resourceId:   id,
+      resourceName: asset.hostname || undefined,
+      actor:        req.session?.username,
+      level:        "info",
+      message:      `Dependency Test started on ${asset.hostname || id} for ${durationMinutes} min (auto-expires ${until.toISOString()})`,
+      details:      { durationMinutes, dependencyTestUntil: until },
+    });
+
+    res.json({ ok: true, dependencyTestUntil: until, dependencyTestStartedBy: startedBy });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete("/:id/dependency-test", requireAdmin, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const asset = await prisma.asset.findUnique({
+      where: { id },
+      select: { id: true, hostname: true, dependencyTestUntil: true, dependencyTestStartedBy: true },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    if (!asset.dependencyTestUntil) {
+      // Idempotent — already cleared. No event, no reconciler hit.
+      return res.json({ ok: true, alreadyCleared: true });
+    }
+
+    await prisma.asset.update({
+      where: { id },
+      data:  { dependencyTestUntil: null, dependencyTestStartedBy: null },
+    });
+    await propagateAfterStatusChange(id);
+
+    logEvent({
+      action:       "asset.dependency_test.cleared",
+      resourceType: "asset",
+      resourceId:   id,
+      resourceName: asset.hostname || undefined,
+      actor:        req.session?.username,
+      level:        "info",
+      message:      `Dependency Test cleared on ${asset.hostname || id}`,
+      details:      { startedBy: asset.dependencyTestStartedBy, scheduledUntil: asset.dependencyTestUntil },
+    });
+
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

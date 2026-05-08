@@ -249,6 +249,15 @@ export interface SuppressionAssetState {
   monitorStatus: string | null;
   /** Computed previously — used as the starting state for the iteration. */
   currentlySuppressed: boolean;
+  /**
+   * Admin-only "Dependency Test" overlay. When this timestamp is in the
+   * future, the asset is treated as confirmed-down for the purposes of
+   * isParentOk — children with this asset in their effective parent set
+   * get suppressed exactly as they would under a real outage. Real probes
+   * still update monitorStatus normally; the overlay is purely a what-if.
+   * Past or null = inactive (auto-expired or never set).
+   */
+  dependencyTestUntil?: Date | null;
 }
 export function evaluateSuppression(
   states: SuppressionAssetState[],
@@ -281,11 +290,19 @@ export function evaluateSuppression(
     // Resolve effective parents — skip unmonitored, walk up through them.
     // Bounded by layer order; we never re-enter visited.
     const visited = new Set<string>();
+    const evalNow = Date.now();
     function isParentOk(parentId: string): boolean {
       if (visited.has(parentId)) return false;
       visited.add(parentId);
       const ps = stateById.get(parentId);
       if (!ps) return true; // unknown asset — treat as ok rather than block.
+      // Admin-only Dependency Test overlay. Active overlay forces this
+      // parent to behave as down for child suppression — it does NOT walk
+      // through to grandparents the way an unmonitored parent does, since
+      // the operator's intent is "pretend THIS box went offline."
+      if (ps.dependencyTestUntil && ps.dependencyTestUntil.getTime() > evalNow) {
+        return false;
+      }
       if (!ps.monitored) {
         // Transparent — recurse to grandparents. No grandparents = "ok"
         // (we have no monitored ancestor that says otherwise).
@@ -490,6 +507,34 @@ export async function reconcileDependencySuppression(): Promise<{
   evaluated: number;
   changed:   number;
 }> {
+  // Auto-expire any "Dependency Test" overlays whose deadline has passed
+  // BEFORE we read the suppression state — this way the read sees the
+  // freshly-cleared rows and the reconciler ends the test session in the
+  // same tick that detects expiry. Each cleared asset writes one audit
+  // Event so admins see when a test ended without explicit cleanup.
+  const now0 = new Date();
+  const expired = await prisma.asset.findMany({
+    where: { dependencyTestUntil: { lte: now0 } },
+    select: { id: true, hostname: true, dependencyTestStartedBy: true, dependencyTestUntil: true },
+  });
+  if (expired.length > 0) {
+    await prisma.asset.updateMany({
+      where: { id: { in: expired.map(e => e.id) } },
+      data:  { dependencyTestUntil: null, dependencyTestStartedBy: null },
+    });
+    for (const e of expired) {
+      await logEvent({
+        action:       "asset.dependency_test.expired",
+        resourceType: "asset",
+        resourceId:   e.id,
+        resourceName: e.hostname ?? undefined,
+        level:        "info",
+        message:      `Dependency Test expired on ${e.hostname ?? e.id} (started by ${e.dependencyTestStartedBy ?? "unknown"})`,
+        details:      { dependencyTestUntil: e.dependencyTestUntil, startedBy: e.dependencyTestStartedBy },
+      });
+    }
+  }
+
   const assets = await prisma.asset.findMany({
     select: {
       id: true,
@@ -499,6 +544,7 @@ export async function reconcileDependencySuppression(): Promise<{
       monitorStatus: true,
       dependencyLayer: true,
       dependencySuppressed: true,
+      dependencyTestUntil: true,
     },
   });
   if (assets.length === 0) return { evaluated: 0, changed: 0 };
@@ -511,6 +557,7 @@ export async function reconcileDependencySuppression(): Promise<{
     monitored:           a.monitored,
     monitorStatus:       a.monitorStatus,
     currentlySuppressed: a.dependencySuppressed,
+    dependencyTestUntil: a.dependencyTestUntil,
   }));
 
   const desired = evaluateSuppression(states, parentsByChild);

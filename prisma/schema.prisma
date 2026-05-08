@@ -475,6 +475,19 @@ model Asset {
   dependencySuppressed   Boolean   @default(false)
   dependencySuppressedAt DateTime?
 
+  // Admin-only "Dependency Test" simulation. When dependencyTestUntil is in
+  // the future, the dependency reconciler treats THIS asset as if it were
+  // confirmed down for the purposes of suppression — so children with this
+  // asset in their effective parent set get marked dependencySuppressed
+  // exactly as they would under a real outage. Real probes keep running and
+  // updating monitorStatus / lastResponseTimeMs normally; the test is a
+  // pure overlay that ends automatically at the timestamp. The reconciler
+  // also auto-clears expired rows (sets dependencyTestUntil back to null).
+  // Only admins can set or clear this — assets-admin and network-admin do
+  // not have the privilege. See routes/assets.ts ":id/dependency-test".
+  dependencyTestUntil      DateTime?
+  dependencyTestStartedBy  String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

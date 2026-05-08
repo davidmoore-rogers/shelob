@@ -918,6 +918,50 @@ async function releaseAssetQuarantine(id) {
   }
 }
 
+// Admin-only Dependency Test simulation. Backend route is gated; we duplicate
+// the gate here for UX so non-admins never see the trigger button. Default
+// duration matches the backend default (30 min); the prompt accepts 1..240.
+async function startDependencyTestPrompt(id) {
+  if (typeof isAdmin !== "function" || !isAdmin()) return;
+  var raw = window.prompt(
+    "Simulate this asset going DOWN for how many minutes? (1–240)\n\n" +
+    "Children with this asset in their dependency chain will be marked Dep. Suppressed " +
+    "as if it had really failed. Real probes against this asset keep running. The " +
+    "simulation auto-expires at the deadline.",
+    "30"
+  );
+  if (raw === null) return; // cancelled
+  var minutes = parseInt(String(raw).trim(), 10);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 240) {
+    showToast("Duration must be a whole number between 1 and 240 minutes", "error");
+    return;
+  }
+  try {
+    await api.assets.startDependencyTest(id, minutes);
+    showToast("Dependency Test started — auto-clears in " + minutes + " min");
+    // Refresh both the list (Status pill flips) and the open details panel
+    // (the Dep Test button flips to "Clear" + the dep-tree block reflects).
+    await loadAssets();
+    await openViewModal(id);
+  } catch (err) {
+    showToast(err.message || "Failed to start Dependency Test", "error");
+  }
+}
+
+async function clearDependencyTestNow(id) {
+  if (typeof isAdmin !== "function" || !isAdmin()) return;
+  var ok = await showConfirm("Clear the Dependency Test on this asset now? Children will resume normal monitoring within ~60 seconds.");
+  if (!ok) return;
+  try {
+    await api.assets.clearDependencyTest(id);
+    showToast("Dependency Test cleared");
+    await loadAssets();
+    await openViewModal(id);
+  } catch (err) {
+    showToast(err.message || "Failed to clear Dependency Test", "error");
+  }
+}
+
 // Phase 3a recovery action — admin-only Split button on each Sources card.
 // Detaches the chosen source onto a freshly-created asset; downstream FKs
 // (monitoring, IP history, sightings, quarantine) stay on the original.
@@ -1356,6 +1400,19 @@ function assetMonitorBadge(asset) {
   if (asset.lastMonitorAt) bits.push("Last poll: " + new Date(asset.lastMonitorAt).toLocaleString());
   if (canToggle) bits.push("Click to disable monitoring");
   var clickCls = canToggle ? " badge-clickable" : "";
+  // Admin-only "Dependency Test" overlay takes priority over every other
+  // pill state — the operator explicitly asked us to simulate this device
+  // going down, so show the simulation label even when the real probe is
+  // succeeding underneath. The expiration timestamp goes in the tooltip
+  // so admins can see how long is left without opening the asset.
+  var depTestUntil = asset.dependencyTestUntil ? new Date(asset.dependencyTestUntil) : null;
+  if (depTestUntil && depTestUntil.getTime() > Date.now()) {
+    var dtBits = ["Simulated as DOWN by an admin (real probes still running)"];
+    dtBits.push("Auto-clears: " + depTestUntil.toLocaleString());
+    if (asset.dependencyTestStartedBy) dtBits.push("Started by: " + asset.dependencyTestStartedBy);
+    var dtTitle = ' title="' + escapeHtml(dtBits.join("\n")) + '"';
+    return '<span class="badge badge-monitor-dep-test"' + dtTitle + '>Dependency Test</span>';
+  }
   // Dependency-suppressed takes precedence over the five-state machine
   // label. The asset's own probe may still be succeeding (redundant L3
   // path / out-of-band management) — that's why monitorStatus AND
@@ -4705,6 +4762,21 @@ function assetMonitoringViewHTML(a) {
   var probeBtn = isUserOrAbove()
     ? '<button class="btn btn-sm btn-primary" id="btn-asset-probe-now" style="margin-right:6px" title="Run a response-time probe and pull fresh telemetry + interface data">Refresh</button>'
     : '';
+  // Admin-only "Dependency Test" trigger lives next to the Status pill on
+  // the System tab. Eligible for Fortinet infra only — workstations etc.
+  // aren't part of the dependency tree, so the simulation has no children
+  // to suppress and the backend rejects the call. Active state shows a
+  // "Clear" button instead. Strictly admin-only.
+  var depTestBtn = "";
+  var isInfraType = a.assetType === "firewall" || a.assetType === "switch" || a.assetType === "access_point";
+  var depTestActiveNow = a.dependencyTestUntil && new Date(a.dependencyTestUntil).getTime() > Date.now();
+  if (typeof isAdmin === "function" && isAdmin() && a.monitored && isInfraType) {
+    if (depTestActiveNow) {
+      depTestBtn = '<button class="btn btn-sm btn-secondary" onclick="clearDependencyTestNow(\'' + escapeHtml(a.id) + '\')" style="margin-left:6px" title="Stop the simulation immediately and let children resume">Clear Dep. Test</button>';
+    } else {
+      depTestBtn = '<button class="btn btn-sm btn-secondary" onclick="startDependencyTestPrompt(\'' + escapeHtml(a.id) + '\')" style="margin-left:6px" title="Admin-only: simulate this device going down to see how children react. Real probes keep running.">Simulate Down…</button>';
+    }
+  }
   var rangeBtns =
     _chartRangeBtnsHTML("asset-monitor-range-btn", [
       { value: "1h",  label: "1h" },
@@ -4724,7 +4796,7 @@ function assetMonitoringViewHTML(a) {
       // Status uses a raw-HTML row because viewRow() escapes its value and
       // would render the badge markup as text.
       '<div class="detail-row"><span class="detail-label">Status</span>' +
-        '<span class="detail-value">' + probeBtn + pill + '</span></div>' +
+        '<span class="detail-value">' + probeBtn + pill + depTestBtn + '</span></div>' +
       // Last hour intermittency bar — one cell per probe sample, colored
       // by the resolved monitor state at that point. Sits in a single
       // grid column (half the panel); the value cell is flex:1 so the bar
@@ -8004,6 +8076,13 @@ function _depTreeStatusPip(node) {
   // child (has it). For parents we don't have suppressed in the payload —
   // that's fine, the pip just reflects monitorStatus.
   if (!node || node.monitored === false) return '<span class="dep-tree-pip dep-tree-pip-unmon" title="Unmonitored">●</span>';
+  // Admin-only "Dependency Test" overlay outranks every other state in the
+  // tree pip — admins reading the tree need to see immediately which node
+  // is the simulated-down one driving suppression downstream.
+  var depTestUntil = node.dependencyTestUntil ? new Date(node.dependencyTestUntil) : null;
+  if (depTestUntil && depTestUntil.getTime() > Date.now()) {
+    return '<span class="dep-tree-pip dep-tree-pip-dep-test" title="Dependency Test active — simulated DOWN until ' + escapeHtml(depTestUntil.toLocaleString()) + '">●</span>';
+  }
   if (node.dependencySuppressed && node.monitorStatus !== "down") {
     return '<span class="dep-tree-pip dep-tree-pip-dep" title="Dep. Down — upstream parent is offline">●</span>';
   }
@@ -8078,6 +8157,7 @@ function renderDependencyTreeBlock(payload, selfId) {
       id: p.parent.id, hostname: p.parent.hostname, assetType: p.parent.assetType,
       dependencyLayer: p.parent.dependencyLayer, monitorStatus: p.parent.monitorStatus,
       monitored: p.parent.monitored, dependencySuppressed: false /* we don't have it on parent */, source: p.source,
+      dependencyTestUntil: p.parent.dependencyTestUntil,
     }); }).join("");
     parentsHTML += '<div class="dep-tree-connector">│</div>';
   }
@@ -8085,6 +8165,7 @@ function renderDependencyTreeBlock(payload, selfId) {
     id: self.id, hostname: self.hostname, assetType: self.assetType,
     dependencyLayer: self.dependencyLayer, monitorStatus: null,
     monitored: true, dependencySuppressed: !!self.dependencySuppressed,
+    dependencyTestUntil: self.dependencyTestUntil,
   }, { self: true });
 
   var childrenHTML = "";
@@ -8098,10 +8179,22 @@ function renderDependencyTreeBlock(payload, selfId) {
   var overrideTag = payload.hasOverride
     ? '<span class="dep-tree-override-tag" title="Operator override is in effect">override active</span>'
     : "";
+  // Admin-only "Dependency Test" — when active on the self node, render an
+  // explanatory banner above the tree so it's obvious why every child is
+  // showing up as Dep. Suppressed and so admins can see the auto-clear time.
+  var depTestBanner = "";
+  var selfDepTest = self.dependencyTestUntil ? new Date(self.dependencyTestUntil) : null;
+  if (selfDepTest && selfDepTest.getTime() > Date.now()) {
+    var startedBy = self.dependencyTestStartedBy ? " by " + escapeHtml(self.dependencyTestStartedBy) : "";
+    depTestBanner = '<div class="dep-tree-test-banner">' +
+      '<strong>Dependency Test active</strong>' + startedBy + ' — children are suppressed as if this device were down. Auto-clears ' + escapeHtml(selfDepTest.toLocaleString()) + '.' +
+      '</div>';
+  }
 
   return '<div class="dep-tree-block">' +
     '<div class="dep-tree-header">Dependency Tree ' + overrideTag + '</div>' +
     '<div class="dep-tree-subtitle">' + escapeHtml(subtitle) + '</div>' +
+    depTestBanner +
     '<div class="dep-tree-body">' +
       parentsHTML +
       selfHTML +

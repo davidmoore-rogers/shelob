@@ -275,4 +275,58 @@ describe("evaluateSuppression", () => {
     const out = evaluateSuppression(states, parents);
     expect(out.get("acc")).toBe(false);
   });
+
+  // Admin-only "Dependency Test" overlay — parent with a future
+  // dependencyTestUntil is treated as confirmed-down for suppression even
+  // when its real probe is up. Past timestamps are inactive (auto-expired).
+  it("dependencyTestUntil in the future treats parent as down", () => {
+    const future = new Date(Date.now() + 30 * 60 * 1000);
+    const states: SuppressionAssetState[] = [
+      { id: "fg",  layer: 1, monitorStatus: "up", monitored: true, currentlySuppressed: false, dependencyTestUntil: future },
+      { id: "sw",  layer: 2, monitorStatus: "up", monitored: true, currentlySuppressed: false },
+    ];
+    const parents = new Map([["sw", ["fg"]]]);
+    const out = evaluateSuppression(states, parents);
+    expect(out.get("sw")).toBe(true);
+  });
+
+  it("dependencyTestUntil in the past is ignored (acts as inactive)", () => {
+    const past = new Date(Date.now() - 60 * 1000);
+    const states: SuppressionAssetState[] = [
+      { id: "fg",  layer: 1, monitorStatus: "up", monitored: true, currentlySuppressed: false, dependencyTestUntil: past },
+      { id: "sw",  layer: 2, monitorStatus: "up", monitored: true, currentlySuppressed: false },
+    ];
+    const parents = new Map([["sw", ["fg"]]]);
+    const out = evaluateSuppression(states, parents);
+    expect(out.get("sw")).toBe(false);
+  });
+
+  it("dependency-test parent does NOT walk transparently to grandparents", () => {
+    // Operator's intent is "pretend THIS box went offline" — even when an
+    // upstream root is healthy, children of the test target stay suppressed.
+    const future = new Date(Date.now() + 30 * 60 * 1000);
+    const states: SuppressionAssetState[] = [
+      { id: "fg",  layer: 1, monitorStatus: "up", monitored: true, currentlySuppressed: false },
+      { id: "sw",  layer: 2, monitorStatus: "up", monitored: true, currentlySuppressed: false, dependencyTestUntil: future },
+      { id: "acc", layer: 3, monitorStatus: "up", monitored: true, currentlySuppressed: false },
+    ];
+    const parents = new Map([["sw", ["fg"]], ["acc", ["sw"]]]);
+    const out = evaluateSuppression(states, parents);
+    expect(out.get("sw")).toBe(false);  // sw itself only depends on fg, which is up
+    expect(out.get("acc")).toBe(true);  // acc's only parent is in test mode
+  });
+
+  it("multi-parent: test-active parent counts as down for the all-down rule", () => {
+    // sw has two FortiGate parents; one is test-active, one is up. With
+    // all-down semantics, ANY parent being up keeps sw not-suppressed.
+    const future = new Date(Date.now() + 30 * 60 * 1000);
+    const states: SuppressionAssetState[] = [
+      { id: "fg1", layer: 1, monitorStatus: "up", monitored: true, currentlySuppressed: false, dependencyTestUntil: future },
+      { id: "fg2", layer: 1, monitorStatus: "up", monitored: true, currentlySuppressed: false },
+      { id: "sw",  layer: 2, monitorStatus: "up", monitored: true, currentlySuppressed: false },
+    ];
+    const parents = new Map([["sw", ["fg1", "fg2"]]]);
+    const out = evaluateSuppression(states, parents);
+    expect(out.get("sw")).toBe(false);
+  });
 });

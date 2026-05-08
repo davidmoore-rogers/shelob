@@ -52,15 +52,15 @@
   // toggled on. Kept module-local — no external file fetch.
   var STICK_FIGURE_SVG = ''
     + '<svg viewBox="0 0 40 56" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-    +   '<ellipse class="hat" cx="20" cy="9" rx="9" ry="5"/>'
-    +   '<rect class="hat" x="9" y="9" width="22" height="2.5" rx="1"/>'
-    +   '<line class="hat-stripe" x1="20" y1="4" x2="20" y2="9"/>'
-    +   '<circle class="face" cx="20" cy="14" r="3.5"/>'
-    +   '<line class="stroke spine" x1="20" y1="17.5" x2="20" y2="34"/>'
-    +   '<line class="stroke arm arm-l" x1="20" y1="22" x2="14" y2="30"/>'
-    +   '<line class="stroke arm arm-r" x1="20" y1="22" x2="26" y2="30"/>'
-    +   '<line class="stroke leg leg-l" x1="20" y1="34" x2="15" y2="46"/>'
-    +   '<line class="stroke leg leg-r" x1="20" y1="34" x2="25" y2="46"/>'
+    +   '<ellipse class="hat" cx="20" cy="8" rx="9" ry="7"/>'
+    +   '<rect class="hat" x="8" y="8" width="24" height="2.5" rx="1"/>'
+    +   '<line class="hat-stripe" x1="20" y1="2" x2="20" y2="8"/>'
+    +   '<circle class="face" cx="20" cy="18" r="5"/>'
+    +   '<line class="stroke spine" x1="20" y1="23" x2="20" y2="38"/>'
+    +   '<line class="stroke arm arm-l" x1="20" y1="27" x2="13" y2="35"/>'
+    +   '<line class="stroke arm arm-r" x1="20" y1="27" x2="27" y2="35"/>'
+    +   '<line class="stroke leg leg-l" x1="20" y1="38" x2="14" y2="50"/>'
+    +   '<line class="stroke leg leg-r" x1="20" y1="38" x2="26" y2="50"/>'
     + '</svg>';
 
   // ─── Lazy loaders ──────────────────────────────────────────────────────

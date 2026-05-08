@@ -1924,12 +1924,18 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
  * asset's heavy cadences are paused while the response-time probe continues
  * at 2× the resolved interval. See Asset.dependencySuppressed. */
 .badge-monitor-dep-down { background: rgba(96,125,139,0.18);  color: #b0bec5;                 border: 1px solid rgba(96,125,139,0.32); }
+/* Admin-only "Dependency Test" simulation. Distinct purple treatment so the
+ * fact that the asset is being SIMULATED as down (vs. truly down or
+ * upstream-suppressed) is unmistakable on the assets list. Striped border
+ * makes it stand out further. See Asset.dependencyTestUntil. */
+.badge-monitor-dep-test { background: rgba(186,104,200,0.18); color: #ce93d8; border: 1px dashed rgba(186,104,200,0.55); }
 [data-theme="light"] .badge-monitored        { background: rgba(46,125,50,0.10); border-color: rgba(46,125,50,0.30); }
 [data-theme="light"] .badge-unmonitored      { background: rgba(117,117,117,0.10); border-color: rgba(117,117,117,0.30); }
 [data-theme="light"] .badge-monitor-down     { background: rgba(211,47,47,0.10); color: #c62828; border-color: rgba(211,47,47,0.30); }
 [data-theme="light"] .badge-monitor-warning  { background: rgba(245,127,23,0.10); color: #f57f17; border-color: rgba(245,127,23,0.30); }
 [data-theme="light"] .badge-monitor-recovering { background: rgba(79,195,247,0.10); border-color: rgba(79,195,247,0.30); }
 [data-theme="light"] .badge-monitor-dep-down   { background: rgba(96,125,139,0.10); color: #455a64; border-color: rgba(96,125,139,0.30); }
+[data-theme="light"] .badge-monitor-dep-test   { background: rgba(123,31,162,0.10); color: #7b1fa2; border-color: rgba(123,31,162,0.45); }
 
 /* Event level badges */
 .badge-level-info    { background: rgba(79,195,247,0.12); color: var(--color-accent); border: 1px solid rgba(79,195,247,0.25); font-size: 0.7rem; letter-spacing: 0.5px; }
@@ -2050,11 +2056,25 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .dep-tree-pip-rec  { color: var(--color-accent); }
 .dep-tree-pip-down { color: #ef9a9a; }
 .dep-tree-pip-dep  { color: #b0bec5; }
+.dep-tree-pip-dep-test { color: #ce93d8; }
 .dep-tree-pip-unk,
 .dep-tree-pip-unmon { color: var(--color-deprecated); }
+.dep-tree-test-banner {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: rgba(186,104,200,0.10);
+  border: 1px dashed rgba(186,104,200,0.55);
+  border-radius: 4px;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+.dep-tree-test-banner strong { color: #ce93d8; margin-right: 4px; }
 [data-theme="light"] .dep-tree-row-self { background: rgba(79,195,247,0.06); border-color: rgba(79,195,247,0.30); }
 [data-theme="light"] .dep-tree-pip-down { color: #c62828; }
 [data-theme="light"] .dep-tree-pip-dep  { color: #455a64; }
+[data-theme="light"] .dep-tree-pip-dep-test { color: #7b1fa2; }
+[data-theme="light"] .dep-tree-test-banner { background: rgba(123,31,162,0.06); border-color: rgba(123,31,162,0.45); }
+[data-theme="light"] .dep-tree-test-banner strong { color: #7b1fa2; }
 
 /* ─── Charts / Dashboard-specific ──────────────────────────────────────────── */
 .overview-grid {
