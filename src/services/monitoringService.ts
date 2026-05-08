@@ -3669,6 +3669,14 @@ async function persistLldpNeighbors(
       const m = matchIndex.byMac.get(mac);
       if (m && m !== assetId) return m;
     }
+    // Workstation LLDP agents (Windows native, FortiClient, etc.) commonly
+    // put the Ethernet MAC in portId(macAddress) rather than chassisId, so
+    // the MAC arm above misses them. Try portId against the MAC index too.
+    if (n.portIdSubtype === "macAddress" && n.portId) {
+      const mac = n.portId.toUpperCase();
+      const m = matchIndex.byMac.get(mac);
+      if (m && m !== assetId) return m;
+    }
     if (n.systemName) {
       const lower = n.systemName.toLowerCase();
       let m = matchIndex.byHostname.get(lower);
@@ -3680,6 +3688,23 @@ async function persistLldpNeighbors(
         m = matchIndex.byHostname.get(lower.split(".")[0]);
       }
       if (m && m !== assetId) return m;
+    }
+    // Some LLDP implementations leave systemName empty and put the hostname
+    // in chassisId with subtype local(7) or chassisComponent(1). Treat any
+    // non-MAC chassisId as a possible hostname when it looks printable.
+    if (n.chassisId && n.chassisIdSubtype !== "macAddress") {
+      const raw = String(n.chassisId).trim();
+      // Skip values that look like MACs or contain whitespace — those won't
+      // match a hostname index entry anyway, and we don't want to pollute
+      // logs with bogus lookups.
+      if (raw && !/\s/.test(raw) && !/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(raw)) {
+        const lower = raw.toLowerCase();
+        let m = matchIndex.byHostname.get(lower);
+        if (!m && lower.includes(".")) {
+          m = matchIndex.byHostname.get(lower.split(".")[0]);
+        }
+        if (m && m !== assetId) return m;
+      }
     }
     return null;
   };
