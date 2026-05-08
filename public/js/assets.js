@@ -2008,6 +2008,8 @@ async function openEditModal(id) {
 var _assetMonitorRefreshTimer = null;
 var _assetSystemRefreshTimer  = null;
 var _ifaceRefreshTimer        = null;
+var _sensorRefreshTimer       = null;
+var _ipsecRefreshTimer        = null;
 var _monitorSettingsCache     = null;  // global monitor settings, fetched once per session
 var _currentAssetForRefresh   = null;  // asset object cached so refresh schedulers can read its per-asset intervals
 
@@ -2027,6 +2029,8 @@ function _clearAssetRefreshTimers() {
   if (_assetMonitorRefreshTimer) { clearTimeout(_assetMonitorRefreshTimer); _assetMonitorRefreshTimer = null; }
   if (_assetSystemRefreshTimer)  { clearTimeout(_assetSystemRefreshTimer);  _assetSystemRefreshTimer  = null; }
   if (_ifaceRefreshTimer)        { clearTimeout(_ifaceRefreshTimer);        _ifaceRefreshTimer        = null; }
+  if (_sensorRefreshTimer)       { clearTimeout(_sensorRefreshTimer);       _sensorRefreshTimer       = null; }
+  if (_ipsecRefreshTimer)        { clearTimeout(_ipsecRefreshTimer);        _ipsecRefreshTimer        = null; }
 }
 
 function _clearIfaceRefreshTimer() {
@@ -2065,6 +2069,24 @@ function _scheduleIfaceRefresh(assetId, ifName, ms) {
   }, ms);
 }
 
+function _scheduleSensorRefresh(assetId, sensorName, ms) {
+  if (_sensorRefreshTimer) clearTimeout(_sensorRefreshTimer);
+  _sensorRefreshTimer = setTimeout(function tick() {
+    if (!_isOverlayOpen("sensor-panel-overlay") || !_isCurrentAsset(assetId)) { _sensorRefreshTimer = null; return; }
+    if (document.hidden) { _sensorRefreshTimer = setTimeout(tick, 30000); return; }
+    _loadSensorHistoryFor(assetId, sensorName, _currentSensorRange(), { silent: true });
+  }, ms);
+}
+
+function _scheduleIpsecRefresh(assetId, tunnelName, ms) {
+  if (_ipsecRefreshTimer) clearTimeout(_ipsecRefreshTimer);
+  _ipsecRefreshTimer = setTimeout(function tick() {
+    if (!_isOverlayOpen("ipsec-panel-overlay") || !_isCurrentAsset(assetId)) { _ipsecRefreshTimer = null; return; }
+    if (document.hidden) { _ipsecRefreshTimer = setTimeout(tick, 30000); return; }
+    _loadIpsecHistoryFor(assetId, tunnelName, _currentIpsecRange(), { silent: true });
+  }, ms);
+}
+
 // Auto-refresh ticks must not yank the user back to the top of the panel.
 // Showing "Loading…" placeholders collapses the slideover body's scrollHeight,
 // which clamps scrollTop. Silent callers skip the placeholders and capture +
@@ -2073,6 +2095,16 @@ function _scheduleIfaceRefresh(assetId, ifName, ms) {
 
 function _currentIfaceRange() {
   var btn = document.querySelector(".iface-range-btn.btn-primary");
+  return (btn && btn.getAttribute("data-range")) || "1h";
+}
+
+function _currentSensorRange() {
+  var btn = document.querySelector(".sensor-range-btn.btn-primary");
+  return (btn && btn.getAttribute("data-range")) || "1h";
+}
+
+function _currentIpsecRange() {
+  var btn = document.querySelector(".ipsec-range-btn.btn-primary");
   return (btn && btn.getAttribute("data-range")) || "1h";
 }
 
@@ -3316,6 +3348,7 @@ function _ensureSensorPanelDOM() {
 function closeSensorPanel() {
   var ov = document.getElementById("sensor-panel-overlay");
   if (ov) ov.classList.remove("open");
+  if (_sensorRefreshTimer) { clearTimeout(_sensorRefreshTimer); _sensorRefreshTimer = null; }
 }
 
 async function openSensorDetailPanel(asset, sensorName) {
@@ -3336,15 +3369,24 @@ async function openSensorDetailPanel(asset, sensorName) {
   document.getElementById("btn-sensor-panel-close-btn").addEventListener("click", closeSensorPanel);
 
   var rangeBtns = _chartRangeBtnsHTML("sensor-range-btn", [
+    { value: "1h",  label: "1h" },
     { value: "24h", label: "24h" },
     { value: "7d",  label: "7d" },
     { value: "30d", label: "30d" },
-  ], "assetSensor", "24h");
+  ], "assetSensor", "1h");
+
+  // Temperature samples are written by collectTelemetry on the same cadence as
+  // CPU/memory, so the section badge tracks the asset's resolved telemetry
+  // polling method (matches the System tab Temperatures section).
+  var sensorBadge = _streamSourceBadgeHTML(asset, "telemetry");
 
   bodyEl.innerHTML =
     '<div style="padding:1rem 1.25rem">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
-        '<h4 style="margin:0">' + escapeHtml(sensorName) + '</h4>' +
+        '<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap">' +
+          '<h4 style="margin:0">' + escapeHtml(sensorName) + '</h4>' +
+          sensorBadge +
+        '</div>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
       '<div id="sensor-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
@@ -3364,7 +3406,11 @@ async function openSensorDetailPanel(asset, sensorName) {
     box.style.fontSize = "0.85rem";
   }
 
-  await _loadSensorHistoryFor(asset.id, sensorName, _getChartRangePref("assetSensor", "24h"));
+  await _loadSensorHistoryFor(asset.id, sensorName, _getChartRangePref("assetSensor", "1h"));
+  // Async overwrite the badge with the authoritative resolved polling method —
+  // sync render only sees per-asset overrides; this catches class / integration
+  // / manual tier values too.
+  _updateStreamSourceBadgesFromEffective(asset.id, asset);
   document.querySelectorAll(".sensor-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
@@ -3376,14 +3422,22 @@ async function openSensorDetailPanel(asset, sensorName) {
   });
 }
 
-async function _loadSensorHistoryFor(assetId, sensorName, range) {
+async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
+  // Cancel any pending auto-refresh — manual range change shouldn't race a tick.
+  if (_sensorRefreshTimer) { clearTimeout(_sensorRefreshTimer); _sensorRefreshTimer = null; }
+  var silent = !!(callOpts && callOpts.silent);
   var chartEl = document.getElementById("sensor-chart");
   var stats   = document.getElementById("sensor-stats");
   if (!chartEl) return;
-  chartEl.textContent = "Loading samples…";
-  if (stats) stats.textContent = "Loading…";
+  if (!silent) {
+    chartEl.textContent = "Loading samples…";
+    if (stats) stats.textContent = "Loading…";
+  }
+  var panelBody = silent ? document.getElementById("sensor-panel-body") : null;
+  var savedScroll = panelBody ? panelBody.scrollTop : 0;
+  var resolvedRange = range || "1h";
   try {
-    var data = await api.assets.temperatureHistory(assetId, { sensorName: sensorName, range: range || "24h" });
+    var data = await api.assets.temperatureHistory(assetId, { sensorName: sensorName, range: resolvedRange });
     var samples = (data.samples || []).filter(function (s) { return typeof s.celsius === "number"; });
     if (stats) {
       var st = data.stats || {};
@@ -3398,10 +3452,28 @@ async function _loadSensorHistoryFor(assetId, sensorName, range) {
       until:   data.until,
       subject: sensorName,
     });
+    // Stash the active range on the chart so silent ticks / probe-now refetch
+    // the same view (canonical convention from primaries.md).
+    chartEl.dataset.range = resolvedRange;
   } catch (err) {
-    chartEl.textContent = "Error: " + (err.message || "failed to load");
-    if (stats) stats.textContent = "";
+    if (!silent) {
+      chartEl.textContent = "Error: " + (err.message || "failed to load");
+      if (stats) stats.textContent = "";
+    }
+    // Silent ticks leave stale content on transient errors.
   }
+  if (panelBody) {
+    panelBody.scrollTop = savedScroll;
+    requestAnimationFrame(function () {
+      if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
+    });
+  }
+  // Schedule next auto-refresh on the resolved telemetry cadence — temperature
+  // samples are written by collectTelemetry, not the response-time probe.
+  var settings = _monitorSettingsCache || {};
+  var asset = _currentAssetForRefresh;
+  var ms = _refreshIntervalMs(asset && asset.telemetryIntervalSec, settings.telemetryIntervalSeconds, 60);
+  _scheduleSensorRefresh(assetId, sensorName, ms);
 }
 
 function _renderSensorChart(container, samples, opts) {
@@ -5066,7 +5138,10 @@ async function openInterfaceDetailPanel(asset, ifName) {
       '</div>' +
       '<div id="iface-lldp-block" style="margin-bottom:0.75rem"></div>' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
-        '<h4 style="margin:0">Throughput &amp; errors</h4>' +
+        '<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap">' +
+          '<h4 style="margin:0">Throughput &amp; errors</h4>' +
+          _streamSourceBadgeHTML(asset, "interfaces") +
+        '</div>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
       '<h5 style="margin:0.75rem 0 0.25rem;font-size:0.85rem">Throughput (bps)</h5>' +
@@ -5090,6 +5165,8 @@ async function openInterfaceDetailPanel(asset, ifName) {
   });
 
   await _loadInterfaceHistoryFor(asset.id, ifName, _getChartRangePref("assetInterface", "1h"));
+  // Async overwrite the badge with the authoritative resolved polling method.
+  _updateStreamSourceBadgesFromEffective(asset.id, asset);
   document.querySelectorAll(".iface-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
@@ -5117,8 +5194,9 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   }
   var panelBody = silent ? document.getElementById("iface-panel-body") : null;
   var savedScroll = panelBody ? panelBody.scrollTop : 0;
+  var resolvedRange = range || "1h";
   try {
-    var data = await api.assets.interfaceHistory(assetId, ifName, range || "1h");
+    var data = await api.assets.interfaceHistory(assetId, ifName, resolvedRange);
     var derived = _derivePerIntervalSeries(data.samples || []);
     _renderIfaceThroughputStats(tputStats, data.samples || [], derived);
     _renderIfaceErrorStats(errStats, data.samples || [], derived);
@@ -5133,6 +5211,10 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
     var ifaceOpts = { since: data.since, until: data.until, subject: ifName };
     _renderIfaceThroughputChart(tputEl, derived, ifaceOpts);
     _renderIfaceErrorChart(errEl, derived, ifaceOpts);
+    // Stash the active range on each chart container so silent ticks /
+    // probe-now refetch the same view (canonical convention).
+    tputEl.dataset.range = resolvedRange;
+    errEl.dataset.range  = resolvedRange;
   } catch (err) {
     if (!silent) {
       tputEl.textContent = errEl.textContent = "Error: " + (err.message || "failed to load");
@@ -5636,6 +5718,7 @@ function _ensureIpsecPanelDOM() {
 function closeIpsecPanel() {
   var ov = document.getElementById("ipsec-panel-overlay");
   if (ov) ov.classList.remove("open");
+  if (_ipsecRefreshTimer) { clearTimeout(_ipsecRefreshTimer); _ipsecRefreshTimer = null; }
 }
 
 async function openIpsecTunnelDetailPanel(asset, tunnelName) {
@@ -5660,12 +5743,21 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
     { value: "24h", label: "24h" },
     { value: "7d",  label: "7d"  },
     { value: "30d", label: "30d" },
-  ], "assetIpsec", "24h");
+  ], "assetIpsec", "1h");
+
+  // IPsec rides the FortiOS REST interfaces stream — even when the operator
+  // routes Interfaces to SNMP, IPsec stays on REST since SNMP has no
+  // equivalent (see CLAUDE.md). The configurable stream that controls its
+  // delivery is `interfaces`.
+  var ipsecBadge = _streamSourceBadgeHTML(asset, "interfaces");
 
   bodyEl.innerHTML =
     '<div style="padding:1rem 1.25rem">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
-        '<h4 style="margin:0">Tunnel state &amp; throughput</h4>' +
+        '<div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap">' +
+          '<h4 style="margin:0">Tunnel state &amp; throughput</h4>' +
+          ipsecBadge +
+        '</div>' +
         '<div style="display:flex;gap:6px">' + rangeBtns + '</div>' +
       '</div>' +
       '<div id="ipsec-stats" style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:0.5rem">Loading…</div>' +
@@ -5689,7 +5781,9 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
     el.style.fontSize = "0.85rem";
   });
 
-  await _loadIpsecHistoryFor(asset.id, tunnelName, _getChartRangePref("assetIpsec", "24h"));
+  await _loadIpsecHistoryFor(asset.id, tunnelName, _getChartRangePref("assetIpsec", "1h"));
+  // Async overwrite the badge with the authoritative resolved polling method.
+  _updateStreamSourceBadgesFromEffective(asset.id, asset);
   document.querySelectorAll(".ipsec-range-btn").forEach(function (b) {
     b.addEventListener("click", function () {
       var range = b.getAttribute("data-range");
@@ -5701,16 +5795,24 @@ async function openIpsecTunnelDetailPanel(asset, tunnelName) {
   });
 }
 
-async function _loadIpsecHistoryFor(assetId, tunnelName, range) {
+async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
+  // Cancel any pending auto-refresh — manual range change shouldn't race a tick.
+  if (_ipsecRefreshTimer) { clearTimeout(_ipsecRefreshTimer); _ipsecRefreshTimer = null; }
+  var silent = !!(callOpts && callOpts.silent);
   var statusEl = document.getElementById("ipsec-status-chart");
   var inEl     = document.getElementById("ipsec-in-chart");
   var outEl    = document.getElementById("ipsec-out-chart");
   var stats    = document.getElementById("ipsec-stats");
   if (!statusEl) return;
-  statusEl.textContent = inEl.textContent = outEl.textContent = "Loading samples…";
-  if (stats) stats.textContent = "Loading…";
+  if (!silent) {
+    statusEl.textContent = inEl.textContent = outEl.textContent = "Loading samples…";
+    if (stats) stats.textContent = "Loading…";
+  }
+  var panelBody = silent ? document.getElementById("ipsec-panel-body") : null;
+  var savedScroll = panelBody ? panelBody.scrollTop : 0;
+  var resolvedRange = range || "1h";
   try {
-    var data = await api.assets.ipsecHistory(assetId, tunnelName, range || "24h");
+    var data = await api.assets.ipsecHistory(assetId, tunnelName, resolvedRange);
     var samples = data.samples || [];
     var derived = _deriveIpsecThroughput(samples);
     _renderIpsecStats(stats, samples, derived);
@@ -5718,10 +5820,28 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range) {
     _renderIpsecStatusChart(statusEl, samples, ipsecOpts);
     _renderIpsecBpsChart(inEl,  derived, "in",  ipsecOpts);
     _renderIpsecBpsChart(outEl, derived, "out", ipsecOpts);
+    statusEl.dataset.range = resolvedRange;
+    inEl.dataset.range     = resolvedRange;
+    outEl.dataset.range    = resolvedRange;
   } catch (err) {
-    statusEl.textContent = inEl.textContent = outEl.textContent = "Error: " + (err.message || "failed to load");
-    if (stats) stats.textContent = "";
+    if (!silent) {
+      statusEl.textContent = inEl.textContent = outEl.textContent = "Error: " + (err.message || "failed to load");
+      if (stats) stats.textContent = "";
+    }
+    // Silent ticks leave stale content on transient errors.
   }
+  if (panelBody) {
+    panelBody.scrollTop = savedScroll;
+    requestAnimationFrame(function () {
+      if (panelBody.scrollTop !== savedScroll) panelBody.scrollTop = savedScroll;
+    });
+  }
+  // Schedule next auto-refresh on the response-time cadence — pinned tunnels
+  // ride that cadence on the backend (collectFastFiltered).
+  var settings = _monitorSettingsCache || {};
+  var asset = _currentAssetForRefresh;
+  var ms = _refreshIntervalMs(asset && asset.monitorIntervalSec, settings.intervalSeconds, 60);
+  _scheduleIpsecRefresh(assetId, tunnelName, ms);
 }
 
 // FortiOS resets phase-1 byte counters when the SA renegotiates, so a
