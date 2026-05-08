@@ -1001,9 +1001,9 @@ button, .list-item, .chip { touch-action: manipulation; }
 }
 .user-pin svg { width: 100%; height: 100%; overflow: visible; }
 .user-pin .hat        { fill: #fbbf24; }                    /* construction-yellow helmet */
-.user-pin .hat-stripe { stroke: #b45309; stroke-width: 0.8; }
-.user-pin .face       { fill: #f5d3a8; }                    /* skin tone */
+.user-pin .hat-stripe { stroke: #b45309; stroke-width: 1.6; stroke-linecap: round; }
 .user-pin .stroke     { stroke: var(--user-pin-stroke); stroke-width: 2.4; stroke-linecap: round; fill: none; }
+.user-pin .head       { fill: #f5d3a8; }                    /* skin tone — overrides .stroke fill:none */
 
 /* Walking animation — alternate left/right limb poses on a ~480ms cycle.
    transform-box:fill-box + per-limb transform-origin pivots the limbs
