@@ -132,11 +132,8 @@ document.addEventListener("DOMContentLoaded", async function () {
   // delete button works regardless of where the tooltip lives.
   document.addEventListener("click", _handleMacDeleteClick);
   document.getElementById("assets-bulk-delete-btn").addEventListener("click", bulkDeleteAssets);
-  document.getElementById("assets-bulk-edit-btn").addEventListener("click", openBulkEditModal);
-  var bmOn  = document.getElementById("assets-bulk-monitor-on-btn");
-  var bmOff = document.getElementById("assets-bulk-monitor-off-btn");
-  if (bmOn)  bmOn.addEventListener("click",  function () { bulkSetMonitoring(true); });
-  if (bmOff) bmOff.addEventListener("click", function () { bulkSetMonitoring(false); });
+  document.getElementById("assets-bulk-tags-btn").addEventListener("click", openBulkTagsModal);
+  _wireBulkBarDropdowns();
   var bQuarantine   = document.getElementById("assets-bulk-quarantine-btn");
   var bUnquarantine = document.getElementById("assets-bulk-unquarantine-btn");
   if (bQuarantine)   bQuarantine.addEventListener("click", bulkQuarantineAssets);
@@ -230,6 +227,17 @@ var ASSET_TYPE_LABELS = {
   printer: "Printer",
   access_point: "AP",
   other: "Other",
+};
+
+// Bulk-bar State dropdown options. quarantined is intentionally omitted —
+// quarantine is set/cleared via the dedicated /assets/bulk-quarantine
+// endpoint, not the regular asset PUT.
+var ASSET_STATUS_LABELS = {
+  active: "Active",
+  maintenance: "Maintenance",
+  storage: "Storage",
+  disabled: "Disabled",
+  decommissioned: "Decommissioned",
 };
 
 async function loadAssets() {
@@ -1003,6 +1011,162 @@ async function openAssetSettingsModal() {
   });
 }
 
+// Bulk-bar dropdown wiring. Three dropdowns share one "only-one-open" model
+// + outside-click-closes pattern: opening one closes the others, and a
+// document-level mousedown handler closes the active menu when the click
+// lands outside it. The Type and State menus are populated from the label
+// maps so the option list isn't duplicated in HTML.
+var _bulkBarOpenMenu = null;
+var _bulkBarOutsideHandler = null;
+
+function _closeBulkBarMenu() {
+  if (_bulkBarOpenMenu) {
+    _bulkBarOpenMenu.classList.remove("open");
+    _bulkBarOpenMenu = null;
+  }
+  if (_bulkBarOutsideHandler) {
+    document.removeEventListener("mousedown", _bulkBarOutsideHandler, true);
+    _bulkBarOutsideHandler = null;
+  }
+}
+
+function _openBulkBarMenu(menu) {
+  _closeBulkBarMenu();
+  menu.classList.add("open");
+  _bulkBarOpenMenu = menu;
+  _bulkBarOutsideHandler = function (ev) {
+    if (!menu.contains(ev.target) && !menu.previousElementSibling.contains(ev.target)) {
+      _closeBulkBarMenu();
+    }
+  };
+  setTimeout(function () {
+    document.addEventListener("mousedown", _bulkBarOutsideHandler, true);
+  }, 0);
+}
+
+function _wireBulkBarDropdowns() {
+  // Populate Type menu from ASSET_TYPE_LABELS.
+  var typeMenu = document.getElementById("assets-bulk-type-menu");
+  if (typeMenu) {
+    var typeHtml = ['<div class="dropdown-heading">Change type</div>'];
+    Object.keys(ASSET_TYPE_LABELS).forEach(function (key) {
+      typeHtml.push('<button type="button" data-bulk-type="' + escapeHtml(key) + '">' + escapeHtml(ASSET_TYPE_LABELS[key]) + '</button>');
+    });
+    typeMenu.innerHTML = typeHtml.join("");
+    typeMenu.querySelectorAll('button[data-bulk-type]').forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var key = btn.getAttribute("data-bulk-type");
+        _closeBulkBarMenu();
+        bulkChangeType(key);
+      });
+    });
+  }
+
+  // Populate State menu from ASSET_STATUS_LABELS.
+  var stateMenu = document.getElementById("assets-bulk-state-menu");
+  if (stateMenu) {
+    var stateHtml = ['<div class="dropdown-heading">Change state</div>'];
+    Object.keys(ASSET_STATUS_LABELS).forEach(function (key) {
+      stateHtml.push('<button type="button" data-bulk-state="' + escapeHtml(key) + '">' + escapeHtml(ASSET_STATUS_LABELS[key]) + '</button>');
+    });
+    stateMenu.innerHTML = stateHtml.join("");
+    stateMenu.querySelectorAll('button[data-bulk-state]').forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var key = btn.getAttribute("data-bulk-state");
+        _closeBulkBarMenu();
+        bulkChangeState(key);
+      });
+    });
+  }
+
+  // Monitoring menu options are static HTML; just wire the click handlers.
+  var monOn  = document.getElementById("assets-bulk-monitor-on");
+  var monOff = document.getElementById("assets-bulk-monitor-off");
+  if (monOn)  monOn.addEventListener("click",  function () { _closeBulkBarMenu(); bulkSetMonitoring(true);  });
+  if (monOff) monOff.addEventListener("click", function () { _closeBulkBarMenu(); bulkSetMonitoring(false); });
+
+  // Open/close on trigger click. Toggling the same trigger closes the menu.
+  [
+    ["assets-bulk-type-btn", "assets-bulk-type-menu"],
+    ["assets-bulk-state-btn", "assets-bulk-state-menu"],
+    ["assets-bulk-monitor-btn", "assets-bulk-monitor-menu"],
+  ].forEach(function (pair) {
+    var trigger = document.getElementById(pair[0]);
+    var menu    = document.getElementById(pair[1]);
+    if (!trigger || !menu) return;
+    trigger.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_bulkBarOpenMenu === menu) {
+        _closeBulkBarMenu();
+      } else {
+        _openBulkBarMenu(menu);
+      }
+    });
+  });
+}
+
+// Bulk type change. No bulk endpoint exists — loop per-asset PUT, same as
+// the legacy "Edit Type & Tags" modal's submit path.
+async function bulkChangeType(nextType) {
+  var ids = Array.from(_assetsSelected);
+  if (!ids.length || !nextType) return;
+  var label = ASSET_TYPE_LABELS[nextType] || nextType;
+  var ok = await showConfirm("Change type to " + label + " for " + ids.length + " asset" + (ids.length !== 1 ? "s" : "") + "?");
+  if (!ok) return;
+  var btn = document.getElementById("assets-bulk-type-btn");
+  if (btn) btn.disabled = true;
+  var successCount = 0;
+  var errorCount = 0;
+  for (var i = 0; i < ids.length; i++) {
+    try {
+      await api.assets.update(ids[i], { assetType: nextType });
+      successCount++;
+    } catch (_e) {
+      errorCount++;
+    }
+  }
+  if (btn) btn.disabled = false;
+  if (errorCount === 0) {
+    showToast("Changed type to " + label + " on " + successCount + " asset" + (successCount !== 1 ? "s" : ""));
+  } else {
+    showToast("Updated " + successCount + ", " + errorCount + " failed", errorCount === ids.length ? "error" : "");
+  }
+  _assetsSelected.clear();
+  loadAssets();
+}
+
+// Bulk state change. The Prisma extension at src/db.ts handles the
+// "decommissioned/disabled → monitored=false" cascade, so no special-casing
+// here. quarantined is intentionally not in ASSET_STATUS_LABELS.
+async function bulkChangeState(nextStatus) {
+  var ids = Array.from(_assetsSelected);
+  if (!ids.length || !nextStatus) return;
+  var label = ASSET_STATUS_LABELS[nextStatus] || nextStatus;
+  var ok = await showConfirm("Change state to " + label + " for " + ids.length + " asset" + (ids.length !== 1 ? "s" : "") + "?");
+  if (!ok) return;
+  var btn = document.getElementById("assets-bulk-state-btn");
+  if (btn) btn.disabled = true;
+  var successCount = 0;
+  var errorCount = 0;
+  for (var i = 0; i < ids.length; i++) {
+    try {
+      await api.assets.update(ids[i], { status: nextStatus });
+      successCount++;
+    } catch (_e) {
+      errorCount++;
+    }
+  }
+  if (btn) btn.disabled = false;
+  if (errorCount === 0) {
+    showToast("Changed state to " + label + " on " + successCount + " asset" + (successCount !== 1 ? "s" : ""));
+  } else {
+    showToast("Updated " + successCount + ", " + errorCount + " failed", errorCount === ids.length ? "error" : "");
+  }
+  _assetsSelected.clear();
+  loadAssets();
+}
+
 async function bulkDeleteAssets() {
   var ids = Array.from(_assetsSelected);
   if (!ids.length) return;
@@ -1022,58 +1186,36 @@ async function bulkDeleteAssets() {
   loadAssets();
 }
 
-async function openBulkEditModal() {
+async function openBulkTagsModal() {
   var ids = Array.from(_assetsSelected);
   if (!ids.length) return;
   await _ensureTagCache();
 
-  var typeOptions = '<option value="">— no change —</option>' +
-    '<option value="server">Server</option>' +
-    '<option value="switch">Switch</option>' +
-    '<option value="router">Router</option>' +
-    '<option value="firewall">Firewall</option>' +
-    '<option value="workstation">Workstation</option>' +
-    '<option value="printer">Printer</option>' +
-    '<option value="access_point">Access Point</option>' +
-    '<option value="other">Other</option>';
-
   var body =
-    '<p style="color:var(--color-text-secondary);margin-bottom:1.25rem">Editing <strong>' + ids.length + '</strong> asset' + (ids.length !== 1 ? 's' : '') + '. Leave a field at its default to skip it.</p>' +
-    '<div class="form-group"><label>Asset Type</label>' +
-      '<select id="bulk-f-type">' + typeOptions + '</select>' +
-    '</div>' +
+    '<p style="color:var(--color-text-secondary);margin-bottom:1.25rem">Editing tags on <strong>' + ids.length + '</strong> asset' + (ids.length !== 1 ? 's' : '') + '.</p>' +
     '<div class="form-group"><label>Tags</label>' +
       '<div style="display:flex;gap:16px;margin-bottom:0.5rem">' +
-        '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-weight:normal"><input type="radio" name="bulk-tag-mode" value="none" checked> No change</label>' +
-        '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-weight:normal"><input type="radio" name="bulk-tag-mode" value="add"> Add tags</label>' +
+        '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-weight:normal"><input type="radio" name="bulk-tag-mode" value="add" checked> Add tags</label>' +
         '<label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-weight:normal"><input type="radio" name="bulk-tag-mode" value="replace"> Replace tags</label>' +
       '</div>' +
-      '<div id="bulk-tag-picker-wrap" style="display:none">' + tagFieldHTML([]) + '</div>' +
+      '<div id="bulk-tag-picker-wrap">' + tagFieldHTML([]) + '</div>' +
     '</div>';
 
   var footer =
     '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="bulk-edit-save-btn">Apply to ' + ids.length + ' Asset' + (ids.length !== 1 ? 's' : '') + '</button>';
 
-  openModal("Edit Selected Assets", body, footer);
+  openModal("Edit Tags", body, footer);
   wireTagPicker();
-
-  document.querySelectorAll('input[name="bulk-tag-mode"]').forEach(function (radio) {
-    radio.addEventListener("change", function () {
-      var wrap = document.getElementById("bulk-tag-picker-wrap");
-      if (wrap) wrap.style.display = this.value !== "none" ? "" : "none";
-    });
-  });
 
   document.getElementById("bulk-edit-save-btn").addEventListener("click", async function () {
     var btn = this;
-    var typeVal = document.getElementById("bulk-f-type").value;
     var tagModeEl = document.querySelector('input[name="bulk-tag-mode"]:checked');
-    var tagMode = tagModeEl ? tagModeEl.value : "none";
-    var selectedTags = tagMode !== "none" ? getTagFieldValue() : null;
+    var tagMode = tagModeEl ? tagModeEl.value : "add";
+    var selectedTags = getTagFieldValue() || [];
 
-    if (!typeVal && tagMode === "none") {
-      showToast("No changes selected", "error");
+    if (!selectedTags.length && tagMode === "add") {
+      showToast("Pick at least one tag to add", "error");
       return;
     }
 
@@ -1086,15 +1228,12 @@ async function openBulkEditModal() {
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i];
       var payload = {};
-      if (typeVal) payload.assetType = typeVal;
-      if (tagMode !== "none") {
-        if (tagMode === "add") {
-          var existing = _assetsData.find(function (a) { return a.id === id; });
-          var existingTags = existing && existing.tags ? existing.tags : [];
-          payload.tags = Array.from(new Set(existingTags.concat(selectedTags)));
-        } else {
-          payload.tags = selectedTags;
-        }
+      if (tagMode === "add") {
+        var existing = _assetsData.find(function (a) { return a.id === id; });
+        var existingTags = existing && existing.tags ? existing.tags : [];
+        payload.tags = Array.from(new Set(existingTags.concat(selectedTags)));
+      } else {
+        payload.tags = selectedTags;
       }
       try {
         await api.assets.update(id, payload);
@@ -1106,7 +1245,7 @@ async function openBulkEditModal() {
 
     closeModal();
     if (errorCount === 0) {
-      showToast("Updated " + successCount + " asset" + (successCount !== 1 ? "s" : ""));
+      showToast("Updated tags on " + successCount + " asset" + (successCount !== 1 ? "s" : ""));
     } else {
       showToast("Updated " + successCount + ", " + errorCount + " failed", errorCount === ids.length ? "error" : "");
     }
@@ -8217,7 +8356,7 @@ async function _monsetSaveOverride(existing) {
 async function bulkSetMonitoring(monitored) {
   var ids = Array.from(_assetsSelected);
   if (!ids.length) return;
-  var btn = document.getElementById(monitored ? "assets-bulk-monitor-on-btn" : "assets-bulk-monitor-off-btn");
+  var btn = document.getElementById("assets-bulk-monitor-btn");
   if (btn) btn.disabled = true;
   var payload = monitored
     ? { ids: ids, monitored: true,  monitorCredentialId: null }
