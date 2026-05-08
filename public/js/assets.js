@@ -1789,6 +1789,11 @@ async function _populateAssetMonitorTierBadges(asset) {
   var eff;
   try { eff = await api.assets.effectiveMonitorSettings(asset.id); } catch (e) { return; }
   if (!eff || !eff.provenance || !eff.resolved) return;
+  // Cache resolved settings so stale-banner slots can re-evaluate against the
+  // class/integration tier the sync render couldn't see, and fire that
+  // re-evaluation immediately for any slots already in the DOM.
+  _effectiveResolvedByAssetId.set(asset.id, eff.resolved);
+  _updateStaleBannersFromEffective(asset.id, asset);
 
   function tierLabel(tier) {
     if (tier === "asset")       return null; // own override — no badge needed; the input itself IS the value
@@ -2036,6 +2041,13 @@ var _sensorRefreshTimer       = null;
 var _ipsecRefreshTimer        = null;
 var _monitorSettingsCache     = null;  // global monitor settings, fetched once per session
 var _currentAssetForRefresh   = null;  // asset object cached so refresh schedulers can read its per-asset intervals
+// Per-asset cache of /effective-monitor-settings's `resolved` block. Both
+// _populateAssetMonitorTierBadges and _updateStreamSourceBadgesFromEffective
+// write here on success so the stale-banner slot has access to the truly-
+// resolved cadence (covers class / integration / manual tiers) without a
+// third fetch. Keyed by assetId; never invalidated within a session — the
+// modal lifecycle is short enough that staleness isn't a concern.
+var _effectiveResolvedByAssetId = new Map();
 
 function _refreshIntervalMs(perAssetSec, globalSec, defaultSec) {
   var s = (typeof perAssetSec === "number" && perAssetSec > 0) ? perAssetSec
@@ -2689,20 +2701,66 @@ function _isRestApiManagedNetworkDevice(asset) {
   return ifPoll === "rest_api";
 }
 
-// Amber stale-data banner. Returns the banner HTML only when `lastAt` is older
-// than 3× the resolved polling interval (per-asset override → global tier →
-// default). Resolves the same way as _refreshIntervalMs so the threshold
-// matches the asset's actual cadence rather than a hardcoded floor. Returns
-// "" when data is fresh so callers can unconditionally prepend the result.
-function _staleBannerHTML(lastAt, perAssetSec, globalSec, defaultSec) {
+// Resolves the polling interval (in seconds) used to gate the stale-data
+// banner for a given stream. Priority — most-authoritative first:
+//   1. _effectiveResolvedByAssetId (full /effective-monitor-settings walk —
+//      covers per-asset, class override, integration, manual tiers)
+//   2. Per-asset override on the loaded asset object
+//   3. Manual tier from _monitorSettingsCache
+//   4. Hardcoded floor (60s telemetry / 600s systemInfo)
+// The first source is missing on first paint (the eff fetch is async). The
+// _updateStaleBannersFromEffective post-pass below re-evaluates each slot
+// once the cache populates, so a mid-tier interval like a class override is
+// honored without waiting for the next full system-info refresh.
+function _resolveStaleStreamSec(assetId, asset, streamKey) {
+  var effField = streamKey + "IntervalSeconds";
+  var perAssetField = streamKey + "IntervalSec";
+  var defaultSec = (streamKey === "systemInfo") ? 600 : 60;
+  var effResolved = assetId ? _effectiveResolvedByAssetId.get(assetId) : null;
+  if (effResolved && typeof effResolved[effField] === "number" && effResolved[effField] > 0) return effResolved[effField];
+  if (asset && typeof asset[perAssetField] === "number" && asset[perAssetField] > 0) return asset[perAssetField];
+  var settings = _monitorSettingsCache || {};
+  if (typeof settings[effField] === "number" && settings[effField] > 0) return settings[effField];
+  return defaultSec;
+}
+
+function _staleBannerInnerHTML(lastAt, resolvedSec) {
   if (!lastAt) return "";
-  var resolvedSec = (typeof perAssetSec === "number" && perAssetSec > 0) ? perAssetSec
-                  : (typeof globalSec   === "number" && globalSec   > 0) ? globalSec
-                  : defaultSec;
   var ageMs = Date.now() - new Date(lastAt).getTime();
   var thresholdMs = resolvedSec * 3 * 1000;
   if (ageMs <= thresholdMs) return "";
   return "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; " + escapeHtml("Information last updated " + timeAgo(lastAt)) + "</div>";
+}
+
+// Amber stale-data banner. Emits a slot wrapper carrying the assetId, stream
+// key, and lastAt timestamp so _updateStaleBannersFromEffective can rewrite
+// the inner content once /effective-monitor-settings lands (covers cases
+// where the resolved cadence comes from a class override the sync render
+// can't see). Banner appears only when `lastAt` is older than 3× the
+// resolved polling interval. `streamKey` is one of: "telemetry"
+// (CPU/memory/temps) or "systemInfo" (interfaces/storage/IPsec/LLDP).
+function _staleBannerHTML(assetId, asset, streamKey, lastAt) {
+  var resolvedSec = _resolveStaleStreamSec(assetId, asset, streamKey);
+  var inner = _staleBannerInnerHTML(lastAt, resolvedSec);
+  return '<div class="asset-stale-banner-slot" data-asset-id="' + escapeHtml(assetId || "") + '" data-stream="' + escapeHtml(streamKey) + '" data-last-at="' + escapeHtml(lastAt || "") + '">' + inner + '</div>';
+}
+
+// Re-evaluates every stale-banner slot for an asset using the now-cached
+// /effective-monitor-settings resolved values. Called from
+// _updateStreamSourceBadgesFromEffective so badge + banner refresh together.
+// Re-checks data-asset-id on each slot so a stale fetch after the modal
+// switched assets doesn't write into the wrong row.
+function _updateStaleBannersFromEffective(assetId, asset) {
+  if (!assetId) return;
+  var sel = '.asset-stale-banner-slot[data-asset-id="' + (window.CSS && CSS.escape ? CSS.escape(assetId) : assetId) + '"]';
+  var slots = document.querySelectorAll(sel);
+  slots.forEach(function (slot) {
+    var streamKey = slot.getAttribute("data-stream");
+    var lastAt = slot.getAttribute("data-last-at") || null;
+    if (!streamKey) return;
+    var resolvedSec = _resolveStaleStreamSec(assetId, asset, streamKey);
+    slot.innerHTML = _staleBannerInnerHTML(lastAt, resolvedSec);
+  });
 }
 
 // Centred "not available" empty-state for a section whose polling method
@@ -2729,8 +2787,7 @@ function _renderInterfacesTable(container, si, asset) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
   }
-  var settings = _monitorSettingsCache || {};
-  var staleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, asset && asset.systemInfoIntervalSec, settings.systemInfoIntervalSeconds, 600);
+  var staleBanner = _staleBannerHTML(asset && asset.id, asset, "systemInfo", si && si.lastSystemInfoAt);
   var monitored        = new Set(((si && si.monitoredInterfaces)   || (asset && asset.monitoredInterfaces)   || []));
   var monitoredTunnels = new Set(((si && si.monitoredIpsecTunnels) || (asset && asset.monitoredIpsecTunnels) || []));
   var canEdit = canManageAssets();
@@ -3227,8 +3284,7 @@ function _renderTemperatures(container, si, asset) {
       '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
-  var tempSettings = _monitorSettingsCache || {};
-  var tempStaleBanner = _staleBannerHTML(si && (si.lastTemperatureAt || si.lastTelemetryAt), asset && asset.telemetryIntervalSec, tempSettings.telemetryIntervalSeconds, 60);
+  var tempStaleBanner = _staleBannerHTML(asset && asset.id, asset, "telemetry", si && (si.lastTemperatureAt || si.lastTelemetryAt));
   container.innerHTML = tempStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
@@ -3292,8 +3348,7 @@ function _renderLldpNeighborsCard(container, si, asset) {
       '<td style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(caps) + '</td>' +
     '</tr>';
   }).join("");
-  var lldpSettings = _monitorSettingsCache || {};
-  var lldpStaleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, asset && asset.systemInfoIntervalSec, lldpSettings.systemInfoIntervalSeconds, 600);
+  var lldpStaleBanner = _staleBannerHTML(asset && asset.id, asset, "systemInfo", si && si.lastSystemInfoAt);
   container.innerHTML = lldpStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Local Port</th><th>Neighbor</th><th>Capabilities</th>' +
@@ -4311,8 +4366,7 @@ function _renderSystemChart(container, data, asset, si) {
       '<text x="' + (padL + 74) + '" y="11">Memory</text>' +
     '</g>';
 
-  var chartSettings = _monitorSettingsCache || {};
-  var chartStaleBanner = _staleBannerHTML(si && si.lastTelemetryAt, asset && asset.telemetryIntervalSec, chartSettings.telemetryIntervalSeconds, 60);
+  var chartStaleBanner = _staleBannerHTML(asset && asset.id, asset, "telemetry", si && si.lastTelemetryAt);
   container.innerHTML =
     chartStaleBanner +
     '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
@@ -4595,6 +4649,10 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
   var eff;
   try { eff = await api.assets.effectiveMonitorSettings(assetId); } catch (_) { return; }
   if (!eff || !eff.resolved) return;
+  // Cache resolved settings so stale-banner slots can re-evaluate against
+  // the class/integration tier; rewrite any slots already in the DOM.
+  _effectiveResolvedByAssetId.set(assetId, eff.resolved);
+  _updateStaleBannersFromEffective(assetId, asset);
   var spans = document.querySelectorAll('.asset-stream-source-badge[data-asset-id="' + (window.CSS && CSS.escape ? CSS.escape(assetId) : assetId) + '"]');
   spans.forEach(function (span) {
     var stream = span.getAttribute("data-stream");
@@ -4725,8 +4783,16 @@ async function _renderIntermittencyBar(assetId) {
     ]);
     var raw = (results[0] && Array.isArray(results[0].samples)) ? results[0].samples : [];
     samples = raw.slice(-30);
-    if (results[1] && results[1].resolved && Number.isFinite(results[1].resolved.failureThreshold)) {
-      threshold = results[1].resolved.failureThreshold;
+    if (results[1] && results[1].resolved) {
+      if (Number.isFinite(results[1].resolved.failureThreshold)) {
+        threshold = results[1].resolved.failureThreshold;
+      }
+      // Populate the shared cache so stale-banner slots see the resolved
+      // class/integration cadence as soon as this fetch lands (covers the
+      // case where the response-time chart loads before the System tab is
+      // opened).
+      _effectiveResolvedByAssetId.set(assetId, results[1].resolved);
+      _updateStaleBannersFromEffective(assetId, _currentAssetForRefresh);
     }
   } catch (_) { /* fall through with defaults */ }
 
