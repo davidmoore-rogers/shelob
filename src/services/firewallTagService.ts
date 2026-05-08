@@ -77,13 +77,13 @@ async function removeTagFromAllAssets(tag: string): Promise<number> {
     where: { tags: { has: tag } },
     select: { id: true, tags: true },
   });
-  for (const row of rows) {
-    const tags = Array.isArray(row.tags) ? row.tags : [];
-    await prisma.asset.update({
-      where: { id: row.id },
-      data: { tags: tags.filter((t) => t !== tag) },
-    });
-  }
+  if (rows.length === 0) return 0;
+  await prisma.$transaction(
+    rows.map((row) => {
+      const tags = Array.isArray(row.tags) ? row.tags : [];
+      return prisma.asset.update({ where: { id: row.id }, data: { tags: tags.filter((t) => t !== tag) } });
+    }),
+  );
   return rows.length;
 }
 
@@ -132,11 +132,15 @@ export async function applyFirewallRename(
     where: { tags: { has: oldTag } },
     select: { id: true, tags: true },
   });
-  for (const row of rows) {
-    const tags = Array.isArray(row.tags) ? row.tags : [];
-    const next = tags.filter((t) => t !== oldTag);
-    if (!next.includes(newTag)) next.push(newTag);
-    await prisma.asset.update({ where: { id: row.id }, data: { tags: next } });
+  if (rows.length > 0) {
+    await prisma.$transaction(
+      rows.map((row) => {
+        const tags = Array.isArray(row.tags) ? row.tags : [];
+        const next = tags.filter((t) => t !== oldTag);
+        if (!next.includes(newTag)) next.push(newTag);
+        return prisma.asset.update({ where: { id: row.id }, data: { tags: next } });
+      }),
+    );
   }
 
   await deleteTagRegistry(oldH);
@@ -204,9 +208,8 @@ export async function reconcileFirewallTagsForIntegration(
 
   // Idempotent registry maintenance — covers fresh-install case where a
   // periodic re-tick or future reconciler call still needs the picker entries.
-  for (const h of ownedHostnames) {
-    await upsertTagRegistry(h);
-  }
+  // Parallel: each upsert is independent, no ordering constraint.
+  await Promise.all(Array.from(ownedHostnames).map((h) => upsertTagRegistry(h)));
 
   // --- 2. Compute expected tag set per asset ---
   const expectedByAsset = new Map<string, Set<string>>();
@@ -279,6 +282,12 @@ export async function reconcileFirewallTagsForIntegration(
     where: { id: { in: Array.from(candidateIds) } },
     select: { id: true, tags: true },
   });
+  // Compute per-asset diffs first, then batch all writes in one transaction.
+  // The sequential-await-per-row pattern was opening one DB connection per
+  // changed asset — on first run after deploy this serialised hundreds of
+  // updates and stalled the pool.
+  const pendingUpdates: Array<{ id: string; tags: string[]; added: number; removed: number }> = [];
+
   for (const row of current) {
     const tags = Array.isArray(row.tags) ? [...row.tags] : [];
     const expected = expectedByAsset.get(row.id) ?? new Set<string>();
@@ -313,10 +322,18 @@ export async function reconcileFirewallTagsForIntegration(
     }
 
     if (added === 0 && removed === 0) continue;
-    await prisma.asset.update({ where: { id: row.id }, data: { tags: next } });
-    summary.added += added;
-    summary.removed += removed;
-    summary.assetsTouched += 1;
+    pendingUpdates.push({ id: row.id, tags: next, added, removed });
+  }
+
+  if (pendingUpdates.length > 0) {
+    await prisma.$transaction(
+      pendingUpdates.map((u) => prisma.asset.update({ where: { id: u.id }, data: { tags: u.tags } })),
+    );
+    for (const u of pendingUpdates) {
+      summary.added += u.added;
+      summary.removed += u.removed;
+      summary.assetsTouched += 1;
+    }
   }
 
   return summary;
