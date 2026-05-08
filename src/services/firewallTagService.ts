@@ -101,12 +101,20 @@ function readTopology(raw: unknown): TopologyMeta {
 
 // --- Public API ---
 
+// DISABLED: every public function below is a no-op while we evaluate whether
+// the firewall:<hostname> breadcrumb tagging belongs in this product. Helpers
+// above (upsertTagRegistry, deleteTagRegistry, removeTagFromAllAssets) are kept
+// in place so re-enabling is a single revert. Existing tags in the database
+// are not touched — flipping back on will reconcile them on the next discovery.
+const DISABLED = true;
+
 /**
  * Idempotent. Called from the Phase 3 firewall create branch so the tag picker
  * carries the entry from the moment a FortiGate is first discovered, before
  * the first reconciler tick lands.
  */
 export async function seedFirewallTagRegistry(hostname: string | null | undefined): Promise<void> {
+  if (DISABLED) return;
   const trimmed = (hostname || "").trim();
   if (!trimmed) return;
   await upsertTagRegistry(trimmed);
@@ -121,6 +129,7 @@ export async function applyFirewallRename(
   oldHostname: string | null | undefined,
   newHostname: string | null | undefined,
 ): Promise<{ renamedAssets: number }> {
+  if (DISABLED) return { renamedAssets: 0 };
   const oldH = (oldHostname || "").trim();
   const newH = (newHostname || "").trim();
   if (!oldH || !newH || oldH === newH) return { renamedAssets: 0 };
@@ -157,6 +166,7 @@ export async function applyFirewallRename(
 export async function applyFirewallDecommission(
   hostname: string | null | undefined,
 ): Promise<{ strippedAssets: number }> {
+  if (DISABLED) return { strippedAssets: 0 };
   const trimmed = (hostname || "").trim();
   if (!trimmed) return { strippedAssets: 0 };
   const stripped = await removeTagFromAllAssets(firewallTag(trimmed));
@@ -185,6 +195,7 @@ export async function reconcileFirewallTagsForIntegration(
   integrationId: string,
 ): Promise<ReconcileSummary> {
   const summary: ReconcileSummary = { integrationId, added: 0, removed: 0, assetsTouched: 0 };
+  if (DISABLED) return summary;
 
   // --- 1. Active firewalls owned by this integration ---
   const firewalls = await prisma.asset.findMany({
