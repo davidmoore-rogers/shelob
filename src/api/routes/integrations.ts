@@ -26,6 +26,12 @@ import { getAdMonitorProtocol } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
 import { recomputeDependencyTree } from "../../services/dependencyTreeService.js";
 import { reconcileMapRegions } from "../../services/mapRegionService.js";
+import {
+  reconcileFirewallTagsForIntegration,
+  seedFirewallTagRegistry,
+  applyFirewallRename,
+  applyFirewallDecommission,
+} from "../../services/firewallTagService.js";
 import * as sightings from "../../services/assetSightingService.js";
 import { quarantineAsset, verifyAssetQuarantine } from "../../services/assetQuarantineService.js";
 import {
@@ -2276,10 +2282,12 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       select: { id: true, hostname: true, serialNumber: true },
     });
     const staleFwIds: string[] = [];
+    const staleFwHostnames: string[] = [];
     for (const a of candidateFws) {
       if (!a.hostname) continue;
       if (knownDeviceNames.has(a.hostname)) continue;
       staleFwIds.push(a.id);
+      staleFwHostnames.push(a.hostname);
       logEvent({
         action: "asset.fortigate.decommissioned",
         resourceType: "asset",
@@ -2295,6 +2303,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         where: { id: { in: staleFwIds } },
         data: { status: "decommissioned", statusChangedAt: new Date(now), statusChangedBy: integrationLabel },
       });
+      // Strip the `firewall:<hostname>` tag from every asset that carried
+      // it and remove the registry row so the tag picker stops offering a
+      // dead FortiGate. Best-effort — failures shouldn't block the status
+      // flip above. See src/services/firewallTagService.ts.
+      for (const hostname of staleFwHostnames) {
+        try {
+          await applyFirewallDecommission(hostname);
+        } catch (err: any) {
+          syncLog("error", `Firewall tag decommission failed for "${hostname}": ${err?.message || "Unknown error"}`);
+        }
+      }
     }
   }
 
@@ -2464,7 +2483,33 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         if (fwProjected.latitude !== null) updateData.latitude = fwProjected.latitude;
         if (fwProjected.longitude !== null) updateData.longitude = fwProjected.longitude;
         clampAcquiredToLastSeen(updateData, existingAsset);
+        // Snapshot pre-write hostname so we can detect a rename below and
+        // rotate the firewall:* tag on every dependent asset before Phase 13.5
+        // recomputes membership.
+        const previousHostname: string | null = existingAsset.hostname || null;
         await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
+        // Rename rotation: when projection wrote a different hostname, swap
+        // `firewall:<old>` → `firewall:<new>` on every asset that carried
+        // the old tag and rotate the registry row. Best-effort; the Phase
+        // 13.5 reconciler will catch any miss on the next cycle.
+        const projectedHostnameRaw = updateData.hostname as string | null | undefined;
+        if (projectedHostnameRaw && previousHostname && projectedHostnameRaw !== previousHostname) {
+          try {
+            await applyFirewallRename(previousHostname, projectedHostnameRaw);
+          } catch (err: any) {
+            syncLog(
+              "error",
+              `Firewall tag rename failed (${previousHostname} → ${projectedHostnameRaw}): ${err?.message || "Unknown error"}`,
+            );
+          }
+        }
+        // Idempotent registry seed for the current hostname so the picker
+        // carries the entry even on the very first reconcile of a fresh
+        // install (covers the case where this asset was created by
+        // registerFortinetHost before discovery first ran).
+        try {
+          await seedFirewallTagRegistry(projectedHostnameRaw || previousHostname || fgHostname);
+        } catch { /* best-effort */ }
         // Update in-memory
         if (device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
         if (device.hostname) existingAsset.hostname = device.hostname;
@@ -2537,6 +2582,13 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           syncLog("error", `Created FortiGate asset ${device.name} but failed to upsert AssetSource row: ${err?.message || "Unknown error"}`);
         }
       }
+      // Seed the `firewall:<hostname>` Tag registry row so the asset-edit
+      // tag picker carries the entry from day one — Phase 13.5's reconciler
+      // would seed it eventually anyway, but doing it here makes the new
+      // FortiGate filterable the moment it appears.
+      try {
+        await seedFirewallTagRegistry(fgHostname);
+      } catch { /* best-effort */ }
       assetIdx.add(newAsset);
       assetNames.push(device.name);
     } catch (err: any) {
@@ -3966,6 +4018,25 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       }
     } catch (err: any) {
       syncLog("error", `Map region reconcile failed: ${err?.message || "Unknown error"}`);
+    }
+
+    // Phase 13.5 — Reconcile `firewall:<hostname>` breadcrumb tags. Rebuilds
+    // the per-asset firewall:* tag set from the data Phase 3b/Phase 6 just
+    // wrote: Asset.fortinetTopology.controllerFortigate (managed switches /
+    // APs) plus AssetFortigateSighting rows within sightingMaxAgeDays
+    // (DHCP-discovered endpoints). Only strips tags that point at this
+    // integration's own FortiGates — cross-integration tags survive. See
+    // src/services/firewallTagService.ts.
+    try {
+      const summary = await reconcileFirewallTagsForIntegration(integrationId);
+      if (summary.assetsTouched > 0) {
+        syncLog(
+          "info",
+          `Firewall tags: +${summary.added} / -${summary.removed} on ${summary.assetsTouched} asset(s)`,
+        );
+      }
+    } catch (err: any) {
+      syncLog("error", `Firewall tag reconcile failed: ${err?.message || "Unknown error"}`);
     }
   }
 

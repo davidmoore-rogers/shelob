@@ -261,6 +261,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 **System writers (managed namespaces):**
 - `src/services/mapRegionService.ts` — owns the `region:` prefix. Adds `region:<name>` to in-polygon firewalls + cascaded FortiSwitches/FortiAPs; only strips on rename/delete (never on polygon edit). Sees its own tags via the prefix; never touches operator-set tags. Mirrored to the `Tag` registry under category "Map Regions".
+- `src/services/firewallTagService.ts` — owns the `firewall:` prefix. Reconciles `firewall:<hostname>` on every FortiSwitch / FortiAP / non-infra endpoint at end of FMG / FortiGate discovery (Phase 13.5) using `Asset.fortinetTopology.controllerFortigate` + `AssetFortigateSighting` rows within `sightingMaxAgeDays`. Strips only tags whose hostname is one of THIS integration's currently-known firewalls (cross-integration safe). Inline lifecycle hooks at Phase 2a (decommission strip), Phase 3 firewall create (registry seed), Phase 3 firewall update (rename rotation). Mirrored to the `Tag` registry under category "FortiGate".
 - Discovery breadcrumb tags — `src/api/routes/integrations.ts` legacy paths still write `entra-disabled`, `ad-disabled`, `prev-*` markers. Some of these (sid:, ad-guid:) are being retired by the multi-source asset model.
 
 **Tag registry mirror (`prisma.tag` rows):**
@@ -436,6 +437,37 @@ Listed alphabetically.
 - If the tag prefix or category constants change, also update CLAUDE.md "Map Regions" section + the assets edit modal's tag picker label conventions.
 - Membership logic depends on `Asset.fortinetTopology.controllerFortigate` matching firewall hostnames; if discovery ever stops setting that field, the cascade silently breaks. Add a coverage test if discovery topology shape evolves.
 - Polygon antimeridian crossings are documented out-of-scope; if Polaris ever supports global polygons, audit `pointInPolygon` for that case.
+
+---
+
+## services/firewallTagService.ts
+
+**What it owns:** `firewall:<hostname>` breadcrumb tags on FortiGate-discovered assets. Reconciler that rebuilds each in-scope asset's `firewall:*` tag set from `Asset.fortinetTopology.controllerFortigate` (managed switches / APs) plus `AssetFortigateSighting` rows within `quarantine.sightingMaxAgeDays` (DHCP-discovered endpoints). Inline lifecycle helpers for firewall create / rename / decommission. Tag-registry mirroring under category "FortiGate".
+
+**Public API:** ReconcileSummary, reconcileFirewallTagsForIntegration, applyFirewallRename, applyFirewallDecommission, seedFirewallTagRegistry.
+
+**Cross-service deps:** `src/services/assetSightingService.ts:getSightingSettings` (reads `sightingMaxAgeDays` for the endpoint freshness window), `prisma.tag` (registry mirror), `prisma.asset` (tag mutations), `prisma.assetFortigateSighting` (endpoint membership).
+
+**Used by:**
+- `src/api/routes/integrations.ts` Phase 2a — calls `applyFirewallDecommission(hostname)` per stale firewall after the status flip.
+- `src/api/routes/integrations.ts` Phase 3 firewall create — calls `seedFirewallTagRegistry(fgHostname)` after the `prisma.asset.create` so the picker carries the tag from day one.
+- `src/api/routes/integrations.ts` Phase 3 firewall update — calls `applyFirewallRename(old, new)` when projection writes a different hostname.
+- `src/api/routes/integrations.ts` Phase 13.5 — calls `reconcileFirewallTagsForIntegration(integrationId)` after the Phase 13 map-region pass (`mode in {"full", "finalize"}`).
+
+**Invariants:**
+- The `firewall:` prefix is owned by THIS service. No other writer touches `firewall:*` tags.
+- FortiGate firewall assets themselves are never tagged — don't tag a device with itself.
+- Strip allowlist is always scoped to the current integration's known firewall hostnames. Tags pointing at FortiGates owned by another integration (or operator-typed `firewall:fake`) survive every reconcile pass.
+- Endpoint membership comes from `AssetFortigateSighting` rows whose `integrationId` matches AND whose `lastSeen` is within `sightingMaxAgeDays` (0 = forever).
+- Infra membership comes from `Asset.fortinetTopology.controllerFortigate` matching one of this integration's firewall hostnames; switches/APs whose controller field is empty get no firewall tag.
+- Reconciler is idempotent: writes only when the tag array actually differs.
+- Registry rows under category "FortiGate" stay in 1:1 correspondence with active firewall hostnames (create upserts; rename rotates; decommission removes; the reconciler also re-upserts as a safety net so rows don't go missing).
+
+**When changing this:**
+- If the tag prefix or category constants change, also update CLAUDE.md "Firewall tag reconcile (Phase 13.5)" section + the touches.md "Asset.tags" cross-cutting entry.
+- Endpoint membership depends on the sightings table's `integrationId` index — if `AssetFortigateSighting`'s indexing changes, audit the `findMany` filter for performance regressions.
+- Adding a fourth lifecycle path (e.g. operator-driven hostname rename via PUT /assets/:id on a firewall row) means hooking `applyFirewallRename` in that path too — the projection-driven Phase 3 hook only catches discovery-driven renames.
+- The reconciler currently runs only at Phase 13.5 of FMG/FortiGate discovery. If discovery is ever skipped or disabled long-term, stale tags persist — operators should run a manual reconcile or delete the tag manually. (No periodic safety-net job exists by design — every input is discovery-written.)
 
 ---
 
