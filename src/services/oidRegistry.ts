@@ -69,6 +69,11 @@ const BUILT_IN_OIDS: Record<string, string> = {
   // Fortinet
   fortinet: "1.3.6.1.4.1.12356",
   fnFortiGateMib: "1.3.6.1.4.1.12356.101",
+  // Stable across every FortiOS release; seeded so the vendor telemetry
+  // profile resolves CPU/memory without requiring FORTINET-FORTIGATE-MIB
+  // to be uploaded — matches the always-on temperature fallback path.
+  fgSysCpuUsage: "1.3.6.1.4.1.12356.101.4.1.3",
+  fgSysMemUsage: "1.3.6.1.4.1.12356.101.4.1.4",
   // Dell
   dell: "1.3.6.1.4.1.674",
 };
