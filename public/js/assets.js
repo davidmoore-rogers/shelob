@@ -2690,14 +2690,19 @@ function _isRestApiManagedNetworkDevice(asset) {
 }
 
 // Amber stale-data banner. Returns the banner HTML only when `lastAt` is older
-// than `intervalSec * 3` (3 = the default failureThreshold). Returns "" when
-// data is fresh so callers can unconditionally prepend the return value.
-function _staleBannerHTML(lastAt, intervalSec) {
+// than 3× the resolved polling interval (per-asset override → global tier →
+// default). Resolves the same way as _refreshIntervalMs so the threshold
+// matches the asset's actual cadence rather than a hardcoded floor. Returns
+// "" when data is fresh so callers can unconditionally prepend the result.
+function _staleBannerHTML(lastAt, perAssetSec, globalSec, defaultSec) {
   if (!lastAt) return "";
+  var resolvedSec = (typeof perAssetSec === "number" && perAssetSec > 0) ? perAssetSec
+                  : (typeof globalSec   === "number" && globalSec   > 0) ? globalSec
+                  : defaultSec;
   var ageMs = Date.now() - new Date(lastAt).getTime();
-  var thresholdMs = (intervalSec || 600) * 3 * 1000;
+  var thresholdMs = resolvedSec * 3 * 1000;
   if (ageMs <= thresholdMs) return "";
-  return "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; " + escapeHtml("Information last updated " + timeAgo(lastAt)) + " — try a different polling method.</div>";
+  return "<div style=\"margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(245,127,23,0.08);border:1px solid rgba(245,127,23,0.3);border-radius:6px;font-size:0.8rem;color:var(--color-warning)\">&#9888; " + escapeHtml("Information last updated " + timeAgo(lastAt)) + "</div>";
 }
 
 // Centred "not available" empty-state for a section whose polling method
@@ -2724,7 +2729,8 @@ function _renderInterfacesTable(container, si, asset) {
     container.innerHTML = '<p class="empty-state">No interface data yet — system info is collected every ~10 minutes after monitoring is enabled.</p>';
     return;
   }
-  var staleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, (asset && asset.systemInfoIntervalSec) || 600);
+  var settings = _monitorSettingsCache || {};
+  var staleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, asset && asset.systemInfoIntervalSec, settings.systemInfoIntervalSeconds, 600);
   var monitored        = new Set(((si && si.monitoredInterfaces)   || (asset && asset.monitoredInterfaces)   || []));
   var monitoredTunnels = new Set(((si && si.monitoredIpsecTunnels) || (asset && asset.monitoredIpsecTunnels) || []));
   var canEdit = canManageAssets();
@@ -3221,7 +3227,8 @@ function _renderTemperatures(container, si, asset) {
       '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
-  var tempStaleBanner = _staleBannerHTML(si && (si.lastTemperatureAt || si.lastTelemetryAt), (asset && asset.telemetryIntervalSec) || 60);
+  var tempSettings = _monitorSettingsCache || {};
+  var tempStaleBanner = _staleBannerHTML(si && (si.lastTemperatureAt || si.lastTelemetryAt), asset && asset.telemetryIntervalSec, tempSettings.telemetryIntervalSeconds, 60);
   container.innerHTML = tempStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
@@ -3285,7 +3292,8 @@ function _renderLldpNeighborsCard(container, si, asset) {
       '<td style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(caps) + '</td>' +
     '</tr>';
   }).join("");
-  var lldpStaleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, (asset && asset.systemInfoIntervalSec) || 600);
+  var lldpSettings = _monitorSettingsCache || {};
+  var lldpStaleBanner = _staleBannerHTML(si && si.lastSystemInfoAt, asset && asset.systemInfoIntervalSec, lldpSettings.systemInfoIntervalSeconds, 600);
   container.innerHTML = lldpStaleBanner +
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Local Port</th><th>Neighbor</th><th>Capabilities</th>' +
@@ -4303,7 +4311,8 @@ function _renderSystemChart(container, data, asset, si) {
       '<text x="' + (padL + 74) + '" y="11">Memory</text>' +
     '</g>';
 
-  var chartStaleBanner = _staleBannerHTML(si && si.lastTelemetryAt, (asset && asset.telemetryIntervalSec) || 60);
+  var chartSettings = _monitorSettingsCache || {};
+  var chartStaleBanner = _staleBannerHTML(si && si.lastTelemetryAt, asset && asset.telemetryIntervalSec, chartSettings.telemetryIntervalSeconds, 60);
   container.innerHTML =
     chartStaleBanner +
     '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
@@ -4974,12 +4983,18 @@ function _renderMonitorChart(container, data, transitions) {
       '" data-ok="' + (s.success ? "1" : "0") +
       '" data-err="' + escapeHtml(s.error || "") + '"';
   }
-  // Transparent hit targets (r=7) on top of every sample so hover is forgiving
-  // for both the 1.5px dots and the 1px failure lines.
+  // Transparent hit targets so hover is forgiving for the 1.5px dots and the
+  // 1px failure lines. Successful samples use a 7px circle centered on the
+  // dot; failed samples use a full-height 10px rect centered on the failure
+  // line (otherwise the operator has to find the vertical middle of the line
+  // for the tooltip to fire — the line spans the chart but the hit target
+  // didn't). Same pattern as the polling-method transition rect above.
   var hitTargets = samples.map(function (s) {
     var x = xFor(s.timestamp);
-    var y = (s.success && typeof s.responseTimeMs === "number") ? yFor(s.responseTimeMs) : (padT + innerH / 2);
-    return '<circle class="monitor-hit" cx="' + x + '" cy="' + y + '" r="7" fill="transparent" style="cursor:crosshair"' + hitAttrs(s) + '/>';
+    if (s.success && typeof s.responseTimeMs === "number") {
+      return '<circle class="monitor-hit" cx="' + x + '" cy="' + yFor(s.responseTimeMs) + '" r="7" fill="transparent" style="cursor:crosshair"' + hitAttrs(s) + '/>';
+    }
+    return '<rect class="monitor-hit" x="' + (x - 5) + '" y="' + padT + '" width="10" height="' + innerH + '" fill="transparent" style="cursor:crosshair"' + hitAttrs(s) + '/>';
   }).join("");
 
   // Y-axis ticks

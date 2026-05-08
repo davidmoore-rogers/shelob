@@ -54,6 +54,7 @@ Per-pattern sections:
 - Range selection is persisted; "Custom" from/to inputs intentionally are not.
 - **Stats line:** call `_renderChartStats(container, count, [{label, value}, …])`. Leading `<strong>{count}</strong> samples` span, then one `<span><strong>{Label}:</strong> {value}</span>` per metric, joined by flex gap. **No** "current/as-of" prose inside the stats line — current readings go in the Status block above the charts, modeled on `Last Response Time` / `Last Poll`. **Each chart owns its own stats line** (don't share one stats container across two charts — see Interface throughput vs errors).
 - **Polling-method badge:** every chart's section header carries one. Sync render uses the per-asset override only as a coarse first guess; the async path overwrites with the authoritative resolved value (covers class / integration / manual tiers). Cadence in the badge comes from the same resolved settings as the polling method, NOT a separate lookup.
+- **Stale-data banner:** sections rendering `lastTelemetryAt` / `lastSystemInfoAt` / `lastTemperatureAt`-driven data prepend `_staleBannerHTML(lastAt, perAssetSec, globalSec, defaultSec)` in `public/js/assets.js:2692`. Resolves the polling interval the same way `_refreshIntervalMs` does (per-asset override → global tier from `_monitorSettingsCache` → hardcoded floor); banner appears only when `lastAt` is older than 3× the resolved interval. Don't pass a hardcoded interval — the resolved triple is what keeps the threshold matched to the asset's real cadence.
 
 **When adding a new instance:**
 - Pick a unique chart id and add it to the prefs key list above.
@@ -64,6 +65,7 @@ Per-pattern sections:
 - Stats values must come from `data.stats` server-side or be derived once from the same samples the chart renders — don't duplicate aggregation logic.
 - Add a polling-method badge to the section header via `_streamSourceBadgeHTML` whenever the chart's data is delivered by a configurable polling stream (response-time / telemetry / interfaces / lldp).
 - If the data is unsupported on some monitor transports (e.g. ICMP/SSH), render an empty-state message — don't show an empty chart.
+- Prepend `_staleBannerHTML(lastAt, perAssetSec, globalSec, defaultSec)` whenever the section renders sample data driven by a `last*At` timestamp — pass the same resolved triple `_refreshIntervalMs` would use (per-asset override → `_monitorSettingsCache.<stream>IntervalSeconds` → hardcoded floor).
 
 ---
 
