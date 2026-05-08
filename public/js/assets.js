@@ -71,6 +71,30 @@ function _setChartRangePref(key, range) {
     localStorage.setItem("polaris-prefs-charts-" + currentUsername, JSON.stringify(p));
   } catch (_) {}
 }
+// Per-asset collapsed-interface persistence. Storage shape:
+//   { "<assetId>": ["wan1", "agg1", ...] }  // collapsed parent ifNames
+// Same per-user keying as chart-range prefs. Per-asset because the same parent
+// name on different assets can have wildly different children.
+function _getCollapsedIfaces(assetId) {
+  if (!currentUsername || !assetId) return new Set();
+  try {
+    var raw = localStorage.getItem("polaris-prefs-iface-collapse-" + currentUsername);
+    var p = raw ? JSON.parse(raw) : null;
+    var arr = (p && p[assetId]) || [];
+    return new Set(arr);
+  } catch (_) { return new Set(); }
+}
+function _setCollapsedIfaces(assetId, collapsedSet) {
+  if (!currentUsername || !assetId) return;
+  try {
+    var raw = localStorage.getItem("polaris-prefs-iface-collapse-" + currentUsername);
+    var p = raw ? (JSON.parse(raw) || {}) : {};
+    if (collapsedSet.size === 0) delete p[assetId];
+    else p[assetId] = Array.from(collapsedSet);
+    localStorage.setItem("polaris-prefs-iface-collapse-" + currentUsername, JSON.stringify(p));
+  } catch (_) {}
+}
+
 // Render a chart range-button bar with the saved (or default) range marked as
 // primary. `entries` is a list of { value, label, id? }; each rendered button
 // carries `data-range="<value>"` so existing click handlers work unchanged.
@@ -2967,6 +2991,20 @@ function _renderInterfacesTable(container, si, asset) {
       '<th title="LLDP neighbor seen on this interface">Neighbor</th>' +
     '</tr></thead><tbody>' + html + "</tbody></table></div>";
 
+  // Restore per-user, per-asset collapsed state for nested rows.
+  var assetId = asset && asset.id;
+  var collapsed = _getCollapsedIfaces(assetId);
+  collapsed.forEach(function (parentName) {
+    var btn = container.querySelector('.iface-expand-toggle[data-parent="' + (window.CSS && CSS.escape ? CSS.escape(parentName) : parentName) + '"]');
+    if (btn) {
+      btn.textContent = "▶";
+      btn.title = "Expand children";
+    }
+    container.querySelectorAll(".iface-child").forEach(function (row) {
+      if (row.getAttribute("data-parent") === parentName) row.style.display = "none";
+    });
+  });
+
   // Expand / collapse aggregate and physical-with-children rows
   container.querySelectorAll(".iface-expand-toggle").forEach(function (btn) {
     btn.addEventListener("click", function (e) {
@@ -2978,6 +3016,8 @@ function _renderInterfacesTable(container, si, asset) {
       container.querySelectorAll(".iface-child").forEach(function (row) {
         if (row.getAttribute("data-parent") === parentName) row.style.display = expanded ? "none" : "";
       });
+      if (expanded) collapsed.add(parentName); else collapsed.delete(parentName);
+      _setCollapsedIfaces(assetId, collapsed);
     });
   });
 
