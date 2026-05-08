@@ -145,6 +145,42 @@ function updateCurrentTime() {
   }
 }
 
+// Page-scoped cache for the NTP timezone override. Fetched once when any
+// tab that needs to format timestamps loads (currently Maintenance), reused
+// by formatLocalTime() below. Empty string = "no override; use browser-local."
+var _tzOverride = null; // null = unloaded, "" = loaded but empty, "America/Chicago" = explicit
+async function loadTzOverride() {
+  if (_tzOverride !== null) return _tzOverride;
+  try {
+    var ntp = await api.serverSettings.getNtp();
+    _tzOverride = (ntp && ntp.timezoneOverride) ? ntp.timezoneOverride : "";
+  } catch (_) {
+    _tzOverride = "";
+  }
+  return _tzOverride;
+}
+
+// Render an ISO timestamp using the configured server timezone override (set
+// in Server Settings → Time & NTP → Timezone Override). When no override is
+// set, falls back to the browser's local timezone — for an admin operating
+// from the same site as the server, those usually match.
+function formatLocalTime(iso) {
+  if (!iso) return "";
+  try {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    var opts = {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "numeric", minute: "2-digit", second: "2-digit",
+      timeZoneName: "short",
+    };
+    if (_tzOverride) opts.timeZone = _tzOverride;
+    return d.toLocaleString("en-US", opts);
+  } catch (_) {
+    return iso;
+  }
+}
+
 async function saveNtpSettings() {
   var btn = document.getElementById("btn-ntp-save");
   btn.disabled = true;
@@ -157,6 +193,9 @@ async function saveNtpSettings() {
       servers: servers,
       timezoneOverride: document.getElementById("f-ntp-timezone-val").value.trim() || null,
     });
+    // Invalidate the formatLocalTime cache so the next Maintenance render
+    // picks up the new override without a full page refresh.
+    _tzOverride = null;
     showToast("NTP settings saved");
   } catch (err) {
     showToast(err.message, "error");
@@ -1096,7 +1135,7 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
           '<div class="capacity-reason-head">' +
             '<span class="capacity-pill capacity-pill-ok capacity-pill-sm">OK</span>' +
             '<span class="capacity-reason-msg">All capacity checks passed' +
-              (capacity.computedAt ? ' at ' + escapeHtml(capacity.computedAt) : '') +
+              (capacity.computedAt ? ' at ' + escapeHtml(formatLocalTime(capacity.computedAt)) : '') +
             '.</span>' +
           '</div>' +
         '</div>' +
@@ -1255,7 +1294,7 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
     '</div>' +
     reasonsHtml +
     '<div class="capacity-grid">' + hostHtml + dbHtml + enginePoolHtml + workHtml + '</div>' +
-    '<p class="hint" style="margin-top:0.75rem;font-size:0.78rem">Last computed ' + escapeHtml(capacity.computedAt || "") + '</p>' +
+    '<p class="hint" style="margin-top:0.75rem;font-size:0.78rem">Last computed ' + escapeHtml(formatLocalTime(capacity.computedAt)) + '</p>' +
   '</div>';
 }
 
@@ -1266,9 +1305,12 @@ async function loadDatabaseInfo() {
   try {
     // Fetch capacity in parallel with the database snapshot — if capacity
     // fails (e.g. statfs not available) we still render the rest of the tab.
+    // Also pull the NTP timezone override so capacity timestamps render in
+    // server time rather than UTC; failures fall through to browser-local.
     var results = await Promise.allSettled([
       api.serverSettings.getDatabase(),
       api.serverSettings.getPgTuning(),
+      loadTzOverride(),
     ]);
     if (results[0].status === "rejected") throw results[0].reason;
     var db = results[0].value;
