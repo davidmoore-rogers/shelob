@@ -52,6 +52,7 @@ import {
   buildAdvisorState,
   percentile,
   roundUpToNearest,
+  summarizeAdvisorGaps,
   type AdvisorInputs,
   type CadenceObservation,
   COLD_START_MIN_SAMPLES,
@@ -345,6 +346,62 @@ describe("buildAdvisorState — cold start", () => {
   it("still produces sensible recommendations (workers at floor, not zero)", () => {
     const probe = state.recommendations.find((r) => r.key === "POLARIS_MONITOR_PROBE_WORKERS")!;
     expect(probe.recommended).toBe(24);
+  });
+});
+
+describe("buildAdvisorState — Prisma pool honors observed peak", () => {
+  // Regression for the case the user spotted in production: the model said
+  // 152 was fine but peakObserved=179 told the truth. The advisor should
+  // size Prisma so the peak (minus pg-boss share) lands at <=80% utilization.
+  const snap = baseSnapshot({
+    monitoredAssetCount: 1714,
+    monitoredInterfaceCount: 32,
+    activeQueueMode: "pgboss",
+    peakObserved: 179,
+    pgbossPoolSize: 20,
+    prismaPoolSize: 152,
+    maxConnections: 300,
+  });
+  const inputs = buildInputs(snap, { DATABASE_POOL_SIZE: 152, POLARIS_PGBOSS_POOL_SIZE: 20 });
+  inputs.integrations.fortimanagerProxy = 1;
+  const state = buildAdvisorState(inputs);
+
+  it("recommends Prisma pool above current when peak exceeds modeled target", () => {
+    const prisma = state.recommendations.find((r) => r.key === "DATABASE_POOL_SIZE")!;
+    expect(prisma.changeRequired).toBe(true);
+    // (179 - 20) / 0.80 = 199; should land at or above that.
+    expect(prisma.recommended).toBeGreaterThanOrEqual(199);
+  });
+  it("includes peakPrismaFloor in the breakdown so operators see the driver", () => {
+    const prisma = state.recommendations.find((r) => r.key === "DATABASE_POOL_SIZE")!;
+    expect(prisma.breakdown).toHaveProperty("peakPrismaFloor");
+    expect(prisma.breakdown!.peakObserved).toBe(179);
+  });
+});
+
+describe("summarizeAdvisorGaps filters cursor-only levers when recommended mode is pgboss", () => {
+  // Regression for the case the user spotted: heavy_concurrency 8 → 48 was
+  // surfacing in monitor_workers_undersized on a pgboss-active install,
+  // where that cursor-only env var does nothing.
+  const snap = baseSnapshot({
+    monitoredAssetCount: 2000,
+    activeQueueMode: "pgboss",
+    pgbossPoolSize: 20,
+  });
+  const inputs = buildInputs(snap, {
+    POLARIS_HEAVY_CONCURRENCY: 8,  // way below what cursor would need
+    POLARIS_PROBE_CONCURRENCY: 8,
+  });
+  const state = buildAdvisorState(inputs);
+
+  it("does not flag POLARIS_HEAVY_CONCURRENCY when recommendedQueueMode is pgboss", () => {
+    expect(state.recommendedQueueMode).toBe("pgboss");
+    const gaps = summarizeAdvisorGaps(state);
+    // worstGap must not mention cursor-only levers.
+    if (gaps.worstGap) {
+      expect(gaps.worstGap).not.toContain("heavy_concurrency");
+      expect(gaps.worstGap).not.toContain("probe_concurrency");
+    }
   });
 });
 

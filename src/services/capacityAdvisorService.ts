@@ -326,10 +326,20 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     (integrations.entra + integrations.activedirectory + integrations.windowsserver) * 2;
 
   // 3. Prisma / pg-boss / max_connections.
-  const prismaTarget = workerCeiling + discoveryReserve + HTTP_JOB_OVERHEAD;
+  //
+  // The Prisma pool recommendation has to honor observed reality, not just the
+  // worker-count model. If the rolling-peak pg_stat_activity count has been
+  // bumping against the configured pool, the model under-predicted demand —
+  // typically because HTTP request bursts or discovery cycles aren't fully
+  // modeled by workerCeiling + discoveryReserve + httpOverhead. We size the
+  // pool so the observed peak (minus the pg-boss share) lands at ≤80% pool
+  // utilization, the same threshold db_pool_undersized used to fire at.
+  const peakObserved = snapshot.database.connectionPool.peakObserved;
+  const modeledPrismaTarget = workerCeiling + discoveryReserve + HTTP_JOB_OVERHEAD;
+  const peakPrismaFloor = Math.ceil(Math.max(0, peakObserved - PGBOSS_POOL_TARGET) / 0.80);
+  const prismaTarget = Math.max(modeledPrismaTarget, peakPrismaFloor);
   const pgbossTarget = PGBOSS_POOL_TARGET;
   const polarisNeeded = prismaTarget + pgbossTarget;
-  const peakObserved = snapshot.database.connectionPool.peakObserved;
   const polarisFloor = Math.max(polarisNeeded, peakObserved);
   const recommendedMax = roundUpToNearest(
     Math.ceil(polarisFloor / POLARIS_FRACTION_OF_MAX),
@@ -437,11 +447,16 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     applyMode: "env",
     current: prismaCurrent,
     recommended: prismaRecommended,
-    rationale: "Sized to cover the worker ceiling plus discovery reserve plus HTTP/job overhead.",
+    rationale: peakPrismaFloor > modeledPrismaTarget
+      ? "Sized to keep observed peak below 80% pool utilization — peak demand currently exceeds the worker-count model."
+      : "Sized to cover the worker ceiling plus discovery reserve plus HTTP/job overhead.",
     breakdown: {
       workerCeiling,
       discoveryReserve,
       httpOverhead: HTTP_JOB_OVERHEAD,
+      modeledTarget: modeledPrismaTarget,
+      peakObserved,
+      peakPrismaFloor,
       target: prismaTarget,
     },
     changeRequired: prismaRecommended > prismaCurrent,
@@ -680,6 +695,22 @@ export interface AdvisorGapSummary {
   worstGap?: string;
 }
 
+/** Levers that only apply in cursor mode. Excluded from gap rollups when
+ *  recommendedQueueMode is pgboss (and vice versa) so a pgboss-active install
+ *  doesn't surface "POLARIS_HEAVY_CONCURRENCY undersized" — that lever does
+ *  nothing in pgboss mode. Mirrors the UI's _advisorRecommendationsForView. */
+const CURSOR_ONLY_LEVERS = new Set<AdvisorLeverKey>([
+  "POLARIS_PROBE_CONCURRENCY",
+  "POLARIS_HEAVY_CONCURRENCY",
+]);
+const PGBOSS_ONLY_LEVERS = new Set<AdvisorLeverKey>([
+  "POLARIS_PGBOSS_POOL_SIZE",
+  "POLARIS_MONITOR_PROBE_WORKERS",
+  "POLARIS_MONITOR_FAST_WORKERS",
+  "POLARIS_MONITOR_HEAVY_WORKERS",
+  "POLARIS_MONITOR_FLOATING_WORKERS",
+]);
+
 /** Distill the advisor state down to the flags capacityService.computeReasons needs. */
 export function summarizeAdvisorGaps(state: AdvisorState): AdvisorGapSummary {
   const out: AdvisorGapSummary = {
@@ -687,10 +718,15 @@ export function summarizeAdvisorGaps(state: AdvisorState): AdvisorGapSummary {
     poolUndersized: false,
     maxConnectionsUndersized: false,
   };
+  const recommendedMode = state.recommendedQueueMode;
   let worstGapDelta = 0;
   let worstGapText = "";
   for (const r of state.recommendations) {
     if (!r.changeRequired) continue;
+    // Skip levers that don't apply to the recommended queue mode — the UI
+    // hides them, and so should the rollup that drives the watch reason.
+    if (recommendedMode === "pgboss" && CURSOR_ONLY_LEVERS.has(r.key)) continue;
+    if (recommendedMode === "cursor" && PGBOSS_ONLY_LEVERS.has(r.key)) continue;
     if (
       r.key === "POLARIS_MONITOR_PROBE_WORKERS" ||
       r.key === "POLARIS_MONITOR_FAST_WORKERS" ||

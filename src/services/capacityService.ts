@@ -664,35 +664,29 @@ function computeReasons(
     });
   }
 
-  // ── Watch: connection pool undersized ───────────────────────────────────
-  // Fires when the rolling peak `pg_stat_activity` count for the polaris DB
-  // approaches the configured Polaris pool capacity (Prisma + pg-boss). The
-  // specific recommended values live on the Capacity Advisor card — this
-  // reason just flags the condition so the Maintenance pill turns watch.
-  //
-  // Skipped when max_connections is unknown (lookup failed) so the alert
-  // never fires on bad data.
+  // ── Watch: pool / workers / max_connections undersized (rollup from advisor) ─
+  // The legacy `db_pool_undersized` reason was absorbed into the Capacity
+  // Advisor's DATABASE_POOL_SIZE recommendation — the advisor factors
+  // peakObserved into the prisma pool target directly, so when the pool is
+  // genuinely undersized the advisor's row flips to "Stage" and the
+  // poolUndersized flag (passed in via `advisor`) carries the signal.
   const pool = snap.database.connectionPool;
-  const polarisPoolCapacity = pool.prismaPoolSize + (pool.pgbossPoolSize ?? 0);
-  if (
-    pool.maxConnections > 0 &&
-    polarisPoolCapacity > 0 &&
-    pool.peakObserved >= Math.ceil(polarisPoolCapacity * 0.8)
-  ) {
+
+  // ── Watch: connection pool undersized (rollup from advisor) ────────────
+  // Replaces the legacy `db_pool_undersized` reason which fired on peak
+  // utilization heuristics. The advisor's DATABASE_POOL_SIZE recommendation
+  // now factors peakObserved directly into the prisma pool target, so when
+  // pool is undersized the advisor card carries the exact recommended value
+  // and this reason just flags it for the Maintenance pill.
+  if (advisor?.poolUndersized) {
     reasons.push({
       severity: "watch",
-      code: "db_pool_undersized",
-      message:
-        `Database connection pool peaked at ${pool.peakObserved}/${polarisPoolCapacity} ` +
-        `configured (Prisma ${pool.prismaPoolSize}` +
-        (pool.pgbossPoolSize !== null ? ` + pg-boss ${pool.pgbossPoolSize}` : "") +
-        `). PostgreSQL max_connections is ${pool.maxConnections} with ` +
-        `${pool.maxConnections - pool.peakObserved} free.`,
+      code: "pool_undersized",
+      message: `Database connection pool is sized below what the current peak demand requires.`,
       suggestion:
-        `See the Capacity Advisor card for recommended pool sizes and click Stage to write ` +
-        `them to .env. Bumping the pool is a low-risk fix when Postgres has headroom. If ` +
-        `pg_stat_activity shows many rows stuck in idle in transaction or the same slow query, ` +
-        `fix the holders instead.`,
+        `Open the Capacity Advisor card and click Stage to write the recommended pool sizes ` +
+        `to .env. Bumping the pool is a low-risk fix when Postgres has headroom. If ` +
+        `pg_stat_activity shows many rows stuck in idle in transaction, fix the holders instead.`,
     });
   }
 
