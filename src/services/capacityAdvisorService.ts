@@ -339,7 +339,16 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
   const peakPrismaFloor = Math.ceil(Math.max(0, peakObserved - PGBOSS_POOL_TARGET) / 0.80);
   const prismaTarget = Math.max(modeledPrismaTarget, peakPrismaFloor);
   const pgbossTarget = PGBOSS_POOL_TARGET;
-  const polarisNeeded = prismaTarget + pgbossTarget;
+  // max_connections must support Polaris's ACTUAL pool footprint, not just the
+  // modeled target. The advisor's never-shrink rule keeps DATABASE_POOL_SIZE
+  // and POLARIS_PGBOSS_POOL_SIZE at their current values when the model would
+  // recommend less — so max_connections has to use those same never-shrink
+  // values, otherwise we'd advise an operator that max_connections=300 is fine
+  // while Polaris is configured for a 339-connection pool that'd refuse
+  // connections the moment it hit 301.
+  const effectivePrismaPool = Math.max(prismaTarget, currentEnv.DATABASE_POOL_SIZE);
+  const effectivePgbossPool = Math.max(pgbossTarget, currentEnv.POLARIS_PGBOSS_POOL_SIZE);
+  const polarisNeeded = effectivePrismaPool + effectivePgbossPool;
   const polarisFloor = Math.max(polarisNeeded, peakObserved);
   const recommendedMax = roundUpToNearest(
     Math.ceil(polarisFloor / POLARIS_FRACTION_OF_MAX),
