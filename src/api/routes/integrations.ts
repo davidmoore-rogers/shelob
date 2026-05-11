@@ -8,6 +8,7 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireNetworkAdmin } from "../middleware/auth.js";
 import * as fortimanager from "../../services/fortimanagerService.js";
+import { getFmgWorker } from "../../services/fmgWorker.js";
 import * as fortigate from "../../services/fortigateService.js";
 import * as windowsServer from "../../services/windowsServerService.js";
 import * as entraId from "../../services/entraIdService.js";
@@ -42,6 +43,7 @@ import {
   type MacJsonEntry,
 } from "../../utils/macAddresses.js";
 import { withIntegrationCtx } from "../../utils/apiCallTracker.js";
+import { logger } from "../../utils/logger.js";
 
 const router = Router();
 
@@ -257,6 +259,11 @@ const FortiManagerConfigSchema = z.object({
   // opt in explicitly because quarantine push requires write access to the
   // FortiGate's address-group configuration.
   pushQuarantine: z.boolean().optional().default(false),
+  // When true, the next discovery cycle AND every monitor job published for
+  // assets owned by this integration will emit step-by-step structured logs
+  // to pino at info level (visible in `journalctl -u polaris`). High log
+  // volume — operators flip on for diagnosis and flip off when done.
+  verboseLogging: z.boolean().optional().default(false),
 });
 
 const FortiGateConfigSchema = z.object({
@@ -276,6 +283,9 @@ const FortiGateConfigSchema = z.object({
   fortigateMonitor:   FortiGateClassMonitorSchema,
   fortiswitchMonitor: FortinetClassMonitorSchema,
   fortiapMonitor:     FortinetClassMonitorSchema,
+  // Per-integration verbose debug logging — see FortiManagerConfigSchema for
+  // shape + semantics. Default false.
+  verboseLogging: z.boolean().optional().default(false),
 });
 
 const WindowsServerConfigSchema = z.object({
@@ -287,6 +297,8 @@ const WindowsServerConfigSchema = z.object({
   domain:    z.string().optional().default(""),
   dhcpInclude: z.array(z.string()).optional().default([]),
   dhcpExclude: z.array(z.string()).optional().default([]),
+  // Per-integration verbose debug logging.
+  verboseLogging: z.boolean().optional().default(false),
 });
 
 const EntraIdConfigSchema = z.object({
@@ -296,6 +308,8 @@ const EntraIdConfigSchema = z.object({
   enableIntune:  z.boolean().optional().default(false),
   deviceInclude: z.array(z.string()).optional().default([]),
   deviceExclude: z.array(z.string()).optional().default([]),
+  // Per-integration verbose debug logging.
+  verboseLogging: z.boolean().optional().default(false),
 });
 
 const ActiveDirectoryConfigSchema = z.object({
@@ -310,6 +324,8 @@ const ActiveDirectoryConfigSchema = z.object({
   ouInclude:       z.array(z.string()).optional().default([]),
   ouExclude:       z.array(z.string()).optional().default([]),
   includeDisabled: z.boolean().optional().default(true),
+  // Per-integration verbose debug logging.
+  verboseLogging: z.boolean().optional().default(false),
 });
 
 const CreateIntegrationSchema = z.discriminatedUnion("type", [
@@ -392,16 +408,31 @@ router.get("/", async (req, res, next) => {
 router.get("/discoveries", async (req, res) => {
   await checkForSlowRuns().catch(() => {});
   const now = Date.now();
-  const running = Array.from(activeDiscovery.entries()).map(([id, entry]) => ({
-    id,
-    name: entry.name,
-    type: entry.type,
-    startedAt: entry.startedAt,
-    elapsedMs: now - entry.startedAt,
-    activeDevices: [...entry.activeDevices],
-    slow: entry.slowAlerted,
-    slowDevices: [...entry.slowAlertedDevices],
-  }));
+  const running = Array.from(activeDiscovery.entries()).map(([id, entry]) => {
+    // For FortiManager integrations, surface the FMG itself as a synthetic
+    // "active device" whenever its worker has any inflight calls (proxy or
+    // native). Discovery starts by talking to FMG directly for the device
+    // roster + per-device mgmt-IP resolves + CMDB scrapes — without this
+    // the operator sees an empty active list during those phases even
+    // though work is clearly happening on the FMG side.
+    const devices = [...entry.activeDevices];
+    if (entry.type === "fortimanager") {
+      const w = getFmgWorker(id);
+      if (w.proxyInFlightLabel !== null || w.nativeInFlightCount > 0) {
+        devices.unshift(entry.name);
+      }
+    }
+    return {
+      id,
+      name: entry.name,
+      type: entry.type,
+      startedAt: entry.startedAt,
+      elapsedMs: now - entry.startedAt,
+      activeDevices: devices,
+      slow: entry.slowAlerted,
+      slowDevices: [...entry.slowAlertedDevices],
+    };
+  });
   res.json({ discoveries: running });
 });
 
@@ -1289,8 +1320,21 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
   const kindLabel = (integration.type === "entraid" || integration.type === "activedirectory") ? "device discovery" : "DHCP discovery";
   logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} ${kindLabel} started for "${integrationName}"` });
 
+  // Per-integration verbose flag — when on, every discovery step ALSO emits
+  // a pino info-level line so an operator running `journalctl -u polaris -f`
+  // sees the per-step trace in real time (in addition to the Events row).
+  const verboseLogging =
+    (integration.config && typeof integration.config === "object" &&
+     (integration.config as Record<string, unknown>).verboseLogging === true);
+
   const onProgress: DiscoveryProgressCallback = (step, level, message, device) => {
     logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
+    if (verboseLogging) {
+      logger.info(
+        { verbose: true, integrationId, integrationName, step, level, device },
+        message,
+      );
+    }
     if (device) {
       const entry = activeDiscovery.get(integrationId);
       if (entry) {
@@ -1958,6 +2002,46 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   const syncLog = (level: "info" | "error", message: string) => {
     logEvent({ action: "integration.sync", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
   };
+  // Per-integration verbose-debug detection — when on, each Phase wrapped by
+  // `phaseTimer` emits one pino info-level line with elapsed ms. Reads the
+  // current integration row up front (one query) so the phaseTimer hot path
+  // doesn't repeat the lookup. When the integration was deleted mid-sync,
+  // the flag falls through to `false` and verbose lines are skipped.
+  let verboseLogging = false;
+  try {
+    const cfgRow = await prisma.integration.findUnique({
+      where: { id: integrationId },
+      select: { config: true },
+    });
+    const cfg = (cfgRow?.config ?? null) as Record<string, unknown> | null;
+    verboseLogging = cfg?.verboseLogging === true;
+  } catch {
+    // best-effort; absence falls through to false
+  }
+  /**
+   * Phase-boundary cursor for verbose logging. Each `phaseMark(name)` call
+   * logs the elapsed time of the PREVIOUS phase (since the last mark) and
+   * starts the new phase's stopwatch. The final `phaseMark("__end__")` at
+   * the bottom of syncDhcpSubnets closes out the last phase.
+   *
+   * Off by default — `verboseLogging` is false for every install that
+   * hasn't opted in. Cursor state is per-sync (closure-local), so
+   * concurrent discoveries for different integrations don't interfere.
+   */
+  let lastPhaseAt = Date.now();
+  let lastPhaseName: string | null = null;
+  const phaseMark = (name: string): void => {
+    if (!verboseLogging) return;
+    const now = Date.now();
+    if (lastPhaseName) {
+      logger.info(
+        { verbose: true, integrationId, integrationName, phase: lastPhaseName, elapsedMs: now - lastPhaseAt },
+        "discovery.phase.complete",
+      );
+    }
+    lastPhaseName = name;
+    lastPhaseAt = now;
+  };
   const integrationLabel =
     integrationType === "windowsserver" ? "Windows Server" :
     integrationType === "fortigate" ? "FortiGate" :
@@ -2145,6 +2229,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   if (mode === "full" || mode === "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 1 — Sync subnets (in-memory lookups, individual creates)
+  phaseMark("1");
   // ══════════════════════════════════════════════════════════════════════════════
 
   // Collect subnet updates to batch
@@ -2228,6 +2313,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   if (mode !== "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 2 — Deprecate stale subnets (single updateMany)
+  phaseMark("2");
   // ══════════════════════════════════════════════════════════════════════════════
 
   if (knownDeviceNames.size > 0) {
@@ -2266,6 +2352,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 2a — Decommission stale FortiGate firewalls
+  phaseMark("2a");
   // ══════════════════════════════════════════════════════════════════════════════
   //
   // For every firewall Asset row discovered by this integration whose hostname
@@ -2325,6 +2412,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 2b — Decommission stale FortiSwitches / FortiAPs
+  phaseMark("2b");
   // ══════════════════════════════════════════════════════════════════════════════
   //
   // For every previously-discovered FortiSwitch / FortiAP whose controller
@@ -2380,6 +2468,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 2c — Auto-Monitor Interfaces apply pass
+  phaseMark("2c");
   //
   // For each per-class block (fortigate / fortiswitch / fortiap), if an
   // `autoMonitorInterfaces` selection has been configured on this integration,
@@ -2426,6 +2515,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   if (mode === "full" || mode === "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 3 — Create/update FortiGate device assets (in-memory serial lookup)
+  phaseMark("3");
   // ══════════════════════════════════════════════════════════════════════════════
 
   for (const device of result.devices) {
@@ -2604,6 +2694,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 3b — Create/update FortiSwitch and FortiAP assets + reservations
+  phaseMark("3b");
   // ══════════════════════════════════════════════════════════════════════════════
 
   // Auto-stamping policy for managed FortiSwitch / FortiAP. Two independent
@@ -3004,6 +3095,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 3c — Sync firewall VIP reservations
+  phaseMark("3c");
   // ══════════════════════════════════════════════════════════════════════════════
 
   if (result.vips && result.vips.length > 0) {
@@ -3078,6 +3170,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 4 — Create reservations for interface IPs (in-memory reservation check)
+  phaseMark("4");
   // ══════════════════════════════════════════════════════════════════════════════
 
   for (const ifaceIp of result.interfaceIps) {
@@ -3123,6 +3216,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 5 — Create DHCP lease/reservation entries (in-memory lookups)
+  phaseMark("5");
   // ══════════════════════════════════════════════════════════════════════════════
 
   if (result.dhcpEntries && result.dhcpEntries.length > 0) {
@@ -3240,6 +3334,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 6 — Associate DHCP MACs with assets & cross-update reservations
+  phaseMark("6");
   //           (in-memory lookups, batched writes)
   // ══════════════════════════════════════════════════════════════════════════════
 
@@ -3444,6 +3539,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 7 — Device inventory (fills gaps not covered by DHCP)
+  phaseMark("7");
   // ══════════════════════════════════════════════════════════════════════════════
 
   if (result.deviceInventory && result.deviceInventory.length > 0) {
@@ -3615,6 +3711,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 7b — Clear stale `device` stamps on MAC entries
+  phaseMark("7b");
   //            For every FortiGate whose inventory succeeded this run, any MAC
   //            stamped with that FortiGate but not seen in the fresh inventory
   //            has a stale attribution — clear `device` on that entry.
@@ -3664,6 +3761,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 7.5 — Enrich existing assets from FortiSwitch MAC table + FortiGate ARP
+  phaseMark("7.5");
   //              (full macmap + ARP path; non-asset-creating)
   //
   // For every (mac → switchId/portName) row from each managed FortiSwitch's
@@ -3775,6 +3873,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   if (mode === "full" || mode === "finalize") {
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 8 — DNS reverse lookup for assets missing dnsName
+  phaseMark("8");
   // ══════════════════════════════════════════════════════════════════════════════
 
   const DEFAULT_PTR_TTL_S = 3600;
@@ -3810,6 +3909,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 9 — OUI manufacturer lookup & override application
+  phaseMark("9");
   // ══════════════════════════════════════════════════════════════════════════════
 
   // 9a — Apply OUI overrides to assets that already have a manufacturer
@@ -3865,6 +3965,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   } // end Phases 8–9 (full | finalize)
 
   // Phase 10 — fortigate-endpoint AssetSource flush. Stamp every endpoint
+  phaseMark("10");
   // asset this sync touched with a fortigate-endpoint source row so the
   // operator's asset-detail Sources tab reflects "this device was
   // discovered/seen by FortiManager X" alongside any entra/ad/intune
@@ -3894,6 +3995,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   }
 
   // Phase 11 — projection apply pass. The inline merge in syncDhcpSubnets
+  phaseMark("11");
   // sets Asset fields opportunistically (set-when-empty for OS, set-always
   // for osVersion, etc.). After Phase 10 stamps the fortigate-endpoint
   // source row, a hybrid-managed device has all its sources on file:
@@ -3989,6 +4091,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // ══════════════════════════════════════════════════════════════════════════════
   // Phase 12 — Recompute dependency tree
+  phaseMark("12");
   //
   // After every infra asset write (FortiGates, FortiSwitches, FortiAPs)
   // is on disk and the projection apply has reconciled multi-source
@@ -4012,6 +4115,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       syncLog("error", `Dependency tree recompute failed: ${err?.message || "Unknown error"}`);
     }
 
+    phaseMark("13");
     // Phase 13 — Reconcile map-region tags. Add-only pass: any firewall
     // whose lat/lng now falls inside an operator-drawn region (or any
     // FortiSwitch / FortiAP whose controllerFortigate matches one) gets
@@ -4026,6 +4130,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       syncLog("error", `Map region reconcile failed: ${err?.message || "Unknown error"}`);
     }
 
+    phaseMark("13.5");
     // Phase 13.5 — Reconcile `firewall:<hostname>` breadcrumb tags. Rebuilds
     // the per-asset firewall:* tag set from the data Phase 3b/Phase 6 just
     // wrote: Asset.fortinetTopology.controllerFortigate (managed switches /
@@ -4046,6 +4151,8 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
   }
 
+  // Close out the final phase's elapsed-time log line before returning.
+  phaseMark("__end__");
   return { created, updated, skipped, deprecated, assets: assetNames, reservations: reservationNames, vips: vipNames.length, dhcpLeases: dhcpLeases.length, dhcpReservations: dhcpReservations.length, inventoryDevices: inventoryAssets.length, dnsResolved, ouiResolved, ouiOverridden, decommissionedSwitches, decommissionedAps, endpointSourcesStamped, projectionCorrected };
 }
 

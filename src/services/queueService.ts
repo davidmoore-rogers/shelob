@@ -34,6 +34,12 @@ import type { PgBoss as PgBossType, Job as PgBossJob } from "pg-boss";
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 import { getDirectDatabaseUrl } from "../utils/dbConnections.js";
+import {
+  acquireWorkerSlot,
+  createWorkerSlotPool,
+  releaseWorkerSlot,
+  type WorkerSlotPool,
+} from "../utils/workerSlotPool.js";
 import { setPgbossQueueJobs, setPgbossJobAge, recordQueueMode, setMonitorWorkers } from "../metrics.js";
 import {
   runProbeFor,
@@ -160,10 +166,69 @@ interface MonitorJobPayload {
    * back to "unknown".
    */
   assetType?: string;
+  /**
+   * When true, the worker emits per-job pickup + finish lines at info level
+   * with the worker slot id. Set by the publisher when the asset's source
+   * integration has `config.verboseLogging === true`. Optional; absent =
+   * quiet operation (the default for every install).
+   */
+  verboseDebug?: boolean;
 }
 
 let bossInstance: PgBossType | null = null;
 let metricsRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+// Per-cadence worker slot pools, populated at boot inside startPgbossWorkers().
+// Acquire on handler entry, release on exit so the slot id rotates through
+// jobs in order. Used by both the dedicated workers and the floating loop
+// to give operators a human-readable identity in journalctl when an
+// integration has `config.verboseLogging` on.
+let slotPools: {
+  probe:        WorkerSlotPool;
+  fastFiltered: WorkerSlotPool;
+  telemetry:    WorkerSlotPool;
+  systemInfo:   WorkerSlotPool;
+  floating:     WorkerSlotPool;
+} | null = null;
+
+/**
+ * Shared wrapper for the four dedicated `boss.work()` handlers. Acquires
+ * a slot from the cadence's pool, optionally logs `monitor.worker.pickup`
+ * / `monitor.worker.finish` when the job carries `verboseDebug=true`, and
+ * releases the slot in a finally block so a thrown handler doesn't leak it.
+ */
+async function runDedicatedWorker(
+  cadence: MonitorCadence,
+  job: PgBossJob<MonitorJobPayload>,
+  exec: (assetId: string, labels: { transport: string; assetType: string }) => Promise<unknown>,
+): Promise<void> {
+  const pool = slotPools![cadence];
+  const workerSlot = acquireWorkerSlot(pool);
+  const { assetId, transport, assetType, verboseDebug } = job.data;
+  const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown" };
+  const startedAt = verboseDebug ? Date.now() : 0;
+  if (verboseDebug) {
+    logger.info(
+      { verbose: true, workerSlot, jobId: job.id, cadence, assetId, transport: labels.transport, assetType: labels.assetType },
+      "monitor.worker.pickup",
+    );
+  }
+  let outcome: "success" | "failure" = "success";
+  try {
+    await exec(assetId, labels);
+  } catch (err) {
+    outcome = "failure";
+    throw err;
+  } finally {
+    if (verboseDebug) {
+      logger.info(
+        { verbose: true, workerSlot, jobId: job.id, cadence, assetId, outcome, elapsedMs: Date.now() - startedAt },
+        "monitor.worker.finish",
+      );
+    }
+    releaseWorkerSlot(pool, workerSlot);
+  }
+}
 
 // ─── Floating workers ───────────────────────────────────────────────────────
 //
@@ -454,32 +519,48 @@ export async function startPgbossWorkers(): Promise<void> {
     "pg-boss workers configured",
   );
 
+  // Per-cadence slot pools. Acquired on handler entry, released on exit so
+  // an operator can trace one slot's lifecycle through journalctl. Always
+  // assigned (cheap); only logged at info level when the job carries
+  // `verboseDebug=true`. See src/utils/workerSlotPool.ts.
+  slotPools = {
+    probe:        createWorkerSlotPool("probe",     probeWorkers),
+    fastFiltered: createWorkerSlotPool("fast",      fastWorkers),
+    telemetry:    createWorkerSlotPool("telemetry", heavyWorkers),
+    systemInfo:   createWorkerSlotPool("sysinfo",   heavyWorkers),
+    floating:     createWorkerSlotPool("floating",  floatingWorkers),
+  };
+
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.probe, {
     localConcurrency: probeWorkers, batchSize: 1, pollingIntervalSeconds: 1,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    const { assetId, transport, assetType } = jobs[0].data;
-    await runProbeFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
+    await runDedicatedWorker("probe", jobs[0], (assetId, labels) =>
+      runProbeFor(assetId, labels),
+    );
   });
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.fastFiltered, {
     localConcurrency: fastWorkers, batchSize: 1, pollingIntervalSeconds: 2,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    const { assetId, transport, assetType } = jobs[0].data;
-    await runFastFilteredFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
+    await runDedicatedWorker("fastFiltered", jobs[0], (assetId, labels) =>
+      runFastFilteredFor(assetId, labels),
+    );
   });
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.telemetry, {
     localConcurrency: heavyWorkers, batchSize: 1, pollingIntervalSeconds: 5,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    const { assetId, transport, assetType } = jobs[0].data;
-    await runTelemetryFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
+    await runDedicatedWorker("telemetry", jobs[0], (assetId, labels) =>
+      runTelemetryFor(assetId, labels),
+    );
   });
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.systemInfo, {
     localConcurrency: heavyWorkers, batchSize: 1, pollingIntervalSeconds: 5,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    const { assetId, transport, assetType } = jobs[0].data;
-    await runSystemInfoFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
+    await runDedicatedWorker("systemInfo", jobs[0], (assetId, labels) =>
+      runSystemInfoFor(assetId, labels),
+    );
   });
 
   bossInstance = boss;
@@ -561,8 +642,21 @@ async function dispatchFloatingJob(
   cadence: MonitorCadence,
 ): Promise<void> {
   const queueName = QUEUE_NAMES[cadence];
-  const { assetId, transport, assetType } = job.data;
+  const { assetId, transport, assetType, verboseDebug } = job.data;
   const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown" };
+  // Floating slot acquired separately from the dedicated pools so the
+  // operator can tell at a glance whether a job ran via dedicated worker
+  // (prefix probe/fast/telemetry/sysinfo) or the floating pool (floating).
+  const floatingPool = slotPools?.floating ?? null;
+  const workerSlot = floatingPool ? acquireWorkerSlot(floatingPool) : "floating-F?";
+  const startedAt = verboseDebug ? Date.now() : 0;
+  if (verboseDebug) {
+    logger.info(
+      { verbose: true, workerSlot, jobId: job.id, cadence, assetId, transport: labels.transport, assetType: labels.assetType, pool: "floating" },
+      "monitor.worker.pickup",
+    );
+  }
+  let outcome: "success" | "failure" = "success";
   try {
     switch (cadence) {
       case "probe":        await runProbeFor(assetId, labels);        break;
@@ -572,11 +666,20 @@ async function dispatchFloatingJob(
     }
     await boss.complete(queueName, job.id);
   } catch (err) {
+    outcome = "failure";
     try {
       await boss.fail(queueName, job.id, { message: err instanceof Error ? err.message : String(err) });
     } catch (failErr) {
       logger.debug({ failErr, jobId: job.id, cadence }, "floating worker fail() reporting failed");
     }
+  } finally {
+    if (verboseDebug) {
+      logger.info(
+        { verbose: true, workerSlot, jobId: job.id, cadence, assetId, outcome, elapsedMs: Date.now() - startedAt, pool: "floating" },
+        "monitor.worker.finish",
+      );
+    }
+    if (floatingPool) releaseWorkerSlot(floatingPool, workerSlot);
   }
 }
 
@@ -598,13 +701,18 @@ async function dispatchFloatingJob(
 export async function publishMonitorJob(
   cadence: MonitorCadence,
   assetId: string,
-  labels?: { transport?: string; assetType?: string },
+  labels?: { transport?: string; assetType?: string; verboseDebug?: boolean },
 ): Promise<void> {
   if (!bossInstance) return;
   const queue = QUEUE_NAMES[cadence];
   await bossInstance.send(
     queue,
-    { assetId, transport: labels?.transport, assetType: labels?.assetType } as MonitorJobPayload,
+    {
+      assetId,
+      transport: labels?.transport,
+      assetType: labels?.assetType,
+      verboseDebug: labels?.verboseDebug,
+    } as MonitorJobPayload,
     {
       singletonKey: `${assetId}:${cadence}`,
     },

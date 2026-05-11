@@ -1115,6 +1115,36 @@ function _readFortigateMonitorBlock(prefix) {
   };
 }
 
+// Shared "Verbose debug logging" checkbox appended to the General tab of
+// every integration type. When ticked, the next discovery cycle + every
+// monitor worker job published for assets owned by this integration emits
+// step-by-step structured logs to journalctl. Off by default.
+function verboseLoggingFormHTML(defaults) {
+  var d = defaults || {};
+  var checked = d.verboseLogging === true ? "checked" : "";
+  return '<hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.5rem">Debug</p>' +
+    '<div style="display:flex;align-items:flex-start;gap:0.55rem">' +
+      '<input type="checkbox" id="f-verboseLogging" ' + checked + ' style="margin-top:3px">' +
+      '<label for="f-verboseLogging" style="margin:0">' +
+        '<strong>Verbose debug logging</strong><br>' +
+        '<span style="font-size:0.8rem;color:var(--color-text-secondary)">' +
+        'Emits step-by-step discovery, sync, and worker pickup/finish logs to ' +
+        'journalctl for this integration. High log volume — flip on for diagnosis, ' +
+        'flip off when done. Effective on the next discovery cycle / monitor tick; no restart needed.' +
+        '</span>' +
+      '</label>' +
+    '</div>';
+}
+
+// Read the verbose-logging checkbox from any integration form. Returns
+// `false` when the checkbox isn't on the page (defensive — keeps the
+// config valid for older modals that may not include it yet).
+function readVerboseLoggingFromForm() {
+  var el = document.getElementById("f-verboseLogging");
+  return el ? el.checked === true : false;
+}
+
 function fortiManagerGeneralHTML(defaults) {
   var d = defaults || {};
   return '<div class="form-group"><label>Name *</label><input type="text" id="f-name" value="' + escapeHtml(d.name || "") + '" placeholder="e.g. Production FortiManager"></div>' +
@@ -1161,7 +1191,8 @@ function fortiManagerGeneralHTML(defaults) {
           '<label for="f-fortigateVerifySsl" style="margin:0">Verify SSL certificate on FortiGates</label>' +
         '</div>' +
       '</div>' +
-    '</div>';
+    '</div>' +
+    verboseLoggingFormHTML(d);
 }
 
 function fortiManagerFiltersHTML(defaults) {
@@ -1272,6 +1303,7 @@ function getFormConfig() {
     fortigateApiUser: val("f-fortigateApiUser"),
     fortigateApiToken: val("f-fortigateApiToken"),
     fortigateVerifySsl: (function () { var el = document.getElementById("f-fortigateVerifySsl"); return el ? el.checked : false; })(),
+    verboseLogging: readVerboseLoggingFromForm(),
   };
 }
 
@@ -1306,7 +1338,8 @@ function fortiGateGeneralHTML(defaults) {
     '<div class="form-group"><label>Auto-Discovery Interval</label><div style="display:flex;align-items:center;gap:8px"><input type="number" id="f-pollInterval" value="' + (d.pollInterval || 12) + '" min="1" max="24" style="width:80px"><span style="color:var(--color-text-tertiary);font-size:0.85rem">hours</span></div><p class="hint">How often to automatically query for DHCP updates (1–24 hours)</p></div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">FortiGate Settings</p>' +
-    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>';
+    '<div class="form-group"><label>Management Interface</label><input type="text" id="f-mgmtInterface" value="' + escapeHtml(d.mgmtInterface || "") + '" placeholder="e.g. port1, mgmt, loopback0"><p class="hint">Interface name used for FortiGate management traffic</p></div>' +
+    verboseLoggingFormHTML(d);
 }
 
 // Standalone FortiGate "Filters" tab — DHCP server scope, interface IP
@@ -1389,6 +1422,7 @@ function getFgtFormConfig() {
     interfaceExclude: ifaceMode === "exclude" ? ifaceIfaces : [],
     inventoryExcludeInterfaces: invMode === "exclude" ? invIfaces : [],
     inventoryIncludeInterfaces: invMode === "include" ? invIfaces : [],
+    verboseLogging: readVerboseLoggingFromForm(),
   };
 }
 
@@ -1419,7 +1453,8 @@ function windowsServerFormHTML(defaults) {
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">DHCP Scope Filtering</p>' +
     '<div class="form-group"><label>Include Scopes</label><textarea id="f-dhcpInclude" rows="2" placeholder="One per line — scope name or ID&#10;e.g. 10.0.1.0">' + escapeHtml((d.dhcpInclude || []).join("\n")) + '</textarea><p class="hint">Only sync these DHCP scopes (leave empty to sync all)</p></div>' +
-    '<div class="form-group"><label>Exclude Scopes</label><textarea id="f-dhcpExclude" rows="2" placeholder="One per line — scope name or ID&#10;e.g. lab-scope">' + escapeHtml((d.dhcpExclude || []).join("\n")) + '</textarea><p class="hint">Skip these DHCP scopes when syncing</p></div>';
+    '<div class="form-group"><label>Exclude Scopes</label><textarea id="f-dhcpExclude" rows="2" placeholder="One per line — scope name or ID&#10;e.g. lab-scope">' + escapeHtml((d.dhcpExclude || []).join("\n")) + '</textarea><p class="hint">Skip these DHCP scopes when syncing</p></div>' +
+    verboseLoggingFormHTML(d);
 }
 
 function getWinFormConfig() {
@@ -1433,6 +1468,7 @@ function getWinFormConfig() {
     domain: val("f-domain"),
     dhcpInclude: linesToArray("f-dhcpInclude"),
     dhcpExclude: linesToArray("f-dhcpExclude"),
+    verboseLogging: readVerboseLoggingFromForm(),
   };
 }
 
@@ -1481,7 +1517,8 @@ function entraIdFormHTML(defaults) {
       '</div>' +
       '<textarea id="f-deviceNames" rows="2" placeholder="One per line — e.g. LAPTOP-*&#10;SRV-HQ-*&#10;*-lab">' + escapeHtml(devNames.join("\n")) + '</textarea>' +
       '<p class="hint">Leave empty to sync every device. Wildcards supported: <code>LAPTOP-*</code>, <code>*-lab</code>, <code>*pc*</code></p>' +
-    '</div>';
+    '</div>' +
+    verboseLoggingFormHTML(d);
 }
 
 function getEntraFormConfig() {
@@ -1495,6 +1532,7 @@ function getEntraFormConfig() {
     includeDisabled: document.getElementById("f-includeDisabled").checked,
     deviceInclude: devMode === "include" ? devNames : [],
     deviceExclude: devMode === "exclude" ? devNames : [],
+    verboseLogging: readVerboseLoggingFromForm(),
   };
 }
 
@@ -1559,7 +1597,8 @@ function activeDirectoryFormHTML(defaults) {
       '</div>' +
       '<textarea id="f-deviceNames" rows="3" placeholder="One per line — e.g.&#10;*OU=Workstations*&#10;*OU=Servers,OU=HQ*">' + escapeHtml(devNames.join("\n")) + '</textarea>' +
       '<p class="hint">Leave empty to sync all computers under the base DN. Each line is matched against the computer\'s full distinguished name. Wildcards: <code>*OU=Workstations*</code>, <code>*OU=Servers,OU=HQ*</code></p>' +
-    '</div>';
+    '</div>' +
+    verboseLoggingFormHTML(d);
 }
 
 function getAdFormConfig() {
@@ -1578,6 +1617,7 @@ function getAdFormConfig() {
     includeDisabled: document.getElementById("f-includeDisabled").checked,
     ouInclude: devMode === "include" ? devNames : [],
     ouExclude: devMode === "exclude" ? devNames : [],
+    verboseLogging: readVerboseLoggingFromForm(),
   };
 }
 

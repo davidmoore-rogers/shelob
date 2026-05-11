@@ -1005,7 +1005,6 @@ export async function discoverDhcpSubnets(
             log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
           }
 
-          log("discover.device.complete", "info", `Completed direct discovery for ${deviceName} in ${Date.now() - devStartMs}ms`, deviceName);
           return {
             device: localDev,
             subnets: fgResult.subnets,
@@ -1762,7 +1761,6 @@ export async function discoverDhcpSubnets(
       }
     }
 
-    log("discover.device.complete", "info", `Completed discovery for ${deviceName} in ${Date.now() - devStartMs}ms`, deviceName);
     return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, switchMacTable: localSwitchMacTable, arpTable: localArpTable, cmdbSwitchSerials: localCmdbSwitchSerials, cmdbApSerials: localCmdbApSerials, didSwitchQuery, didApQuery };
   }
 
@@ -1790,7 +1788,16 @@ export async function discoverDhcpSubnets(
     }
 
     const task: Promise<void> = (async () => {
+      // Time the whole per-device cycle including the DB sync (onDeviceComplete).
+      // `discover.device.complete` is what clears the device from activeDevices
+      // in the UI; emitting it from inside processDevice (which used to be the
+      // case) made the device disappear the moment network scrape finished,
+      // even though the DB writes were still in progress and the worker slot
+      // was still held. Emitting after onDeviceComplete keeps the UI honest.
+      const devStartMs = Date.now();
       const chunk = await processDevice(rawDevice);
+      // processDevice emits its own terminal event (skip / error) on the
+      // null-return paths — nothing more to do here in that case.
       if (!chunk) return;
 
       const filteredDevSubnets = filterDhcpResults(
@@ -1847,8 +1854,11 @@ export async function discoverDhcpSubnets(
           });
         } catch (err: any) {
           log("discover.device", "error", `${chunk.device.name}: Per-device sync failed — ${err.message || "Unknown error"}`, chunk.device.name);
+          return; // terminal event already emitted — skip the complete log
         }
       }
+
+      log("discover.device.complete", "info", `Completed discovery for ${chunk.device.name} in ${Date.now() - devStartMs}ms`, chunk.device.name);
     })().catch(() => {});
 
     executing.add(task);

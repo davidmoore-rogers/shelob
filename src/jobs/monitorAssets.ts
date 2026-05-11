@@ -117,8 +117,10 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       assetType: true,
       discoveredByIntegrationId: true,
       // Joined for the resolver — picks the source-default polling method.
-      // See the matching comment in monitoringService.runMonitorPass.
-      discoveredByIntegration: { select: { type: true } },
+      // Also reads `config` so we can detect per-integration verboseLogging
+      // and stamp `verboseDebug` on the pg-boss job payload. See the matching
+      // comment in monitoringService.runMonitorPass.
+      discoveredByIntegration: { select: { type: true, config: true } },
       monitorStatus: true,
       lastMonitorAt: true, monitorIntervalSec: true,
       lastTelemetryAt: true, telemetryIntervalSec: true,
@@ -195,18 +197,26 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
     const probeTransport = eff.responseTimePolling || "unknown";
     const telTransport   = eff.telemetryPolling    || "unknown";
     const ifTransport    = eff.interfacesPolling   || "unknown";
+    // Per-integration verbose debug toggle — stamped on every job for assets
+    // owned by an integration with `config.verboseLogging === true`. Workers
+    // check this flag to decide whether to emit pickup/finish lines.
+    const intCfg = a.discoveredByIntegration?.config as Record<string, unknown> | null | undefined;
+    const verboseDebug = intCfg?.verboseLogging === true;
+    const labels = { transport: probeTransport, assetType, verboseDebug };
+    const telLabels = { transport: telTransport, assetType, verboseDebug };
+    const ifLabels  = { transport: ifTransport,  assetType, verboseDebug };
 
     if (probe && enabled.has("probe")) {
-      await publishMonitorJob("probe", a.id, { transport: probeTransport, assetType });
+      await publishMonitorJob("probe", a.id, labels);
     }
     if (telemetry && canTelemetry && isUp && enabled.has("telemetry")) {
-      await publishMonitorJob("telemetry", a.id, { transport: telTransport, assetType });
+      await publishMonitorJob("telemetry", a.id, telLabels);
     }
     if (systemInfo && canSystemInfo && isUp && enabled.has("systemInfo")) {
-      await publishMonitorJob("systemInfo", a.id, { transport: ifTransport, assetType });
+      await publishMonitorJob("systemInfo", a.id, ifLabels);
     }
     if (probe && hasFastPin && canSystemInfo && !systemInfo && isUp && enabled.has("fastFiltered")) {
-      await publishMonitorJob("fastFiltered", a.id, { transport: ifTransport, assetType });
+      await publishMonitorJob("fastFiltered", a.id, ifLabels);
     }
   }
 

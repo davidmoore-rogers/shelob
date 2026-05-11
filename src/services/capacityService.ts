@@ -584,12 +584,17 @@ function computeReasons(
   }
 
   // Database dominates *its* volume (only useful when DB volume is visible).
+  // Fires red when the DB is approaching the size of remaining free space —
+  // at that point a normal write-amplification spike (autovacuum, a big
+  // sample backlog flush) can fill the disk. The per-volume disk-free
+  // thresholds above already cover the "volume is mostly full of anything"
+  // case; this reason is specifically "the DB itself is the imminent threat."
   const dbVolume = snap.appHost.volumes.find((v) => v.roles.includes("db"));
-  if (dbVolume && snap.database.sizeBytes > dbVolume.freeBytes * 0.5) {
+  if (dbVolume && snap.database.sizeBytes > dbVolume.freeBytes * 0.9) {
     reasons.push({
       severity: "red",
       code: "db_dominates_disk",
-      message: `Database (${formatBytes(snap.database.sizeBytes)}) exceeds 50% of free space on its volume.`,
+      message: `Database (${formatBytes(snap.database.sizeBytes)}) exceeds 90% of free space on its volume.`,
       suggestion: "Reduce sample retention (Asset monitoring settings), expand the disk, or move PostgreSQL to a larger volume.",
     });
   }

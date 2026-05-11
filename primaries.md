@@ -312,3 +312,35 @@ Per-pattern sections:
 - Append a `BufferKey`, a `TABLE_LABEL` entry, an `enqueueXxx` helper, and a `writeBatch` switch arm — five touch points in one file. Tests mirror the same shape.
 - Confirm the new table is append-only with no FK on `(assetId, ...)` that requires per-row uniqueness mid-flush; if it does, you probably want synchronous semantics (LLDP-style) instead.
 - Update `touches.md`'s `services/sampleWriteBuffer.ts` entry's Writers list to name the new caller.
+
+---
+
+## Per-integration verbose debug logging
+
+**What it is:** Operator flips one checkbox on an integration's edit modal and gets step-by-step structured logs of that integration's discovery + sync + monitor-worker activity. Off by default; logs emit at pino info level (tagged `verbose: true`) so journalctl shows them immediately — no `LOG_LEVEL=debug` restart dance. Reused across discovery, sync, and per-job worker pickup/finish so an operator never has to wonder "which knob lights this up."
+
+**Canonical implementation:** Four touchpoints, all consistent on the same payload shape:
+- **Config flag:** `verboseLogging: z.boolean().optional().default(false)` on every integration's Zod schema in [src/api/routes/integrations.ts](src/api/routes/integrations.ts) (mirrors the `useProxy` / `pushReservations` / `pushQuarantine` pattern).
+- **Discovery → pino:** the `onProgress` closure reads `integration.config.verboseLogging` once at run start and `logger.info({ verbose: true, integrationId, integrationName, step, level, device }, message)` for each callback.
+- **Sync phases → pino:** `phaseMark(name)` cursor in `syncDhcpSubnets`. Each call logs the elapsed time of the previous phase; final `phaseMark("__end__")` closes the last one.
+- **Worker pickup/finish → pino:** the publisher in `monitorAssets.publishDueWork` reads `discoveredByIntegration.config.verboseLogging` and stamps `verboseDebug: true` on the job payload; `runDedicatedWorker` / `dispatchFloatingJob` in `queueService.ts` read it back and emit lines with the worker slot id.
+
+**Key conventions:**
+- **One structured-payload shape** for all four surfaces: `verbose: true`, optional `integrationId` + `integrationName`, plus surface-specific fields (`step` or `phase`, or `workerSlot` + `jobId` + `cadence` + `assetId`, plus `elapsedMs` and `outcome` where measured). Don't invent a parallel shape for new debug surfaces — operators rely on `jq 'select(.verbose==true)'` working uniformly.
+- **Off by default everywhere.** New integration types must default to `false`; new debug surfaces must read a config flag (per-integration) or env var (global) before emitting at info level. No always-on debug noise.
+- **Pino, not Events.** Verbose lines never write to the `Event` table — that's reserved for the existing audit surface. Events table inflation from a 1000-FortiGate discovery would balloon retention.
+- **Stable worker slot ids** via [src/utils/workerSlotPool.ts](src/utils/workerSlotPool.ts). Acquired on entry, released on exit (try/finally). Reused across jobs so an operator can follow one slot through journalctl.
+- **No restart needed** to flip the toggle. The discovery `onProgress` and the publisher both read the current config at runtime; the next discovery cycle / next monitor tick picks up the change.
+- **UI shape:** appended to every integration's General tab as a uniform "Debug" section via `verboseLoggingFormHTML(defaults)` in [public/js/integrations.js](public/js/integrations.js). Same checkbox id (`f-verboseLogging`) across types so `readVerboseLoggingFromForm()` works without per-type branching.
+
+**When adding a new integration type:**
+- Schema gets `verboseLogging: z.boolean().optional().default(false)`.
+- Frontend form helper appends `verboseLoggingFormHTML(d)` at the bottom of its return value.
+- Reader (`getXxxFormConfig`) adds `verboseLogging: readVerboseLoggingFromForm()` to the returned config.
+
+**When adding a new pg-boss queue:**
+- Allocate a slot pool in `slotPools` with the matching size.
+- Use `runDedicatedWorker(cadence, job, exec)` for the handler; verbose pickup/finish logs land automatically when `job.data.verboseDebug` is true.
+
+**When adding a new sync phase:**
+- Insert `phaseMark("X")` right under the `// Phase X — ...` comment. The previous phase's elapsed time is logged at the next phaseMark call; the final phase is closed by `phaseMark("__end__")` at the bottom of `syncDhcpSubnets`.
