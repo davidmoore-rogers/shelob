@@ -886,7 +886,11 @@ export async function getCapacitySnapshot(opts: {
   if (currentInUse > peakConnectionCount) peakConnectionCount = currentInUse;
   const bootMode = getBootTimeMode();
   const prismaPoolSize = readEnvInt("DATABASE_POOL_SIZE", 25);
-  const pgbossPoolSize = bootMode === "pgboss" ? readEnvInt("POLARIS_PGBOSS_POOL_SIZE", 10) : null;
+  // Default must match queueService.ts:resolveEnvInt("POLARIS_PGBOSS_POOL_SIZE", 20) — that's
+  // the value pg-boss is actually instantiated with when the env var is unset, so we report
+  // it consistently in the snapshot. A mismatch here made the Database card's "Polaris pool
+  // size" line disagree with the Capacity Advisor's "POLARIS_PGBOSS_POOL_SIZE" row.
+  const pgbossPoolSize = bootMode === "pgboss" ? readEnvInt("POLARIS_PGBOSS_POOL_SIZE", 20) : null;
 
   const cadences = {
     responseTimeSec: monitor.intervalSeconds,
