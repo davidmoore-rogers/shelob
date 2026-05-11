@@ -150,28 +150,32 @@ Per-pattern sections:
 
 ---
 
-## Per-instance single-consumer serial worker
+## Per-instance multi-lane worker (constrained + unconstrained endpoints)
 
-**What it is:** A FIFO queue + single consumer used to serialize all traffic to a flaky external system whose own concurrency limits would otherwise drop parallel connections. Distinct from a worker pool — the cap is hard-coded to 1, and the value is cross-feature serialization (every code path that talks to the system funnels through the same queue) rather than throttling.
+**What it is:** A per-instance worker that segregates traffic to a flaky external system by endpoint family — endpoints subject to the system's parallel-connection limit ride a strict single-consumer FIFO lane (concurrency=1); endpoints without that constraint ride an unbounded lane that just tracks inflight count for observability. Distinct from a single-cap worker pool: the value is *cross-feature serialization for the constrained endpoints only*, while letting unconstrained endpoints parallelize freely.
 
-**Canonical implementation:** `FmgWorker` in [src/services/fmgWorker.ts](src/services/fmgWorker.ts). One `FmgWorker` per integration id; module-level `Map<integrationId, FmgWorker>` keyed off the integration row's id.
+**Canonical implementation:** `FmgWorker` in [src/services/fmgWorker.ts](src/services/fmgWorker.ts). One `FmgWorker` per integration id; module-level `Map<integrationId, FmgWorker>` keyed off the integration row's id. Proxy lane (strict 1) carries `/sys/proxy/json` calls — FMG drops parallel calls past 1-2 there. Native lane (unbounded) carries every other call (`/pm/config/...`, `/dvmdb/...`, auth) — those hit FMG's own DB and have no parallel-call constraint.
 
 **Key conventions:**
-- Public API is just `submit<T>(label: string, task: () => Promise<T>, signal?: AbortSignal): Promise<T>` plus read-only `queueDepth` / `inFlightLabel` for telemetry. Don't expose the queue itself.
-- FIFO single-consumer drain loop owned by the class — caller `submit()`s and awaits the returned promise. Caller never touches the queue directly.
-- AbortSignal handling: pre-dispatch abort drops the entry from the queue and rejects with `AbortError(...)` (a custom subclass of Error with `name = "AbortError"`). In-flight abort is the *task's* responsibility (via fetch signal threading) — the worker doesn't force-cancel.
-- Lazy creation, never torn down. `getFmgWorker(id)` returns the existing worker or creates one. Workers leak on integration-delete; that's intentional (cheap; tearing down races with concurrent `getXxxWorker` callers).
-- Telemetry: every queue depth change publishes a Prometheus gauge (`polaris_fmg_worker_queue_depth{integrationId}`); inflight is a 0/1 gauge so operators can correlate `queue_depth>0 AND inflight=1` as "FMG is the bottleneck right now."
-- Test reset: provide a `__resetXxxWorkersForTests()` symbol so tests start with a clean registry without relying on module-cache reset.
-- Label is a short string used for telemetry (`inFlightLabel`) and audit logs. Format like `"fmg.<rpcMethod>:<resourceUrl>"` — derived from the inner task, not freeform.
-- The wrapping point should be the SHARED low-level helper that every code path goes through (in FmgWorker's case, `rpc()` in `fortimanagerService.ts`). Wrapping individual high-level functions instead means future contributors can add a NEW high-level function that bypasses the worker.
+- Public API is two submit methods: `submitProxy<T>(label, task, signal): Promise<T>` (strict lane) and `submitNative<T>(label, task, signal): Promise<T>` (unbounded lane). Plus read-only `proxyQueueDepth` / `proxyInFlightLabel` / `nativeInFlightCount` for telemetry. Don't expose the queue itself.
+- Lane dispatch lives at ONE call site — the shared low-level helper that every code path funnels through (in FmgWorker's case, `rpc()` in `fortimanagerService.ts`). The helper inspects the payload (e.g. URL pattern) and routes to the right lane. Callers above the helper don't pick the lane.
+- Proxy lane: FIFO single-consumer drain loop owned by the class. AbortSignal pre-dispatch drops the entry and rejects with `AbortError(...)`. In-flight abort is the *task's* responsibility (via fetch signal threading) — the worker doesn't force-cancel.
+- Native lane: no queue, no semaphore. `submitNative` just bumps an inflight counter, awaits the task, and decrements (in a finally so throws don't leak the counter). Pre-submit abort throws `AbortError` immediately; in-flight abort is the task's responsibility via the fetch signal.
+- Lazy creation, never torn down. `getXxxWorker(id)` returns the existing worker or creates one. Workers leak on instance-delete; that's intentional (cheap; tearing down races with concurrent `getXxxWorker` callers).
+- Telemetry: proxy lane publishes queue-depth gauge + 0/1 inflight gauge so operators can spot `queue_depth>0 AND inflight=1` as "constrained lane is the bottleneck." Native lane publishes a single inflight-count gauge — sustained high values indicate genuine parallelism (good), not a bottleneck.
+- Test reset: provide a `__resetXxxWorkersForTests()` symbol so tests start with a clean registry.
+- Label is a short string used for telemetry and audit logs. Format like `"fmg.<rpcMethod>:<resourceUrl>"` — derived from the inner task, not freeform.
 
 **When adding a new instance:**
-- Identify the shared low-level helper that all callers funnel through. Wrap THAT in `getXxxWorker(id).submit(...)`. Don't scatter `pLimit(1)` wraps at every entry point — the next contributor will forget one.
+- Identify the shared low-level helper that all callers funnel through. The lane-dispatch predicate lives ONLY in that helper. Don't scatter `submitProxy` / `submitNative` calls across high-level entry points — the next contributor will forget one.
+- Decide which endpoints belong in the constrained lane. Document the rule in the worker file's header so future code paths route correctly. For FmgWorker: `/sys/proxy/json` ⇒ proxy lane, everything else ⇒ native lane.
 - Thread the keying id (typically integrationId) through every public function that ends up calling the helper. The id flows from the route handler → service → low-level helper.
 - Public functions take the id as the LAST optional parameter so unsaved-state callers (e.g. pre-create test connection on a draft integration) can omit it; in that case the worker is bypassed and the call runs direct (no contention possible since there's no other code talking to this instance yet).
-- Wire two gauges to `src/metrics.ts`: queue depth (count) and inflight (0/1). Keep the metric names parallel to FmgWorker's so dashboards generalize.
-- Document a "load-bearing test": one task A in-flight against the worker, submit task B from a different feature surface, confirm B waits until A completes. This is the cross-feature-serialization invariant the primitive exists to enforce.
+- Wire three gauges to `src/metrics.ts`: proxy-lane queue depth (count), proxy-lane inflight (0/1), native-lane inflight (count). Keep names parallel to FmgWorker's so dashboards generalize.
+- Document the "load-bearing tests" for both lanes:
+  - Proxy lane: one proxy task A in-flight, submit proxy task B from a different feature surface, confirm B waits until A completes. This is the cross-feature-serialization invariant the constrained lane exists to enforce.
+  - Native lane: submit three native tasks simultaneously, confirm all three are started concurrently (not queued).
+  - Cross-lane independence: a blocked proxy task does NOT block native tasks, and vice versa.
 
 ---
 

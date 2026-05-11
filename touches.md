@@ -905,26 +905,25 @@ Listed alphabetically.
 
 ## services/fmgWorker.ts
 
-**What it owns:** Per-integration single-consumer worker that serializes ALL FortiManager-bound traffic from this Polaris process. Module-level `Map<integrationId, FmgWorker>` lazy-created on first `submit()`; never torn down (idle workers are negligible).
+**What it owns:** Per-integration FortiManager worker with two lanes — a proxy lane (strict concurrency=1 FIFO) for `/sys/proxy/json` calls and a native lane (unbounded) for every other FMG call. Module-level `Map<integrationId, FmgWorker>` lazy-created on first submit; never torn down.
 
-**Public API:** `getFmgWorker(integrationId): FmgWorker`, `FmgWorker.submit<T>(label, task, signal)`, `FmgWorker.queueDepth`, `FmgWorker.inFlightLabel`, `__resetFmgWorkersForTests`.
+**Public API:** `getFmgWorker(integrationId): FmgWorker`, `FmgWorker.submitProxy<T>(label, task, signal)`, `FmgWorker.submitNative<T>(label, task, signal)`, `FmgWorker.proxyQueueDepth`, `FmgWorker.proxyInFlightLabel`, `FmgWorker.nativeInFlightCount`, `__resetFmgWorkersForTests`.
 
-**Cross-service deps:** metrics (publishes `polaris_fmg_worker_queue_depth{integrationId}` / `polaris_fmg_worker_inflight{integrationId}` via `setFmgWorkerQueueDepth` / `setFmgWorkerInflight`).
+**Cross-service deps:** metrics (publishes `polaris_fmg_worker_queue_depth{integrationId}` + `polaris_fmg_worker_inflight{integrationId}` for the proxy lane, `polaris_fmg_worker_native_inflight{integrationId}` for the native lane).
 
-**Used by:** src/services/fortimanagerService.ts — `rpc()` wraps every internal call when `integrationId` is provided, which covers `testConnection` / `resolveDeviceMgmtIpViaFmg` / `proxyQuery` / `fmgProxyRest` / `proxyQueryViaFortigate` / `discoverDhcpSubnets`. By transitivity also reservationPushService.ts and assetQuarantineService.ts (both call `fmgProxyRest` and `resolveDeviceMgmtIpViaFmg` with an `integrationId`), and monitoringService.ts (controller-IP cache miss + proxy-mode `fmgProxyRest`). Routes that hit FMG (test-connection, manual /query) thread integration.id through the same APIs.
+**Used by:** src/services/fortimanagerService.ts only — specifically `rpc()`, which inspects each JSON-RPC payload's first param URL and routes to `submitProxy` when it's `/sys/proxy/json` or `submitNative` otherwise. No other module should call `submitProxy` / `submitNative` directly; everything that touches FMG flows through `rpc()` and gets the right lane automatically. By transitivity covers reservationPushService.ts, assetQuarantineService.ts, monitoringService.ts, and the integrations.ts routes that test / probe / manual-query FMG.
 
 **Invariants:**
-- Single-consumer FIFO: `submit()` callers see ordered execution per-integration; one task at a time per FortiManager instance.
-- Aborts: pre-dispatch abort drops the queued entry and rejects with `AbortError`. In-flight abort is the task's responsibility (the inner fetch's signal threading); the worker doesn't force-cancel.
-- One worker per integration id. Different integrations (different FMG hosts) get independent workers and run concurrently.
-- The worker is the ONLY path code in this process should use to talk to FMG — any direct `rpc()` / `fmgProxyRest()` call without an `integrationId` bypasses the cross-feature serialization and is reintroducing the parallel-connection failure mode.
-- Workers are not torn down on integration delete — the map entry remains until process exit. This is intentional (cheap, no GC race on `getFmgWorker`).
+- Proxy lane is strict FIFO with concurrency=1 — honors FMG's "drops parallel /sys/proxy/json past 1-2" constraint. Cross-feature serialization holds here: an operator clicking "Reserve IP" mid-discovery has the reservation-push proxy call wait behind in-flight discovery proxy calls.
+- Native lane is unbounded; the worker just tracks inflight count for observability. Native FMG endpoints (`/pm/config/...`, `/dvmdb/...`, auth) hit FMG's own DB and have no parallel-call constraint.
+- Aborts (proxy lane): pre-dispatch abort drops the queued entry and rejects with AbortError. In-flight abort is the task's fetch-signal responsibility.
+- Aborts (native lane): no queue, so abort just bubbles through the task's own fetch signal.
+- One worker per integration id. Different integrations get independent workers and run fully concurrently across both lanes.
 
 **When changing this:**
-- Adding a NEW FMG-bound code path: thread `integrationId` from the route handler / service caller all the way to the FMG-touching function so it ends up at `rpc()`. Verify with grep: `await rpc(.*[^,]\)` (no trailing integrationId) inside fortimanagerService.ts is a smell.
-- If you need queue-priority semantics later (e.g. discovery-low / push-high), add a priority parameter to `submit()` and a heap-based queue — keep the public API back-compat with FIFO as the default.
-- Adding a metric: extend `setFmgWorkerQueueDepth` / `setFmgWorkerInflight` rather than introducing a new gauge — operators already grep for `polaris_fmg_worker_*`.
-- Test serial behavior: submit two tasks concurrently and confirm the second resolves only after the first completes, even when both signals start out un-aborted.
+- Adding a NEW FMG-bound code path: just call `rpc()` with the integrationId; the lane dispatch is automatic from the JSON-RPC payload URL. Never call `submitProxy` / `submitNative` directly from outside fortimanagerService.
+- If a new FMG endpoint pattern shows up that needs lane treatment different from "is it /sys/proxy/json", update `rpcPayloadIsProxy()` in fortimanagerService — keep the predicate the only place that decides which lane.
+- Test both lanes when adding behavior — the proxy lane is exercised by FIFO + abort tests; the native lane by concurrent-fire + inflight-decrement-on-throw tests.
 
 ---
 
@@ -939,9 +938,9 @@ Listed alphabetically.
 **Used by:** src/api/routes/integrations.ts:531,693,824,840,1107,1283 — discovery orchestration + test + manual proxy query + realtime push via FMG, src/services/monitoringService.ts:39 — FMG proxy REST for uptime monitoring, src/services/reservationPushService.ts:26 — push DHCP reservations to FortiGate via FMG proxy/direct, src/services/assetQuarantineService.ts:49 — push quarantine targets via FMG proxy/direct.
 
 **Invariants:**
-- Proxy mode (`useProxy: true`, default) clamps per-FortiGate parallelism to 1 because FortiManager drops parallel proxy connections; CMDB queries not subject to throttle (still routed through the FMG worker, which is itself serial).
-- Direct mode (`useProxy: false`) requires valid fortigateApiUser/fortigateApiToken on the FMG integration; mgmt IPs come from either the warm cache (monitor-up firewall Asset rows) or `resolveDeviceMgmtIpViaFmg` for cache-cold/new devices.
-- All FMG-bound calls go through `getFmgWorker(integrationId).submit(...)` when an integrationId is in scope. Per-device direct-FortiGate calls do NOT touch FMG and are NOT serialized through the worker — they fan out up to `discoveryParallelism` wide.
+- Proxy mode (`useProxy: true`, default) clamps per-FortiGate parallelism to 1 because FortiManager drops parallel `/sys/proxy/json` connections. The FMG worker's proxy lane enforces that serialization; the per-device CMDB scrapes (interface config, DHCP CMDB, VIPs, geo coords, etc.) run concurrently on the worker's native lane, so per-device throughput is higher than the proxy-lane bottleneck alone would suggest.
+- Direct mode (`useProxy: false`) requires valid fortigateApiUser/fortigateApiToken on the FMG integration; mgmt IPs come from either the warm cache (monitor-up firewall Asset rows) or `resolveDeviceMgmtIpViaFmg` for cache-cold/new devices. Cache-cold mgmt-IP resolves now run concurrently across the worker pool (native lane is unbounded) — fresh installs no longer pay the serial-resolve penalty before per-device discovery can start.
+- All FMG-bound calls go through `rpc()`, which inspects the JSON-RPC payload's first param URL and routes to `getFmgWorker(integrationId).submitProxy` (when it's `/sys/proxy/json`) or `submitNative` (every other URL). Per-device direct-FortiGate calls do NOT touch FMG and fan out up to `discoveryParallelism` wide independently of the worker.
 - Parity invariant: both FMG and standalone FortiGate return identical DiscoveryResult shape for sync pipeline compatibility.
 - FortiAP LLDP/mesh fields extracted via extractApLldpAndMesh, skipping wireless-mesh peers (system_description != "FortiSwitch-*").
 - Cache-miss fallback in processDevice's direct-mode branch: if a warm-cache dispatch fails, re-resolve via FMG worker and retry once at the freshly-resolved IP. Cleared via `cachedNames.delete(deviceName)` so the loop never iterates more than twice.

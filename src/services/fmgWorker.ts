@@ -1,31 +1,42 @@
 /**
- * src/services/fmgWorker.ts — Per-integration single-consumer FortiManager worker.
+ * src/services/fmgWorker.ts — Per-integration FortiManager worker with two lanes.
  *
- * FortiManager drops parallel API connections past 1-2 concurrent requests for
- * the same API user (the "FMG concurrency limit" — see project memo). Every
- * code path in Polaris that talks to FMG must funnel through one of these
- * workers so that constraint is enforced by construction instead of by
- * convention. Callers `submit()` work; the worker drains the queue serially.
+ * FortiManager's "one-request-at-a-time" rule is specifically about its
+ * `/sys/proxy/json` passthrough endpoint, which forwards calls through to
+ * managed FortiGates. FMG drops parallel proxy connections past 1-2 concurrent
+ * requests for the same API user. Native FMG endpoints (`/pm/config/...`,
+ * `/dvmdb/...`) hit FMG's own database and don't have that constraint.
  *
- * The worker is per-integration-id (one logical FMG instance, one queue) and
- * is created lazily on first `submit()`. Idle workers are not torn down — the
- * memory footprint is negligible and GCing them would race with concurrent
- * `getFmgWorker()` calls.
+ * This worker therefore exposes two lanes per integration:
  *
- * Cross-feature serialization: discovery's mgmt-IP resolves, reservation push,
- * quarantine push, lease release, manual API proxy, and connection-test calls
- * all share the same per-integration queue. An operator clicking "Reserve IP"
- * mid-discovery can't drop a parallel-connection on FMG anymore — the push
- * waits its turn behind the in-flight resolve.
+ *   • Proxy lane  — strict single-consumer FIFO (concurrency = 1). Honors the
+ *                   FMG hard limit. Used for every `/sys/proxy/json` call.
+ *   • Native lane — unbounded; just tracks inflight count for observability.
+ *                   Used for every CMDB / dvmdb / auth / other native call.
  *
- * Abort: `submit()` accepts an optional AbortSignal. If it fires before the
- * task starts, the queued entry is rejected with AbortError (the task never
- * runs). If it fires while the task is in-flight, it's the task's job to honor
- * the signal via the standard fetch-signal threading — the worker doesn't
- * force-cancel.
+ * Each lane has its own gauges: `polaris_fmg_worker_queue_depth` and
+ * `polaris_fmg_worker_inflight` apply to the proxy lane (back-compat with the
+ * pre-split metric names); `polaris_fmg_worker_native_inflight` is the native
+ * lane's counter.
+ *
+ * Cross-feature serialization still holds where it matters: discovery's per-
+ * device proxy queries, reservation push (proxy mode), quarantine push (proxy
+ * mode), and the manual /sys/proxy/json proxy endpoint all share the same
+ * single proxy slot per integration. Native queries — mgmt-IP resolution,
+ * CMDB scrapes, the device roster — now run concurrently up to whatever
+ * `discoveryParallelism` and the host can handle.
+ *
+ * Abort: `submitProxy()` and `submitNative()` both accept an optional
+ * AbortSignal. Proxy lane: pre-dispatch abort yanks the entry from the queue.
+ * Native lane: abort fires the underlying task's own signal-aware fetch
+ * (the worker doesn't queue native calls so there's nothing to yank).
  */
 
-import { setFmgWorkerQueueDepth, setFmgWorkerInflight } from "../metrics.js";
+import {
+  setFmgWorkerQueueDepth,
+  setFmgWorkerInflight,
+  setFmgWorkerNativeInflight,
+} from "../metrics.js";
 
 class AbortError extends Error {
   override name = "AbortError";
@@ -47,30 +58,39 @@ interface QueueEntry<T = unknown> {
 
 export class FmgWorker {
   readonly integrationId: string;
-  private queue: QueueEntry[] = [];
-  private inFlight: QueueEntry | null = null;
-  private draining = false;
+
+  // ── Proxy lane: strict FIFO concurrency=1 ──────────────────────────────
+  private proxyQueue: QueueEntry[] = [];
+  private proxyInFlight: QueueEntry | null = null;
+  private proxyDraining = false;
+
+  // ── Native lane: unbounded; just tracks inflight count ─────────────────
+  private nativeInFlight = 0;
 
   constructor(integrationId: string) {
     this.integrationId = integrationId;
   }
 
-  get queueDepth(): number {
-    return this.queue.length;
+  get proxyQueueDepth(): number {
+    return this.proxyQueue.length;
   }
 
-  get inFlightLabel(): string | null {
-    return this.inFlight?.label ?? null;
+  get proxyInFlightLabel(): string | null {
+    return this.proxyInFlight?.label ?? null;
+  }
+
+  get nativeInFlightCount(): number {
+    return this.nativeInFlight;
   }
 
   /**
-   * Submit a task to the worker. Returns a promise that resolves with the
-   * task's result, or rejects with the task's error. Aborting before the task
-   * starts removes the entry and rejects with AbortError without running the
-   * task. Aborting while in-flight is the task's responsibility (via fetch
-   * signal); the worker only guarantees serial dispatch.
+   * Submit a `/sys/proxy/json`-bound task to the strict proxy lane.
+   * Returns a promise resolving with the task's result or rejecting with the
+   * task's error. Aborting before the task starts removes the entry from the
+   * queue and rejects with AbortError; aborting in-flight is the task's
+   * responsibility (via the fetch signal).
    */
-  submit<T>(label: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  submitProxy<T>(label: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (signal?.aborted) {
       return Promise.reject(new AbortError(`Aborted before submit: ${label}`));
     }
@@ -80,12 +100,10 @@ export class FmgWorker {
 
       if (signal) {
         const onAbort = () => {
-          // Only matters if the entry hasn't been picked up yet. If it's
-          // already in-flight, the inner fetch handles the abort.
-          const idx = this.queue.indexOf(entry as QueueEntry);
+          const idx = this.proxyQueue.indexOf(entry as QueueEntry);
           if (idx >= 0) {
-            this.queue.splice(idx, 1);
-            this.publishDepth();
+            this.proxyQueue.splice(idx, 1);
+            this.publishProxyDepth();
             entry.reject(new AbortError(`Aborted while queued: ${label}`));
           }
         };
@@ -93,19 +111,39 @@ export class FmgWorker {
         signal.addEventListener("abort", onAbort, { once: true });
       }
 
-      this.queue.push(entry as QueueEntry);
-      this.publishDepth();
-      this.drain();
+      this.proxyQueue.push(entry as QueueEntry);
+      this.publishProxyDepth();
+      this.drainProxy();
     });
   }
 
-  private async drain(): Promise<void> {
-    if (this.draining) return;
-    this.draining = true;
+  /**
+   * Submit a native FMG task (CMDB, dvmdb, auth, etc.) to the unbounded
+   * native lane. The task fires immediately — the worker only tracks the
+   * inflight count for the `polaris_fmg_worker_native_inflight` gauge.
+   * Abort handling is the task's responsibility (fetch signal threading).
+   */
+  async submitNative<T>(label: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) {
+      throw new AbortError(`Aborted before submit: ${label}`);
+    }
+    this.nativeInFlight++;
+    this.publishNativeInflight();
     try {
-      while (this.queue.length > 0) {
-        const entry = this.queue.shift()!;
-        this.publishDepth();
+      return await run();
+    } finally {
+      this.nativeInFlight--;
+      this.publishNativeInflight();
+    }
+  }
+
+  private async drainProxy(): Promise<void> {
+    if (this.proxyDraining) return;
+    this.proxyDraining = true;
+    try {
+      while (this.proxyQueue.length > 0) {
+        const entry = this.proxyQueue.shift()!;
+        this.publishProxyDepth();
         if (entry.signal && entry.onAbort) {
           entry.signal.removeEventListener("abort", entry.onAbort);
         }
@@ -113,29 +151,33 @@ export class FmgWorker {
           entry.reject(new AbortError(`Aborted before dispatch: ${entry.label}`));
           continue;
         }
-        this.inFlight = entry;
-        this.publishInflight(1);
+        this.proxyInFlight = entry;
+        this.publishProxyInflight(1);
         try {
           const result = await entry.run();
           entry.resolve(result);
         } catch (err) {
           entry.reject(err);
         } finally {
-          this.inFlight = null;
-          this.publishInflight(0);
+          this.proxyInFlight = null;
+          this.publishProxyInflight(0);
         }
       }
     } finally {
-      this.draining = false;
+      this.proxyDraining = false;
     }
   }
 
-  private publishDepth(): void {
-    setFmgWorkerQueueDepth(this.integrationId, this.queue.length);
+  private publishProxyDepth(): void {
+    setFmgWorkerQueueDepth(this.integrationId, this.proxyQueue.length);
   }
 
-  private publishInflight(value: 0 | 1): void {
+  private publishProxyInflight(value: 0 | 1): void {
     setFmgWorkerInflight(this.integrationId, value);
+  }
+
+  private publishNativeInflight(): void {
+    setFmgWorkerNativeInflight(this.integrationId, this.nativeInFlight);
   }
 }
 

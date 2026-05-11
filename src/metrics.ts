@@ -106,7 +106,14 @@ const fmgWorkerQueueDepth = new Gauge({
 
 const fmgWorkerInflight = new Gauge({
   name: "polaris_fmg_worker_inflight",
-  help: "1 when the FMG worker for this integration id is currently executing a task; 0 when idle.",
+  help: "1 when the FMG worker's PROXY lane (strict concurrency=1) is currently executing a task; 0 when idle. Proxy lane carries every /sys/proxy/json call; FMG drops parallel proxy connections past 1-2 so this stays serialized by design.",
+  labelNames: ["integrationId"] as const,
+  registers: [registry],
+});
+
+const fmgWorkerNativeInflight = new Gauge({
+  name: "polaris_fmg_worker_native_inflight",
+  help: "Count of native FMG calls (CMDB, dvmdb, auth — anything that ISN'T /sys/proxy/json) currently in flight for this integration. Unbounded by design — native endpoints hit FMG's own DB and don't share the proxy concurrency constraint. Persistently high values indicate genuine native-call parallelism (good) rather than a bottleneck.",
   labelNames: ["integrationId"] as const,
   registers: [registry],
 });
@@ -324,6 +331,10 @@ export function setFmgWorkerQueueDepth(integrationId: string, depth: number): vo
 
 export function setFmgWorkerInflight(integrationId: string, value: 0 | 1): void {
   fmgWorkerInflight.set({ integrationId }, value);
+}
+
+export function setFmgWorkerNativeInflight(integrationId: string, count: number): void {
+  fmgWorkerNativeInflight.set({ integrationId }, count);
 }
 
 export type Severity = "ok" | "watch" | "amber" | "red";

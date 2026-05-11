@@ -302,16 +302,37 @@ export async function testRandomFortiGate(
   return { ok: fgResult.ok, message: fgResult.message, version: fgResult.version, deviceName };
 }
 
+/** True when this JSON-RPC payload targets FMG's `/sys/proxy/json` passthrough
+ *  (i.e. forwards a call through to a managed FortiGate). FMG drops parallel
+ *  proxy connections past 1-2 so these go through the FmgWorker's strict
+ *  proxy lane; everything else (CMDB, dvmdb, auth) goes through the unbounded
+ *  native lane. */
+function rpcPayloadIsProxy(payload: JsonRpcRequest): boolean {
+  const params = payload.params;
+  if (!Array.isArray(params)) return false;
+  for (const p of params) {
+    const url = (p as { url?: string } | undefined)?.url;
+    if (typeof url === "string" && url === "/sys/proxy/json") return true;
+  }
+  return false;
+}
+
 /**
  * Low-level JSON RPC call to FortiManager with bearer token auth.
  *
  * When `integrationId` is provided, the call funnels through the
- * per-integration FmgWorker so that all FMG-bound traffic across the process
- * (discovery, reservation push, quarantine push, manual proxy, test calls)
- * stays serial against FortiManager's "one-request-at-a-time" constraint.
- * When omitted (e.g. test-connection on an unsaved integration where no id
- * exists yet), the call runs direct — there's no other code talking to that
- * FMG instance, so contention is impossible.
+ * per-integration FmgWorker. The worker has two lanes:
+ *
+ *   • Proxy lane (strict concurrency=1) — every `/sys/proxy/json` call.
+ *     FortiManager drops parallel proxy connections past 1-2, so these stay
+ *     serialized by design.
+ *   • Native lane (unbounded) — every other call (CMDB, dvmdb, auth, etc.).
+ *     Native endpoints hit FMG's own database and don't share the proxy
+ *     concurrency constraint, so they parallelize freely.
+ *
+ * When `integrationId` is omitted (e.g. test-connection on an unsaved
+ * integration where no id exists yet), the call runs direct — there's no
+ * other code talking to that FMG instance, so contention is impossible.
  */
 async function rpc(
   url: string,
@@ -325,7 +346,10 @@ async function rpc(
   const inner = () => rpcInner(url, payload, apiUser, apiToken, verifySsl, externalSignal);
   if (!integrationId) return inner();
   const label = `fmg.${payload.method}:${describeRpcParams(payload)}`;
-  return getFmgWorker(integrationId).submit(label, inner, externalSignal);
+  const worker = getFmgWorker(integrationId);
+  return rpcPayloadIsProxy(payload)
+    ? worker.submitProxy(label, inner, externalSignal)
+    : worker.submitNative(label, inner, externalSignal);
 }
 
 function describeRpcParams(payload: JsonRpcRequest): string {
