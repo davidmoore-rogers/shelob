@@ -316,11 +316,32 @@ export async function discoverDhcpSubnets(
     return { subnets: [], devices, interfaceIps, dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [deviceName], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
   }
 
-  // Step 3: DHCP server configuration
+  // Hoisted: dhcpInterfaceNames is built in Step 3 and read both by Step 3b
+  // (VLAN tagging on subnets) and the post-discovery filter logic at line
+  // ~779. Keep its declaration outside the Promise.all chain so all readers
+  // share the same array regardless of which chain populated it.
   const dhcpInterfaceNames: string[] = [];
   const configResStart = dhcpEntries.length;
-  try {
-    const dhcpData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system.dhcp/server", { query: queryBase, signal });
+
+  // Fan out the six independent per-FortiGate query chains in parallel.
+  // Inside each chain, steps stay sequential where they share state:
+  //   Chain A:  Step 3 (DHCP CMDB) → Promise.all(Step 3a + Step 3b)
+  //   Chain B:  Step 3c    (device inventory)
+  //   Chain C:  Step 3d (managed switches) → Step 3e (APs) → Step 3e.5 (port map)
+  //   Chain D:  Step 3e.55 (ARP table)
+  //   Chain E:  Step 3e.6  (geo coordinates)
+  //   Chain F:  Step 3f    (firewall VIPs)
+  // Per-FortiGate wall-clock drops from sum-of-all to max(any chain). Peak
+  // intra-device REST concurrency is ~6 simultaneous calls; small-branch
+  // FortiGates (60F/61F class) handle this in practice, and the existing
+  // per-step try/catch isolates a slow individual query from tanking the
+  // whole device's discovery.
+  await Promise.all([
+    // ─── Chain A: DHCP CMDB → DHCP monitor + interface IPs in parallel ───
+    (async () => {
+      // Step 3: DHCP server configuration
+      try {
+        const dhcpData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system.dhcp/server", { query: queryBase, signal });
     if (!Array.isArray(dhcpData)) {
       log("discover.dhcp", "info", `${deviceHostname}: No DHCP servers configured`, deviceHostname);
     } else {
@@ -375,9 +396,13 @@ export async function discoverDhcpSubnets(
     log("discover.dhcp", "error", `${deviceHostname}: Failed to query DHCP servers — ${err.message || "Unknown error"}`, deviceHostname);
   }
 
-  // Step 3a: Live DHCP table (reservations + leases) via monitor endpoint
-  try {
-    const leases = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/system/dhcp", {
+      // ── Inside Chain A: 3a (live monitor) + 3b (interfaces) run in
+      // parallel once Step 3 has populated `discovered` + `dhcpInterfaceNames`.
+      await Promise.all([
+        // Step 3a: Live DHCP table (reservations + leases) via monitor endpoint
+        (async () => {
+          try {
+            const leases = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/system/dhcp", {
       query: { ...queryBase, format: "ip|mac|hostname|interface|reserved|expire_time|access_point|ssid|vci" },
       signal,
     });
@@ -448,15 +473,16 @@ export async function discoverDhcpSubnets(
   } catch (err: any) {
     log("discover.leases", "error", `${deviceHostname}: Failed to query DHCP monitor — ${err.message || "Unknown error"}`, deviceHostname);
   }
-
-  // Step 3b: Interface IPs + VLAN IDs
-  // Walk every interface (not just DHCP-bound ones) so WAN / non-RFC1918
-  // addresses also flow into Asset.associatedIps via Phase 4b. The mgmt
-  // interface is already pushed above as role:"management"; everything
-  // else passes the same interfaceInclude/interfaceExclude filter the FMG
-  // proxy path applies, and lands as role:"interface".
-  try {
-    const ifaceData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system/interface", { query: queryBase, signal });
+        })(),
+        // Step 3b: Interface IPs + VLAN IDs
+        // Walk every interface (not just DHCP-bound ones) so WAN / non-RFC1918
+        // addresses also flow into Asset.associatedIps via Phase 4b. The mgmt
+        // interface is already pushed above as role:"management"; everything
+        // else passes the same interfaceInclude/interfaceExclude filter the FMG
+        // proxy path applies, and lands as role:"interface".
+        (async () => {
+          try {
+            const ifaceData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system/interface", { query: queryBase, signal });
     const ifaceVlanMap = new Map<string, number>();
     let ifaceIpCount = 0;
     if (Array.isArray(ifaceData)) {
@@ -496,10 +522,14 @@ export async function discoverDhcpSubnets(
   } catch (err: any) {
     log("discover.interfaces", "error", `${deviceHostname}: Failed to query interfaces — ${err.message || "Unknown error"}`, deviceHostname);
   }
-
-  // Step 3c: Device inventory (detected clients)
-  try {
-    const results = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/user/device/query", {
+        })(),
+      ]); // end Promise.all([Step 3a, Step 3b])
+    })(), // end Chain A
+    // ─── Chain B: Device inventory ───────────────────────────────────────
+    (async () => {
+      // Step 3c: Device inventory (detected clients)
+      try {
+        const results = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/user/device/query", {
       query: { ...queryBase, format: "mac|ip|hostname|host|os|type|os_version|hardware_vendor|interface|switch_fortilink|fortiswitch|switch_port|ap_name|fortiap|user|detected_user|is_online|last_seen" },
       signal,
     });
@@ -536,13 +566,15 @@ export async function discoverDhcpSubnets(
   } catch (err: any) {
     log("discover.inventory", "error", `${deviceHostname}: Failed to query device inventory — ${err.message || "Unknown error"}`, deviceHostname);
   }
-
-  // Step 3d: Managed FortiSwitches
-  try {
-    const swResults = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/switch-controller/managed-switch/status", {
-      query: { ...queryBase, format: "connecting_from|fgt_peer_intf_name|join_time|os_version|serial|switch-id|state|status" },
-      signal,
-    });
+    })(), // end Chain B
+    // ─── Chain C: Switches → APs → AP-port mapping (serial intra-chain) ──
+    (async () => {
+      // Step 3d: Managed FortiSwitches
+      try {
+        const swResults = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/switch-controller/managed-switch/status", {
+          query: { ...queryBase, format: "connecting_from|fgt_peer_intf_name|join_time|os_version|serial|switch-id|state|status" },
+          signal,
+        });
     didSwitchQuery = true;
     let switchCount = 0;
     if (Array.isArray(swResults)) {
@@ -676,13 +708,15 @@ export async function discoverDhcpSubnets(
     const isNotFound = err instanceof AppError && err.httpStatus === 404;
     log("discover.ap-uplinks", "info", `${deviceHostname}: ${isNotFound ? "detected-device not available — skipping" : `AP uplink query skipped — ${err.message || "Unknown error"}`}`, deviceHostname);
   }
-
-  // Step 3e.55: FortiGate ARP table (mirrors fortimanagerService).
-  try {
-    const arpResults = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/network/arp", {
-      query: queryBase,
-      signal,
-    });
+    })(), // end Chain C
+    // ─── Chain D: ARP table ──────────────────────────────────────────────
+    (async () => {
+      // Step 3e.55: FortiGate ARP table (mirrors fortimanagerService).
+      try {
+        const arpResults = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/network/arp", {
+          query: queryBase,
+          signal,
+        });
     if (Array.isArray(arpResults)) {
       for (const a of arpResults) {
         const ip = typeof a.ip === "string" ? a.ip.trim() : "";
@@ -704,15 +738,17 @@ export async function discoverDhcpSubnets(
     const isNotFound = err instanceof AppError && err.httpStatus === 404;
     log("discover.arp", "info", `${deviceHostname}: ${isNotFound ? "ARP endpoint not available — skipping" : `ARP query skipped — ${err.message || "Unknown error"}`}`, deviceHostname);
   }
-
-  // Step 3e.6: Geo coordinates from `config system global`.
-  // CMDB endpoints use `?fields=` (not `?format=`, which is monitor-only).
-  // Dropping the filter entirely — the full system/global object is small,
-  // and pulling every key means we log them when lat/lng are absent so the
-  // operator can see exactly where the gate does (or doesn't) store coords.
-  try {
-    const sysGlobal = await fgRequest<any>(config, "GET", "/api/v2/cmdb/system/global", {
-      query: queryBase,
+    })(), // end Chain D
+    // ─── Chain E: Geo coordinates ────────────────────────────────────────
+    (async () => {
+      // Step 3e.6: Geo coordinates from `config system global`.
+      // CMDB endpoints use `?fields=` (not `?format=`, which is monitor-only).
+      // Dropping the filter entirely — the full system/global object is small,
+      // and pulling every key means we log them when lat/lng are absent so the
+      // operator can see exactly where the gate does (or doesn't) store coords.
+      try {
+        const sysGlobal = await fgRequest<any>(config, "GET", "/api/v2/cmdb/system/global", {
+          query: queryBase,
       signal,
     });
     const globalObj = sysGlobal && typeof sysGlobal === "object" && !Array.isArray(sysGlobal)
@@ -735,10 +771,12 @@ export async function discoverDhcpSubnets(
   } catch (err: any) {
     log("discover.geo", "info", `${deviceHostname}: Geo lookup skipped — ${err.message || "Unknown error"}`, deviceHostname);
   }
-
-  // Step 3f: Firewall VIPs
-  try {
-    const vipData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/firewall/vip", { query: queryBase, signal });
+    })(), // end Chain E
+    // ─── Chain F: Firewall VIPs ──────────────────────────────────────────
+    (async () => {
+      // Step 3f: Firewall VIPs
+      try {
+        const vipData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/firewall/vip", { query: queryBase, signal });
     let vipCount = 0;
     if (Array.isArray(vipData)) {
       for (const vip of vipData) {
@@ -769,6 +807,8 @@ export async function discoverDhcpSubnets(
   } catch (err: any) {
     log("discover.vips", "error", `${deviceHostname}: Failed to query firewall VIPs — ${err.message || "Unknown error"}`, deviceHostname);
   }
+    })(), // end Chain F
+  ]); // end Promise.all of 6 per-FortiGate query chains
 
   // Filter
   const filteredSubnets = filterDhcpResults(discovered, config.dhcpInclude, config.dhcpExclude);
