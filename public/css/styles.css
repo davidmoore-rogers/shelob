@@ -589,6 +589,51 @@ code {
   color: var(--color-text-tertiary);
 }
 
+/* ─── Capacity Advisor card ───────────────────────────────────────────────── */
+.capacity-advisor-card { border-left: 3px solid var(--color-info, #4fc3f7); }
+.advisor-header-amber { font-size: 0.78rem; color: var(--color-warning); font-weight: 600; }
+.advisor-header-ok    { font-size: 0.78rem; color: #2ecc71; font-weight: 600; }
+[data-theme="light"] .advisor-header-ok { color: #27ae60; }
+
+.advisor-table tbody tr.advisor-divider td {
+  padding-top: 0.85rem;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  border-bottom: 1px solid var(--color-border);
+}
+.advisor-table tbody tr.advisor-row-change td {
+  background: rgba(255,214,0,0.04);
+}
+[data-theme="light"] .advisor-table tbody tr.advisor-row-change td {
+  background: rgba(245,127,23,0.04);
+}
+.advisor-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+.advisor-pill-change { background: rgba(255,214,0,0.18); color: var(--color-warning); }
+.advisor-pill-ok     { background: rgba(46,204,113,0.15); color: #2ecc71; }
+[data-theme="light"] .advisor-pill-ok { background: rgba(39,174,96,0.15); color: #27ae60; }
+.advisor-cold-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  cursor: help;
+}
+.advisor-stage-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
 /* ─── Main Content ─────────────────────────────────────────────────────────── */
 .main {
   flex: 1;

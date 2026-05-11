@@ -91,15 +91,7 @@ Server Settings → Maintenance shows host CPU/RAM/disk, database size with samp
 
 Discovery pre-loads subnets, reservations, and assets for O(1) lookups; peak memory is ~200–400 MB on top of the Node.js base. Monitoring sample tables grow proportionally with monitored asset count × cadence × retention; the Capacity card on Server Settings → Maintenance projects this at runtime.
 
-**PostgreSQL tuning for large deployments** (`postgresql.conf`):
-
-```
-shared_buffers = 2GB
-work_mem = 32MB
-effective_cache_size = 4GB
-max_connections = 20
-random_page_cost = 1.1
-```
+**PostgreSQL tuning for large deployments**: open Server Settings → Maintenance → **Capacity Advisor** after the host has been monitoring for ~15 minutes. It computes recommended values for `shared_buffers` / `work_mem` / `effective_cache_size` / `random_page_cost` / `max_connections` based on observed workload, host RAM, and connection peak, then surfaces them alongside Polaris's own pool and worker tunables. For headless installs, see `docs/INSTALL.md` → "Capacity tuning — use the Capacity Advisor."
 
 ## Quick start (development)
 

@@ -26,6 +26,7 @@
 
 import { logger } from "../utils/logger.js";
 import { getCapacitySnapshot, recordCapacityTransition } from "../services/capacityService.js";
+import { recomputeAdvisorFromSnapshot, type PgTuningExternal } from "../services/capacityAdvisorService.js";
 import { setDbPoolGauges, setCapacityGauges } from "../metrics.js";
 import { runInstrumentedJob } from "./_metrics.js";
 
@@ -56,6 +57,20 @@ async function runCapacityWatch(): Promise<void> {
         databaseSizeBytes: snap.database.sizeBytes,
         steadyStateSizeBytes: snap.workload.steadyStateSizeBytes,
       });
+
+      // Refresh the Capacity Advisor cache out-of-band so the Maintenance tab
+      // doesn't have to wait for the recompute on first load. PG tuning inputs
+      // are stubbed here — pg_settings is queried only on the route handler
+      // path (where an admin is actively looking), not on every 10-min tick;
+      // the advisor PG_* recommendations stay accurate enough between ticks
+      // because PG settings don't drift between page loads.
+      const stubPgTuning: PgTuningExternal = {
+        sharedBuffers:      { current: null, recommended: "?", changeRequired: false },
+        effectiveCacheSize: { current: null, recommended: "?", changeRequired: false },
+        workMem:            { current: null, recommended: "?", changeRequired: false },
+        randomPageCost:     { current: null, recommended: "?", changeRequired: false },
+      };
+      await recomputeAdvisorFromSnapshot(snap, stubPgTuning);
     });
   } catch (err: any) {
     logger.debug({ err: err?.message }, "capacityWatch job failed (non-fatal)");

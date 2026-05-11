@@ -650,16 +650,18 @@ Listed alphabetically.
 
 ## services/capacityService.ts
 
-**What it owns:** Capacity snapshot (host/DB/workload), severity grading (ok/watch/amber/red), reason codes, Event emission on severity transition, and steady-state DB size projection.
+**What it owns:** Capacity snapshot (host/DB/workload), severity grading (ok/watch/amber/red), reason codes, Event emission on severity transition, and steady-state DB size projection. Also orchestrates the two-pass `getCapacitySnapshotWithAdvisor` helper that interleaves Capacity Advisor recompute with reason-building.
 
-**Public API:** `getCapacitySnapshot`, `recordCapacityTransition`.
+**Public API:** `getCapacitySnapshot`, `getCapacitySnapshotWithAdvisor`, `recordCapacityTransition`.
 
-**Cross-service deps:** `monitoringService` (cadences, retention), `timescaleService` (hypertable check), `queueService` (pg-boss installed, boot/persisted mode), `deploymentContext` (DB co-location).
+**Cross-service deps:** `monitoringService` (cadences, retention), `timescaleService` (hypertable check), `queueService` (pg-boss installed, boot/persisted mode), `deploymentContext` (DB co-location), `capacityAdvisorService` (dynamic import in `getCapacitySnapshotWithAdvisor`; type-only the other direction to avoid runtime cycle).
 
-**Used by:** `src/jobs/capacityWatch.ts — 10-min capacity check + Event emission`; `src/api/routes/serverSettings.ts:864,865,929,936 — pg-tuning endpoint snapshots + transitions`. ~4 call sites.
+**Used by:** `src/jobs/capacityWatch.ts — 10-min capacity check + Event emission`; `src/api/routes/serverSettings.ts — /pg-tuning, /capacity-advisor, /capacity-advisor/stage endpoints`. ~6 call sites.
 
 **Invariants:**
-- Severity tiers: **red** = disk <10%, DB >50% of free disk, stale autovacuum >7d on sample table (Timescale hypertables exempt — append-only chunks legitimately don't autovacuum), projected >8× RAM; **amber** = disk 10–20%, projected >4× RAM, dead-tup >20%, ramInsufficient, pgTuningNeeded, pgboss_overdue (>5000 monitored assets on cursor); **watch** = disk 20–30%, pgboss_recommended (>500 assets on cursor), pgboss_pending, db_pool_undersized (>=80% of pool capacity AND <70% of max_connections), timescale_recommended (sample tables >1 GB, extension not installed), metrics_token_unset, health_token_unset; **ok** = none.
+- Severity tiers: **red** = disk <10%, DB >50% of free disk, stale autovacuum >7d on sample table (Timescale hypertables exempt — append-only chunks legitimately don't autovacuum), projected >8× RAM; **amber** = disk 10–20%, projected >4× RAM, dead-tup >20%, ramInsufficient, pgTuningNeeded, max_connections_undersized (advisor-driven); **watch** = disk 20–30%, db_pool_undersized (>=80% of pool capacity), monitor_workers_undersized (advisor-driven rollup), timescale_recommended (sample tables >1 GB, extension not installed), metrics_token_unset, health_token_unset; **ok** = none.
+- Legacy `pgboss_recommended` / `pgboss_overdue` / `pgboss_pending` reasons were absorbed into the Capacity Advisor's QUEUE_MODE lever and no longer fire. The advisor's per-lever recommendations are the source of truth for queue-mode advice.
+- Advisor-driven reasons (`monitor_workers_undersized`, `max_connections_undersized`) only fire when callers pass `advisor` gap data into `computeReasons`. `getCapacitySnapshot` with `advisor: undefined` skips them; `getCapacitySnapshotWithAdvisor` builds the gaps and re-runs the snapshot in pass 2.
 - Reason codes are unique per condition — `projected_exceeds_disk` (red, projected > free disk on DB volume) and `projected_approaches_disk` (amber, >75% of free disk) deliberately use different codes so transition Events stay distinguishable.
 - Volumes deduped by `stat.dev` so single-LV box = one entry, STIG RHEL with separate /var = two.
 - Steady-state projection = base DB size – current sample table bytes + projected sample bytes (per monitored asset × rows/day/asset × retention × bytes/row).

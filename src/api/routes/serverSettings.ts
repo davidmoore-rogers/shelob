@@ -846,96 +846,145 @@ function parsePgBytes(val: string): number {
   }
 }
 
+/**
+ * Compute the pg-tuning data: per-setting current vs recommended pairs, the
+ * pg_settings config-file path, plus the `ramInsufficient` and `pgTuningNeeded`
+ * flags consumed by capacityService.
+ *
+ * Extracted into a helper so both `/pg-tuning` and `/capacity-advisor` can
+ * reuse it without duplicating the PG_SETTINGS query. Returns null when no
+ * threshold is crossed (small install — no tuning advice yet).
+ */
+interface PgTuningRow {
+  name: string;
+  current: string;
+  recommended: string;
+  ok: boolean;
+}
+interface PgTuningResult {
+  settings: PgTuningRow[];
+  pgConfigFile: string | null;
+  ramInsufficient: boolean;
+  pgTuningNeeded: boolean;
+}
+async function computePgTuning(): Promise<PgTuningResult | null> {
+  const [assetCount, subnetCount, reservationCount] = await Promise.all([
+    prisma.asset.count(),
+    prisma.subnet.count(),
+    prisma.reservation.count(),
+  ]);
+
+  const triggered: string[] = [];
+  if (assetCount >= PG_TUNING_THRESHOLDS.assets) triggered.push("assets");
+  if (subnetCount >= PG_TUNING_THRESHOLDS.subnets) triggered.push("subnets");
+  if (reservationCount >= PG_TUNING_THRESHOLDS.reservations) triggered.push("reservations");
+  if (!triggered.length) return null;
+
+  const pgSettings = await prisma.$queryRawUnsafe<{ name: string; setting: string; unit: string | null }[]>(
+    `SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost', 'config_file')`
+  );
+  const pgConfigFile = pgSettings.find((s) => s.name === "config_file")?.setting || null;
+
+  const dbSizeResult = await prisma.$queryRawUnsafe<{ size: bigint }[]>(
+    "SELECT pg_database_size(current_database()) AS size"
+  );
+  const dbSizeBytes = Number(dbSizeResult[0]?.size ?? 0);
+  const minRam = getMinRecommendedRamBytes(dbSizeBytes);
+  const currentRam = totalmem();
+  const GB = 1024 * 1024 * 1024;
+  const currentRamGb = detectInstalledRamGb(currentRam);
+  const recommendedRamGb = minRam / GB;
+  const ramInsufficient = currentRamGb < recommendedRamGb;
+
+  const PG_RECOMMENDED = buildPgRecommended();
+  const settings: PgTuningRow[] = pgSettings.map((s) => {
+    if (s.name === "config_file") return null;
+    const rec = PG_RECOMMENDED[s.name];
+    if (!rec) return null;
+    let currentBytes: number;
+    let ok: boolean;
+    if (s.name === "random_page_cost") {
+      const val = parseFloat(s.setting);
+      ok = val <= 1.1;
+      return { name: s.name, current: String(val), recommended: rec.display, ok };
+    }
+    if (s.unit === "8kB") {
+      currentBytes = parseInt(s.setting, 10) * 8192;
+    } else if (s.unit === "kB") {
+      currentBytes = parseInt(s.setting, 10) * 1024;
+    } else {
+      currentBytes = parsePgBytes(s.setting);
+    }
+    ok = currentBytes >= rec.min;
+    let currentDisplay: string;
+    if (currentBytes >= 1024 * 1024 * 1024) currentDisplay = (currentBytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "") + "GB";
+    else if (currentBytes >= 1024 * 1024) currentDisplay = (currentBytes / (1024 * 1024)).toFixed(0) + "MB";
+    else currentDisplay = (currentBytes / 1024).toFixed(0) + "kB";
+    return { name: s.name, current: currentDisplay, recommended: rec.display, ok };
+  }).filter((s): s is PgTuningRow => s !== null);
+
+  const allOk = settings.every((s) => s.ok);
+  return { settings, pgConfigFile, ramInsufficient, pgTuningNeeded: !allOk };
+}
+
+/** Project the pg-tuning rows into the shape the Capacity Advisor consumes. */
+function pgTuningToAdvisorShape(t: PgTuningResult | null): import("../../services/capacityAdvisorService.js").PgTuningExternal {
+  const find = (name: string): PgTuningRow | undefined =>
+    t?.settings.find((s) => s.name === name);
+  const sb = find("shared_buffers");
+  const ec = find("effective_cache_size");
+  const wm = find("work_mem");
+  const rp = find("random_page_cost");
+  const PG_DEFAULTS = buildPgRecommended();
+  return {
+    sharedBuffers: {
+      current: sb?.current ?? null,
+      recommended: sb?.recommended ?? PG_DEFAULTS.shared_buffers.display,
+      changeRequired: sb ? !sb.ok : false,
+    },
+    effectiveCacheSize: {
+      current: ec?.current ?? null,
+      recommended: ec?.recommended ?? PG_DEFAULTS.effective_cache_size.display,
+      changeRequired: ec ? !ec.ok : false,
+    },
+    workMem: {
+      current: wm?.current ?? null,
+      recommended: wm?.recommended ?? PG_DEFAULTS.work_mem.display,
+      changeRequired: wm ? !wm.ok : false,
+    },
+    randomPageCost: {
+      current: rp?.current ?? null,
+      recommended: rp?.recommended ?? PG_DEFAULTS.random_page_cost.display,
+      changeRequired: rp ? !rp.ok : false,
+    },
+  };
+}
+
 router.get("/pg-tuning", async (_req, res, next) => {
   try {
-    // 1. Count records to see if any threshold is crossed
-    const [assetCount, subnetCount, reservationCount] = await Promise.all([
-      prisma.asset.count(),
-      prisma.subnet.count(),
-      prisma.reservation.count(),
-    ]);
-
-    const triggered: string[] = [];
-    if (assetCount >= PG_TUNING_THRESHOLDS.assets) triggered.push("assets");
-    if (subnetCount >= PG_TUNING_THRESHOLDS.subnets) triggered.push("subnets");
-    if (reservationCount >= PG_TUNING_THRESHOLDS.reservations) triggered.push("reservations");
-
-    if (!triggered.length) {
+    const tuning = await computePgTuning();
+    if (!tuning) {
       const capacity = await getCapacitySnapshot({ ramInsufficient: false, pgTuningNeeded: false });
       void recordCapacityTransition(capacity);
       return res.json({ settings: [], pgConfigFile: null, capacity });
     }
-
-    // 2. Query current PostgreSQL settings
-    const pgSettings = await prisma.$queryRawUnsafe<{ name: string; setting: string; unit: string | null }[]>(
-      `SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost', 'config_file')`
-    );
-    const pgConfigFile = pgSettings.find((s) => s.name === "config_file")?.setting || null;
-
-    const dbSizeResult = await prisma.$queryRawUnsafe<{ size: bigint }[]>(
-      "SELECT pg_database_size(current_database()) AS size"
-    );
-    const dbSizeBytes = Number(dbSizeResult[0]?.size ?? 0);
-    const minRam = getMinRecommendedRamBytes(dbSizeBytes);
-    const currentRam = totalmem();
-    const GB = 1024 * 1024 * 1024;
-    const currentRamGb    = detectInstalledRamGb(currentRam);
-    const recommendedRamGb = minRam / GB;
-    // Compare in whole GBs so a server displaying "8 GB" is never flagged against an "8 GB" target
-    const ramInsufficient = currentRamGb < recommendedRamGb;
-
-    const PG_RECOMMENDED = buildPgRecommended();
-    const settings = pgSettings.map((s) => {
-      if (s.name === "config_file") return null;
-      const rec = PG_RECOMMENDED[s.name];
-      if (!rec) return null;
-
-      let currentBytes: number;
-      let ok: boolean;
-
-      if (s.name === "random_page_cost") {
-        const val = parseFloat(s.setting);
-        ok = val <= 1.1;
-        return { name: s.name, current: String(val), recommended: rec.display, ok };
-      }
-
-      // PostgreSQL reports shared_buffers in 8kB pages, work_mem in kB, etc.
-      if (s.unit === "8kB") {
-        currentBytes = parseInt(s.setting, 10) * 8192;
-      } else if (s.unit === "kB") {
-        currentBytes = parseInt(s.setting, 10) * 1024;
-      } else {
-        currentBytes = parsePgBytes(s.setting);
-      }
-
-      ok = currentBytes >= rec.min;
-      // Format current value for display
-      let currentDisplay: string;
-      if (currentBytes >= 1024 * 1024 * 1024) currentDisplay = (currentBytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, "") + "GB";
-      else if (currentBytes >= 1024 * 1024) currentDisplay = (currentBytes / (1024 * 1024)).toFixed(0) + "MB";
-      else currentDisplay = (currentBytes / 1024).toFixed(0) + "kB";
-
-      return { name: s.name, current: currentDisplay, recommended: rec.display, ok };
-    }).filter(Boolean);
-
-    const allOk = settings.every((s: any) => s.ok);
-    const pgTuningNeeded = !allOk;
 
     // Layer the capacity snapshot on top so callers get a single source of
     // truth for severity, reasons, host stats, sample-table breakdown, and
     // steady-state size projection. The card consumes `settings` + `pgConfigFile`
     // alongside `capacity` to render the inline pg-tuning rows under the
     // `pg_tuning_needed` reason.
-    const capacity = await getCapacitySnapshot({ ramInsufficient, pgTuningNeeded });
+    const capacity = await getCapacitySnapshot({
+      ramInsufficient: tuning.ramInsufficient,
+      pgTuningNeeded: tuning.pgTuningNeeded,
+    });
 
     // Best-effort transition Event so a flip into watch/amber/red flows out
     // through eventArchiveService → syslog/SFTP even if no admin loads the
-    // Maintenance tab. The dedicated job (`capacityWatch`) carries this on
-    // a fixed cadence; the route call is the fast path for "operator is
-    // already looking and we want the audit trail in real time."
+    // Maintenance tab.
     void recordCapacityTransition(capacity);
 
-    res.json({ settings, pgConfigFile, capacity });
+    res.json({ settings: tuning.settings, pgConfigFile: tuning.pgConfigFile, capacity });
   } catch (err) {
     next(err);
   }
@@ -989,6 +1038,90 @@ router.post("/queue-mode", async (req, res, next) => {
       active: getBootTimeMode(),
       restartRequired: getBootTimeMode() !== requested,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Capacity Advisor ─────────────────────────────────────────────────────
+//
+// GET returns the advisor state (per-lever current vs recommended) alongside
+// the capacity snapshot and pg-tuning data — single round-trip for the UI.
+// POST /stage applies operator-selected env-driven recommendations to .env
+// (restart-required to take effect); advisory-only levers (max_connections,
+// PostgreSQL tuning) are skipped because they need a PostgreSQL restart.
+
+router.get("/capacity-advisor", async (_req, res, next) => {
+  try {
+    const tuning = await computePgTuning();
+    const pgTuningExternal = pgTuningToAdvisorShape(tuning);
+    const { getCapacitySnapshotWithAdvisor } = await import("../../services/capacityService.js");
+    const { snapshot, advisor } = await getCapacitySnapshotWithAdvisor({
+      ramInsufficient: tuning?.ramInsufficient ?? false,
+      pgTuningNeeded: tuning?.pgTuningNeeded ?? false,
+      pgTuning: pgTuningExternal,
+    });
+    void recordCapacityTransition(snapshot);
+    res.json({
+      advisor,
+      capacity: snapshot,
+      pgTuning: {
+        settings: tuning?.settings ?? [],
+        pgConfigFile: tuning?.pgConfigFile ?? null,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/capacity-advisor/stage", async (req, res, next) => {
+  try {
+    const keysRaw = req.body?.keys;
+    if (!Array.isArray(keysRaw) || keysRaw.length === 0) {
+      throw new AppError(400, "keys must be a non-empty array of advisor lever names");
+    }
+    const keys = keysRaw.map((k) => String(k)) as import("../../services/capacityAdvisorService.js").AdvisorLeverKey[];
+    // Fresh recompute so we never write a stale recommendation.
+    const tuning = await computePgTuning();
+    const pgTuningExternal = pgTuningToAdvisorShape(tuning);
+    const { getCapacitySnapshotWithAdvisor } = await import("../../services/capacityService.js");
+    const { advisor } = await getCapacitySnapshotWithAdvisor({
+      ramInsufficient: tuning?.ramInsufficient ?? false,
+      pgTuningNeeded: tuning?.pgTuningNeeded ?? false,
+      pgTuning: pgTuningExternal,
+    });
+    const { stageAdvisorState } = await import("../../services/capacityAdvisorService.js");
+    const receipt = await stageAdvisorState(keys, advisor);
+
+    const applied = receipt.results.filter((r) => r.status === "applied");
+    const errored = receipt.results.filter((r) => r.status === "error");
+    if (applied.length > 0) {
+      await logEvent({
+        level: "info",
+        action: "capacity_advisor.staged",
+        resourceType: "system",
+        actor: req.session?.username,
+        message: `Capacity Advisor staged ${applied.length} value${applied.length === 1 ? "" : "s"} (restart required)`,
+        details: {
+          staged:  applied.map((r) => ({ key: r.key, old: r.oldValue, new: r.newValue })),
+          skipped: receipt.results.filter((r) => r.status === "skipped").map((r) => ({ key: r.key, reason: r.reason })),
+          errors:  errored.map((r) => ({ key: r.key, reason: r.reason })),
+        },
+      });
+    }
+    if (errored.length > 0) {
+      await logEvent({
+        level: "warning",
+        action: "capacity_advisor.stage_failed",
+        resourceType: "system",
+        actor: req.session?.username,
+        message: `Capacity Advisor: ${errored.length} stage operation${errored.length === 1 ? "" : "s"} failed`,
+        details: { errors: errored.map((r) => ({ key: r.key, reason: r.reason })) },
+      });
+    }
+
+    res.json(receipt);
   } catch (err) {
     next(err);
   }

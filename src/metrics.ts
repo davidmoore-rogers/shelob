@@ -443,6 +443,21 @@ export function recordJobOutcome(job: string, outcome: JobOutcome): void {
   jobTotal.inc({ job, outcome });
 }
 
+export interface HistogramBucketValue {
+  labels: Record<string, string | number>;
+  value: number;
+  metricName?: string;
+}
+
+export interface HistogramValues {
+  values: HistogramBucketValue[];
+}
+
+export async function getMonitorWorkHistogramValues(): Promise<HistogramValues> {
+  const data = await monitorWorkDuration.get();
+  return { values: data.values as HistogramBucketValue[] };
+}
+
 export async function renderMetrics(): Promise<{ contentType: string; body: string }> {
   return { contentType: registry.contentType, body: await registry.metrics() };
 }

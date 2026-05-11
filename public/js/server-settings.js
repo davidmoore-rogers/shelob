@@ -1087,6 +1087,176 @@ function renderEnginePoolStatHtml(db, capacity) {
   '</div>';
 }
 
+// ─── Capacity Advisor card ────────────────────────────────────────────────
+
+// Lever rows are grouped into three sections so the operator can scan them
+// quickly:
+//   - "queue":         the QUEUE_MODE lever (queue-mode-endpoint apply)
+//   - "env":           DATABASE_POOL_SIZE / POLARIS_PGBOSS_POOL_SIZE / per-cadence workers
+//   - "advisory":      PG_MAX_CONNECTIONS / PG_* tuning (no Stage button)
+function _advisorSection(rec) {
+  if (rec.key === "QUEUE_MODE") return "queue";
+  if (rec.applyMode === "advisory-only") return "advisory";
+  return "env";
+}
+
+// Friendly labels for the levers shown in the table.
+function _advisorLabel(key) {
+  switch (key) {
+    case "QUEUE_MODE":                       return "Queue mode";
+    case "DATABASE_POOL_SIZE":               return "DATABASE_POOL_SIZE (Prisma pool)";
+    case "POLARIS_PGBOSS_POOL_SIZE":         return "POLARIS_PGBOSS_POOL_SIZE";
+    case "POLARIS_MONITOR_PROBE_WORKERS":    return "POLARIS_MONITOR_PROBE_WORKERS";
+    case "POLARIS_MONITOR_FAST_WORKERS":     return "POLARIS_MONITOR_FAST_WORKERS";
+    case "POLARIS_MONITOR_HEAVY_WORKERS":    return "POLARIS_MONITOR_HEAVY_WORKERS";
+    case "POLARIS_MONITOR_FLOATING_WORKERS": return "POLARIS_MONITOR_FLOATING_WORKERS";
+    case "POLARIS_PROBE_CONCURRENCY":        return "POLARIS_PROBE_CONCURRENCY (cursor)";
+    case "POLARIS_HEAVY_CONCURRENCY":        return "POLARIS_HEAVY_CONCURRENCY (cursor)";
+    case "PG_MAX_CONNECTIONS":               return "PostgreSQL max_connections";
+    case "PG_SHARED_BUFFERS":                return "shared_buffers";
+    case "PG_EFFECTIVE_CACHE_SIZE":          return "effective_cache_size";
+    case "PG_WORK_MEM":                      return "work_mem";
+    case "PG_RANDOM_PAGE_COST":              return "random_page_cost";
+    default:                                 return key;
+  }
+}
+
+// Filter the advisor's full recommendation list down to what's relevant to
+// the recommended queue mode. Cursor mode hides POLARIS_MONITOR_*_WORKERS +
+// POLARIS_PGBOSS_POOL_SIZE; pg-boss mode hides POLARIS_*_CONCURRENCY.
+function _advisorRecommendationsForView(advisor) {
+  if (!advisor || !Array.isArray(advisor.recommendations)) return [];
+  var mode = advisor.recommendedQueueMode || "cursor";
+  return advisor.recommendations.filter(function (r) {
+    if (mode === "pgboss") {
+      return r.key !== "POLARIS_PROBE_CONCURRENCY" && r.key !== "POLARIS_HEAVY_CONCURRENCY";
+    }
+    return r.key !== "POLARIS_PGBOSS_POOL_SIZE" &&
+           r.key !== "POLARIS_MONITOR_PROBE_WORKERS" &&
+           r.key !== "POLARIS_MONITOR_FAST_WORKERS" &&
+           r.key !== "POLARIS_MONITOR_HEAVY_WORKERS" &&
+           r.key !== "POLARIS_MONITOR_FLOATING_WORKERS";
+  });
+}
+
+function _advisorRowHtml(rec, advisor, pgConfigFile) {
+  var section = _advisorSection(rec);
+  var label = _advisorLabel(rec.key);
+  var current = rec.current === null || rec.current === undefined ? "—" : String(rec.current);
+  var recommended = String(rec.recommended);
+  var pillCls = rec.changeRequired ? "advisor-pill advisor-pill-change" : "advisor-pill advisor-pill-ok";
+  var pillLabel = rec.changeRequired ? "Stage" : "OK";
+
+  // Cold-start badge for cadence-driven rows.
+  var coldStartBadge = "";
+  var coldKeys = ["POLARIS_MONITOR_PROBE_WORKERS","POLARIS_MONITOR_FAST_WORKERS","POLARIS_MONITOR_HEAVY_WORKERS","POLARIS_MONITOR_FLOATING_WORKERS","POLARIS_PROBE_CONCURRENCY","POLARIS_HEAVY_CONCURRENCY"];
+  if (advisor && advisor.usingColdStartDefaults && coldKeys.indexOf(rec.key) !== -1) {
+    coldStartBadge = ' <span class="advisor-cold-badge" title="Histogram samples insufficient — using cold-start defaults until populated">cold-start</span>';
+  }
+  // "Applies after queue-mode flip" hint for cursor-only / pgboss-only levers
+  // when the recommended mode differs from the active mode.
+  var modeFlipHint = "";
+  if (rec.appliesAfterQueueModeFlip) {
+    modeFlipHint = ' <span class="advisor-cold-badge" title="Takes effect after the queue-mode flip is applied">post-flip</span>';
+  }
+  var tooltip = "";
+  if (rec.breakdown && typeof rec.breakdown === "object") {
+    try {
+      var parts = Object.keys(rec.breakdown).map(function (k) { return k + "=" + rec.breakdown[k]; });
+      tooltip = ' title="' + escapeHtml(rec.rationale + " — " + parts.join(", ")) + '"';
+    } catch (e) {
+      tooltip = ' title="' + escapeHtml(rec.rationale || "") + '"';
+    }
+  } else if (rec.rationale) {
+    tooltip = ' title="' + escapeHtml(rec.rationale) + '"';
+  }
+
+  // Checkbox column: shown only on env / queue rows where changeRequired = true.
+  var checkboxCell = "";
+  if (section !== "advisory") {
+    if (rec.changeRequired) {
+      checkboxCell = '<input type="checkbox" class="advisor-stage-checkbox" data-key="' + escapeHtml(rec.key) + '" checked>';
+    } else {
+      checkboxCell = '<span class="muted">—</span>';
+    }
+  } else if (rec.key === "PG_MAX_CONNECTIONS" || rec.key === "PG_SHARED_BUFFERS" || rec.key === "PG_EFFECTIVE_CACHE_SIZE" || rec.key === "PG_WORK_MEM" || rec.key === "PG_RANDOM_PAGE_COST") {
+    // Advisory-only rows: surface the pgConfigFile hint inline on the last advisory row.
+    checkboxCell = '<span class="muted">manual</span>';
+  }
+
+  return '<tr class="advisor-row advisor-row-' + section + (rec.changeRequired ? " advisor-row-change" : "") + '"' + tooltip + '>' +
+    '<td>' + escapeHtml(label) + coldStartBadge + modeFlipHint + '</td>' +
+    '<td class="mono">' + escapeHtml(current) + '</td>' +
+    '<td class="mono">' + escapeHtml(recommended) + '</td>' +
+    '<td><span class="' + pillCls + '">' + pillLabel + '</span></td>' +
+    '<td style="text-align:center">' + checkboxCell + '</td>' +
+  '</tr>';
+}
+
+function renderCapacityAdvisorCard(advisor, pgConfigFile) {
+  if (!advisor) return "";
+  var recs = _advisorRecommendationsForView(advisor);
+  if (recs.length === 0) return "";
+
+  var headerNote = advisor.anyChangeRequired
+    ? '<span class="advisor-header-amber">' + recs.filter(function (r) { return r.changeRequired; }).length + ' recommendation' + (recs.filter(function (r) { return r.changeRequired; }).length === 1 ? "" : "s") + ' available</span>'
+    : '<span class="advisor-header-ok">All settings at or above recommended</span>';
+
+  var coldStartNote = advisor.usingColdStartDefaults
+    ? '<p class="hint" style="margin:0.4rem 0 0 0;font-size:0.78rem">Some cadences are using cold-start defaults until the histogram populates (~24h). Recommendations may shift once real workload duration data is observed.</p>'
+    : "";
+
+  var groupedRows = {
+    queue: recs.filter(function (r) { return _advisorSection(r) === "queue"; }),
+    env:   recs.filter(function (r) { return _advisorSection(r) === "env";   }),
+    advisory: recs.filter(function (r) { return _advisorSection(r) === "advisory"; }),
+  };
+
+  function renderRows(list) {
+    return list.map(function (r) { return _advisorRowHtml(r, advisor, pgConfigFile); }).join("");
+  }
+
+  var staged = recs.filter(function (r) { return r.applyMode !== "advisory-only" && r.changeRequired; }).length;
+  var stageBtn = staged > 0
+    ? '<button class="btn btn-primary" id="capacity-advisor-stage-btn" data-staged-count="' + staged + '">Stage selected</button>'
+    : '<button class="btn btn-primary" disabled>Stage selected</button>';
+
+  var pgConfigHint = pgConfigFile
+    ? '<p class="hint" style="margin:0.4rem 0 0 0;font-size:0.78rem">Advisory-only settings live in <code>' + escapeHtml(pgConfigFile) + '</code>. Edit and restart PostgreSQL to apply.</p>'
+    : "";
+
+  return '<div class="settings-card capacity-advisor-card" id="capacity-advisor-card">' +
+    '<div class="capacity-header">' +
+      '<h4 style="margin:0">Capacity Advisor</h4>' +
+      headerNote +
+    '</div>' +
+    coldStartNote +
+    '<table class="ip-table advisor-table" style="margin-top:0.75rem;width:100%">' +
+      '<thead><tr>' +
+        '<th>Setting</th>' +
+        '<th style="width:8rem">Current</th>' +
+        '<th style="width:8rem">Recommended</th>' +
+        '<th style="width:6rem">Status</th>' +
+        '<th style="width:5rem;text-align:center">Stage</th>' +
+      '</tr></thead>' +
+      '<tbody>' +
+        (groupedRows.queue.length ? renderRows(groupedRows.queue) : "") +
+        (groupedRows.env.length
+          ? '<tr class="advisor-divider"><td colspan="5"><strong>Pool &amp; worker (apply via .env, restart Polaris)</strong></td></tr>' + renderRows(groupedRows.env)
+          : "") +
+        (groupedRows.advisory.length
+          ? '<tr class="advisor-divider"><td colspan="5"><strong>Advisory-only (require PostgreSQL restart)</strong></td></tr>' + renderRows(groupedRows.advisory)
+          : "") +
+      '</tbody>' +
+    '</table>' +
+    pgConfigHint +
+    '<div style="margin-top:0.85rem;display:flex;align-items:center;gap:0.75rem">' +
+      stageBtn +
+      '<span class="hint" style="font-size:0.78rem">Computed ' + escapeHtml(formatLocalTime(advisor.computedAt)) + '. Restart Polaris after Stage to pick up changes.</span>' +
+    '</div>' +
+  '</div>';
+}
+
 function renderCapacityCard(capacity, dbInfo, pgTuning) {
   if (!capacity) {
     // Capacity grading unavailable (e.g. statfs not supported) — still render
@@ -1103,26 +1273,9 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
   var severity = capacity.severity || "ok";
   var pillClass = "capacity-pill capacity-pill-" + severity;
 
-  // For pg_tuning_needed, inline the actual current → recommended rows so
-  // operators don't have to scroll down to the sidebar tuning alert to see
-  // what to change.
-  var badPgSettings = (pgTuning && Array.isArray(pgTuning.settings))
-    ? pgTuning.settings.filter(function (s) { return !s.ok; })
-    : [];
-  var pgConfigFile = pgTuning && pgTuning.pgConfigFile ? pgTuning.pgConfigFile : null;
-  var pgSettingsRowsHtml = badPgSettings.length
-    ? '<div class="capacity-reason-pg-settings">' +
-        badPgSettings.map(function (s) {
-          return '<div class="pg-tuning-row">' +
-            '<span class="pg-tuning-param">' + escapeHtml(s.name) + '</span>' +
-            '<span class="pg-tuning-values">' + escapeHtml(s.current) + ' &rarr; ' + escapeHtml(s.recommended) + '</span>' +
-          '</div>';
-        }).join("") +
-        (pgConfigFile
-          ? '<div class="capacity-reason-pg-path">Edit in <code>' + escapeHtml(pgConfigFile) + '</code> and restart PostgreSQL.</div>'
-          : '') +
-      '</div>'
-    : '';
+  // pg_tuning_needed used to inline a per-setting table here; that's now
+  // rendered inside the Capacity Advisor card, which also covers max_connections
+  // and worker-count recommendations alongside the PostgreSQL settings.
 
   // Reasons section — list each issue with severity + suggestion. When the
   // list is empty we still render a single subdued "all checks passed" row
@@ -1144,21 +1297,12 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
     reasonsHtml =
       '<div class="capacity-reasons">' +
         capacity.reasons.map(function (r) {
-          var extra = r.code === "pg_tuning_needed" ? pgSettingsRowsHtml : "";
-          // pgboss_recommended  → Enable button (writes Setting=pgboss); same
-          // pgboss_overdue      →   action, just amber-tier severity past 5000 assets.
-          // pgboss_pending      → Cancel button (writes Setting back to active)
-          // metrics_token_unset → Generate token (writes METRICS_TOKEN into .env)
-          // health_token_unset  → Generate token (writes HEALTH_TOKEN into .env)
-          // pgboss actions confirm via showConfirm() in the click handler.
+          // Action buttons for reason codes that have a one-click apply.
+          // The legacy pgboss_recommended / pgboss_overdue / pgboss_pending
+          // codes were folded into the Capacity Advisor's QUEUE_MODE lever
+          // — they no longer come back from the server.
           var action = "";
-          if (r.code === "pgboss_recommended" || r.code === "pgboss_overdue") {
-            action = '<button class="btn btn-sm btn-primary capacity-action" data-action="enable-pgboss" style="margin-top:0.5rem">Enable on next restart</button>';
-          } else if (r.code === "pgboss_pending") {
-            var queueState = (capacity.database && capacity.database.queue) || {};
-            var revertTo = queueState.active || "cursor";
-            action = '<button class="btn btn-sm btn-secondary capacity-action" data-action="cancel-pgboss" data-revert-to="' + escapeHtml(revertTo) + '" style="margin-top:0.5rem">Cancel — stay on ' + escapeHtml(revertTo) + '</button>';
-          } else if (r.code === "metrics_token_unset") {
+          if (r.code === "metrics_token_unset") {
             action = '<button class="btn btn-sm btn-primary capacity-action" data-action="generate-token" data-which="metrics" style="margin-top:0.5rem">Generate token</button>';
           } else if (r.code === "health_token_unset") {
             action = '<button class="btn btn-sm btn-primary capacity-action" data-action="generate-token" data-which="health" style="margin-top:0.5rem">Generate token</button>';
@@ -1175,7 +1319,6 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
             '</div>' +
             '<div class="capacity-reason-suggestion">' + escapeHtml(r.suggestion) + '</div>' +
             action +
-            extra +
           '</div>';
         }).join("") +
       '</div>';
@@ -1303,24 +1446,27 @@ async function loadDatabaseInfo() {
   container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading maintenance information...</p></div>';
 
   try {
-    // Fetch capacity in parallel with the database snapshot — if capacity
-    // fails (e.g. statfs not available) we still render the rest of the tab.
-    // Also pull the NTP timezone override so capacity timestamps render in
-    // server time rather than UTC; failures fall through to browser-local.
+    // Fetch capacity advisor in parallel with the database snapshot — if the
+    // advisor fails (e.g. statfs not available) we still render the rest of
+    // the tab. Also pull the NTP timezone override so capacity timestamps
+    // render in server time; failures fall through to browser-local.
     var results = await Promise.allSettled([
       api.serverSettings.getDatabase(),
-      api.serverSettings.getPgTuning(),
+      api.serverSettings.getCapacityAdvisor(),
       loadTzOverride(),
     ]);
     if (results[0].status === "rejected") throw results[0].reason;
     var db = results[0].value;
-    var pgTuning = results[1].status === "fulfilled" && results[1].value
+    var advisorResp = results[1].status === "fulfilled" && results[1].value
       ? results[1].value
       : null;
-    var capacity = pgTuning && pgTuning.capacity ? pgTuning.capacity : null;
+    var advisor = advisorResp && advisorResp.advisor ? advisorResp.advisor : null;
+    var capacity = advisorResp && advisorResp.capacity ? advisorResp.capacity : null;
+    var pgTuning = advisorResp && advisorResp.pgTuning ? advisorResp.pgTuning : null;
     _dbLoaded = true;
 
     container.innerHTML =
+      renderCapacityAdvisorCard(advisor, pgTuning && pgTuning.pgConfigFile) +
       renderCapacityCard(capacity, db, pgTuning) +
       // ── Outbound API Calls card ──
       '<div class="settings-card" id="api-call-chart-card">' +
@@ -1451,6 +1597,7 @@ async function loadDatabaseInfo() {
     loadBackupHistory();
     initUpdateControls();
     initCapacityActions();
+    initCapacityAdvisorActions();
     initApiCallChart();
   } catch (err) {
     container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
@@ -1484,57 +1631,12 @@ async function warnIfDiscoveryRunning(actionLabel) {
  * Wire click handlers for the action buttons rendered inside capacity
  * reasons. Called from loadDatabaseInfo after the card is in the DOM.
  *
- * Two reason codes carry buttons:
- *   pgboss_recommended → [Enable on next restart] (writes Setting=pgboss)
- *   pgboss_pending     → [Cancel] (writes Setting back to active mode,
- *                                  effectively undoing a prior enable click)
+ * Only the metrics/health token-generation buttons remain here; queue-mode
+ * changes are handled by the Capacity Advisor card via its Stage flow.
  */
 function initCapacityActions() {
   var card = document.getElementById("capacity-card");
   if (!card) return;
-
-  card.querySelectorAll('button[data-action="enable-pgboss"]').forEach(function (btn) {
-    btn.addEventListener("click", async function () {
-      var ok = await showConfirm(
-        "Polaris will switch to the pg-boss monitor queue after the next application restart. The new queue creates ~5 tables in the Polaris database. Continue?"
-      );
-      if (!ok) return;
-      btn.disabled = true;
-      btn.textContent = "Saving...";
-      try {
-        await api.serverSettings.setQueueMode("pgboss");
-        showToast("pg-boss will be active after the next application restart", "success");
-        _dbLoaded = false;
-        loadDatabaseInfo();
-      } catch (err) {
-        showToast("Could not save: " + (err && err.message ? err.message : "unknown error"), "error");
-        btn.disabled = false;
-        btn.textContent = "Enable on next restart";
-      }
-    });
-  });
-
-  card.querySelectorAll('button[data-action="cancel-pgboss"]').forEach(function (btn) {
-    btn.addEventListener("click", async function () {
-      var revertTo = btn.getAttribute("data-revert-to") || "cursor";
-      var ok = await showConfirm(
-        "Cancel the pending queue switch? Polaris will continue using " + revertTo + " after the next restart."
-      );
-      if (!ok) return;
-      btn.disabled = true;
-      btn.textContent = "Cancelling...";
-      try {
-        await api.serverSettings.setQueueMode(revertTo);
-        showToast("Queue switch cancelled — staying on " + revertTo, "success");
-        _dbLoaded = false;
-        loadDatabaseInfo();
-      } catch (err) {
-        showToast("Could not save: " + (err && err.message ? err.message : "unknown error"), "error");
-        btn.disabled = false;
-        btn.textContent = "Cancel — stay on " + revertTo;
-      }
-    });
-  });
 
   card.querySelectorAll('button[data-action="generate-token"]').forEach(function (btn) {
     btn.addEventListener("click", async function () {
@@ -1553,6 +1655,51 @@ function initCapacityActions() {
         btn.textContent = "Generate token";
       }
     });
+  });
+}
+
+/**
+ * Wire the Stage button on the Capacity Advisor card. Collects checked rows,
+ * confirms the operator, posts to POST /capacity-advisor/stage, and renders
+ * per-row success/error badges from the receipt.
+ */
+function initCapacityAdvisorActions() {
+  var card = document.getElementById("capacity-advisor-card");
+  if (!card) return;
+  var stageBtn = document.getElementById("capacity-advisor-stage-btn");
+  if (!stageBtn || stageBtn.disabled) return;
+
+  stageBtn.addEventListener("click", async function () {
+    var checked = Array.prototype.slice.call(
+      card.querySelectorAll('input.advisor-stage-checkbox:checked')
+    ).map(function (el) { return el.getAttribute("data-key"); });
+    if (checked.length === 0) {
+      showToast("Tick at least one row before staging", "error");
+      return;
+    }
+    var msg = "Write " + checked.length + " value" + (checked.length === 1 ? "" : "s") +
+      " to .env? They take effect on next Polaris restart.\n\nKeys:\n  " + checked.join("\n  ") +
+      "\n\nmax_connections and PostgreSQL tuning are NOT in this set — those require a Postgres restart and must be done manually.";
+    var ok = await showConfirm(msg);
+    if (!ok) return;
+    stageBtn.disabled = true;
+    stageBtn.textContent = "Staging...";
+    try {
+      var receipt = await api.serverSettings.stageCapacityAdvisor(checked);
+      var applied = (receipt.results || []).filter(function (r) { return r.status === "applied"; }).length;
+      var errored = (receipt.results || []).filter(function (r) { return r.status === "error";   });
+      if (errored.length > 0) {
+        showToast("Staged " + applied + ", " + errored.length + " error" + (errored.length === 1 ? "" : "s") + ": " + errored.map(function (r) { return r.key + " — " + (r.reason || "unknown"); }).join("; "), "error");
+      } else {
+        showToast("Staged " + applied + " value" + (applied === 1 ? "" : "s") + ". Restart Polaris to apply.", "success");
+      }
+      _dbLoaded = false;
+      loadDatabaseInfo();
+    } catch (err) {
+      showToast("Stage failed: " + (err && err.message ? err.message : "unknown error"), "error");
+      stageBtn.disabled = false;
+      stageBtn.textContent = "Stage selected";
+    }
   });
 }
 

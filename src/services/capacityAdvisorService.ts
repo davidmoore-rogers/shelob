@@ -1,0 +1,901 @@
+/**
+ * src/services/capacityAdvisorService.ts
+ *
+ * Capacity Advisor — derives recommended worker counts, connection-pool sizes,
+ * PostgreSQL max_connections, queue mode (cursor ↔ pg-boss), and PostgreSQL
+ * tuning settings from observable workload (monitored asset count, monitored
+ * interface count, integration counts, per-cadence pass-duration P90, observed
+ * peak connections, host RAM, current max_connections).
+ *
+ * Advisory-only by default: this module computes recommendations and exposes
+ * them via the Maintenance tab. An explicit Stage POST writes the operator-
+ * selected env-driven values to `.env` (takes effect at next Polaris restart);
+ * max_connections and PostgreSQL tuning are display-only because they require
+ * a PostgreSQL restart Polaris can't trigger.
+ *
+ * Calc chain (see CLAUDE.md "Capacity Advisor"):
+ *
+ *   For each cadence c in {probe, fastFiltered, telemetry, systemInfo}:
+ *     workersNeeded[c] = ceil(applicable × p90 / cadenceInterval × 1.5)
+ *     workersFloor[c]  = max(currentEnvVar, 24)
+ *     recommended[c]   = max(workersNeeded, workersFloor)
+ *
+ *   floatingWorkers  = max(32, ceil(0.25 × Σrecommended))
+ *   workerCeiling    = Σrecommended + floatingWorkers
+ *
+ *   discoveryReserve = Σ over enabled integrations
+ *   httpOverhead     = 15
+ *   prismaTarget     = workerCeiling + discoveryReserve + httpOverhead
+ *   pgbossTarget     = 20  (fixed; queue mechanics only)
+ *
+ *   polarisNeeded    = prismaTarget + pgbossTarget
+ *   polarisFloor     = max(polarisNeeded, peakObserved)
+ *   recommendedMax   = roundUpToNearest(ceil(polarisFloor / 0.65), 50)
+ *
+ * Cold start: when histogram sample count is < 100 per cadence, substitute
+ * COLD_START_P90_SEC defaults. Surfaced as a per-row badge in the UI.
+ *
+ * Never recommends shrinking — changeRequired is set only when recommended >
+ * current. Small downward drift isn't worth a restart.
+ */
+
+import { totalmem } from "node:os";
+
+import { prisma } from "../db.js";
+import { logger } from "../utils/logger.js";
+import { setEnvVar } from "../utils/envFile.js";
+import { getMonitorWorkHistogramValues, type HistogramBucketValue } from "../metrics.js";
+import { setQueueMode, isPgbossInstalled } from "./queueService.js";
+import type { CapacitySnapshot } from "./capacityService.js";
+
+// ─── Types ─────────────────────────────────────────────────────────────────
+
+export type CadenceKey = "probe" | "fastFiltered" | "telemetry" | "systemInfo";
+
+export type AdvisorLeverKey =
+  | "DATABASE_POOL_SIZE"
+  | "POLARIS_PGBOSS_POOL_SIZE"
+  | "POLARIS_MONITOR_PROBE_WORKERS"
+  | "POLARIS_MONITOR_FAST_WORKERS"
+  | "POLARIS_MONITOR_HEAVY_WORKERS"
+  | "POLARIS_MONITOR_FLOATING_WORKERS"
+  | "POLARIS_PROBE_CONCURRENCY"
+  | "POLARIS_HEAVY_CONCURRENCY"
+  | "QUEUE_MODE"
+  | "PG_MAX_CONNECTIONS"
+  | "PG_SHARED_BUFFERS"
+  | "PG_EFFECTIVE_CACHE_SIZE"
+  | "PG_WORK_MEM"
+  | "PG_RANDOM_PAGE_COST";
+
+export type ApplyMode = "env" | "queue-mode-endpoint" | "advisory-only";
+
+export interface AdvisorRecommendation {
+  key: AdvisorLeverKey;
+  applyMode: ApplyMode;
+  /** Null when the current value can't be resolved (e.g. PG setting query failed). */
+  current: number | string | null;
+  recommended: number | string;
+  /** Human-friendly text rendered in the UI describing why this number. */
+  rationale: string;
+  /** Numeric component breakdown for tooltip diagnostics. */
+  breakdown?: Record<string, number>;
+  /** True when recommended > current (i.e. Stage would change something). */
+  changeRequired: boolean;
+  /** True when the queue mode this lever applies to does not match the active mode.
+   *  UI uses this to dim "applies after queue-mode flip" rows. */
+  appliesAfterQueueModeFlip?: boolean;
+}
+
+export interface CadenceObservation {
+  sampleCount: number;
+  /** P50 duration in seconds, or null when sampleCount < threshold. */
+  p50: number | null;
+  /** P90 duration in seconds, or null when sampleCount < threshold. */
+  p90: number | null;
+  /** True when we substituted COLD_START_P90_SEC for this cadence. */
+  usedDefault: boolean;
+}
+
+export interface AdvisorState {
+  computedAt: string;
+  /** True when ANY cadence's sample count was below the cold-start threshold. */
+  usingColdStartDefaults: boolean;
+  cadenceSamples: Record<CadenceKey, CadenceObservation>;
+  recommendations: AdvisorRecommendation[];
+  /** Roll-up: any recommendation with changeRequired = true. */
+  anyChangeRequired: boolean;
+  /** True when a successful Stage would require a Polaris restart to take effect. */
+  restartRequired: boolean;
+  /** Boot-time active queue mode (informational; lets the UI render hints). */
+  activeQueueMode: "cursor" | "pgboss";
+  /** What the advisor would recommend the queue mode be. */
+  recommendedQueueMode: "cursor" | "pgboss";
+}
+
+export interface IntegrationBreakdown {
+  fortimanagerProxy: number;
+  fortimanagerDirectParallelismSum: number;
+  fortigate: number;
+  entra: number;
+  activedirectory: number;
+  windowsserver: number;
+}
+
+export interface PgRecommendation {
+  /** Friendly current display value (e.g. "128MB"), or null when unknown. */
+  current: string | null;
+  /** Friendly recommended value. */
+  recommended: string;
+  /** True when current is below recommended. */
+  changeRequired: boolean;
+}
+
+export interface AdvisorInputs {
+  snapshot: CapacitySnapshot;
+  integrations: IntegrationBreakdown;
+  cadence: Record<CadenceKey, CadenceObservation>;
+  /** Per-cadence cadence-interval seconds (resolved from MonitorSettings). */
+  cadenceIntervals: Record<CadenceKey, number>;
+  /** Already-resolved per-cadence applicable asset population. */
+  applicable: Record<CadenceKey, number>;
+  /** Current env-var values for the worker / pool levers (numeric). */
+  currentEnv: {
+    DATABASE_POOL_SIZE: number;
+    POLARIS_PGBOSS_POOL_SIZE: number;
+    POLARIS_MONITOR_PROBE_WORKERS: number;
+    POLARIS_MONITOR_FAST_WORKERS: number;
+    POLARIS_MONITOR_HEAVY_WORKERS: number;
+    POLARIS_MONITOR_FLOATING_WORKERS: number;
+    POLARIS_PROBE_CONCURRENCY: number;
+    POLARIS_HEAVY_CONCURRENCY: number;
+  };
+  /** PG tuning current → recommended pairs (computed by serverSettings.buildPgRecommended). */
+  pgTuning: {
+    sharedBuffers: PgRecommendation;
+    effectiveCacheSize: PgRecommendation;
+    workMem: PgRecommendation;
+    randomPageCost: PgRecommendation;
+  };
+}
+
+// ─── Constants ─────────────────────────────────────────────────────────────
+
+/** Min samples in the histogram before we trust p90; below this we fall back
+ *  to COLD_START_P90_SEC. At a 60s probe cadence with 1000 monitored assets,
+ *  1000 samples accumulate per minute — this threshold is reached in seconds. */
+export const COLD_START_MIN_SAMPLES = 100;
+
+export const COLD_START_P90_SEC: Record<CadenceKey, number> = {
+  probe:        0.4,
+  fastFiltered: 0.6,
+  telemetry:    0.8,
+  systemInfo:   1.0,
+};
+
+/** Floor every cadence at 24 workers so a fresh install with a tiny histogram
+ *  doesn't end up with 1 worker per queue and immediately backlog under any
+ *  modest burst (manual probe-now, multi-operator UI use). */
+const PER_CADENCE_FLOOR = 24;
+
+/** Floating worker pool baseline; absorbs cross-queue imbalance. */
+const FLOATING_FLOOR = 32;
+
+/** Multiplier applied to workersNeeded to absorb variance, retries, slow tail. */
+const SAFETY_FACTOR = 1.5;
+
+/** Empirical headroom for HTTP request bursts and scheduled jobs. */
+const HTTP_JOB_OVERHEAD = 15;
+
+/** Fixed; pg-boss internal queue mechanics don't scale with workload. */
+const PGBOSS_POOL_TARGET = 20;
+
+/** Target fraction of max_connections we want Polaris to occupy at peak. */
+const POLARIS_FRACTION_OF_MAX = 0.65;
+
+/** Round up to nearest multiple — operator-friendly recommendations. */
+const MAX_CONNECTIONS_ROUNDING = 50;
+
+/** Asset-count threshold above which pgboss is the recommended queue mode. */
+const PGBOSS_RECOMMEND_ASSETS = 500;
+
+const ADVISOR_CACHE_TTL_MS = 10 * 60 * 1000;
+const LAST_CHANGE_REQUIRED_SETTING_KEY = "capacity.advisor.lastChangeRequired";
+
+// ─── Public utility: roundUpToNearest (exported for tests) ────────────────
+
+export function roundUpToNearest(value: number, multiple: number): number {
+  if (multiple <= 0 || !Number.isFinite(value)) return value;
+  return Math.ceil(value / multiple) * multiple;
+}
+
+// ─── Histogram percentile parsing ──────────────────────────────────────────
+
+const HISTOGRAM_BUCKETS = [0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60];
+
+/**
+ * Compute a percentile from prom-client histogram values, scoped to a single
+ * cadence label. Aggregates bucket counts across all asset_type × transport
+ * label combos for that cadence, then linear-interpolates within the matching
+ * bucket. Returns null when fewer than COLD_START_MIN_SAMPLES samples exist.
+ *
+ * The histogram is `polaris_monitor_work_duration_seconds` with buckets
+ * defined in src/metrics.ts:33 — keep HISTOGRAM_BUCKETS above in sync.
+ */
+export function percentile(
+  values: HistogramBucketValue[],
+  cadence: CadenceKey,
+  p: 0.5 | 0.9,
+): { value: number | null; sampleCount: number } {
+  // Pre-prom-client emits per-bucket entries with metricName ending in
+  // "_bucket" and labels.le set to the bucket boundary (or "+Inf"). The
+  // "_count" rows (no le) carry the total sample count.
+  const scoped = values.filter((v) => v.labels.cadence === cadence);
+
+  // Sum cumulative bucket counts across asset_type × transport for each `le`.
+  const bucketSums = new Map<string, number>();
+  let totalCount = 0;
+  for (const entry of scoped) {
+    const m = entry.metricName;
+    if (m && m.endsWith("_count")) {
+      totalCount += entry.value;
+      continue;
+    }
+    if (m && m.endsWith("_sum")) continue;
+    const le = entry.labels.le;
+    if (le === undefined) continue;
+    const key = String(le);
+    bucketSums.set(key, (bucketSums.get(key) ?? 0) + entry.value);
+  }
+
+  if (totalCount < COLD_START_MIN_SAMPLES) {
+    return { value: null, sampleCount: totalCount };
+  }
+
+  const target = totalCount * p;
+  let prevBoundary = 0;
+  let prevCum = 0;
+  for (const boundary of HISTOGRAM_BUCKETS) {
+    const cum = bucketSums.get(String(boundary)) ?? 0;
+    if (cum >= target) {
+      // Linear interpolate within this bucket so the percentile estimate is
+      // closer than just naming the bucket upper bound.
+      const within = cum - prevCum;
+      if (within <= 0) return { value: boundary, sampleCount: totalCount };
+      const frac = (target - prevCum) / within;
+      const interpolated = prevBoundary + (boundary - prevBoundary) * frac;
+      return { value: interpolated, sampleCount: totalCount };
+    }
+    prevBoundary = boundary;
+    prevCum = cum;
+  }
+  // Past the largest finite bucket — fall through to "+Inf"; return last
+  // boundary as a conservative estimate.
+  return { value: HISTOGRAM_BUCKETS[HISTOGRAM_BUCKETS.length - 1], sampleCount: totalCount };
+}
+
+async function observeCadences(): Promise<Record<CadenceKey, CadenceObservation>> {
+  const out: Record<CadenceKey, CadenceObservation> = {
+    probe:        { sampleCount: 0, p50: null, p90: null, usedDefault: true },
+    fastFiltered: { sampleCount: 0, p50: null, p90: null, usedDefault: true },
+    telemetry:    { sampleCount: 0, p50: null, p90: null, usedDefault: true },
+    systemInfo:   { sampleCount: 0, p50: null, p90: null, usedDefault: true },
+  };
+  try {
+    const hist = await getMonitorWorkHistogramValues();
+    for (const c of Object.keys(out) as CadenceKey[]) {
+      const p50 = percentile(hist.values, c, 0.5);
+      const p90 = percentile(hist.values, c, 0.9);
+      out[c] = {
+        sampleCount: p90.sampleCount,
+        p50: p50.value,
+        p90: p90.value,
+        usedDefault: p90.value === null,
+      };
+    }
+  } catch (err: any) {
+    logger.debug({ err: err?.message }, "capacityAdvisor: histogram read failed; using cold-start defaults");
+  }
+  return out;
+}
+
+// ─── Pure compute: buildAdvisorState ──────────────────────────────────────
+
+export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
+  const { snapshot, integrations, cadence, cadenceIntervals, applicable, currentEnv, pgTuning } = inputs;
+  const recommendations: AdvisorRecommendation[] = [];
+
+  // 1. Per-cadence worker needs.
+  const cadenceKeys: CadenceKey[] = ["probe", "fastFiltered", "telemetry", "systemInfo"];
+  const workersNeeded: Record<CadenceKey, number> = { probe: 0, fastFiltered: 0, telemetry: 0, systemInfo: 0 };
+  for (const c of cadenceKeys) {
+    const p90 = cadence[c].p90 ?? COLD_START_P90_SEC[c];
+    const interval = Math.max(1, cadenceIntervals[c]);
+    const need = Math.ceil((applicable[c] * p90 * SAFETY_FACTOR) / interval);
+    workersNeeded[c] = Math.max(need, PER_CADENCE_FLOOR);
+  }
+  const sumWorkersNeeded = Object.values(workersNeeded).reduce((a, b) => a + b, 0);
+  const floatingWorkers = Math.max(FLOATING_FLOOR, Math.ceil(sumWorkersNeeded * 0.25));
+  const workerCeiling = sumWorkersNeeded + floatingWorkers;
+
+  // 2. Discovery reserve.
+  const discoveryReserve =
+    integrations.fortimanagerProxy * 1 +
+    Math.min(integrations.fortimanagerDirectParallelismSum, 20) +
+    integrations.fortigate * 1 +
+    (integrations.entra + integrations.activedirectory + integrations.windowsserver) * 2;
+
+  // 3. Prisma / pg-boss / max_connections.
+  const prismaTarget = workerCeiling + discoveryReserve + HTTP_JOB_OVERHEAD;
+  const pgbossTarget = PGBOSS_POOL_TARGET;
+  const polarisNeeded = prismaTarget + pgbossTarget;
+  const peakObserved = snapshot.database.connectionPool.peakObserved;
+  const polarisFloor = Math.max(polarisNeeded, peakObserved);
+  const recommendedMax = roundUpToNearest(
+    Math.ceil(polarisFloor / POLARIS_FRACTION_OF_MAX),
+    MAX_CONNECTIONS_ROUNDING,
+  );
+
+  // 4. Queue mode.
+  const monitoredCount = snapshot.workload.monitoredAssetCount;
+  const activeMode = snapshot.database.queue.active;
+  const recommendedMode: "cursor" | "pgboss" =
+    monitoredCount > PGBOSS_RECOMMEND_ASSETS && isPgbossInstalled() ? "pgboss" : activeMode;
+
+  // ── Recommendation: queue mode ─────────────────────────────────────────
+  recommendations.push({
+    key: "QUEUE_MODE",
+    applyMode: "queue-mode-endpoint",
+    current: activeMode,
+    recommended: recommendedMode,
+    rationale:
+      recommendedMode === "pgboss" && activeMode !== "pgboss"
+        ? `Monitoring ${monitoredCount} assets. pg-boss provides per-cadence isolation that scales further than the cursor queue.`
+        : `Current queue mode fits the workload (${monitoredCount} monitored).`,
+    breakdown: { monitoredAssetCount: monitoredCount, threshold: PGBOSS_RECOMMEND_ASSETS },
+    changeRequired: activeMode !== recommendedMode,
+  });
+
+  // ── Recommendation: per-cadence workers ───────────────────────────────
+  // pgboss mode levers
+  const pgbossWorkerLevers: Array<{ key: AdvisorLeverKey; cad: CadenceKey | "floating"; need: number; current: number }> = [
+    { key: "POLARIS_MONITOR_PROBE_WORKERS",    cad: "probe",        need: workersNeeded.probe,        current: currentEnv.POLARIS_MONITOR_PROBE_WORKERS    },
+    { key: "POLARIS_MONITOR_FAST_WORKERS",     cad: "fastFiltered", need: workersNeeded.fastFiltered, current: currentEnv.POLARIS_MONITOR_FAST_WORKERS     },
+    // HEAVY_WORKERS covers both telemetry + systemInfo — pick the larger gap.
+    { key: "POLARIS_MONITOR_HEAVY_WORKERS",    cad: "telemetry",    need: Math.max(workersNeeded.telemetry, workersNeeded.systemInfo), current: currentEnv.POLARIS_MONITOR_HEAVY_WORKERS },
+    { key: "POLARIS_MONITOR_FLOATING_WORKERS", cad: "floating",     need: floatingWorkers,            current: currentEnv.POLARIS_MONITOR_FLOATING_WORKERS },
+  ];
+  for (const lever of pgbossWorkerLevers) {
+    const recommended = Math.max(lever.need, lever.current);
+    recommendations.push({
+      key: lever.key,
+      applyMode: "env",
+      current: lever.current,
+      recommended,
+      rationale:
+        lever.cad === "floating"
+          ? `Floating pool absorbs cross-queue backlog. Sized at max(${FLOATING_FLOOR}, 25% of dedicated workers).`
+          : `Workers needed = ceil(${applicable[lever.cad as CadenceKey]} × p90 × ${SAFETY_FACTOR} / ${cadenceIntervals[lever.cad as CadenceKey]}s). Floored at ${PER_CADENCE_FLOOR}.`,
+      breakdown:
+        lever.cad === "floating"
+          ? { sumWorkersNeeded, floor: FLOATING_FLOOR, quarterOfDedicated: Math.ceil(sumWorkersNeeded * 0.25) }
+          : {
+              applicable: applicable[lever.cad as CadenceKey],
+              p90Sec: cadence[lever.cad as CadenceKey].p90 ?? COLD_START_P90_SEC[lever.cad as CadenceKey],
+              cadenceSec: cadenceIntervals[lever.cad as CadenceKey],
+              safetyFactor: SAFETY_FACTOR,
+              workersNeeded: lever.need,
+              floor: PER_CADENCE_FLOOR,
+            },
+      changeRequired: recommended > lever.current,
+      appliesAfterQueueModeFlip: activeMode === "cursor" && recommendedMode === "pgboss",
+    });
+  }
+
+  // cursor mode levers
+  const cursorWorkerLevers: Array<{ key: AdvisorLeverKey; need: number; current: number; rationale: string; breakdown: Record<string, number> }> = [
+    {
+      key: "POLARIS_PROBE_CONCURRENCY",
+      need: workersNeeded.probe + workersNeeded.fastFiltered,
+      current: currentEnv.POLARIS_PROBE_CONCURRENCY,
+      rationale: "Cursor mode's light loop runs probe + fastFiltered together. Sized as sum of both cadence needs.",
+      breakdown: {
+        probeWorkers: workersNeeded.probe,
+        fastFilteredWorkers: workersNeeded.fastFiltered,
+      },
+    },
+    {
+      key: "POLARIS_HEAVY_CONCURRENCY",
+      need: workersNeeded.telemetry + workersNeeded.systemInfo,
+      current: currentEnv.POLARIS_HEAVY_CONCURRENCY,
+      rationale: "Cursor mode's heavy loop runs telemetry + systemInfo together. Sized as sum of both cadence needs.",
+      breakdown: {
+        telemetryWorkers: workersNeeded.telemetry,
+        systemInfoWorkers: workersNeeded.systemInfo,
+      },
+    },
+  ];
+  for (const lever of cursorWorkerLevers) {
+    const recommended = Math.max(lever.need, lever.current);
+    recommendations.push({
+      key: lever.key,
+      applyMode: "env",
+      current: lever.current,
+      recommended,
+      rationale: lever.rationale,
+      breakdown: lever.breakdown,
+      changeRequired: recommended > lever.current,
+      appliesAfterQueueModeFlip: activeMode === "pgboss" && recommendedMode === "cursor",
+    });
+  }
+
+  // ── Recommendation: Prisma + pg-boss pool ─────────────────────────────
+  const prismaCurrent = currentEnv.DATABASE_POOL_SIZE;
+  const prismaRecommended = Math.max(prismaTarget, prismaCurrent);
+  recommendations.push({
+    key: "DATABASE_POOL_SIZE",
+    applyMode: "env",
+    current: prismaCurrent,
+    recommended: prismaRecommended,
+    rationale: "Sized to cover the worker ceiling plus discovery reserve plus HTTP/job overhead.",
+    breakdown: {
+      workerCeiling,
+      discoveryReserve,
+      httpOverhead: HTTP_JOB_OVERHEAD,
+      target: prismaTarget,
+    },
+    changeRequired: prismaRecommended > prismaCurrent,
+  });
+  const pgbossCurrent = currentEnv.POLARIS_PGBOSS_POOL_SIZE;
+  const pgbossRecommended = Math.max(PGBOSS_POOL_TARGET, pgbossCurrent);
+  recommendations.push({
+    key: "POLARIS_PGBOSS_POOL_SIZE",
+    applyMode: "env",
+    current: pgbossCurrent,
+    recommended: pgbossRecommended,
+    rationale: "Pg-boss queue ops are fast and multiplex many workers onto few connections — 20 is plenty.",
+    breakdown: { fixedTarget: PGBOSS_POOL_TARGET },
+    changeRequired: pgbossRecommended > pgbossCurrent,
+    appliesAfterQueueModeFlip: activeMode === "cursor" && recommendedMode === "pgboss",
+  });
+
+  // ── Recommendation: max_connections (advisory-only) ───────────────────
+  const maxConnectionsCurrent = snapshot.database.connectionPool.maxConnections || null;
+  recommendations.push({
+    key: "PG_MAX_CONNECTIONS",
+    applyMode: "advisory-only",
+    current: maxConnectionsCurrent,
+    recommended: recommendedMax,
+    rationale: `Set max_connections so Polaris's combined pool sits at ${Math.round(POLARIS_FRACTION_OF_MAX * 100)}% of max. Requires a PostgreSQL restart.`,
+    breakdown: {
+      polarisNeeded,
+      peakObserved,
+      polarisFloor,
+      polarisFraction: POLARIS_FRACTION_OF_MAX,
+      rounding: MAX_CONNECTIONS_ROUNDING,
+    },
+    changeRequired: maxConnectionsCurrent !== null && recommendedMax > maxConnectionsCurrent,
+  });
+
+  // ── Recommendation: PG tuning (advisory-only) ────────────────────────
+  recommendations.push({
+    key: "PG_SHARED_BUFFERS",
+    applyMode: "advisory-only",
+    current: pgTuning.sharedBuffers.current,
+    recommended: pgTuning.sharedBuffers.recommended,
+    rationale: "25% of host RAM, minimum 128 MB. Requires a PostgreSQL restart.",
+    changeRequired: pgTuning.sharedBuffers.changeRequired,
+  });
+  recommendations.push({
+    key: "PG_EFFECTIVE_CACHE_SIZE",
+    applyMode: "advisory-only",
+    current: pgTuning.effectiveCacheSize.current,
+    recommended: pgTuning.effectiveCacheSize.recommended,
+    rationale: "75% of host RAM, minimum 256 MB. Requires a PostgreSQL reload.",
+    changeRequired: pgTuning.effectiveCacheSize.changeRequired,
+  });
+  recommendations.push({
+    key: "PG_WORK_MEM",
+    applyMode: "advisory-only",
+    current: pgTuning.workMem.current,
+    recommended: pgTuning.workMem.recommended,
+    rationale: "RAM/128, capped at 256 MB, minimum 32 MB. Requires a PostgreSQL reload.",
+    changeRequired: pgTuning.workMem.changeRequired,
+  });
+  recommendations.push({
+    key: "PG_RANDOM_PAGE_COST",
+    applyMode: "advisory-only",
+    current: pgTuning.randomPageCost.current,
+    recommended: pgTuning.randomPageCost.recommended,
+    rationale: "1.1 on SSD. Requires a PostgreSQL reload.",
+    changeRequired: pgTuning.randomPageCost.changeRequired,
+  });
+
+  const anyChangeRequired = recommendations.some((r) => r.changeRequired);
+  const restartRequired = recommendations.some(
+    (r) => r.changeRequired && (r.applyMode === "env" || r.applyMode === "queue-mode-endpoint"),
+  );
+  const usingColdStartDefaults = Object.values(cadence).some((c) => c.usedDefault);
+
+  return {
+    computedAt: new Date().toISOString(),
+    usingColdStartDefaults,
+    cadenceSamples: cadence,
+    recommendations,
+    anyChangeRequired,
+    restartRequired,
+    activeQueueMode: activeMode,
+    recommendedQueueMode: recommendedMode,
+  };
+}
+
+// ─── Snapshot-driven recompute ─────────────────────────────────────────────
+
+function readEnvInt(envName: string, fallback: number): number {
+  const raw = process.env[envName];
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1 ? n : fallback;
+}
+
+async function readIntegrationBreakdown(): Promise<IntegrationBreakdown> {
+  const rows = await prisma.integration.findMany({
+    where: { enabled: true },
+    select: { type: true, config: true },
+  });
+  const out: IntegrationBreakdown = {
+    fortimanagerProxy: 0,
+    fortimanagerDirectParallelismSum: 0,
+    fortigate: 0,
+    entra: 0,
+    activedirectory: 0,
+    windowsserver: 0,
+  };
+  for (const r of rows) {
+    const cfg = (r.config ?? {}) as Record<string, unknown>;
+    if (r.type === "fortimanager") {
+      const useProxy = cfg.useProxy !== false; // default true
+      if (useProxy) {
+        out.fortimanagerProxy += 1;
+      } else {
+        const parallel = Number(cfg.discoveryParallelism ?? 5);
+        out.fortimanagerDirectParallelismSum += Number.isFinite(parallel) ? Math.max(1, Math.min(parallel, 20)) : 5;
+      }
+    } else if (r.type === "fortigate") {
+      out.fortigate += 1;
+    } else if (r.type === "entraid") {
+      out.entra += 1;
+    } else if (r.type === "activedirectory") {
+      out.activedirectory += 1;
+    } else if (r.type === "windowsserver") {
+      out.windowsserver += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Reads the per-cadence applicable counts from the same SQL conventions used
+ * by capacityService.projectSteadyStateSize: probe = monitored, telemetry +
+ * systemInfo exclude managed FortiSwitches/APs on REST API, fastFiltered =
+ * monitoredInterfaceCount (Asset.monitoredInterfaces array sum).
+ */
+async function readApplicableCounts(snap: CapacitySnapshot): Promise<Record<CadenceKey, number>> {
+  const monitored = snap.workload.monitoredAssetCount;
+  const telemetryRow = await prisma.$queryRawUnsafe<{ count: bigint }[]>(`
+    SELECT COUNT(*)::bigint AS count FROM "assets"
+    WHERE monitored = true
+      AND NOT (
+        "assetType" IN ('switch', 'access_point')
+        AND ("telemetryPolling" IS NULL OR "telemetryPolling" = 'rest_api')
+      )
+  `);
+  const systemInfoRow = await prisma.$queryRawUnsafe<{ count: bigint }[]>(`
+    SELECT COUNT(*)::bigint AS count FROM "assets"
+    WHERE monitored = true
+      AND NOT (
+        "assetType" IN ('switch', 'access_point')
+        AND ("interfacesPolling" IS NULL OR "interfacesPolling" = 'rest_api')
+      )
+  `);
+  return {
+    probe:        monitored,
+    fastFiltered: snap.workload.monitoredInterfaceCount,
+    telemetry:    Number(telemetryRow[0]?.count ?? monitored),
+    systemInfo:   Number(systemInfoRow[0]?.count ?? monitored),
+  };
+}
+
+export interface PgTuningExternal {
+  sharedBuffers: PgRecommendation;
+  effectiveCacheSize: PgRecommendation;
+  workMem: PgRecommendation;
+  randomPageCost: PgRecommendation;
+}
+
+/**
+ * Build the advisor state from a capacity snapshot. The caller (capacityWatch
+ * job + route handler) provides pgTuning current/recommended values via the
+ * existing buildPgRecommended() path so we don't duplicate that logic.
+ */
+export async function recomputeAdvisorFromSnapshot(
+  snap: CapacitySnapshot,
+  pgTuning: PgTuningExternal,
+): Promise<AdvisorState> {
+  const [cadenceObs, integrations, applicable] = await Promise.all([
+    observeCadences(),
+    readIntegrationBreakdown(),
+    readApplicableCounts(snap),
+  ]);
+
+  const inputs: AdvisorInputs = {
+    snapshot: snap,
+    integrations,
+    cadence: cadenceObs,
+    cadenceIntervals: {
+      probe:        snap.workload.cadences.responseTimeSec,
+      fastFiltered: snap.workload.cadences.responseTimeSec,
+      telemetry:    snap.workload.cadences.telemetrySec,
+      systemInfo:   snap.workload.cadences.systemInfoSec,
+    },
+    applicable,
+    currentEnv: {
+      DATABASE_POOL_SIZE:                readEnvInt("DATABASE_POOL_SIZE", 25),
+      POLARIS_PGBOSS_POOL_SIZE:          readEnvInt("POLARIS_PGBOSS_POOL_SIZE", 20),
+      POLARIS_MONITOR_PROBE_WORKERS:     readEnvInt("POLARIS_MONITOR_PROBE_WORKERS", 24),
+      POLARIS_MONITOR_FAST_WORKERS:      readEnvInt("POLARIS_MONITOR_FAST_WORKERS", 24),
+      POLARIS_MONITOR_HEAVY_WORKERS:     readEnvInt("POLARIS_MONITOR_HEAVY_WORKERS", 24),
+      POLARIS_MONITOR_FLOATING_WORKERS:  readEnvInt("POLARIS_MONITOR_FLOATING_WORKERS", 32),
+      POLARIS_PROBE_CONCURRENCY:         readEnvInt("POLARIS_PROBE_CONCURRENCY", 16),
+      POLARIS_HEAVY_CONCURRENCY:         readEnvInt("POLARIS_HEAVY_CONCURRENCY", 8),
+    },
+    pgTuning,
+  };
+
+  const state = buildAdvisorState(inputs);
+  cachedState = state;
+  cachedAt = Date.now();
+  void recordAdvisorTransition(state);
+  return state;
+}
+
+// ─── Cache ─────────────────────────────────────────────────────────────────
+
+let cachedState: AdvisorState | null = null;
+let cachedAt = 0;
+
+export function getCachedAdvisorState(): AdvisorState | null {
+  if (!cachedState) return null;
+  if (Date.now() - cachedAt > ADVISOR_CACHE_TTL_MS) return null;
+  return cachedState;
+}
+
+// ─── Summary for capacityService reasons ──────────────────────────────────
+
+export interface AdvisorGapSummary {
+  workersUndersized: boolean;
+  poolUndersized: boolean;
+  maxConnectionsUndersized: boolean;
+  /** Brief text naming the worst worker gap, for the reason message. */
+  worstGap?: string;
+}
+
+/** Distill the advisor state down to the flags capacityService.computeReasons needs. */
+export function summarizeAdvisorGaps(state: AdvisorState): AdvisorGapSummary {
+  const out: AdvisorGapSummary = {
+    workersUndersized: false,
+    poolUndersized: false,
+    maxConnectionsUndersized: false,
+  };
+  let worstGapDelta = 0;
+  let worstGapText = "";
+  for (const r of state.recommendations) {
+    if (!r.changeRequired) continue;
+    if (
+      r.key === "POLARIS_MONITOR_PROBE_WORKERS" ||
+      r.key === "POLARIS_MONITOR_FAST_WORKERS" ||
+      r.key === "POLARIS_MONITOR_HEAVY_WORKERS" ||
+      r.key === "POLARIS_MONITOR_FLOATING_WORKERS" ||
+      r.key === "POLARIS_PROBE_CONCURRENCY" ||
+      r.key === "POLARIS_HEAVY_CONCURRENCY"
+    ) {
+      out.workersUndersized = true;
+      const cur = typeof r.current === "number" ? r.current : 0;
+      const rec = typeof r.recommended === "number" ? r.recommended : 0;
+      const delta = rec - cur;
+      if (delta > worstGapDelta) {
+        worstGapDelta = delta;
+        worstGapText = `${r.key.replace(/^POLARIS_(MONITOR_)?/, "").toLowerCase()} (${cur} → ${rec})`;
+      }
+    }
+    if (r.key === "DATABASE_POOL_SIZE" || r.key === "POLARIS_PGBOSS_POOL_SIZE") {
+      out.poolUndersized = true;
+    }
+    if (r.key === "PG_MAX_CONNECTIONS") {
+      out.maxConnectionsUndersized = true;
+    }
+  }
+  if (worstGapText) out.worstGap = worstGapText;
+  return out;
+}
+
+// ─── Transition Event ─────────────────────────────────────────────────────
+
+interface StoredAdvisorTransition {
+  anyChangeRequired: boolean;
+  recordedAt: string;
+}
+
+async function readStoredChangeRequired(): Promise<boolean | null> {
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: LAST_CHANGE_REQUIRED_SETTING_KEY } });
+    if (!row) return null;
+    const v = row.value as Partial<StoredAdvisorTransition> | null;
+    if (!v || typeof v.anyChangeRequired !== "boolean") return null;
+    return v.anyChangeRequired;
+  } catch {
+    return null;
+  }
+}
+
+async function writeStoredChangeRequired(value: boolean): Promise<void> {
+  const stored: StoredAdvisorTransition = { anyChangeRequired: value, recordedAt: new Date().toISOString() };
+  await prisma.setting.upsert({
+    where: { key: LAST_CHANGE_REQUIRED_SETTING_KEY },
+    update: { value: stored as any },
+    create: { key: LAST_CHANGE_REQUIRED_SETTING_KEY, value: stored as any },
+  });
+}
+
+async function recordAdvisorTransition(state: AdvisorState): Promise<void> {
+  try {
+    const prior = await readStoredChangeRequired();
+    if (prior === state.anyChangeRequired) return;
+    // Only emit an Event when the rollup flag flips — avoids per-tick spam.
+    await prisma.event.create({
+      data: {
+        action: "capacity_advisor.recomputed",
+        resourceType: "system",
+        actor: "system",
+        level: "info",
+        message: state.anyChangeRequired
+          ? `Capacity Advisor: one or more settings now below recommended.`
+          : `Capacity Advisor: all settings at or above recommended.`,
+        details: {
+          recommendations: state.recommendations
+            .filter((r) => r.changeRequired)
+            .map((r) => ({ key: r.key, current: r.current, recommended: r.recommended })),
+        } as any,
+      },
+    });
+    await writeStoredChangeRequired(state.anyChangeRequired);
+  } catch (err: any) {
+    logger.debug({ err: err?.message }, "capacityAdvisor: recordAdvisorTransition failed");
+  }
+}
+
+// ─── Stage (apply selected recommendations) ───────────────────────────────
+
+const ENV_KEY_MAP: Partial<Record<AdvisorLeverKey, string>> = {
+  DATABASE_POOL_SIZE:               "DATABASE_POOL_SIZE",
+  POLARIS_PGBOSS_POOL_SIZE:         "POLARIS_PGBOSS_POOL_SIZE",
+  POLARIS_MONITOR_PROBE_WORKERS:    "POLARIS_MONITOR_PROBE_WORKERS",
+  POLARIS_MONITOR_FAST_WORKERS:     "POLARIS_MONITOR_FAST_WORKERS",
+  POLARIS_MONITOR_HEAVY_WORKERS:    "POLARIS_MONITOR_HEAVY_WORKERS",
+  POLARIS_MONITOR_FLOATING_WORKERS: "POLARIS_MONITOR_FLOATING_WORKERS",
+  POLARIS_PROBE_CONCURRENCY:        "POLARIS_PROBE_CONCURRENCY",
+  POLARIS_HEAVY_CONCURRENCY:        "POLARIS_HEAVY_CONCURRENCY",
+};
+
+export type StageStatus = "applied" | "skipped" | "error";
+
+export interface StageResult {
+  key: AdvisorLeverKey;
+  status: StageStatus;
+  oldValue: string | null;
+  newValue: string | null;
+  reason?: string;
+}
+
+export interface StageReceipt {
+  ok: boolean;
+  results: StageResult[];
+  restartRequired: boolean;
+}
+
+/**
+ * Apply selected lever recommendations.
+ *
+ * - `applyMode === "env"`: write `setEnvVar(envName, recommended)` to `.env`.
+ *   Takes effect at next Polaris restart. Errors return `status: "error"`.
+ * - `applyMode === "queue-mode-endpoint"`: call `setQueueMode()` directly.
+ *   Same path the existing `POST /server-settings/queue-mode` route uses.
+ * - `applyMode === "advisory-only"`: skip with reason `"advisory-only"`.
+ *
+ * Server picks values from a fresh advisor recompute — never trusts client-
+ * provided values. This means `Stage` isn't a generic env-write endpoint.
+ */
+export async function stageAdvisorState(
+  keys: AdvisorLeverKey[],
+  freshState: AdvisorState,
+): Promise<StageReceipt> {
+  const results: StageResult[] = [];
+  const byKey = new Map(freshState.recommendations.map((r) => [r.key, r]));
+  for (const key of keys) {
+    const r = byKey.get(key);
+    if (!r) {
+      results.push({ key, status: "error", oldValue: null, newValue: null, reason: "unknown lever key" });
+      continue;
+    }
+    if (r.applyMode === "advisory-only") {
+      results.push({
+        key,
+        status: "skipped",
+        oldValue: r.current !== null ? String(r.current) : null,
+        newValue: String(r.recommended),
+        reason: "advisory-only — requires PostgreSQL restart",
+      });
+      continue;
+    }
+    if (!r.changeRequired) {
+      results.push({
+        key,
+        status: "skipped",
+        oldValue: r.current !== null ? String(r.current) : null,
+        newValue: String(r.recommended),
+        reason: "already at or above recommended",
+      });
+      continue;
+    }
+    try {
+      if (r.applyMode === "queue-mode-endpoint") {
+        const mode = String(r.recommended) as "cursor" | "pgboss";
+        if (mode !== "cursor" && mode !== "pgboss") {
+          throw new Error(`invalid queue mode: ${mode}`);
+        }
+        if (mode === "pgboss" && !isPgbossInstalled()) {
+          throw new Error("pg-boss is not installed in this build");
+        }
+        await setQueueMode(mode);
+        results.push({
+          key,
+          status: "applied",
+          oldValue: r.current !== null ? String(r.current) : null,
+          newValue: String(r.recommended),
+        });
+      } else if (r.applyMode === "env") {
+        const envName = ENV_KEY_MAP[key];
+        if (!envName) throw new Error(`no env mapping for ${key}`);
+        setEnvVar(envName, String(r.recommended));
+        results.push({
+          key,
+          status: "applied",
+          oldValue: r.current !== null ? String(r.current) : null,
+          newValue: String(r.recommended),
+        });
+      }
+    } catch (err: any) {
+      results.push({
+        key,
+        status: "error",
+        oldValue: r.current !== null ? String(r.current) : null,
+        newValue: String(r.recommended),
+        reason: err?.message ?? String(err),
+      });
+    }
+  }
+  const restartRequired = results.some((r) => r.status === "applied");
+  return { ok: results.every((r) => r.status !== "error"), results, restartRequired };
+}
+
+export const __testing = {
+  HISTOGRAM_BUCKETS,
+  PER_CADENCE_FLOOR,
+  FLOATING_FLOOR,
+  SAFETY_FACTOR,
+  HTTP_JOB_OVERHEAD,
+  PGBOSS_POOL_TARGET,
+  POLARIS_FRACTION_OF_MAX,
+  MAX_CONNECTIONS_ROUNDING,
+  PGBOSS_RECOMMEND_ASSETS,
+};

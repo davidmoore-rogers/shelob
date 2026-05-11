@@ -535,3 +535,32 @@ After install, Polaris monitors disk space on every filesystem it (and PostgreSQ
 - **Server Settings → Maintenance**: live volume bars + per-reason advisory cards. Severity tiering is **watch** at 20–30% free, **amber** at 10–20%, **red** below 10%.
 
 The watch tier is the new "you have weeks, not minutes" warning. Don't ignore it.
+
+---
+
+## Capacity tuning — use the Capacity Advisor
+
+After Polaris has been running long enough to populate the monitor-work duration histogram (~5–15 minutes on a populated fleet, up to 24 hours on a fresh install), open **Server Settings → Maintenance → Capacity Advisor**. The card derives recommended values for connection pool sizes, monitor worker counts, queue mode (cursor ↔ pg-boss), and PostgreSQL `max_connections` / tuning settings from your observed workload (monitored asset count, monitored interface count, per-class FortiGate count, per-cadence p90 pass duration, observed peak connection count, host RAM).
+
+How it works in practice:
+
+1. Tick the rows you want to apply. Each row shows current vs recommended; rows already at-or-above recommendation render with an OK pill and a disabled checkbox.
+2. Click **Stage selected**. Polaris writes the chosen env-driven values to `.env` and (for the queue-mode lever) updates `Setting.monitor.queueMode`. **Restart Polaris** to pick up the changes.
+3. Advisory-only rows (PostgreSQL `max_connections`, `shared_buffers`, `effective_cache_size`, `work_mem`, `random_page_cost`) are display-only because they require a PostgreSQL restart Polaris can't trigger. Edit `postgresql.conf` and restart PostgreSQL to apply.
+
+The env vars surfaced by the advisor have safe defaults out of the box, so a fresh install starts at sensible values:
+
+```
+DATABASE_POOL_SIZE=25
+POLARIS_PGBOSS_POOL_SIZE=20
+POLARIS_MONITOR_PROBE_WORKERS=24
+POLARIS_MONITOR_FAST_WORKERS=24
+POLARIS_MONITOR_HEAVY_WORKERS=24
+POLARIS_MONITOR_FLOATING_WORKERS=32
+POLARIS_PROBE_CONCURRENCY=16   # cursor mode only
+POLARIS_HEAVY_CONCURRENCY=8    # cursor mode only
+```
+
+For headless installs (no UI access) the same env vars can be set by hand. The defaults above cover up to ~500 monitored assets in cursor mode; past that, flip to pg-boss (`Setting.monitor.queueMode = "pgboss"`) and let the advisor scale worker counts as the fleet grows.
+
+`max_connections` on the PostgreSQL side should sit at roughly `(prismaPool + pgbossPool) / 0.65` rounded up to a multiple of 50, leaving ~35% headroom for non-Polaris consumers (psql sessions, backups, replication, monitoring agents). The advisor surfaces the exact recommendation alongside the pool sizes.

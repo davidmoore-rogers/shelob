@@ -482,10 +482,21 @@ function volumeLabel(v: VolumeStat): string {
   return "Application volume";
 }
 
+export interface AdvisorGapsForReasons {
+  workersUndersized: boolean;
+  poolUndersized: boolean;
+  maxConnectionsUndersized: boolean;
+  /** Brief text naming the worst worker gap, used inside the reason message. */
+  worstGap?: string;
+  /** The recommended max_connections value, surfaced in the reason text. */
+  recommendedMaxConnections?: number;
+}
+
 function computeReasons(
   snap: CapacitySnapshot,
   ramInsufficient: boolean,
   pgTuningNeeded: boolean,
+  advisor?: AdvisorGapsForReasons,
 ): CapacityReason[] {
   const reasons: CapacityReason[] = [];
   const ram = snap.appHost.totalMemoryBytes;
@@ -545,14 +556,14 @@ function computeReasons(
       severity: "red",
       code: "projected_exceeds_disk",
       message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
-      suggestion: "Reduce sample retention or monitored asset count, or expand the database volume.",
+      suggestion: "Reduce sample retention or monitored asset count, or expand the database volume. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
     });
   } else if (dbVolume && snap.workload.steadyStateSizeBytes > dbVolume.freeBytes * 0.75) {
     reasons.push({
       severity: "amber",
       code: "projected_approaches_disk",
       message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) will consume more than 75% of free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
-      suggestion: "Consider reducing sample retention or expanding the database volume before it fills.",
+      suggestion: "Consider reducing sample retention or expanding the database volume before it fills. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
     });
   }
 
@@ -588,7 +599,7 @@ function computeReasons(
       severity: "red",
       code: "projected_db_huge",
       message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) is more than 8× host RAM at current settings.`,
-      suggestion: "Add RAM, reduce sample retention, or reduce the monitored asset count. Charts will get progressively slower.",
+      suggestion: "Add RAM, reduce sample retention, or reduce the monitored asset count. Charts will get progressively slower. The Capacity Advisor card surfaces retention and cadence levers if you can't add RAM.",
     });
   }
 
@@ -618,58 +629,15 @@ function computeReasons(
       severity: "amber",
       code: "projected_db_large",
       message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds 4× host RAM.`,
-      suggestion: "Consider adding RAM or reducing sample retention before performance degrades.",
+      suggestion: "Consider adding RAM or reducing sample retention before performance degrades. The Capacity Advisor card surfaces retention and cadence levers if you can't add RAM.",
     });
   }
 
   // ── pg-boss state ────────────────────────────────────────────────────────
-  // Three mutually-exclusive states surface a queue-mode signal:
-  //   - "pending"     (watch): operator already clicked Enable; persisted
-  //     setting differs from the running mode. Show what's pending + a Cancel
-  //     button so the change can be undone before restart if it was a mistake.
-  //   - "recommended" (watch): fleet has crossed ~500 monitored assets and the
-  //     operator is still on cursor. Cursor still works fine in this band; the
-  //     suggestion is opportunistic.
-  //   - "overdue"     (amber): fleet is well past 5000 — pg-boss is the right
-  //     answer and cursor will degrade noticeably. Drives Maintenance-tab
-  //     attention, not just an informational hint.
-  // All three run only when pg-boss is installed (no actionable advice otherwise).
-  if (snap.database.queue.pgbossInstalled) {
-    const { active, persisted } = snap.database.queue;
-    if (active !== persisted) {
-      reasons.push({
-        severity: "watch",
-        code: "pgboss_pending",
-        message: `Monitor queue switch to ${persisted} is pending — takes effect on the next application restart.`,
-        suggestion: `If this was clicked by mistake, cancel below to keep using ${active}.`,
-      });
-    } else if (active === "cursor") {
-      const PGBOSS_RECOMMEND_ASSETS = 500;
-      const PGBOSS_OVERDUE_ASSETS = 5000;
-      const count = snap.workload.monitoredAssetCount;
-      if (count > PGBOSS_RECOMMEND_ASSETS) {
-        const ctx = getDeploymentContext();
-        const suggestion = !ctx.dbIsLocal
-          ? "Click Enable on next restart to switch. pg-boss creates its own tables in the polaris database — confirm your DB role has CREATE TABLE permission with your DBA before flipping."
-          : "Click Enable on next restart to switch. After the next application restart Polaris will use the pg-boss queue with per-cadence worker pools.";
-        if (count > PGBOSS_OVERDUE_ASSETS) {
-          reasons.push({
-            severity: "amber",
-            code: "pgboss_overdue",
-            message: `Monitoring ${count} assets on the cursor queue is well past the comfortable cursor-mode size. pg-boss queue is the recommended fit at this scale.`,
-            suggestion,
-          });
-        } else {
-          reasons.push({
-            severity: "watch",
-            code: "pgboss_recommended",
-            message: `Monitoring ${count} assets on the cursor queue. pg-boss has structural per-cadence isolation that scales further.`,
-            suggestion,
-          });
-        }
-      }
-    }
-  }
+  // The legacy pgboss_recommended / pgboss_overdue / pgboss_pending reasons
+  // were folded into the Capacity Advisor card, which surfaces queue mode as
+  // one of its levers alongside pool sizes and worker counts. See
+  // capacityAdvisorService.ts and the QUEUE_MODE recommendation.
 
   // ── Watch: TimescaleDB recommendation ────────────────────────────────────
   // Once the sample tables together cross ~1 GB and the extension isn't
@@ -698,10 +666,9 @@ function computeReasons(
 
   // ── Watch: connection pool undersized ───────────────────────────────────
   // Fires when the rolling peak `pg_stat_activity` count for the polaris DB
-  // approaches the configured Polaris pool capacity (Prisma + pg-boss),
-  // BUT PostgreSQL still has comfortable max_connections headroom. That's
-  // the case where bumping DATABASE_POOL_SIZE / POLARIS_PGBOSS_POOL_SIZE
-  // is a free win — no Postgres restart, no shared_buffers retune.
+  // approaches the configured Polaris pool capacity (Prisma + pg-boss). The
+  // specific recommended values live on the Capacity Advisor card — this
+  // reason just flags the condition so the Maintenance pill turns watch.
   //
   // Skipped when max_connections is unknown (lookup failed) so the alert
   // never fires on bad data.
@@ -710,31 +677,8 @@ function computeReasons(
   if (
     pool.maxConnections > 0 &&
     polarisPoolCapacity > 0 &&
-    pool.peakObserved >= Math.ceil(polarisPoolCapacity * 0.8) &&
-    pool.peakObserved < Math.ceil(pool.maxConnections * 0.7)
+    pool.peakObserved >= Math.ceil(polarisPoolCapacity * 0.8)
   ) {
-    // Suggest pool sizes that target ~50% utilization at the observed peak,
-    // capped so the combined Polaris pool never exceeds 70% of max_connections
-    // (leaves headroom for psql / pg_dump / monitoring tools / etc.).
-    const targetTotal = Math.min(
-      Math.ceil(pool.peakObserved * 2),
-      Math.floor(pool.maxConnections * 0.7),
-    );
-    // Distribute the new total roughly proportional to the current split,
-    // keeping pg-boss at minimum 10 when it's running.
-    const currentRatioPgboss = pool.pgbossPoolSize !== null
-      ? pool.pgbossPoolSize / polarisPoolCapacity
-      : 0;
-    const newPgbossSize = pool.pgbossPoolSize !== null
-      ? Math.max(10, Math.round(targetTotal * currentRatioPgboss))
-      : null;
-    const newPrismaSize = newPgbossSize !== null
-      ? targetTotal - newPgbossSize
-      : targetTotal;
-
-    const envLines = newPgbossSize !== null
-      ? `DATABASE_POOL_SIZE=${newPrismaSize} and POLARIS_PGBOSS_POOL_SIZE=${newPgbossSize}`
-      : `DATABASE_POOL_SIZE=${newPrismaSize}`;
     reasons.push({
       severity: "watch",
       code: "db_pool_undersized",
@@ -745,12 +689,42 @@ function computeReasons(
         `). PostgreSQL max_connections is ${pool.maxConnections} with ` +
         `${pool.maxConnections - pool.peakObserved} free.`,
       suggestion:
-        `High pool utilization can mean genuine demand or slow holders. ` +
-        `If pg_stat_activity during peak shows mostly active workers running a healthy mix, ` +
-        `bumping the pool to add buffer is a low-risk fix since Postgres has headroom — ` +
-        `set ${envLines} in .env and restart Polaris. ` +
-        `If you see many rows stuck in idle in transaction or the same slow query, ` +
-        `fixing the holders is the better answer than enlarging the pool.`,
+        `See the Capacity Advisor card for recommended pool sizes and click Stage to write ` +
+        `them to .env. Bumping the pool is a low-risk fix when Postgres has headroom. If ` +
+        `pg_stat_activity shows many rows stuck in idle in transaction or the same slow query, ` +
+        `fix the holders instead.`,
+    });
+  }
+
+  // ── Watch: monitor workers undersized (rollup from advisor) ─────────────
+  // Single rollup reason — one entry per cadence would clutter the panel.
+  // The advisor card carries the per-cadence recommendations.
+  if (advisor?.workersUndersized) {
+    const gapText = advisor.worstGap ? ` Worst gap: ${advisor.worstGap}.` : "";
+    reasons.push({
+      severity: "watch",
+      code: "monitor_workers_undersized",
+      message: `Monitor worker pool is sized below what the current workload requires.${gapText}`,
+      suggestion:
+        `Open the Capacity Advisor card and click Stage to write the recommended worker ` +
+        `counts to .env. Takes effect on next Polaris restart.`,
+    });
+  }
+
+  // ── Amber: max_connections undersized ───────────────────────────────────
+  // Fires when current max_connections is below what the advisor would
+  // recommend. Requires a PostgreSQL restart, so it stays advisory and
+  // doesn't get a Stage button.
+  if (advisor?.maxConnectionsUndersized && advisor.recommendedMaxConnections && pool.maxConnections > 0) {
+    reasons.push({
+      severity: "amber",
+      code: "max_connections_undersized",
+      message:
+        `PostgreSQL max_connections is ${pool.maxConnections} but the recommended value ` +
+        `for current workload is ${advisor.recommendedMaxConnections}.`,
+      suggestion:
+        `Set max_connections=${advisor.recommendedMaxConnections} in postgresql.conf and ` +
+        `restart PostgreSQL. Polaris can't change this from the UI because it requires a Postgres restart.`,
     });
   }
 
@@ -830,6 +804,11 @@ function deriveSeverity(reasons: CapacityReason[]): Severity {
 export async function getCapacitySnapshot(opts: {
   ramInsufficient: boolean;
   pgTuningNeeded: boolean;
+  /** Optional advisor-driven gap data. When provided, populates the
+   *  `monitor_workers_undersized` / `max_connections_undersized` reasons.
+   *  Omitted by callers that don't yet have an advisor state (e.g. the
+   *  first half of the two-pass orchestration in getCapacitySnapshotWithAdvisor). */
+  advisor?: AdvisorGapsForReasons;
 }): Promise<CapacitySnapshot> {
   const dataDirectory = await resolveDbDataDirectory();
 
@@ -971,9 +950,63 @@ export async function getCapacitySnapshot(opts: {
     },
   };
 
-  snap.reasons = computeReasons(snap, opts.ramInsufficient, opts.pgTuningNeeded);
+  snap.reasons = computeReasons(snap, opts.ramInsufficient, opts.pgTuningNeeded, opts.advisor);
   snap.severity = deriveSeverity(snap.reasons);
   return snap;
+}
+
+/**
+ * Two-pass orchestrator: builds an initial snapshot, computes the Capacity
+ * Advisor state against it, then rebuilds the snapshot with the advisor's gap
+ * data wired into computeReasons so the advisor-driven reasons appear.
+ *
+ * Used by callers that want both the snapshot and the advisor state without
+ * duplicating the orchestration (capacityWatch job, the new
+ * /server-settings/capacity-advisor route).
+ *
+ * `pgTuning` is the external dependency that `capacityAdvisorService` can't
+ * compute on its own — it's owned by `buildPgRecommended` in serverSettings.ts.
+ * Callers pass in the already-computed current/recommended pairs.
+ */
+export async function getCapacitySnapshotWithAdvisor(
+  opts: {
+    ramInsufficient: boolean;
+    pgTuningNeeded: boolean;
+    pgTuning: import("./capacityAdvisorService.js").PgTuningExternal;
+  },
+): Promise<{
+  snapshot: CapacitySnapshot;
+  advisor: import("./capacityAdvisorService.js").AdvisorState;
+}> {
+  // Avoid an import cycle at module load: require lazily inside the function.
+  // capacityAdvisorService imports type-only from this module, so this dynamic
+  // import is purely a paranoia-belt for the runtime side.
+  const advisorMod = await import("./capacityAdvisorService.js");
+  // Pass 1: snapshot without advisor data. Used as input for the advisor.
+  const initial = await getCapacitySnapshot({
+    ramInsufficient: opts.ramInsufficient,
+    pgTuningNeeded: opts.pgTuningNeeded,
+  });
+  // Compute the advisor state against this snapshot.
+  const advisor = await advisorMod.recomputeAdvisorFromSnapshot(initial, opts.pgTuning);
+  const gaps = advisorMod.summarizeAdvisorGaps(advisor);
+  // The recommendedMaxConnections lives on the advisor's PG_MAX_CONNECTIONS
+  // recommendation; surface it so the reason text can name the value.
+  const maxConnRec = advisor.recommendations.find((r) => r.key === "PG_MAX_CONNECTIONS");
+  const gapsForReasons: AdvisorGapsForReasons = {
+    ...gaps,
+    recommendedMaxConnections:
+      maxConnRec && typeof maxConnRec.recommended === "number"
+        ? maxConnRec.recommended
+        : undefined,
+  };
+  // Pass 2: snapshot with advisor gaps in scope so the new reasons fire.
+  const snapshot = await getCapacitySnapshot({
+    ramInsufficient: opts.ramInsufficient,
+    pgTuningNeeded: opts.pgTuningNeeded,
+    advisor: gapsForReasons,
+  });
+  return { snapshot, advisor };
 }
 
 // ─── Transition-only Event emission ───────────────────────────────────────────
