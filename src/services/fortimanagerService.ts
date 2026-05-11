@@ -923,6 +923,7 @@ export async function discoverDhcpSubnets(
     if (signal?.aborted) return null;
 
     log("discover.device.start", "info", `Starting discovery for ${deviceName}`, deviceName);
+    const devStartMs = Date.now();
 
     // Direct mode: skip FMG entirely for per-device calls. Use the FortiGate's
     // real management-interface IP (resolved through FMG's interface config —
@@ -1004,7 +1005,7 @@ export async function discoverDhcpSubnets(
             log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
           }
 
-          log("discover.device.complete", "info", `Completed direct discovery for ${deviceName}`, deviceName);
+          log("discover.device.complete", "info", `Completed direct discovery for ${deviceName} in ${Date.now() - devStartMs}ms`, deviceName);
           return {
             device: localDev,
             subnets: fgResult.subnets,
@@ -1761,7 +1762,7 @@ export async function discoverDhcpSubnets(
       }
     }
 
-    log("discover.device.complete", "info", `Completed discovery for ${deviceName}`, deviceName);
+    log("discover.device.complete", "info", `Completed discovery for ${deviceName} in ${Date.now() - devStartMs}ms`, deviceName);
     return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, switchMacTable: localSwitchMacTable, arpTable: localArpTable, cmdbSwitchSerials: localCmdbSwitchSerials, cmdbApSerials: localCmdbApSerials, didSwitchQuery, didApQuery };
   }
 
