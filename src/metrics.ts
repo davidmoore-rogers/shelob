@@ -28,16 +28,16 @@ const monitorPassDuration = new Histogram({
 
 const monitorWorkDuration = new Histogram({
   name: "polaris_monitor_work_duration_seconds",
-  help: "Wall-clock duration of a single monitor work item, by cadence.",
-  labelNames: ["cadence"] as const,
+  help: "Wall-clock duration of a single monitor work item, by cadence, asset_type, and transport. `transport` is the resolved polling method for that cadence (probe=responseTimePolling, telemetry=telemetryPolling, systemInfo + fastFiltered=interfacesPolling); falls back to 'unknown' if the worker can't resolve it. Lets operators slice work duration by device-class × transport to find which combo is the bottleneck.",
+  labelNames: ["cadence", "asset_type", "transport"] as const,
   buckets: [0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
   registers: [registry],
 });
 
 const monitorWorkTotal = new Counter({
   name: "polaris_monitor_work_total",
-  help: "Number of monitor work items processed, by cadence and outcome.",
-  labelNames: ["cadence", "outcome"] as const,
+  help: "Number of monitor work items processed, by cadence, asset_type, transport, and outcome.",
+  labelNames: ["cadence", "asset_type", "transport", "outcome"] as const,
   registers: [registry],
 });
 
@@ -248,12 +248,32 @@ export function startPassTimer(): () => number {
   return monitorPassDuration.startTimer();
 }
 
-export function startWorkTimer(cadence: Cadence): () => number {
-  return monitorWorkDuration.startTimer({ cadence });
+export interface WorkLabels {
+  /** Asset.assetType — one of the 8 AssetType enum values; "unknown" when the worker can't resolve. */
+  assetType: string;
+  /** Resolved per-cadence polling method (e.g. "rest_api", "snmp", "icmp"); "unknown" when not resolved. */
+  transport: string;
 }
 
-export function recordWorkOutcome(cadence: Cadence, outcome: WorkOutcome): void {
-  monitorWorkTotal.inc({ cadence, outcome });
+export function startWorkTimer(cadence: Cadence, labels: WorkLabels): () => number {
+  return monitorWorkDuration.startTimer({
+    cadence,
+    asset_type: labels.assetType,
+    transport: labels.transport,
+  });
+}
+
+export function recordWorkOutcome(
+  cadence: Cadence,
+  outcome: WorkOutcome,
+  labels: WorkLabels,
+): void {
+  monitorWorkTotal.inc({
+    cadence,
+    outcome,
+    asset_type: labels.assetType,
+    transport: labels.transport,
+  });
 }
 
 export function recordProbe(transport: string, durationSeconds: number, outcome: ProbeOutcome): void {

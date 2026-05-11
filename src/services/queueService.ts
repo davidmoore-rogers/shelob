@@ -145,8 +145,20 @@ export const QUEUE_NAMES: Record<MonitorCadence, string> = {
 
 interface MonitorJobPayload {
   assetId: string;
-  /** Probe-only: labels the per-transport metric. Omitted for other cadences. */
+  /**
+   * Resolved per-cadence polling method (probe=responseTimePolling,
+   * telemetry=telemetryPolling, systemInfo + fastFiltered=interfacesPolling).
+   * Labels the per-transport metric. Optional for back-compat with jobs
+   * enqueued before this field was added — worker falls back to "unknown".
+   */
   transport?: string;
+  /**
+   * Asset.assetType captured at publish time so the worker can stamp it onto
+   * the work-duration histogram without re-reading from the DB. Optional for
+   * back-compat with jobs enqueued before this field was added — worker falls
+   * back to "unknown".
+   */
+  assetType?: string;
 }
 
 let bossInstance: PgBossType | null = null;
@@ -437,26 +449,29 @@ export async function startPgbossWorkers(): Promise<void> {
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.probe, {
     localConcurrency: probeWorkers, batchSize: 1, pollingIntervalSeconds: 1,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    const job = jobs[0];
-    await runProbeFor(job.data.assetId, job.data.transport ?? "unknown");
+    const { assetId, transport, assetType } = jobs[0].data;
+    await runProbeFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
   });
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.fastFiltered, {
     localConcurrency: fastWorkers, batchSize: 1, pollingIntervalSeconds: 2,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    await runFastFilteredFor(jobs[0].data.assetId);
+    const { assetId, transport, assetType } = jobs[0].data;
+    await runFastFilteredFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
   });
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.telemetry, {
     localConcurrency: heavyWorkers, batchSize: 1, pollingIntervalSeconds: 5,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    await runTelemetryFor(jobs[0].data.assetId);
+    const { assetId, transport, assetType } = jobs[0].data;
+    await runTelemetryFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
   });
 
   await boss.work<MonitorJobPayload>(QUEUE_NAMES.systemInfo, {
     localConcurrency: heavyWorkers, batchSize: 1, pollingIntervalSeconds: 5,
   }, async (jobs: PgBossJob<MonitorJobPayload>[]) => {
-    await runSystemInfoFor(jobs[0].data.assetId);
+    const { assetId, transport, assetType } = jobs[0].data;
+    await runSystemInfoFor(assetId, { transport: transport ?? "unknown", assetType: assetType ?? "unknown" });
   });
 
   bossInstance = boss;
@@ -538,13 +553,14 @@ async function dispatchFloatingJob(
   cadence: MonitorCadence,
 ): Promise<void> {
   const queueName = QUEUE_NAMES[cadence];
-  const { assetId, transport } = job.data;
+  const { assetId, transport, assetType } = job.data;
+  const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown" };
   try {
     switch (cadence) {
-      case "probe":        await runProbeFor(assetId, transport ?? "unknown"); break;
-      case "fastFiltered": await runFastFilteredFor(assetId);                  break;
-      case "telemetry":    await runTelemetryFor(assetId);                     break;
-      case "systemInfo":   await runSystemInfoFor(assetId);                    break;
+      case "probe":        await runProbeFor(assetId, labels);        break;
+      case "fastFiltered": await runFastFilteredFor(assetId, labels); break;
+      case "telemetry":    await runTelemetryFor(assetId, labels);    break;
+      case "systemInfo":   await runSystemInfoFor(assetId, labels);   break;
     }
     await boss.complete(queueName, job.id);
   } catch (err) {
@@ -574,13 +590,13 @@ async function dispatchFloatingJob(
 export async function publishMonitorJob(
   cadence: MonitorCadence,
   assetId: string,
-  transport?: string,
+  labels?: { transport?: string; assetType?: string },
 ): Promise<void> {
   if (!bossInstance) return;
   const queue = QUEUE_NAMES[cadence];
   await bossInstance.send(
     queue,
-    { assetId, transport } as MonitorJobPayload,
+    { assetId, transport: labels?.transport, assetType: labels?.assetType } as MonitorJobPayload,
     {
       singletonKey: `${assetId}:${cadence}`,
     },

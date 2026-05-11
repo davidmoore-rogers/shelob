@@ -185,21 +185,28 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
     // in monitoringService.runMonitorPass.
     const isUp = a.monitorStatus === "up" && !a.dependencySuppressed;
 
+    // Per-cadence transport labels for the work-duration histogram. Each
+    // cadence is labeled with the polling method it actually uses
+    // (probe → responseTimePolling, telemetry → telemetryPolling,
+    // systemInfo + fastFiltered → interfacesPolling). All four resolve
+    // through the same hierarchy, so by this point eff.* is the source
+    // of truth — same fidelity as runMonitorPass in monitoringService.
+    const assetType = a.assetType ?? "unknown";
+    const probeTransport = eff.responseTimePolling || "unknown";
+    const telTransport   = eff.telemetryPolling    || "unknown";
+    const ifTransport    = eff.interfacesPolling   || "unknown";
+
     if (probe && enabled.has("probe")) {
-      // Transport label for the per-probe metrics. Uses the resolved
-      // responseTimePolling — same fidelity as runMonitorPass's
-      // transportById in monitoringService.
-      const transport = eff.responseTimePolling || "unknown";
-      await publishMonitorJob("probe", a.id, transport);
+      await publishMonitorJob("probe", a.id, { transport: probeTransport, assetType });
     }
     if (telemetry && canTelemetry && isUp && enabled.has("telemetry")) {
-      await publishMonitorJob("telemetry", a.id);
+      await publishMonitorJob("telemetry", a.id, { transport: telTransport, assetType });
     }
     if (systemInfo && canSystemInfo && isUp && enabled.has("systemInfo")) {
-      await publishMonitorJob("systemInfo", a.id);
+      await publishMonitorJob("systemInfo", a.id, { transport: ifTransport, assetType });
     }
     if (probe && hasFastPin && canSystemInfo && !systemInfo && isUp && enabled.has("fastFiltered")) {
-      await publishMonitorJob("fastFiltered", a.id);
+      await publishMonitorJob("fastFiltered", a.id, { transport: ifTransport, assetType });
     }
   }
 

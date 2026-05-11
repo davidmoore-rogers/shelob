@@ -4062,32 +4062,45 @@ export type MonitorCadence = "probe" | "telemetry" | "systemInfo" | "fastFiltere
 export type CadenceOutcome = "success" | "failure" | "crash";
 
 /**
+ * Per-work-item label set, stamped onto the work-duration histogram +
+ * outcome counter so operators can slice by device-class × transport to
+ * find which combo is the bottleneck. Callers that already know these (the
+ * monitorAssets publisher and runMonitorPass) pass them in to avoid a
+ * second DB read on the worker side; legacy callers pass "unknown".
+ */
+export interface WorkItemLabels {
+  /** Resolved per-cadence polling method (probe=responseTimePolling, telemetry=telemetryPolling, systemInfo+fastFiltered=interfacesPolling). */
+  transport: string;
+  /** Asset.assetType (one of the 8 AssetType enum values). */
+  assetType: string;
+}
+
+/**
  * Run a single response-time probe for one asset, write the sample, update
  * Asset row state (monitorStatus / lastMonitorAt / consecutiveFailures),
- * record metrics. `transport` labels the per-transport histogram + counter
- * — callers that already know the asset's monitorType (e.g. runMonitorPass
- * has it from the candidate query) pass it in to avoid a second DB read.
+ * record metrics. `labels` stamp the work histogram + per-transport probe
+ * histogram so operators can slice by asset_type × transport.
  */
-export async function runProbeFor(assetId: string, transport: string): Promise<CadenceOutcome> {
-  const stopWork = startWorkTimer("probe");
+export async function runProbeFor(assetId: string, labels: WorkItemLabels): Promise<CadenceOutcome> {
+  const stopWork = startWorkTimer("probe", labels);
   const probeStart = Date.now();
   try {
     const result = await probeAsset(assetId);
     const probeMs = Date.now() - probeStart;
     await recordProbeResult(assetId, result);
     if (result.success) {
-      recordProbe(transport, probeMs / 1000, "success");
-      recordWorkOutcome("probe", "success");
+      recordProbe(labels.transport, probeMs / 1000, "success");
+      recordWorkOutcome("probe", "success", labels);
       return "success";
     }
-    recordProbe(transport, probeMs / 1000, "failure");
-    recordWorkOutcome("probe", "failure");
+    recordProbe(labels.transport, probeMs / 1000, "failure");
+    recordWorkOutcome("probe", "failure", labels);
     return "failure";
   } catch (err) {
     const probeMs = Date.now() - probeStart;
     logger.error({ err, assetId }, "Monitor probe crashed");
-    recordProbe(transport, probeMs / 1000, "failure");
-    recordWorkOutcome("probe", "crash");
+    recordProbe(labels.transport, probeMs / 1000, "failure");
+    recordWorkOutcome("probe", "crash", labels);
     return "crash";
   } finally {
     stopWork();
@@ -4101,24 +4114,24 @@ export async function runProbeFor(assetId: string, transport: string): Promise<C
  * `failure` means the transport is supported but the call returned no
  * data (timed-out, rejected, etc.).
  */
-export async function runTelemetryFor(assetId: string): Promise<CadenceOutcome> {
-  const stopWork = startWorkTimer("telemetry");
+export async function runTelemetryFor(assetId: string, labels: WorkItemLabels): Promise<CadenceOutcome> {
+  const stopWork = startWorkTimer("telemetry", labels);
   try {
     const tr = await collectTelemetry(assetId);
     await recordTelemetryResult(assetId, tr);
     if (tr.supported) {
       if (tr.data) {
-        recordWorkOutcome("telemetry", "success");
+        recordWorkOutcome("telemetry", "success", labels);
         return "success";
       }
-      recordWorkOutcome("telemetry", "failure");
+      recordWorkOutcome("telemetry", "failure", labels);
       return "failure";
     }
-    recordWorkOutcome("telemetry", "success");
+    recordWorkOutcome("telemetry", "success", labels);
     return "success";
   } catch (err) {
     logger.error({ err, assetId }, "Telemetry collection crashed");
-    recordWorkOutcome("telemetry", "crash");
+    recordWorkOutcome("telemetry", "crash", labels);
     return "crash";
   } finally {
     stopWork();
@@ -4129,24 +4142,24 @@ export async function runTelemetryFor(assetId: string): Promise<CadenceOutcome> 
  * Full system-info pass (interfaces + storage + IPsec + LLDP) for one
  * asset. Same supported / data / failure semantics as telemetry.
  */
-export async function runSystemInfoFor(assetId: string): Promise<CadenceOutcome> {
-  const stopWork = startWorkTimer("systemInfo");
+export async function runSystemInfoFor(assetId: string, labels: WorkItemLabels): Promise<CadenceOutcome> {
+  const stopWork = startWorkTimer("systemInfo", labels);
   try {
     const sr = await collectSystemInfo(assetId);
     await recordSystemInfoResult(assetId, sr);
     if (sr.supported) {
       if (sr.data) {
-        recordWorkOutcome("systemInfo", "success");
+        recordWorkOutcome("systemInfo", "success", labels);
         return "success";
       }
-      recordWorkOutcome("systemInfo", "failure");
+      recordWorkOutcome("systemInfo", "failure", labels);
       return "failure";
     }
-    recordWorkOutcome("systemInfo", "success");
+    recordWorkOutcome("systemInfo", "success", labels);
     return "success";
   } catch (err) {
     logger.error({ err, assetId }, "System info collection crashed");
-    recordWorkOutcome("systemInfo", "crash");
+    recordWorkOutcome("systemInfo", "crash", labels);
     return "crash";
   } finally {
     stopWork();
@@ -4157,24 +4170,24 @@ export async function runSystemInfoFor(assetId: string): Promise<CadenceOutcome>
  * Fast-filtered scrape for the operator-pinned subset (interfaces + storage
  * + IPsec). Same supported / data / failure semantics as systemInfo.
  */
-export async function runFastFilteredFor(assetId: string): Promise<CadenceOutcome> {
-  const stopWork = startWorkTimer("fastFiltered");
+export async function runFastFilteredFor(assetId: string, labels: WorkItemLabels): Promise<CadenceOutcome> {
+  const stopWork = startWorkTimer("fastFiltered", labels);
   try {
     const fr = await collectFastFiltered(assetId);
     await recordFastFilteredResult(assetId, fr);
     if (fr.supported) {
       if (fr.data) {
-        recordWorkOutcome("fastFiltered", "success");
+        recordWorkOutcome("fastFiltered", "success", labels);
         return "success";
       }
-      recordWorkOutcome("fastFiltered", "failure");
+      recordWorkOutcome("fastFiltered", "failure", labels);
       return "failure";
     }
-    recordWorkOutcome("fastFiltered", "success");
+    recordWorkOutcome("fastFiltered", "success", labels);
     return "success";
   } catch (err) {
     logger.error({ err, assetId }, "Fast-cadence scrape crashed");
-    recordWorkOutcome("fastFiltered", "crash");
+    recordWorkOutcome("fastFiltered", "crash", labels);
     return "crash";
   } finally {
     stopWork();
@@ -4247,21 +4260,40 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
   }
   setMonitoredAssets(candidates.length, { up: upCount, down: downCount, unknown: unknownCount });
 
-  // Map (assetId → resolved transport label) for the per-probe metrics.
-  // Pre-3j we labeled by Asset.monitorType; now we use the resolved
-  // responseTimePolling, falling back through the hierarchy to the source
-  // default. Computed from the candidate row's per-asset polling override
-  // first, then the integration-source default — full resolver fidelity
-  // would require the class-override + tier-3 lookup but that's overkill
-  // for a metric label.
-  const transportById = new Map<string, string>();
+  // Per-asset resolved transport labels for the work-duration histogram and
+  // per-probe histogram. Probe uses responseTimePolling; telemetry uses
+  // telemetryPolling; systemInfo + fastFiltered use interfacesPolling.
+  // Falls back to the integration-source default when the per-asset column
+  // is null (full resolver fidelity would require the class-override +
+  // tier-3 lookup but that's overkill for a metric label).
+  //
+  // Source defaults (from CLAUDE.md): fortimanager/fortigate → rest_api on
+  // probe / telemetry / interfaces; everything else → icmp on probe and
+  // null (= "not delivered") on the other streams. The publishDueWork +
+  // canTelemetry/canSystemInfo gates already block work items whose stream
+  // resolves to null, so in practice the non-fortinet null case here
+  // doesn't reach a worker — the "not_delivered" label is a defensive
+  // fallback only.
+  function defaultProbeTransport(integrationType: string | null | undefined): string {
+    return (integrationType === "fortimanager" || integrationType === "fortigate") ? "rest_api" : "icmp";
+  }
+  function defaultHeavyTransport(integrationType: string | null | undefined): string {
+    return (integrationType === "fortimanager" || integrationType === "fortigate") ? "rest_api" : "not_delivered";
+  }
+  const transportByCadenceById = new Map<string, Record<MonitorCadence, string>>();
+  const assetTypeById = new Map<string, string>();
   for (const a of candidates) {
-    let label: string = a.responseTimePolling || "";
-    if (!label) {
-      const t = a.discoveredByIntegration?.type;
-      label = (t === "fortimanager" || t === "fortigate") ? "rest_api" : "icmp";
-    }
-    transportById.set(a.id, label);
+    const integrationType = a.discoveredByIntegration?.type;
+    const probeT = a.responseTimePolling || defaultProbeTransport(integrationType);
+    const telT   = a.telemetryPolling    || defaultHeavyTransport(integrationType);
+    const ifT    = a.interfacesPolling   || defaultHeavyTransport(integrationType);
+    transportByCadenceById.set(a.id, {
+      probe:        probeT,
+      telemetry:    telT,
+      systemInfo:   ifT,
+      fastFiltered: ifT,
+    });
+    assetTypeById.set(a.id, a.assetType ?? "unknown");
   }
 
   function isDue(last: Date | null, intervalSec: number): boolean {
@@ -4402,28 +4434,33 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       const idx = cursor++;
       const w = work[idx];
       const runWork = async () => {
+        const assetType = assetTypeById.get(w.id) ?? "unknown";
+        const transports = transportByCadenceById.get(w.id);
+        const labelFor = (cadence: MonitorCadence): WorkItemLabels => ({
+          assetType,
+          transport: transports?.[cadence] ?? "unknown",
+        });
         switch (w.kind) {
           case "probe": {
-            const transport = transportById.get(w.id) ?? "unknown";
-            const outcome = await runProbeFor(w.id, transport);
+            const outcome = await runProbeFor(w.id, labelFor("probe"));
             stats.probed++;
             if (outcome === "success") stats.succeeded++; else stats.failed++;
             break;
           }
           case "telemetry": {
-            const outcome = await runTelemetryFor(w.id);
+            const outcome = await runTelemetryFor(w.id, labelFor("telemetry"));
             if (outcome === "success") stats.telemetry.collected++;
             else stats.telemetry.failed++;
             break;
           }
           case "systemInfo": {
-            const outcome = await runSystemInfoFor(w.id);
+            const outcome = await runSystemInfoFor(w.id, labelFor("systemInfo"));
             if (outcome === "success") stats.systemInfo.collected++;
             else stats.systemInfo.failed++;
             break;
           }
           case "fastFiltered": {
-            const outcome = await runFastFilteredFor(w.id);
+            const outcome = await runFastFilteredFor(w.id, labelFor("fastFiltered"));
             if (outcome === "success") stats.fastFiltered.collected++;
             else stats.fastFiltered.failed++;
             break;
