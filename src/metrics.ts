@@ -212,6 +212,13 @@ const sampleWriteDuration = new Histogram({
   registers: [registry],
 });
 
+const sampleBufferDepth = new Gauge({
+  name: "polaris_sample_buffer_depth",
+  help: "Rows currently held in the in-memory write buffer for each monitor sample table. Oscillates between near-0 and the steady-state batch size between 2s flush ticks; a persistently rising value means the flush can't keep up with the enqueue rate.",
+  labelNames: ["table"] as const,
+  registers: [registry],
+});
+
 // ─── HTTP server ──────────────────────────────────────────────────────────
 
 const httpRequestDuration = new Histogram({
@@ -416,6 +423,10 @@ export function recordDiscovery(
 
 export function startSampleWriteTimer(table: string): () => number {
   return sampleWriteDuration.startTimer({ table });
+}
+
+export function setSampleBufferDepth(table: string, depth: number): void {
+  sampleBufferDepth.set({ table }, depth);
 }
 
 export type StatusClass = "2xx" | "3xx" | "4xx" | "5xx";

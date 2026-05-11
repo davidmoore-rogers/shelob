@@ -1071,6 +1071,7 @@ Listed alphabetically.
 - **Per-transport dispatch:** probes dispatch on polling method (rest_api → probeFortinet/probeFortinetController; snmp → probeSnmp; winrm → probeWinRm; ssh → probeSsh; icmp → probeIcmp). REST API probes to `/api/v2/monitor/system/status`; SNMP probes `sysUpTime` OID.
 - **vendorTelemetryProfiles + oidRegistry consumers:** collectTelemetry/collectSystemInfo/collectLldpOnlySnmp call `pickVendorProfile()` and `resolveOidSync()` for SNMP walks; boot calls `ensureRegistryLoaded()` for warm cache.
 - **Credential fallback chain:** asset-level credential → integration-stored token/SNMP → inherited from FMG on FMG-discovered firewalls.
+- **Sample writes are async-buffered, status writes are synchronous.** The six append-only sample tables (asset_monitor / asset_telemetry / asset_temperature / asset_interface / asset_storage / asset_ipsec_tunnel) go through `sampleWriteBuffer.enqueue*` and flush every 2 s. `Asset.update` for `monitorStatus` / counters / `last*At` and the per-asset `$transaction` for `assetAssociatedIp` and `persistLldpNeighbors` stay synchronous because they need read-modify-write or per-asset replace semantics that an append-only buffer can't provide. Future contributors adding a new cadence must NOT batch the asset.update — the state machine reads counters then writes new ones, and batching would break that.
 
 **When changing this:**
 - Audit state-machine transitions and verify no edge cases leave assets in phantom states (esp. recovery threshold tuning).
@@ -1260,6 +1261,39 @@ Listed alphabetically.
 - Test cold-start grace window (rows pre-dating detectionStartedAt get full threshold window)
 - Check flagStaleReservations only fires on active dhcp_reservation rows (not discovered dhcp_lease)
 - Audit snooze idempotency: repeated snooze clicks should extend from "now" not from prior snooze
+
+---
+
+## services/sampleWriteBuffer.ts
+
+**What it owns:** Periodic batch-flush buffer for the six append-only monitor sample tables (asset_monitor_samples / asset_telemetry_samples / asset_temperature_samples / asset_interface_samples / asset_storage_samples / asset_ipsec_tunnel_samples). Collapses per-work-item `prisma.<table>.create*` calls into one `createMany` per 2 s flush window so the monitor hot loop stops eating DB pool capacity per probe.
+
+**Public API:** `enqueueMonitorSample`, `enqueueTelemetrySample`, `enqueueTemperatureSamples`, `enqueueInterfaceSamples`, `enqueueStorageSamples`, `enqueueIpsecTunnelSamples`, `flushAllSampleBuffers`, `startSampleWriteBuffer`, `shutdownFlushSampleBuffers`, `FLUSH_INTERVAL_MS`, all six row-type interfaces.
+
+**Cross-service deps:** `prisma` (db.js), `retryOnDeadlock` (utils/dbRetry.js), `startSampleWriteTimer` + `setSampleBufferDepth` (metrics.js), `logger` (utils/logger.js).
+
+**Writers (the only callers of `enqueue*`):**
+- `src/services/monitoringService.ts:recordProbeResult` — `enqueueMonitorSample` for the probe outcome row.
+- `src/services/monitoringService.ts:recordTelemetryResult` — `enqueueTelemetrySample` (CPU/memory) and `enqueueTemperatureSamples` (per-sensor).
+- `src/services/monitoringService.ts:recordSystemInfoResult` — `enqueueInterfaceSamples`, `enqueueStorageSamples`, `enqueueIpsecTunnelSamples`.
+- `src/services/monitoringService.ts:recordFastFilteredResult` — same three as systemInfo, smaller subset (pinned interfaces only).
+
+**Readers:** none directly. The sample tables are read by `assets.ts` route handlers (chart endpoints), `capacityService.ts` (sample-table breakdown), and Cytoscape topology builders — none of those see the buffer, only the persisted rows after a flush.
+
+**Boot + shutdown:**
+- `src/app.ts:startSampleWriteBuffer()` called once after queue init.
+- `src/app.ts` SIGTERM/SIGINT hook awaits `shutdownFlushSampleBuffers()` before `process.exit(0)` so a graceful restart drains the buffer.
+
+**Invariants:**
+- **Append-only.** No conflicts on createMany — every row is a fresh time-series sample with a synthetic UUID `id`. Don't try to add upsert/dedupe logic; if you need replace semantics, do it synchronously in the record function before enqueueing (cf. `persistLldpNeighbors`, which is NOT buffered for this reason).
+- **Snapshot-on-flush.** `flushTable` splices the current array up front so concurrent enqueues during the awaited `createMany` land in a fresh array. On retry-exhausted failure the snapshot is re-prepended for the next tick.
+- **Per-table flush guard.** `flushing[key]` prevents re-entry on the same table — a 2 s tick that fires while a slow flush is still mid-write becomes a no-op for that table, no concurrent writer per table.
+- **Trade-off documented:** up to 2 s of sample rows lost on hard crash. Acceptable because samples are an append-only time series and the next cadence tick re-supplies; UI state (Asset row, status pill) is still synchronous.
+
+**When changing this:**
+- New sample table → add a `BufferKey`, an `enqueueXxx` helper, a `TABLE_LABEL` entry, and a `switch` arm in `writeBatch`. Touch the test file too — same shape.
+- Flush interval change → consider both UI latency (samples take this long to appear on charts) and crash-window data loss. The current 2 s was the explicit operator choice.
+- Don't add a `prisma.$transaction` here. `createMany` is one network round-trip already; wrapping it in a transaction just adds round-trips without giving us anything (each table is independent, no cross-table invariant).
 
 ---
 

@@ -56,6 +56,14 @@ import {
 } from "../metrics.js";
 import { dropChunks } from "./timescaleService.js";
 import {
+  enqueueMonitorSample,
+  enqueueTelemetrySample,
+  enqueueTemperatureSamples,
+  enqueueInterfaceSamples,
+  enqueueStorageSamples,
+  enqueueIpsecTunnelSamples,
+} from "./sampleWriteBuffer.js";
+import {
   type PollingMethod,
   type AssetSourceKind,
   isPollingMethod,
@@ -1891,9 +1899,8 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
   const d = result.data;
   const now = new Date();
   if (d.interfaces.length > 0) {
-    const stopWrite = startSampleWriteTimer("asset_interface_samples");
-    await prisma.assetInterfaceSample.createMany({
-      data: d.interfaces.map((i) => ({
+    enqueueInterfaceSamples(
+      d.interfaces.map((i) => ({
         assetId,
         timestamp: now,
         ifName:      i.ifName,
@@ -1906,29 +1913,28 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
         outOctets:   i.outOctets != null ? BigInt(Math.round(i.outOctets)) : null,
         inErrors:    i.inErrors  != null ? BigInt(Math.round(i.inErrors))  : null,
         outErrors:   i.outErrors != null ? BigInt(Math.round(i.outErrors)) : null,
+        ifType:      null,
+        ifParent:    null,
+        vlanId:      null,
         alias:       i.alias       ?? null,
         description: i.description ?? null,
       })),
-    });
-    stopWrite();
+    );
   }
   if (d.storage.length > 0) {
-    const stopWrite = startSampleWriteTimer("asset_storage_samples");
-    await prisma.assetStorageSample.createMany({
-      data: d.storage.map((s) => ({
+    enqueueStorageSamples(
+      d.storage.map((s) => ({
         assetId,
         timestamp: now,
         mountPath:  s.mountPath,
         totalBytes: s.totalBytes != null ? BigInt(Math.round(s.totalBytes)) : null,
         usedBytes:  s.usedBytes  != null ? BigInt(Math.round(s.usedBytes))  : null,
       })),
-    });
-    stopWrite();
+    );
   }
   if (Array.isArray(d.ipsecTunnels) && d.ipsecTunnels.length > 0) {
-    const stopWrite = startSampleWriteTimer("asset_ipsec_tunnel_samples");
-    await prisma.assetIpsecTunnelSample.createMany({
-      data: d.ipsecTunnels.map((t) => ({
+    enqueueIpsecTunnelSamples(
+      d.ipsecTunnels.map((t) => ({
         assetId,
         timestamp: now,
         tunnelName:      t.tunnelName,
@@ -1939,8 +1945,7 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
         outgoingBytes:   t.outgoingBytes != null ? BigInt(Math.round(t.outgoingBytes)) : null,
         proxyIdCount:    t.proxyIdCount,
       })),
-    });
-    stopWrite();
+    );
   }
 }
 
@@ -3505,31 +3510,23 @@ export async function recordTelemetryResult(assetId: string, result: CollectionR
   const now = new Date();
   if (result.data) {
     const d = result.data;
-    {
-      const stopWrite = startSampleWriteTimer("asset_telemetry_samples");
-      await prisma.assetTelemetrySample.create({
-        data: {
-          assetId,
-          timestamp: now,
-          cpuPct:        d.cpuPct ?? null,
-          memPct:        d.memPct ?? null,
-          memUsedBytes:  d.memUsedBytes  != null ? BigInt(Math.round(d.memUsedBytes))  : null,
-          memTotalBytes: d.memTotalBytes != null ? BigInt(Math.round(d.memTotalBytes)) : null,
-        },
-      });
-      stopWrite();
-    }
+    enqueueTelemetrySample({
+      assetId,
+      timestamp: now,
+      cpuPct:        d.cpuPct ?? null,
+      memPct:        d.memPct ?? null,
+      memUsedBytes:  d.memUsedBytes  != null ? BigInt(Math.round(d.memUsedBytes))  : null,
+      memTotalBytes: d.memTotalBytes != null ? BigInt(Math.round(d.memTotalBytes)) : null,
+    });
     if (Array.isArray(d.temperatures) && d.temperatures.length > 0) {
-      const stopWrite = startSampleWriteTimer("asset_temperature_samples");
-      await prisma.assetTemperatureSample.createMany({
-        data: d.temperatures.map((t) => ({
+      enqueueTemperatureSamples(
+        d.temperatures.map((t) => ({
           assetId,
           timestamp: now,
           sensorName: t.sensorName,
           celsius:    t.celsius,
         })),
-      });
-      stopWrite();
+      );
     }
   }
   // Always advance the cadence stamp so a transient failure doesn't make us
@@ -3543,9 +3540,8 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
   if (result.data) {
     const d = result.data;
     if (d.interfaces.length > 0) {
-      const stopWrite = startSampleWriteTimer("asset_interface_samples");
-      await prisma.assetInterfaceSample.createMany({
-        data: d.interfaces.map((i) => ({
+      enqueueInterfaceSamples(
+        d.interfaces.map((i) => ({
           assetId,
           timestamp: now,
           ifName:      i.ifName,
@@ -3564,26 +3560,22 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           alias:       i.alias       ?? null,
           description: i.description ?? null,
         })),
-      });
-      stopWrite();
+      );
     }
     if (d.storage.length > 0) {
-      const stopWrite = startSampleWriteTimer("asset_storage_samples");
-      await prisma.assetStorageSample.createMany({
-        data: d.storage.map((s) => ({
+      enqueueStorageSamples(
+        d.storage.map((s) => ({
           assetId,
           timestamp: now,
           mountPath:  s.mountPath,
           totalBytes: s.totalBytes != null ? BigInt(Math.round(s.totalBytes)) : null,
           usedBytes:  s.usedBytes  != null ? BigInt(Math.round(s.usedBytes))  : null,
         })),
-      });
-      stopWrite();
+      );
     }
     if (Array.isArray(d.ipsecTunnels) && d.ipsecTunnels.length > 0) {
-      const stopWrite = startSampleWriteTimer("asset_ipsec_tunnel_samples");
-      await prisma.assetIpsecTunnelSample.createMany({
-        data: d.ipsecTunnels.map((t) => ({
+      enqueueIpsecTunnelSamples(
+        d.ipsecTunnels.map((t) => ({
           assetId,
           timestamp: now,
           tunnelName:      t.tunnelName,
@@ -3594,8 +3586,7 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           outgoingBytes:   t.outgoingBytes != null ? BigInt(Math.round(t.outgoingBytes)) : null,
           proxyIdCount:    t.proxyIdCount,
         })),
-      });
-      stopWrite();
+      );
     }
     // Mirror per-interface IPs+MACs into the asset_associated_ips side
     // table. Replaces the legacy JSONB read-modify-write pattern. Discovery
@@ -3984,19 +3975,18 @@ export async function recordProbeResult(assetId: string, result: ProbeResult): P
     }
   }
 
-  {
-    const stopWrite = startSampleWriteTimer("asset_monitor_samples");
-    await prisma.assetMonitorSample.create({
-      data: {
-        assetId,
-        timestamp: now,
-        success: result.success,
-        responseTimeMs: result.success ? result.responseTimeMs : null,
-        error: result.success ? null : (result.error ?? null),
-      },
-    });
-    stopWrite();
-  }
+  // Buffer the sample row — the periodic flush in sampleWriteBuffer will
+  // batch this with every other monitor sample seen in the same 2 s
+  // window into one createMany. Cuts per-probe pool acquisitions from
+  // (read + create + update) to (read + update); the sample inserts
+  // collapse from N individual creates to one createMany per flush.
+  enqueueMonitorSample({
+    assetId,
+    timestamp: now,
+    success: result.success,
+    responseTimeMs: result.success ? result.responseTimeMs : null,
+    error: result.success ? null : (result.error ?? null),
+  });
 
   await prisma.asset.update({
     where: { id: assetId },

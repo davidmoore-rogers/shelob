@@ -55,6 +55,7 @@ import "./jobs/reconcileMapRegions.js";
 import { ensureRegistryLoaded } from "./services/oidRegistry.js";
 import { detectTimescale, migrateToHypertables } from "./services/timescaleService.js";
 import { initializeQueue, startPgbossWorkers, stopPgbossWorkers } from "./services/queueService.js";
+import { startSampleWriteBuffer, shutdownFlushSampleBuffers } from "./services/sampleWriteBuffer.js";
 import { runStartupDiskCheck } from "./utils/startupDiskCheck.js";
 
 // Warm the symbolic-OID registry once at startup so the first monitor tick
@@ -105,11 +106,21 @@ initializeQueue()
     logger.warn({ err: err?.message }, "Queue initialization failed; defaulting to cursor mode");
   });
 
-// Graceful pg-boss shutdown on SIGTERM/SIGINT so in-flight jobs can drain
-// before the process exits. No-op when pg-boss never started.
+// Start the monitor sample-write buffer. Cuts per-probe DB-pool acquisitions
+// by batching the six append-only sample tables (monitor / telemetry /
+// temperature / interface / storage / ipsec tunnel) into one createMany
+// per 2-second flush window instead of one create per work item.
+startSampleWriteBuffer();
+
+// Graceful shutdown on SIGTERM/SIGINT so in-flight jobs can drain and the
+// final sample-buffer flush lands before the process exits. No-op when
+// pg-boss never started.
 for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.once(sig, () => {
-    stopPgbossWorkers().finally(() => process.exit(0));
+    Promise.allSettled([
+      shutdownFlushSampleBuffers(),
+      stopPgbossWorkers(),
+    ]).finally(() => process.exit(0));
   });
 }
 

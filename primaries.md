@@ -288,3 +288,27 @@ Per-pattern sections:
 - Wrap the tick body in `runInstrumentedJob("name", async () => { ... })`. Keep the existing outer try/catch for error logging — the helper's catch re-throws so log paths are preserved.
 - Pick a stable, machine-readable name (no spaces, no version suffixes, no UUIDs). One-shot startup migrations use the module basename; multi-tick modules use `<module>.<loop>`.
 - If the new job ships with the same commit that adds an unrelated capability, the metric label is one observation that confirms the job is actually firing on a real install — useful smoke check during the first deploy.
+
+---
+
+## High-volume append-only time-series writes (batch-flush buffer)
+
+**What it is:** Persistent time-series tables that receive many small writes from a hot loop. Per-row `prisma.<table>.create()` calls each consume one Prisma pool connection, and at high concurrency the pool fills before the operation matters. The canonical fix is an in-memory per-table buffer with a periodic flush — accumulate rows, then issue one `createMany` per N-second window.
+
+**Canonical implementation:** [src/services/sampleWriteBuffer.ts](src/services/sampleWriteBuffer.ts) — handles the six monitor sample tables (`asset_monitor_samples`, `asset_telemetry_samples`, `asset_temperature_samples`, `asset_interface_samples`, `asset_storage_samples`, `asset_ipsec_tunnel_samples`). Boot wiring in [src/app.ts](src/app.ts) — `startSampleWriteBuffer()` after queue init, `shutdownFlushSampleBuffers()` awaited in the SIGTERM/SIGINT hook.
+
+**Key conventions:**
+- **Append-only tables only.** Conflict-handling, dedupe, and per-asset replace semantics break the model. If you need to overwrite or delete prior rows, do that synchronously in the caller before the enqueue (cf. `recordSystemInfoResult`, which keeps the `$transaction` for `assetAssociatedIp` and the per-asset replace in `persistLldpNeighbors` synchronous).
+- **Buffer is sync to enqueue, async to flush.** The hot loop calls `enqueue*(row)` and returns immediately — no await on the buffer. The flush is fire-and-forget, driven by `setInterval` and a per-table size threshold (5,000 rows in this implementation).
+- **Snapshot the array up front.** `flushTable` splices the buffer into a local snapshot before the `await prisma.<table>.createMany` so concurrent enqueues during the awaited write land in a fresh array. On retry-exhausted failure, re-prepend the snapshot for the next tick.
+- **Per-table flush guard.** A `flushing[key]` boolean prevents re-entry on the same table — a 2 s tick that fires while a slow flush is still mid-write becomes a no-op for that table.
+- **Use `retryOnDeadlock` from `src/utils/dbRetry.ts`.** Postgres deadlocks (SQLSTATE 40P01) on bulk insert are rare but real; the retry helper covers them with jittered backoff.
+- **Trade-off documented in code:** up to one flush-interval of data is lost on hard crash. State that the operator's UI view stays consistent through a crash by keeping any synchronous state writes (status pills, cadence stamps, counters) outside the buffer.
+- **Instrument both flush duration and depth.** `polaris_sample_write_duration_seconds{table}` (histogram) wrapping each flush + `polaris_sample_buffer_depth{table}` (gauge) updated on every enqueue and flush — the pair distinguishes "flush is slow" from "enqueue rate exceeds flush throughput".
+- **SIGTERM-safe.** Exported `shutdown*` function clears the timer and runs one final `flushAllSampleBuffers()`. Awaited from the graceful-shutdown hook in `app.ts` so a restart doesn't drop the in-flight buffer.
+- **Test hooks under `__test__`.** Expose `getBufferDepth(key)` and `reset()` so unit tests can verify buffer state without exposing the buffers themselves to production callers.
+
+**When adding a new table:**
+- Append a `BufferKey`, a `TABLE_LABEL` entry, an `enqueueXxx` helper, and a `writeBatch` switch arm — five touch points in one file. Tests mirror the same shape.
+- Confirm the new table is append-only with no FK on `(assetId, ...)` that requires per-row uniqueness mid-flush; if it does, you probably want synchronous semantics (LLDP-style) instead.
+- Update `touches.md`'s `services/sampleWriteBuffer.ts` entry's Writers list to name the new caller.
