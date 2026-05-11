@@ -1857,19 +1857,33 @@ export async function discoverDhcpSubnets(
   // Producer B — FMG-verify: dispatch the remaining devices, serially
   // resolving each mgmt IP through the FMG worker. In proxy mode this
   // dispatches every device with no resolves (the existing behavior).
+  //
+  // Devices are sorted alphabetically by name (case-insensitive, natural-
+  // numeric so FW-2 precedes FW-10) so the dispatch order matches the warm
+  // cache producer's order and gives operators a predictable view in live
+  // discovery logs. Same comparator as buildFmgWarmCacheIps in integrations.ts.
+  const sortDevicesByName = (arr: any[]): any[] =>
+    [...arr].sort((a, b) =>
+      String(a.name || a.hostname || "").localeCompare(
+        String(b.name || b.hostname || ""),
+        undefined,
+        { sensitivity: "base", numeric: true },
+      ),
+    );
+
   const verifyTask: Promise<void> = (async () => {
     if (useProxy) {
-      for (const raw of devicesData) {
+      for (const raw of sortDevicesByName(devicesData)) {
         if (signal?.aborted) return;
         await dispatchDevice(raw);
       }
       return;
     }
 
-    const verifyTargets = devicesData.filter((d) => {
+    const verifyTargets = sortDevicesByName(devicesData.filter((d) => {
       const n = d.name || d.hostname;
       return typeof n === "string" && !warmDispatched.has(n);
-    });
+    }));
     const connectedVerifyCount = verifyTargets.filter(
       (d) => d.conn_status === undefined || d.conn_status === 1,
     ).length;

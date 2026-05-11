@@ -1190,10 +1190,16 @@ async function buildFmgWarmCacheIps(
       },
       select: { hostname: true, ipAddress: true },
     });
+    // Sort by hostname (case-insensitive, natural-numeric so FW-2 precedes
+    // FW-10) before populating the Map. Map iteration order is insertion
+    // order, and the downstream `cachedNames` Set inherits it, so the
+    // warm-cache producer dispatches FortiGates alphabetically — predictable
+    // for operators watching live discovery logs.
+    const sorted = rows
+      .filter((r): r is { hostname: string; ipAddress: string } => !!r.hostname && !!r.ipAddress)
+      .sort((a, b) => a.hostname.localeCompare(b.hostname, undefined, { sensitivity: "base", numeric: true }));
     const map = new Map<string, string>();
-    for (const r of rows) {
-      if (r.hostname && r.ipAddress) map.set(r.hostname, r.ipAddress);
-    }
+    for (const r of sorted) map.set(r.hostname, r.ipAddress);
     return map;
   } catch {
     return empty;
