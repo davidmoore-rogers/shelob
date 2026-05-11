@@ -564,3 +564,98 @@ POLARIS_HEAVY_CONCURRENCY=8    # cursor mode only
 For headless installs (no UI access) the same env vars can be set by hand. The defaults above cover up to ~500 monitored assets in cursor mode; past that, flip to pg-boss (`Setting.monitor.queueMode = "pgboss"`) and let the advisor scale worker counts as the fleet grows.
 
 `max_connections` on the PostgreSQL side should sit at roughly `(prismaPool + pgbossPool) / 0.65` rounded up to a multiple of 50, leaving ~35% headroom for non-Polaris consumers (psql sessions, backups, replication, monitoring agents). The advisor surfaces the exact recommendation alongside the pool sizes.
+
+---
+
+## Optional: PgBouncer in front of PostgreSQL
+
+When Polaris's `DATABASE_POOL_SIZE + POLARIS_PGBOSS_POOL_SIZE` keeps climbing past what's comfortable to provision on PostgreSQL directly (each backend connection costs ~10 MB of RSS plus a process slot), put **PgBouncer** in front of PostgreSQL. PgBouncer holds a small pool of real Postgres backends and multiplexes Polaris's many connection slots onto them. The Maintenance tab's "Peak observed" can grow well past PG's `max_connections` without any of those connections actually reaching PostgreSQL.
+
+Polaris is PgBouncer-aware: application queries (Prisma) go through PgBouncer, but pg-boss queue ops, `pg_dump` backup/restore, and `pg_stat_activity` reads still need a direct Postgres connection (LISTEN/NOTIFY, prepared-statement cache, and the COPY-heavy dump protocol all break under PgBouncer transaction-pool mode). The two-URL setup keeps both paths working.
+
+### When to deploy PgBouncer
+
+- Capacity Advisor's `DATABASE_POOL_SIZE` recommendation has crept past ~300, AND
+- You'd rather not raise PostgreSQL `max_connections` past ~600–800 (memory budget, replication slot accounting, or just shop policy).
+
+If neither bullet applies, skip it. The single-URL setup is simpler to operate and the Capacity Advisor's recommendations are correct without it.
+
+### RHEL / Rocky / AlmaLinux 9
+
+```bash
+sudo dnf install -y pgbouncer
+```
+
+Edit `/etc/pgbouncer/pgbouncer.ini`:
+
+```ini
+[databases]
+polaris = host=127.0.0.1 port=5432 dbname=polaris
+
+[pgbouncer]
+listen_addr = 127.0.0.1
+listen_port = 6432
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+pool_mode = transaction
+max_client_conn = 500
+default_pool_size = 40
+reserve_pool_size = 10
+reserve_pool_timeout = 5
+server_idle_timeout = 600
+# Required for Prisma's prepared-statement use under transaction pooling.
+# Requires PgBouncer 1.21+ (RHEL 9 EPEL ships 1.21+).
+max_prepared_statements = 200
+```
+
+Generate `userlist.txt` by copying PostgreSQL's existing SCRAM hash:
+
+```bash
+sudo -u postgres psql -tAc \
+  "SELECT '\"polaris\" \"' || rolpassword || '\"' FROM pg_authid WHERE rolname = 'polaris'" \
+  | sudo tee /etc/pgbouncer/userlist.txt
+sudo chown pgbouncer:pgbouncer /etc/pgbouncer/userlist.txt
+sudo chmod 600 /etc/pgbouncer/userlist.txt
+```
+
+Enable + start:
+
+```bash
+sudo systemctl enable --now pgbouncer
+sudo ss -tnlp 'sport = :6432'   # confirm it's listening
+```
+
+### Wire Polaris into PgBouncer
+
+In `/opt/polaris/.env`:
+
+```
+DATABASE_URL=postgresql://polaris:PASSWORD@127.0.0.1:6432/polaris?pgbouncer=true
+POLARIS_DB_DIRECT_URL=postgresql://polaris:PASSWORD@127.0.0.1:5432/polaris
+```
+
+Restart Polaris (`sudo systemctl restart polaris`). Verify in the journal:
+
+```bash
+sudo journalctl -u polaris -n 50 --no-pager | grep "DB connection mode"
+```
+
+You should see `DB connection mode: PgBouncer detected. ...`. On the Maintenance tab → Capacity Advisor card, a "PgBouncer detected" hint will appear above the recommendations.
+
+### Ubuntu / Debian
+
+```bash
+sudo apt install -y pgbouncer
+```
+
+Same `pgbouncer.ini` shape; on Debian/Ubuntu it lives at `/etc/pgbouncer/pgbouncer.ini`. Same userlist + service enable pattern. Same Polaris `.env` lines.
+
+### Windows Server
+
+PgBouncer isn't officially packaged for Windows. If you've crossed the threshold where you need it, the practical path is to move PostgreSQL + Polaris to Linux. (The Windows install path is documented but is a smaller-fleet target.)
+
+### After enabling PgBouncer
+
+- **`max_connections`** on PostgreSQL can drop materially. PgBouncer's `default_pool_size` × pool count is what hits Postgres now, not Polaris's pool. The Capacity Advisor's `max_connections` recommendation becomes an upper bound rather than a strict requirement; size PG to comfortably exceed `(default_pool_size + reserve_pool_size + admin/autovacuum)` × number of DBs.
+- **`pg_dump` backups** taken from Server Settings → Maintenance → Backup automatically use `POLARIS_DB_DIRECT_URL`. If you script backups outside the app, target port 5432 directly — not 6432.
+- **Prisma migrations** (when you upgrade Polaris and the in-app updater runs `prisma migrate`) need the direct URL too. CLI migrations require `DATABASE_URL=<direct URL> npx prisma migrate deploy`.

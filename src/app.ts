@@ -57,6 +57,23 @@ import { detectTimescale, migrateToHypertables } from "./services/timescaleServi
 import { initializeQueue, startPgbossWorkers, stopPgbossWorkers } from "./services/queueService.js";
 import { startSampleWriteBuffer, shutdownFlushSampleBuffers } from "./services/sampleWriteBuffer.js";
 import { runStartupDiskCheck } from "./utils/startupDiskCheck.js";
+import { getDbConnectionMode } from "./utils/dbConnections.js";
+import { recordDbConnectionMode } from "./metrics.js";
+
+// Stamp the detected DB connection topology once at boot so operators (and
+// `/metrics` scrapes) can confirm Polaris recognized their PgBouncer setup
+// without reading logs. The mode is constant for the life of the process.
+{
+  const mode = getDbConnectionMode();
+  recordDbConnectionMode(mode);
+  if (mode === "pgbouncer") {
+    logger.info(
+      "DB connection mode: PgBouncer detected. Application queries through DATABASE_URL; pg-boss / pg_dump / pg_stat_activity through POLARIS_DB_DIRECT_URL.",
+    );
+  } else {
+    logger.info("DB connection mode: direct to PostgreSQL.");
+  }
+}
 
 // Warm the symbolic-OID registry once at startup so the first monitor tick
 // can resolve vendor MIB symbols without paying a load on the hot path. Errors

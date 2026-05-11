@@ -33,6 +33,7 @@ import type { PgBoss as PgBossType, Job as PgBossJob } from "pg-boss";
 
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
+import { getDirectDatabaseUrl } from "../utils/dbConnections.js";
 import { setPgbossQueueJobs, setPgbossJobAge, recordQueueMode, setMonitorWorkers } from "../metrics.js";
 import {
   runProbeFor,
@@ -372,8 +373,15 @@ export async function startPgbossWorkers(): Promise<void> {
     logger.warn("pg-boss queue mode requested but package not installed; staying on cursor");
     return;
   }
-  if (!process.env.DATABASE_URL) {
-    logger.warn("pg-boss requested but DATABASE_URL is unset; staying on cursor");
+  // Route pg-boss through the direct Postgres URL even when DATABASE_URL
+  // points at PgBouncer. pg-boss uses LISTEN/NOTIFY for job-state
+  // propagation AND relies on the pg client's prepared-statement cache —
+  // both break under PgBouncer transaction pooling. Falls back to
+  // DATABASE_URL when POLARIS_DB_DIRECT_URL is unset (= operator is not
+  // running PgBouncer; existing single-URL installs are unchanged).
+  const directUrl = getDirectDatabaseUrl();
+  if (!directUrl) {
+    logger.warn("pg-boss requested but neither POLARIS_DB_DIRECT_URL nor DATABASE_URL is set; staying on cursor");
     return;
   }
 
@@ -385,7 +393,7 @@ export async function startPgbossWorkers(): Promise<void> {
   // size it alongside DATABASE_POOL_SIZE.
   const pgbossPoolSize = resolveEnvInt("POLARIS_PGBOSS_POOL_SIZE", 20);
   const boss: PgBossType = new PgBoss({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: directUrl,
     max: pgbossPoolSize,
   });
 

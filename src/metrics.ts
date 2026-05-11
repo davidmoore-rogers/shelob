@@ -132,6 +132,13 @@ const dbPoolPeakObserved = new Gauge({
   registers: [registry],
 });
 
+const dbConnectionMode = new Gauge({
+  name: "polaris_db_connection_mode",
+  help: "DB connection topology Polaris detected at boot. 1 for the active mode; the other label stays at 0. `pgbouncer` = Polaris's application connections go through PgBouncer (DATABASE_URL points at it; POLARIS_DB_DIRECT_URL points at Postgres for pg-boss / pg_dump / pg_stat_activity). `direct` = single DATABASE_URL pointed straight at Postgres.",
+  labelNames: ["mode"] as const,
+  registers: [registry],
+});
+
 const dbPoolPolarisCapacity = new Gauge({
   name: "polaris_db_pool_polaris_capacity",
   help: "Combined Polaris-owned connection capacity = DATABASE_POOL_SIZE (Prisma) + POLARIS_PGBOSS_POOL_SIZE (pg-boss, if pg-boss mode is active). The ceiling above which the app stalls at pool acquisition.",
@@ -318,6 +325,12 @@ export function setPgbossQueueJobs(queue: string, state: string, count: number):
 
 export function recordQueueMode(mode: string): void {
   monitorQueueModeGauge.set({ mode }, 1);
+}
+
+/** Stamp the detected DB connection mode (one-shot, called once at boot). */
+export function recordDbConnectionMode(mode: "direct" | "pgbouncer"): void {
+  dbConnectionMode.reset();
+  dbConnectionMode.set({ mode }, 1);
 }
 
 export function setMonitorWorkers(

@@ -1193,7 +1193,7 @@ function _advisorRowHtml(rec, advisor, pgConfigFile) {
   '</tr>';
 }
 
-function renderCapacityAdvisorCard(advisor, pgConfigFile) {
+function renderCapacityAdvisorCard(advisor, pgConfigFile, dbConnectionMode) {
   if (!advisor) return "";
   var recs = _advisorRecommendationsForView(advisor);
   if (recs.length === 0) return "";
@@ -1204,6 +1204,14 @@ function renderCapacityAdvisorCard(advisor, pgConfigFile) {
 
   var coldStartNote = advisor.usingColdStartDefaults
     ? '<p class="hint" style="margin:0.4rem 0 0 0;font-size:0.78rem">Some cadences are using cold-start defaults until the histogram populates (~24h). Recommendations may shift once real workload duration data is observed.</p>'
+    : "";
+
+  // PgBouncer mode shifts what max_connections actually needs to support:
+  // PgBouncer multiplexes Polaris's pool slots onto a much smaller backend
+  // pool, so the advisor's max_connections recommendation is an upper bound
+  // rather than a strict requirement under this topology.
+  var pgbouncerNote = dbConnectionMode === "pgbouncer"
+    ? '<p class="hint" style="margin:0.4rem 0 0 0;font-size:0.78rem;color:var(--color-text-secondary)">PgBouncer detected. Polaris\'s pool size is what it opens to PgBouncer; PgBouncer\'s <code>default_pool_size</code> is what reaches PostgreSQL. The <code>PostgreSQL max_connections</code> recommendation below is a conservative upper bound — your actual PG max only needs to support PgBouncer\'s configured pool sizes plus admin/autovacuum overhead.</p>'
     : "";
 
   var groupedRows = {
@@ -1231,6 +1239,7 @@ function renderCapacityAdvisorCard(advisor, pgConfigFile) {
       headerNote +
     '</div>' +
     coldStartNote +
+    pgbouncerNote +
     '<table class="ip-table advisor-table" style="margin-top:0.75rem;width:100%">' +
       '<thead><tr>' +
         '<th>Setting</th>' +
@@ -1463,10 +1472,11 @@ async function loadDatabaseInfo() {
     var advisor = advisorResp && advisorResp.advisor ? advisorResp.advisor : null;
     var capacity = advisorResp && advisorResp.capacity ? advisorResp.capacity : null;
     var pgTuning = advisorResp && advisorResp.pgTuning ? advisorResp.pgTuning : null;
+    var dbConnectionMode = advisorResp && advisorResp.dbConnectionMode ? advisorResp.dbConnectionMode : "direct";
     _dbLoaded = true;
 
     container.innerHTML =
-      renderCapacityAdvisorCard(advisor, pgTuning && pgTuning.pgConfigFile) +
+      renderCapacityAdvisorCard(advisor, pgTuning && pgTuning.pgConfigFile, dbConnectionMode) +
       renderCapacityCard(capacity, db, pgTuning) +
       // ── Outbound API Calls card ──
       '<div class="settings-card" id="api-call-chart-card">' +

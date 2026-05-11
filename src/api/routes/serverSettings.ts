@@ -59,6 +59,7 @@ import {
 } from "../../services/queueService.js";
 import { BACKUP_DIR, UPLOADS_DIR } from "../../utils/paths.js";
 import { getAppVersion } from "../../utils/version.js";
+import { getDirectDatabaseUrl } from "../../utils/dbConnections.js";
 import {
   setTrackerEnabled,
   isTrackerEnabled,
@@ -206,7 +207,10 @@ mkdirSync(BACKUP_DIR, { recursive: true });
 router.post("/database/backup", async (req, res, next) => {
   try {
     const password: string | null = req.body?.password || null;
-    const connUrl = process.env.DATABASE_URL || "";
+    // pg_dump goes direct to Postgres even under PgBouncer — the COPY-heavy
+    // dump protocol doesn't proxy reliably through transaction-pool mode.
+    // Falls back to DATABASE_URL when POLARIS_DB_DIRECT_URL is unset.
+    const connUrl = getDirectDatabaseUrl();
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const backupId = `bk-${Date.now()}`;
     const filename = `polaris-backup-${APP_VERSION}-${ts}${password ? ".enc" : ""}.gz`;
@@ -274,7 +278,8 @@ router.post("/database/restore", restoreUpload.single("file"), async (req, res, 
     if (!req.file) throw new AppError(400, "No backup file uploaded");
     if (hasActiveDiscoveries()) throw new AppError(409, "A discovery is currently running — wait for it to finish or abort it before restoring");
     const password: string | null = req.body?.password || null;
-    const connUrl = process.env.DATABASE_URL || "";
+    // psql restore goes direct — see backup-route comment above for why.
+    const connUrl = getDirectDatabaseUrl();
 
     // Check magic bytes from disk to detect encryption without loading the whole file
     const magic = Buffer.from("POLARIS\0");
@@ -1062,6 +1067,7 @@ router.get("/capacity-advisor", async (_req, res, next) => {
       pgTuning: pgTuningExternal,
     });
     void recordCapacityTransition(snapshot);
+    const { getDbConnectionMode } = await import("../../utils/dbConnections.js");
     res.json({
       advisor,
       capacity: snapshot,
@@ -1069,6 +1075,7 @@ router.get("/capacity-advisor", async (_req, res, next) => {
         settings: tuning?.settings ?? [],
         pgConfigFile: tuning?.pgConfigFile ?? null,
       },
+      dbConnectionMode: getDbConnectionMode(),
     });
   } catch (err) {
     next(err);

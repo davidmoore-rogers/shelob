@@ -37,6 +37,7 @@ import { statfs, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import pg from "pg";
 import { prisma } from "../db.js";
 import { getMonitorSettings, type MonitorSettings } from "./monitoringService.js";
 import { isTimescaleAvailable, isHypertable, SAMPLE_TABLES as TIMESCALE_SAMPLE_TABLES } from "./timescaleService.js";
@@ -44,6 +45,7 @@ import { isPgbossInstalled, getBootTimeMode, getQueueMode } from "./queueService
 import { getDeploymentContext } from "../utils/deploymentContext.js";
 import { BACKUP_DIR, STATE_DIR } from "../utils/paths.js";
 import { logger } from "../utils/logger.js";
+import { getDirectDatabaseUrl, isPgbouncerMode } from "../utils/dbConnections.js";
 
 export type Severity = "ok" | "watch" | "amber" | "red";
 
@@ -54,6 +56,50 @@ export type Severity = "ok" | "watch" | "amber" | "red";
 // restart, which is fine: if the pool is genuinely undersized the alert
 // will resurface within one capacityWatch tick (10 min) of operator load.
 let peakConnectionCount = 0;
+
+// ─── Direct pg.Pool for pg_stat_activity reads ──────────────────────────────
+//
+// When PgBouncer sits in front of Postgres, the application Prisma client
+// goes through it — but `pg_stat_activity` then shows the PgBouncer-side
+// view of backend connections, which under-counts what Polaris actually
+// holds. Open a tiny dedicated pool (max 2) against the direct URL so the
+// pool-saturation gauges + the Capacity Advisor's pool sizing read the
+// real cluster-side state.
+//
+// Lazy-init: under single-URL installs we never instantiate this and just
+// route the query through `prisma` like before. Same data, no extra pool.
+let directStatsPool: pg.Pool | null = null;
+
+function getDirectStatsPool(): pg.Pool | null {
+  if (!isPgbouncerMode()) return null;
+  if (directStatsPool) return directStatsPool;
+  const url = getDirectDatabaseUrl();
+  if (!url) return null;
+  directStatsPool = new pg.Pool({ connectionString: url, max: 2 });
+  directStatsPool.on("error", (err) => {
+    logger.warn({ err: err.message }, "capacityService: direct stats pool error");
+  });
+  return directStatsPool;
+}
+
+async function readPgStatActivity(): Promise<{ in_use: number; max: number }> {
+  const directPool = getDirectStatsPool();
+  const sql = `
+    SELECT
+      (SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database()) AS in_use,
+      (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max
+  `;
+  try {
+    if (directPool) {
+      const r = await directPool.query<{ in_use: number; max: number }>(sql);
+      return r.rows[0] ?? { in_use: 0, max: 0 };
+    }
+    const r = await prisma.$queryRawUnsafe<{ in_use: number; max: number }[]>(sql);
+    return r[0] ?? { in_use: 0, max: 0 };
+  } catch {
+    return { in_use: 0, max: 0 };
+  }
+}
 
 function readEnvInt(envName: string, fallback: number): number {
   const raw = process.env[envName];
@@ -860,11 +906,7 @@ export async function getCapacitySnapshot(opts: {
       "SELECT pg_database_size(current_database()) AS size",
     ),
     getSampleTableStats(),
-    prisma.$queryRawUnsafe<{ in_use: number; max: number }[]>(`
-      SELECT
-        (SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database()) AS in_use,
-        (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max
-    `).catch(() => [{ in_use: 0, max: 0 }]),
+    readPgStatActivity(),
   ]);
   const telemetryEligibleCount  = Number(telemetryEligibleRow[0]?.count  ?? monitoredCount);
   const systemInfoEligibleCount = Number(systemInfoEligibleRow[0]?.count ?? monitoredCount);
@@ -875,8 +917,8 @@ export async function getCapacitySnapshot(opts: {
   // Connection-pool snapshot. Update the rolling peak before reading it back
   // so the snapshot reflects the new high-water mark when this call is the
   // one that observed it.
-  const currentInUse = Number(connRow[0]?.in_use ?? 0);
-  const maxConnections = Number(connRow[0]?.max ?? 0);
+  const currentInUse = Number(connRow.in_use ?? 0);
+  const maxConnections = Number(connRow.max ?? 0);
   if (currentInUse > peakConnectionCount) peakConnectionCount = currentInUse;
   const bootMode = getBootTimeMode();
   const prismaPoolSize = readEnvInt("DATABASE_POOL_SIZE", 25);
