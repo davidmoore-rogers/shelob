@@ -980,13 +980,16 @@ export async function getCapacitySnapshotWithAdvisor(
   // capacityAdvisorService imports type-only from this module, so this dynamic
   // import is purely a paranoia-belt for the runtime side.
   const advisorMod = await import("./capacityAdvisorService.js");
-  // Pass 1: snapshot without advisor data. Used as input for the advisor.
-  const initial = await getCapacitySnapshot({
+  // Build the snapshot once. The expensive bits (sample-table stats, volume
+  // statfs, pg_stat_activity) cost hundreds of ms on busy DBs — re-running
+  // the full snapshot just to inject advisor reasons was doubling the
+  // Maintenance tab's first-paint latency.
+  const snapshot = await getCapacitySnapshot({
     ramInsufficient: opts.ramInsufficient,
     pgTuningNeeded: opts.pgTuningNeeded,
   });
   // Compute the advisor state against this snapshot.
-  const advisor = await advisorMod.recomputeAdvisorFromSnapshot(initial, opts.pgTuning);
+  const advisor = await advisorMod.recomputeAdvisorFromSnapshot(snapshot, opts.pgTuning);
   const gaps = advisorMod.summarizeAdvisorGaps(advisor);
   // The recommendedMaxConnections lives on the advisor's PG_MAX_CONNECTIONS
   // recommendation; surface it so the reason text can name the value.
@@ -998,12 +1001,10 @@ export async function getCapacitySnapshotWithAdvisor(
         ? maxConnRec.recommended
         : undefined,
   };
-  // Pass 2: snapshot with advisor gaps in scope so the new reasons fire.
-  const snapshot = await getCapacitySnapshot({
-    ramInsufficient: opts.ramInsufficient,
-    pgTuningNeeded: opts.pgTuningNeeded,
-    advisor: gapsForReasons,
-  });
+  // Re-derive reasons + severity in place with the advisor gaps wired in,
+  // so the advisor-driven reasons fire without doing a second snapshot pass.
+  snapshot.reasons = computeReasons(snapshot, opts.ramInsufficient, opts.pgTuningNeeded, gapsForReasons);
+  snapshot.severity = deriveSeverity(snapshot.reasons);
   return { snapshot, advisor };
 }
 
