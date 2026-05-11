@@ -81,6 +81,30 @@ export interface ProbeResult {
   error?: string;
 }
 
+/**
+ * Slim subset of Asset columns that `recordProbeResult` needs for its
+ * state-machine update. Lets the hot loop (runProbeFor) preload the asset
+ * once and skip the second findUnique inside recordProbeResult.
+ *
+ * The type is structural — fields named the same as on the Asset model so
+ * a `Prisma.AssetGetPayload<...>` row (the shape probeAsset already loads
+ * with its includes) satisfies it without an explicit map step.
+ */
+export interface AssetMonitorSnapshot {
+  id: string;
+  hostname: string | null;
+  assetType: string;
+  monitored: boolean;
+  monitorStatus: string | null;
+  consecutiveFailures: number;
+  consecutiveSuccesses: number;
+  discoveredByIntegrationId: string | null;
+  monitorIntervalSec: number | null;
+  telemetryIntervalSec: number | null;
+  systemInfoIntervalSec: number | null;
+  probeTimeoutMs: number | null;
+}
+
 // ─── Monitor settings hierarchy ─────────────────────────────────────────────
 //
 // Resolution order (most-specific wins):
@@ -811,8 +835,17 @@ async function collectIpsecOnlyFortinetSafe(
  * Run a single probe against the asset (no DB writes — caller persists).
  * The probe always returns a result; thrown errors are caught and packaged
  * into `{ success: false, error }` so the monitor loop never aborts.
+ *
+ * Hot loop callers pass `out` to surface the loaded asset row to the
+ * subsequent `recordProbeResult` call — that lets recordProbeResult skip
+ * its own findUnique on the state-machine update path. The /probe-now
+ * route doesn't bother (one operator-triggered request, savings don't
+ * matter); leaves `out` undefined and pays the second read.
  */
-export async function probeAsset(assetId: string): Promise<ProbeResult> {
+export async function probeAsset(
+  assetId: string,
+  out?: { snapshot?: AssetMonitorSnapshot },
+): Promise<ProbeResult> {
   const start = performance.now();
   try {
     const asset = await prisma.asset.findUnique({
@@ -820,6 +853,10 @@ export async function probeAsset(assetId: string): Promise<ProbeResult> {
       include: { monitorCredential: true, responseTimeCredential: true, discoveredByIntegration: true },
     });
     if (!asset) return finish(start, false, "Asset not found");
+    // Surface the loaded asset to the caller so `recordProbeResult` can
+    // skip its own findUnique. The fields in `AssetMonitorSnapshot` are a
+    // subset of what this `include` already pulled — no extra DB cost.
+    if (out) out.snapshot = asset;
     if (!asset.monitored) return finish(start, false, "Monitoring disabled");
     const effectiveRTCred = asset.responseTimeCredential ?? asset.monitorCredential;
 
@@ -3649,7 +3686,7 @@ async function persistLldpNeighbors(
   now: Date,
   defaultSource: "fortios" | "snmp" | string,
 ): Promise<void> {
-  const matchIndex = await buildLldpAssetMatchIndex();
+  const matchIndex = await getLldpAssetMatchIndex();
   const matchedFor = (n: LldpNeighborSample): string | null => {
     if (n.managementIp) {
       const m = matchIndex.byIp.get(n.managementIp);
@@ -3797,6 +3834,63 @@ async function persistLldpNeighbors(
  * - byMac: macAddress (uppercased) + every entry in macAddresses
  * - byHostname: hostname (lowercased) — first wins on duplicates
  */
+// ─── LLDP match-index cache ───────────────────────────────────────────────
+//
+// `persistLldpNeighbors` used to call `buildLldpAssetMatchIndex` on every
+// system-info pass — for each monitored asset that returned an LLDP scrape
+// we'd findMany over EVERY asset row (plus its associated IP and MAC side
+// tables) just to build the IP/MAC/hostname lookup maps. At 1700 monitored
+// assets that's the heaviest single read in the monitor hot loop.
+//
+// Cache the index for 60 s. Asset hostnames / IPs / MACs change slowly
+// enough that the worst-case stale-cache effect is one cycle of "LLDP
+// neighbor resolved to the wrong asset" which corrects itself on the next
+// scrape. Single-process module-level cache; no inter-process invalidation
+// needed because the workers are all in one node process.
+//
+// Discovery code that materially changes the lookup keys (asset rename,
+// IP change, MAC add/remove) can call `invalidateLldpMatchCache()` to drop
+// the cache before its next read — but the TTL is short enough that
+// explicit invalidation is optional, and most discovery writes don't need
+// it. Currently nobody calls it; the TTL is the source of truth.
+const LLDP_MATCH_CACHE_TTL_MS = 60_000;
+interface LldpMatchIndex {
+  byIp: Map<string, string>;
+  byMac: Map<string, string>;
+  byHostname: Map<string, string>;
+}
+let lldpMatchCache: LldpMatchIndex | null = null;
+let lldpMatchCachedAt = 0;
+let lldpMatchInflight: Promise<LldpMatchIndex> | null = null;
+
+async function getLldpAssetMatchIndex(): Promise<LldpMatchIndex> {
+  const now = Date.now();
+  if (lldpMatchCache && now - lldpMatchCachedAt < LLDP_MATCH_CACHE_TTL_MS) {
+    return lldpMatchCache;
+  }
+  // De-duplicate concurrent builders. Many parallel systemInfo workers can
+  // hit this within the same TTL miss window — let only the first one issue
+  // the findMany; the rest await the same promise.
+  if (lldpMatchInflight) return lldpMatchInflight;
+  lldpMatchInflight = buildLldpAssetMatchIndex().then((idx) => {
+    lldpMatchCache = idx;
+    lldpMatchCachedAt = Date.now();
+    return idx;
+  }).finally(() => {
+    lldpMatchInflight = null;
+  });
+  return lldpMatchInflight;
+}
+
+/** Drop the cached LLDP match index so the next `persistLldpNeighbors`
+ *  call rebuilds from a fresh findMany. Currently unused — discovery code
+ *  relies on the 60 s TTL for refresh. Exported for tests and for future
+ *  callers that want explicit control after a bulk asset write. */
+export function invalidateLldpMatchCache(): void {
+  lldpMatchCache = null;
+  lldpMatchCachedAt = 0;
+}
+
 async function buildLldpAssetMatchIndex(): Promise<{
   byIp: Map<string, string>;
   byMac: Map<string, string>;
@@ -3903,8 +3997,15 @@ function buildMonitorAssocIpEntries(
  * monitorStatus / consecutiveFailures, writes one AssetMonitorSample, and
  * fires a single monitor.status_changed Event on transition.
  */
-export async function recordProbeResult(assetId: string, result: ProbeResult): Promise<void> {
-  const asset = await prisma.asset.findUnique({
+export async function recordProbeResult(
+  assetId: string,
+  result: ProbeResult,
+  /** Optional pre-loaded asset row. The cursor + pg-boss hot loop already
+   *  loaded the asset inside probeAsset; passing it here skips a second
+   *  findUnique per probe, cutting steady-state pool acquisitions at peak. */
+  preloadedAsset?: AssetMonitorSnapshot | null,
+): Promise<void> {
+  const asset = preloadedAsset ?? await prisma.asset.findUnique({
     where: { id: assetId },
     select: {
       id: true,
@@ -4075,9 +4176,13 @@ export async function runProbeFor(assetId: string, labels: WorkItemLabels): Prom
   const stopWork = startWorkTimer("probe", labels);
   const probeStart = Date.now();
   try {
-    const result = await probeAsset(assetId);
+    // probeAsset stashes its loaded asset row into `probeOut.snapshot` so
+    // recordProbeResult can reuse it for the state-machine update — one
+    // findUnique per probe instead of two.
+    const probeOut: { snapshot?: AssetMonitorSnapshot } = {};
+    const result = await probeAsset(assetId, probeOut);
     const probeMs = Date.now() - probeStart;
-    await recordProbeResult(assetId, result);
+    await recordProbeResult(assetId, result, probeOut.snapshot ?? null);
     if (result.success) {
       recordProbe(labels.transport, probeMs / 1000, "success");
       recordWorkOutcome("probe", "success", labels);
