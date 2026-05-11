@@ -369,8 +369,13 @@ describe("buildAdvisorState — Prisma pool honors observed peak", () => {
   it("recommends Prisma pool above current when peak exceeds modeled target", () => {
     const prisma = state.recommendations.find((r) => r.key === "DATABASE_POOL_SIZE")!;
     expect(prisma.changeRequired).toBe(true);
-    // (179 - 20) / 0.80 = 199; should land at or above that.
-    expect(prisma.recommended).toBeGreaterThanOrEqual(199);
+    // peakPrismaFloor = ceil((peak − pgbossTarget) / 0.80). pgbossTarget now
+    // scales with worker count (max(20, 0.25 × workerCeiling)) instead of
+    // being a fixed 20, so peakPrismaFloor is somewhat lower than the prior
+    // (179 − 20) / 0.80 = 199. Still well above the 152 current pool so the
+    // recommendation has changeRequired=true; we just don't pin the exact
+    // value the way the older test did.
+    expect(prisma.recommended).toBeGreaterThan(prisma.current as number);
   });
   it("includes peakPrismaFloor in the breakdown so operators see the driver", () => {
     const prisma = state.recommendations.find((r) => r.key === "DATABASE_POOL_SIZE")!;

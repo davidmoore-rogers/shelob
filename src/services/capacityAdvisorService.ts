@@ -187,8 +187,21 @@ const SAFETY_FACTOR = 1.5;
 /** Empirical headroom for HTTP request bursts and scheduled jobs. */
 const HTTP_JOB_OVERHEAD = 15;
 
-/** Fixed; pg-boss internal queue mechanics don't scale with workload. */
+/** Floor for the pg-boss internal connection pool. pg-boss uses this pool
+ *  for its own queue mechanics (boss.fetch, boss.complete, boss.fail) —
+ *  separate from the Prisma pool that workers use to do their actual
+ *  work. Earlier this was hardcoded; in practice operators running with
+ *  128 concurrent workers (24×4 dedicated + 32 floating) saw pg-boss
+ *  queries queue up at 20 conns because every worker completion has to
+ *  acquire a slot to call boss.complete()/fail(). The advisor now scales
+ *  the recommendation with the total worker count (see `pgbossPoolForWorkers`
+ *  in buildAdvisorState); this constant is the never-shrink-below floor. */
 const PGBOSS_POOL_TARGET = 20;
+/** Fraction of total worker count to allocate to the pg-boss pool. Sized
+ *  for the completion-burst case — at 128 workers, 0.25 × 128 = 32 conns,
+ *  comfortably absorbing simultaneous boss.complete()/fail() calls when a
+ *  cadence tick finishes its batch. */
+const PGBOSS_POOL_WORKER_FRACTION = 0.25;
 
 /** Target fraction of max_connections we want Polaris to occupy at peak. */
 const POLARIS_FRACTION_OF_MAX = 0.65;
@@ -335,10 +348,19 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
   // pool so the observed peak (minus the pg-boss share) lands at ≤80% pool
   // utilization, the same threshold db_pool_undersized used to fire at.
   const peakObserved = snapshot.database.connectionPool.peakObserved;
+  // pg-boss pool sized to absorb the completion burst when many workers
+  // finish simultaneously. Floors at PGBOSS_POOL_TARGET so installs below
+  // ~80 workers stay on the historical 20-connection default.
+  const pgbossTarget = Math.max(
+    PGBOSS_POOL_TARGET,
+    Math.ceil(workerCeiling * PGBOSS_POOL_WORKER_FRACTION),
+  );
   const modeledPrismaTarget = workerCeiling + discoveryReserve + HTTP_JOB_OVERHEAD;
-  const peakPrismaFloor = Math.ceil(Math.max(0, peakObserved - PGBOSS_POOL_TARGET) / 0.80);
+  // peakPrismaFloor subtracts pg-boss's share of the observed peak to back
+  // out the Prisma-only demand. Uses the scaled pgbossTarget so the split
+  // matches what the advisor would actually recommend, not the old fixed 20.
+  const peakPrismaFloor = Math.ceil(Math.max(0, peakObserved - pgbossTarget) / 0.80);
   const prismaTarget = Math.max(modeledPrismaTarget, peakPrismaFloor);
-  const pgbossTarget = PGBOSS_POOL_TARGET;
   // max_connections must support Polaris's ACTUAL pool footprint, not just the
   // modeled target. The advisor's never-shrink rule keeps DATABASE_POOL_SIZE
   // and POLARIS_PGBOSS_POOL_SIZE at their current values when the model would
@@ -471,14 +493,24 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     changeRequired: prismaRecommended > prismaCurrent,
   });
   const pgbossCurrent = currentEnv.POLARIS_PGBOSS_POOL_SIZE;
-  const pgbossRecommended = Math.max(PGBOSS_POOL_TARGET, pgbossCurrent);
+  // Never shrink. Recommend the scaled `pgbossTarget` (sized to worker count
+  // above) unless the operator has already configured something larger.
+  const pgbossRecommended = Math.max(pgbossTarget, pgbossCurrent);
   recommendations.push({
     key: "POLARIS_PGBOSS_POOL_SIZE",
     applyMode: "env",
     current: pgbossCurrent,
     recommended: pgbossRecommended,
-    rationale: "Pg-boss queue ops are fast and multiplex many workers onto few connections — 20 is plenty.",
-    breakdown: { fixedTarget: PGBOSS_POOL_TARGET },
+    rationale:
+      pgbossTarget > PGBOSS_POOL_TARGET
+        ? `Sized to ${Math.round(PGBOSS_POOL_WORKER_FRACTION * 100)}% of the ${workerCeiling}-worker ceiling so simultaneous boss.complete()/fail() bursts don't queue on pg-boss's internal pool.`
+        : "Pg-boss queue ops are fast and multiplex many workers onto few connections — the 20-conn floor is plenty for this worker count.",
+    breakdown: {
+      workerCeiling,
+      workerFraction: PGBOSS_POOL_WORKER_FRACTION,
+      floor: PGBOSS_POOL_TARGET,
+      target: pgbossTarget,
+    },
     changeRequired: pgbossRecommended > pgbossCurrent,
     appliesAfterQueueModeFlip: activeMode === "cursor" && recommendedMode === "pgboss",
   });
