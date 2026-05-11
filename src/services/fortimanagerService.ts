@@ -1777,11 +1777,17 @@ export async function discoverDhcpSubnets(
 
   // Per-FortiGate dispatch into the worker pool. Two producers (warm-cache and
   // FMG-verify) call this concurrently; the semaphore (executing.size cap)
-  // gates the actual concurrency.
+  // gates the actual concurrency. The `while` loop is load-bearing: when a
+  // task completes, every awaiter of Promise.race(executing) resolves at the
+  // same time, so each woken producer must re-check the size before claiming
+  // a slot — otherwise N concurrent awaiters all add tasks on a single
+  // completion and the effective concurrency drifts upward without bound.
   async function dispatchDevice(rawDevice: any): Promise<void> {
     if (signal?.aborted) return;
-    if (executing.size >= concurrency) await Promise.race(executing);
-    if (signal?.aborted) return;
+    while (executing.size >= concurrency) {
+      await Promise.race(executing);
+      if (signal?.aborted) return;
+    }
 
     const task: Promise<void> = (async () => {
       const chunk = await processDevice(rawDevice);
@@ -1859,18 +1865,29 @@ export async function discoverDhcpSubnets(
   // Producer A — warm-cache: dispatch every monitor-up FortiGate immediately
   // using its cached management IP. No FMG round-trip. Skipped in proxy mode
   // (FMG is in front of every per-device call there anyway).
+  //
+  // `warmDispatched` is populated SYNCHRONOUSLY here, before either producer
+  // IIFE runs, so verifyTask sees the final exclusion set when it computes
+  // verifyTargets. Populating it inside the warm loop would race with
+  // verifyTask's synchronous startup: only the first cached name would be in
+  // the set at the moment verifyTargets is computed, and the verify producer
+  // would redundantly dispatch every other warm-cache device.
   const warmDispatched = new Set<string>();
-  const warmCacheTask: Promise<void> = (async () => {
-    if (useProxy || cachedNames.size === 0) return;
-    let dispatched = 0;
+  if (!useProxy) {
     for (const name of cachedNames) {
+      if (devicesByName.has(name)) warmDispatched.add(name);
+    }
+  }
+  const warmCacheTask: Promise<void> = (async () => {
+    if (useProxy || warmDispatched.size === 0) return;
+    let dispatched = 0;
+    for (const name of warmDispatched) {
       if (signal?.aborted) return;
       const raw = devicesByName.get(name);
-      if (!raw) continue; // device left the FMG roster (or was filtered out)
+      if (!raw) continue; // defensive — populated synchronously above
       // Respect FMG's view of online/offline — if FMG says the device is
       // disconnected, processDevice's standard skip log fires anyway, but
       // there's no value in attempting the direct call.
-      warmDispatched.add(name);
       await dispatchDevice(raw);
       dispatched++;
     }
