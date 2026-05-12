@@ -2268,10 +2268,23 @@ async function collectSystemInfoFortinet(
     for (const c of arr) {
       if (!c || typeof c !== "object" || typeof c.name !== "string") continue;
       const t = typeof c.type === "string" ? c.type : null;
-      // CMDB `member` is an array of { interface_name } entries on aggregate
-      // and hard-switch / vap-switch interfaces.
+      // CMDB `member` is an array of { "interface-name": "<port>" } entries on
+      // aggregate and hard-switch / vap-switch interfaces. The FortiOS REST
+      // envelope returns the key with a hyphen — the JS-friendly underscore
+      // form (`interface_name`) doesn't exist, and accessing it would silently
+      // yield undefined, collapsing the members list to empty. `q_origin_key`
+      // duplicates the value for the table's primary key, so it's a reliable
+      // fallback when a firmware variant drops `interface-name`.
       const members: string[] = Array.isArray(c.member)
-        ? c.member.map((m: any) => (typeof m === "string" ? m : (typeof m?.interface_name === "string" ? m.interface_name : null))).filter(Boolean)
+        ? c.member.map((m: any) => {
+            if (typeof m === "string") return m;
+            if (m && typeof m === "object") {
+              if (typeof m["interface-name"] === "string") return m["interface-name"];
+              if (typeof m.q_origin_key  === "string") return m.q_origin_key;
+              if (typeof m.interface_name === "string") return m.interface_name;
+            }
+            return null;
+          }).filter(Boolean)
         : [];
       const alias       = typeof c.alias       === "string" && c.alias.trim()       ? c.alias.trim()       : null;
       const description = typeof c.description === "string" && c.description.trim() ? c.description.trim() : null;
