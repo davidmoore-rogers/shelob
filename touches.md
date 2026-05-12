@@ -1245,7 +1245,7 @@ Listed alphabetically.
 
 **What it owns:** DHCP reserved-address push/unpush to FortiGate via FMG proxy or direct REST.
 
-**Public API:** normalizeMac, pushReservation, unpushReservation, releaseDhcpLease, plus the transport helpers `buildTransportForIntegration` / `findScopeIdForCidr` / `listReservedAddresses` / `callFortiOs` (+ types `Transport`, `FortiOsReservedAddress`) exported so peer services can reuse the same FMG-proxy / direct-FortiGate dispatcher for read-only single-scope work.
+**Public API:** normalizeMac, pushReservation, updatePushedReservation, unpushReservation, releaseDhcpLease, plus the transport helpers `buildTransportForIntegration` / `findScopeIdForCidr` / `listReservedAddresses` / `callFortiOs` (+ types `Transport`, `FortiOsReservedAddress`) exported so peer services can reuse the same FMG-proxy / direct-FortiGate dispatcher for read-only single-scope work.
 
 **Cross-service deps:** fortigateService (fgRequest), fortimanagerService (fmgProxyRest, resolveDeviceMgmtIpViaFmg).
 
@@ -1274,7 +1274,7 @@ Listed alphabetically.
 
 **Public API:** listReservations, getReservation, createReservation, updateReservation, releaseReservation, nextAvailableReservation, expireStaleReservations.
 
-**Cross-service deps:** reservationPushService (pushReservation, unpushReservation, releaseDhcpLease, normalizeMac).
+**Cross-service deps:** reservationPushService (pushReservation, updatePushedReservation, unpushReservation, releaseDhcpLease, normalizeMac).
 
 **Used by:** src/api/routes/reservations.ts:12 (all CRUD + next-available), src/jobs/expireReservations.ts:11 (expireStaleReservations every 15 min).
 
@@ -1284,6 +1284,8 @@ Listed alphabetically.
 - No duplicate active reservations (unique constraint on subnetId, ipAddress, status="active")
 - Subnet must not be deprecated (409 if status="deprecated")
 - Push failure rolls back the Polaris reservation (fail-on-failure semantics)
+- updateReservation accepts an optional `macAddress`; on push-eligible subnets a MAC change pushes a PUT to the FortiGate via reservationPushService.updatePushedReservation BEFORE the Polaris write — device-side failure throws and Polaris stays untouched. Clearing the MAC on a push-eligible subnet is rejected with 400 (DHCP reservations are MAC→IP).
+- updateReservation auto-stamps `owner = caller.username` when `input.owner === undefined`. Pairs with the discovery sync's MAC-aware owner-preservation rule in `integrations.ts` `syncDhcpSubnets` Phase 6 — discovery only overwrites owner with `asset.assignedTo` when the discovered MAC differs from `reservation.macAddress`, so a Polaris-stamped owner survives across discovery cycles for stable reservations.
 - Released reservations clear pushedTo* fields and drop historical released rows (unique constraint relief)
 - Discovered dhcp_lease release attempts bestEffort via releaseDhcpLease (failure does not block Polaris release)
 

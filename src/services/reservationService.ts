@@ -9,6 +9,7 @@ import { ipInCidr, isValidIpAddress, enumerateSubnetIps, detectIpVersion } from 
 import {
   pushReservation,
   unpushReservation,
+  updatePushedReservation,
   releaseDhcpLease,
   normalizeMac,
   type PushReservationResult,
@@ -37,6 +38,13 @@ export interface UpdateReservationInput {
   projectRef?: string;
   expiresAt?: Date;
   notes?: string;
+  // Optional MAC update. When the subnet is push-eligible (FMG/FortiGate
+  // integration with pushReservations=true) and the MAC value changes, the
+  // service pushes the new MAC to the FortiGate (PUT + verify) before
+  // committing the Polaris write. On device failure the whole update is
+  // aborted so Polaris doesn't drift from the device. Empty string clears
+  // the stored MAC; only allowed when the subnet is not push-eligible.
+  macAddress?: string;
 }
 
 export interface ListReservationsFilter {
@@ -300,21 +308,140 @@ export async function createReservation(input: CreateReservationInput) {
 
 export async function updateReservation(
   id: string,
-  input: UpdateReservationInput
+  input: UpdateReservationInput,
+  opts: { actor?: string | null } = {}
 ) {
-  const reservation = await prisma.reservation.findUnique({ where: { id } });
+  const reservation = await prisma.reservation.findUnique({
+    where: { id },
+    include: { subnet: { include: { integration: true } } },
+  });
   if (!reservation) throw new AppError(404, `Reservation ${id} not found`);
   if (reservation.status !== "active")
     throw new AppError(409, `Cannot update a ${reservation.status} reservation`);
+
+  // Auto-stamp owner with the caller's username when they didn't explicitly
+  // type a different value. Pairs with the discovery sync's MAC-aware owner
+  // preservation in Phase 6 of syncDhcpSubnets: as long as the device-side
+  // MAC stays the same, this stamp survives across discovery cycles, so the
+  // last operator to touch the row stays visible. When MAC changes (a
+  // different physical device now uses the IP) discovery wins.
+  const actor = (opts.actor || "").trim();
+  const resolvedOwner = input.owner !== undefined ? input.owner : (actor || undefined);
+
+  // Normalize incoming MAC for comparison. Empty string → caller wants to
+  // clear the stored MAC; null/undefined → caller isn't touching the MAC.
+  let normalizedNewMac: string | null | undefined;
+  if (input.macAddress !== undefined) {
+    const trimmed = input.macAddress.trim();
+    if (trimmed === "") {
+      normalizedNewMac = null;
+    } else {
+      normalizedNewMac = normalizeMac(trimmed);
+      if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(normalizedNewMac)) {
+        throw new AppError(400, `Invalid MAC address: ${input.macAddress}`);
+      }
+    }
+  }
+  const currentNormalizedMac = reservation.macAddress
+    ? normalizeMac(reservation.macAddress)
+    : null;
+  const macChanged =
+    normalizedNewMac !== undefined && normalizedNewMac !== currentNormalizedMac;
+
+  // Push eligibility for THIS reservation's subnet.
+  const integration = reservation.subnet.integration;
+  const integrationConfig = (integration?.config ?? {}) as Record<string, unknown>;
+  const pushEligible =
+    !!integration &&
+    (integration.type === "fortimanager" || integration.type === "fortigate") &&
+    integrationConfig.pushReservations === true &&
+    !!reservation.subnet.fortigateDevice &&
+    !!reservation.ipAddress;
+
+  // Updating a push-eligible reservation's MAC must succeed on the device
+  // before we touch Polaris — otherwise the two views diverge.
+  let pushStateUpdates: {
+    pushedToId: string;
+    pushedScopeId: number;
+    pushedEntryId: number;
+    pushedAt: Date;
+    pushStatus: string;
+    pushError: null;
+  } | null = null;
+
+  if (macChanged && pushEligible) {
+    if (!normalizedNewMac) {
+      throw new AppError(
+        400,
+        "Cannot clear MAC on a reservation whose subnet pushes DHCP reservations to a FortiGate — DHCP reservations are MAC→IP and require a MAC. Release the reservation instead.",
+      );
+    }
+    const macForPush: string = normalizedNewMac;
+    try {
+      const result = await updatePushedReservation({
+        reservationId: id,
+        subnetCidr: reservation.subnet.cidr,
+        ip: reservation.ipAddress!,
+        newMac: macForPush,
+        hostname: input.hostname ?? reservation.hostname,
+        createdBy: reservation.createdBy,
+        scopeId: reservation.pushedScopeId,
+        entryId: reservation.pushedEntryId,
+        integration: { id: integration!.id, type: integration!.type, config: integration!.config },
+        deviceName: reservation.subnet.fortigateDevice!,
+      });
+      pushStateUpdates = {
+        pushedToId: integration!.id,
+        pushedScopeId: result.scopeId,
+        pushedEntryId: result.entryId,
+        pushedAt: new Date(),
+        pushStatus: "synced",
+        pushError: null,
+      };
+      void logEvent({
+        action: "reservation.push.updated",
+        level: "info",
+        resourceType: "reservation",
+        resourceId: id,
+        resourceName: reservation.hostname || reservation.ipAddress || undefined,
+        message: `Reservation MAC updated on FortiGate "${reservation.subnet.fortigateDevice}" (scope ${result.scopeId}, entry ${result.entryId}): ${currentNormalizedMac ?? "(none)"} → ${normalizedNewMac}`,
+        details: {
+          deviceName: reservation.subnet.fortigateDevice,
+          scopeId: result.scopeId,
+          entryId: result.entryId,
+          previousMac: currentNormalizedMac,
+          newMac: normalizedNewMac,
+        },
+      });
+    } catch (err: any) {
+      void logEvent({
+        action: "reservation.push.update_failed",
+        level: "warning",
+        resourceType: "reservation",
+        resourceId: id,
+        resourceName: reservation.hostname || reservation.ipAddress || undefined,
+        message: `Failed to push MAC update for ${reservation.ipAddress} to FortiGate "${reservation.subnet.fortigateDevice}": ${err?.message || "Unknown error"}`,
+        details: {
+          deviceName: reservation.subnet.fortigateDevice,
+          previousMac: currentNormalizedMac,
+          attemptedMac: normalizedNewMac,
+          error: err?.message || String(err),
+        },
+      });
+      throw err;
+    }
+  }
 
   return prisma.reservation.update({
     where: { id },
     data: {
       hostname: input.hostname,
-      owner: input.owner,
+      owner: resolvedOwner,
       projectRef: input.projectRef,
       expiresAt: input.expiresAt,
       notes: input.notes,
+      ...(macChanged ? { macAddress: normalizedNewMac } : {}),
+      ...(pushStateUpdates ?? {}),
     },
   });
 }

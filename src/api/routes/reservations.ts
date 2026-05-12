@@ -55,6 +55,18 @@ const UpdateReservationSchema = z.object({
   projectRef: z.string().min(1, "Project reference is required").optional(),
   expiresAt: z.coerce.date().optional(),
   notes: z.string().optional(),
+  // Empty string clears the MAC (only allowed when the subnet is not
+  // push-eligible — service layer enforces). A non-empty value must match
+  // the standard 48-bit MAC formats.
+  macAddress: z
+    .string()
+    .refine(
+      (s) =>
+        s === "" ||
+        /^[0-9a-f]{12}$|^([0-9a-f]{2}[:\-]){5}[0-9a-f]{2}$|^([0-9a-f]{4}\.){2}[0-9a-f]{4}$/i.test(s),
+      "MAC address must be 12 hex chars (with optional :, -, or . separators)",
+    )
+    .optional(),
 });
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -227,10 +239,12 @@ router.put("/:id", requireUserOrAbove, async (req, res, next) => {
       throw new AppError(403, "Forbidden — you can only edit reservations you created");
     }
     const input = UpdateReservationSchema.parse(req.body);
-    const reservation = await reservationService.updateReservation(id, input);
+    const reservation = await reservationService.updateReservation(id, input, {
+      actor: req.session?.username ?? null,
+    });
     const changes = buildChanges(
-      { hostname: before.hostname, owner: before.owner, projectRef: before.projectRef, expiresAt: before.expiresAt, notes: before.notes },
-      { hostname: reservation.hostname, owner: reservation.owner, projectRef: reservation.projectRef, expiresAt: reservation.expiresAt, notes: reservation.notes },
+      { hostname: before.hostname, owner: before.owner, macAddress: before.macAddress, projectRef: before.projectRef, expiresAt: before.expiresAt, notes: before.notes },
+      { hostname: reservation.hostname, owner: reservation.owner, macAddress: reservation.macAddress, projectRef: reservation.projectRef, expiresAt: reservation.expiresAt, notes: reservation.notes },
     );
     logEvent({ action: "reservation.updated", resourceType: "reservation", resourceId: id, resourceName: input.hostname, actor: req.session?.username, message: `Reservation updated`, details: changes ? { changes } : undefined });
     res.json(reservation);

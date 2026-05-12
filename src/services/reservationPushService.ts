@@ -377,6 +377,143 @@ export async function pushReservation(
   return { scopeId, entryId, serverInterface, description };
 }
 
+export interface UpdatePushedReservationParams {
+  reservationId: string;
+  subnetCidr: string;
+  ip: string;
+  // The new MAC the operator wants on the device-side entry.
+  newMac: string;
+  // Hostname + createdBy go into the FortiOS `description` field. When the
+  // hostname is being updated alongside the MAC, callers pass the NEW value
+  // so the device description tracks Polaris.
+  hostname?: string | null;
+  createdBy?: string | null;
+  // Pinned device-side identity for Polaris-pushed reservations. When either
+  // is null the helper resolves the scope via subnetCidr and looks up the
+  // entry by IP — covers the "MAC update on a discovered (never-pushed)
+  // dhcp_reservation" path so editing in Polaris can take ownership.
+  scopeId?: number | null;
+  entryId?: number | null;
+  integration: { id: string; type: string; config: unknown };
+  deviceName: string;
+}
+
+export interface UpdatePushedReservationResult {
+  scopeId: number;
+  entryId: number;
+  serverInterface?: string;
+  description: string;
+}
+
+/**
+ * Update the MAC (and description) of an existing FortiOS reserved-address
+ * entry, with read-back verification. Throws AppError on any device-side
+ * failure so the caller can keep its Polaris row pristine and surface a
+ * single error to the operator instead of producing a Polaris/FortiGate
+ * mismatch.
+ *
+ * Two ownership paths:
+ *   - Polaris-pushed: caller supplies pinned scopeId + entryId; we PUT
+ *     directly.
+ *   - Discovered (never pushed): caller leaves them null; we resolve the
+ *     scope by CIDR and find the entry by IP on the device. On success the
+ *     caller stamps the resolved scopeId/entryId on the Polaris row so
+ *     future operations have a direct handle.
+ */
+export async function updatePushedReservation(
+  params: UpdatePushedReservationParams,
+): Promise<UpdatePushedReservationResult> {
+  if (!params.deviceName) {
+    throw new AppError(
+      400,
+      "Subnet has no fortigateDevice — update requires a discovered FortiGate device name",
+    );
+  }
+  const mac = normalizeMac(params.newMac);
+  if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(mac)) {
+    throw new AppError(400, `Invalid MAC address: ${params.newMac} — update requires a 48-bit MAC`);
+  }
+
+  const t = await buildTransportForIntegration(params.integration, params.deviceName);
+
+  // Resolve scope: prefer the pinned id from a prior push so we don't pay
+  // the full DHCP-server list call on the hot path.
+  let scopeId = typeof params.scopeId === "number" ? params.scopeId : null;
+  let serverInterface: string | undefined;
+  if (scopeId == null) {
+    const r = await findScopeIdForCidr(t, params.subnetCidr);
+    scopeId = r.scopeId;
+    serverInterface = r.serverInterface;
+  }
+
+  const existing = await listReservedAddresses(t, scopeId);
+
+  // Locate the entry we're updating: pinned id wins, then fall back to IP.
+  let entry: FortiOsReservedAddress | undefined =
+    typeof params.entryId === "number"
+      ? existing.find((r) => r.id === params.entryId)
+      : undefined;
+  if (!entry) {
+    entry = existing.find((r) => r.ip === params.ip);
+  }
+  if (!entry) {
+    throw new AppError(
+      404,
+      `FortiGate has no reservation matching ${params.ip} on scope ${scopeId} — was it deleted on the device?`,
+    );
+  }
+  const entryId = entry.id;
+
+  // Reject MAC collisions with a DIFFERENT entry on the same scope. Matches
+  // the create-time pre-check shape so the error read-out is consistent.
+  const describeEntry = (r: FortiOsReservedAddress): string => {
+    const parts: string[] = [`entry id ${r.id}`];
+    if (r.mac) parts.push(`MAC ${r.mac}`);
+    if (r.description) parts.push(`description "${r.description}"`);
+    return parts.join(", ");
+  };
+  for (const r of existing) {
+    if (r.id === entryId) continue;
+    if (r.mac && normalizeMac(r.mac) === mac) {
+      throw new AppError(
+        409,
+        `FortiGate already has another reservation for MAC ${mac} on this scope (${describeEntry(r)}). ` +
+          `Remove the colliding entry or pick a different MAC.`,
+      );
+    }
+  }
+
+  const description = buildDescription(params.hostname, params.createdBy, params.ip);
+
+  // FortiOS accepts partial CMDB updates. We send MAC + refreshed description
+  // (and re-assert type="mac" so an entry that drifted to option82 mode comes
+  // back to MAC-binding semantics).
+  await callFortiOs<unknown>(
+    t,
+    "PUT",
+    `/api/v2/cmdb/system.dhcp/server/${scopeId}/reserved-address/${entryId}`,
+    { mac, description, type: "mac" },
+  );
+
+  // Verify by read-back.
+  const after = await listReservedAddresses(t, scopeId);
+  const verified = after.find((r) => r.id === entryId);
+  if (!verified) {
+    throw new AppError(
+      502,
+      `FortiGate accepted the update but entry id ${entryId} is no longer visible on read-back`,
+    );
+  }
+  if (normalizeMac(verified.mac || "") !== mac) {
+    throw new AppError(
+      502,
+      `FortiGate verify mismatch — read back MAC ${verified.mac ?? "?"}, wrote ${mac}`,
+    );
+  }
+
+  return { scopeId, entryId, serverInterface, description };
+}
+
 export interface UnpushReservationParams {
   reservationId: string;
   scopeId: number;

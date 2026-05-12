@@ -308,31 +308,33 @@ function _renderIpList(data) {
     var assetBtn = ip.assetId
       ? '<button class="btn btn-sm btn-secondary ip-asset-btn" data-aid="' + escapeHtml(ip.assetId) + '" title="Open asset details">View Asset</button>'
       : '';
+    // Action column order is fixed: Reserve → Free → View Asset → Edit.
+    // Each row only renders the buttons that apply to its state; any
+    // unavailable button is skipped, but the visible buttons stay in that
+    // sequence so the column scans cleanly down the table.
+    var editBtn = canEditThis && r ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '';
+    var freeBtn = canEditThis && r ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '';
     if (isSpecial) {
       actions = "";
     } else if (r && r.status === "active" && (r.sourceType === "dhcp_lease" || r.owner === "dhcp-lease")) {
-      actions =
-        assetBtn +
-        (canReserveIps() ? '<button class="btn btn-sm btn-primary ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '">Reserve</button>' : '') +
-        (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
-        (canEditThis ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
+      var reserveBtn = canReserveIps()
+        ? '<button class="btn btn-sm btn-primary ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '">Reserve</button>'
+        : '';
+      actions = reserveBtn + freeBtn + assetBtn + editBtn;
     } else if (r && r.status === "active" && r.sourceType === "vip") {
       // VIPs are FortiGate NAT config — they cannot be Freed from Polaris.
       // Reserve lets the operator attach editable metadata (hostname / owner /
       // notes) that survives across discovery cycles.
-      actions =
-        assetBtn +
-        (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
-        (canReserveIps() ? '<button class="btn btn-sm btn-primary ip-vip-reserve-btn" data-rid="' + escapeHtml(r.id) + '">Reserve</button>' : '');
+      var vipReserveBtn = canReserveIps()
+        ? '<button class="btn btn-sm btn-primary ip-vip-reserve-btn" data-rid="' + escapeHtml(r.id) + '">Reserve</button>'
+        : '';
+      actions = vipReserveBtn + assetBtn + editBtn;
     } else if (r && r.status === "active") {
-      actions =
-        assetBtn +
-        (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
-        (canEditThis ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
+      actions = freeBtn + assetBtn + editBtn;
     } else if (r && r.status === "expired") {
-      actions = assetBtn + (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '');
+      actions = assetBtn + editBtn;
     } else if (!r && canReserveIps()) {
-      actions = assetBtn + '<button class="btn btn-sm btn-primary ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '">Reserve</button>';
+      actions = '<button class="btn btn-sm btn-primary ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '">Reserve</button>' + assetBtn;
     } else {
       actions = assetBtn;
     }
@@ -937,6 +939,15 @@ function _openEditReservationModal(reservationId) {
     var lock = readOnly ? ' disabled class="field-locked"' : '';
     var subnetLabel = r.subnet ? escapeHtml(r.subnet.name) + " (" + escapeHtml(r.subnet.cidr) + ")" : r.subnetId;
     var expiresVal = r.expiresAt ? _toDatetimeLocal(r.expiresAt) : "";
+    // Push-eligible reservations need a MAC because FortiOS DHCP reservations
+    // are MAC→IP. The IP panel slide-in already passes `pushEligible` on the
+    // subnet payload; mirror that for the MAC field UX in this modal.
+    var panelSubnet = _ipPanelData ? _ipPanelData.subnet : null;
+    var pushEligible = !!(panelSubnet && panelSubnet.pushEligible);
+    var macLabel = pushEligible ? "MAC Address *" : "MAC Address";
+    var macHint = pushEligible
+      ? 'Pushed to FortiGate "' + escapeHtml((panelSubnet && panelSubnet.fortigateDevice) || "") + '" on save when changed.'
+      : "Optional. Format: AA:BB:CC:DD:EE:FF (separators may be :, -, or .).";
     var banner = readOnly
       ? '<p class="hint" style="margin-bottom:12px">View-only — you don\'t have permission to edit this reservation.</p>'
       : '';
@@ -945,7 +956,12 @@ function _openEditReservationModal(reservationId) {
       '<div class="form-group"><label>IP Address</label><input type="text" value="' + escapeHtml(r.ipAddress || "Full network") + '" disabled></div>' +
       '<div class="form-group"><label>Status</label>' + statusBadge(r.status) + '</div>' +
       '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(r.hostname || "") + '"' + lock + '></div>' +
-      '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" value="' + escapeHtml(r.owner) + '"' + lock + '></div>' +
+      '<div class="form-group"><label>' + macLabel + '</label>' +
+        '<input type="text" id="f-mac" placeholder="AA:BB:CC:DD:EE:FF" value="' + escapeHtml(r.macAddress || "") + '"' + lock + '>' +
+        '<p class="hint">' + macHint + '</p></div>' +
+      '<div class="form-group"><label>Owner</label>' +
+        '<input type="text" id="f-owner" value="' + escapeHtml(r.owner) + '"' + lock + '>' +
+        '<p class="hint">Saved-as-you unless you change this — your username is auto-stamped here on save.</p></div>' +
       '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" value="' + escapeHtml(r.projectRef) + '"' + lock + '></div>' +
       '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt" value="' + expiresVal + '"' + lock + '></div>' +
       '<div class="form-group"><label>Reservation notes</label><textarea id="f-notes" placeholder="e.g. web-server-01"' + lock + '>' + escapeHtml(r.notes || "") + '</textarea></div>';
@@ -955,18 +971,42 @@ function _openEditReservationModal(reservationId) {
         '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
     openModal(readOnly ? "View Reservation" : "Edit Reservation", body, footer);
 
+    // Snapshot pre-edit owner so we can omit it from the save body when the
+    // operator didn't touch the field. Pairs with the server's "stamp caller
+    // as owner when input.owner is undefined" auto-stamp rule.
+    var originalOwner = r.owner || "";
+
     if (!readOnly) {
       document.getElementById("btn-save").addEventListener("click", async function () {
         var btn = this;
         btn.disabled = true;
         try {
           var expiresVal = document.getElementById("f-expiresAt").value;
+          var macVal = document.getElementById("f-mac").value.trim();
+          // Push-eligible subnets require a MAC. Catch it client-side so the
+          // operator sees the error inline instead of an opaque 400 from the
+          // service-layer validator.
+          if (pushEligible && !macVal) {
+            showToast("MAC address is required for this network — it pushes reservations to a FortiGate.", "error");
+            btn.disabled = false;
+            return;
+          }
+          var ownerVal = document.getElementById("f-owner").value.trim();
+          var ownerChanged = ownerVal !== originalOwner;
           var input = {
             hostname: document.getElementById("f-hostname").value.trim() || undefined,
-            owner: document.getElementById("f-owner").value.trim() || undefined,
+            // Only send owner when the operator actually changed it — that way
+            // the server's auto-stamp ("input.owner === undefined → owner =
+            // caller username") fires by default. Untouched fields don't carry
+            // pre-filled values through to the write.
+            owner: ownerChanged ? (ownerVal || undefined) : undefined,
             projectRef: document.getElementById("f-projectRef").value.trim() || undefined,
             expiresAt: expiresVal ? new Date(expiresVal).toISOString() : undefined,
             notes: document.getElementById("f-notes").value.trim() || undefined,
+            // Always send macAddress so the service can detect "clear" vs
+            // "unchanged" via the trailing-empty-string contract. The service
+            // is the source of truth for whether the change is push-relevant.
+            macAddress: macVal,
           };
           await api.reservations.update(reservationId, input);
           closeModal();

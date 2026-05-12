@@ -3477,6 +3477,13 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         continue;
       }
 
+      // Persist the MAC at first discovery. The FortiOS CMDB reserved-address
+      // payload already carries the MAC; without this the row is created with
+      // macAddress=null and the IP panel edit modal can't render the existing
+      // MAC for the operator to edit.
+      const normalizedMacAtCreate = entry.macAddress
+        ? entry.macAddress.toUpperCase().replace(/-/g, ":")
+        : null;
       try {
         const newRes = await prisma.reservation.create({
           data: {
@@ -3486,6 +3493,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             owner: proposedOwner,
             projectRef: projectRefLabel,
             notes: proposedNotes,
+            macAddress: normalizedMacAtCreate,
             status: "active",
             sourceType: proposedSourceType,
             expiresAt: proposedExpiresAt,
@@ -3612,19 +3620,40 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       asset.lastSeen = now;
       assetIdx.reindex(asset);
 
-      // Queue reservation cross-update (in-memory lookup, no DB query)
+      // Queue reservation cross-update (in-memory lookup, no DB query).
+      // **Owner preservation rule:** owner is overwritten with asset.assignedTo
+      // ONLY when the discovered MAC differs from the reservation's stored
+      // MAC (or when the row had no stored MAC, e.g. legacy rows from before
+      // the MAC ingest fix). This keeps a Polaris-set owner (stamped when an
+      // operator edits the reservation) from being clobbered on every
+      // discovery cycle for stable reservations; if the MAC genuinely changes
+      // (a different physical device now uses this IP) the discovered owner
+      // takes precedence again. Hostname follows the existing behaviour —
+      // discovery is authoritative there.
       if (matchingSubnet) {
         const key = reservationKey(matchingSubnet.id, entry.ipAddress);
         const res = activeResMap.get(key);
         if (res) {
+          const resMacNorm = res.macAddress
+            ? res.macAddress.toUpperCase().replace(/-/g, ":")
+            : null;
+          const macChanged = resMacNorm !== normalized;
           const resUpdate: Record<string, string> = {};
-          if (asset.hostname && res.hostname !== asset.hostname) resUpdate.hostname = asset.hostname;
-          if (asset.assignedTo && res.owner !== asset.assignedTo) resUpdate.owner = asset.assignedTo;
+          if (asset.hostname && res.hostname !== asset.hostname) {
+            resUpdate.hostname = asset.hostname;
+          }
+          if (asset.assignedTo && res.owner !== asset.assignedTo && macChanged) {
+            resUpdate.owner = asset.assignedTo;
+          }
+          if (macChanged) {
+            resUpdate.macAddress = normalized;
+          }
           if (Object.keys(resUpdate).length > 0) {
             resUpdates.push({ id: res.id, data: resUpdate });
             // Update in-memory
             if (resUpdate.hostname) res.hostname = resUpdate.hostname;
             if (resUpdate.owner) res.owner = resUpdate.owner;
+            if (resUpdate.macAddress) res.macAddress = resUpdate.macAddress;
           }
         }
       }
