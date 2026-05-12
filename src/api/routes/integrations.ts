@@ -23,7 +23,7 @@ import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
 import { recordDiscovery } from "../../metrics.js";
-import { getAdMonitorProtocol } from "../../services/monitoringService.js";
+import { getAdMonitorProtocol, invalidateMonitorSettingsCache } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
 import { recomputeDependencyTree } from "../../services/dependencyTreeService.js";
 import { reconcileMapRegions } from "../../services/mapRegionService.js";
@@ -808,6 +808,13 @@ router.put("/:id", async (req, res, next) => {
       data,
     });
 
+    // Editing the Monitoring tab rewrites `config.monitorSettings` (tier-3 of
+    // the resolver hierarchy). The resolver memoizes tier-3 lookups per
+    // integration, so without an explicit invalidation the asset's badges and
+    // the next monitor tick would keep using the previously-cached polling
+    // method until process restart.
+    invalidateMonitorSettingsCache({ integrationId: req.params.id });
+
     logEvent({ action: "integration.updated", resourceType: "integration", resourceId: req.params.id, resourceName: updated.name, actor: req.session?.username, message: `Integration "${updated.name}" updated` });
 
     const finalConfig = (updated.config as Record<string, unknown>) || {};
@@ -839,6 +846,7 @@ router.delete("/:id", async (req, res, next) => {
     const existing = await prisma.integration.findUnique({ where: { id: req.params.id } });
     if (!existing) throw new AppError(404, "Integration not found");
     await prisma.integration.delete({ where: { id: req.params.id } });
+    invalidateMonitorSettingsCache({ integrationId: req.params.id });
     logEvent({ action: "integration.deleted", resourceType: "integration", resourceId: req.params.id, resourceName: existing.name, actor: req.session?.username, message: `Integration "${existing.name}" deleted` });
     res.status(204).send();
   } catch (err) {
