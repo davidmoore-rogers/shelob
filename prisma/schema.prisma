@@ -228,6 +228,11 @@ model Credential {
   telemetryAssets  Asset[] @relation("AssetTelemetryCred")
   interfacesAssets Asset[] @relation("AssetInterfacesCred")
   lldpAssets       Asset[] @relation("AssetLldpCred")
+  // Back-relations for per-stream class override credentials
+  classOverrideRTAssets    MonitorClassOverride[] @relation("ClassOverrideRTCred")
+  classOverrideTelAssets   MonitorClassOverride[] @relation("ClassOverrideTelCred")
+  classOverrideIfAssets    MonitorClassOverride[] @relation("ClassOverrideIfCred")
+  classOverrideLldpAssets  MonitorClassOverride[] @relation("ClassOverrideLldpCred")
 
   @@index([type])
   @@map("credentials")
@@ -274,6 +279,20 @@ model MonitorClassOverride {
   telemetryPolling          String?
   interfacesPolling         String?
   lldpPolling               String?
+  // Per-stream credential overrides (FK to Credential, null = inherit)
+  responseTimeCredentialId  String?
+  responseTimeCredential    Credential?  @relation("ClassOverrideRTCred", fields: [responseTimeCredentialId], references: [id], onDelete: SetNull)
+  telemetryCredentialId     String?
+  telemetryCredential       Credential?  @relation("ClassOverrideTelCred", fields: [telemetryCredentialId], references: [id], onDelete: SetNull)
+  interfacesCredentialId    String?
+  interfacesCredential      Credential?  @relation("ClassOverrideIfCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
+  lldpCredentialId          String?
+  lldpCredential            Credential?  @relation("ClassOverrideLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
+  // Per-stream MIB overrides (String: "std:<key>" or uploaded MIB UUID or null)
+  responseTimeMibId         String?
+  telemetryMibId            String?
+  interfacesMibId           String?
+  lldpMibId                 String?
   createdAt                 DateTime     @default(now())
   updatedAt                 DateTime     @updatedAt
 
@@ -390,6 +409,11 @@ model Asset {
   interfacesCredential     Credential? @relation("AssetInterfacesCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
   lldpCredentialId         String?
   lldpCredential           Credential? @relation("AssetLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
+  // Per-stream MIB overrides (String: "std:<key>" or uploaded MIB UUID or null)
+  responseTimeMibId        String?
+  telemetryMibId           String?
+  interfacesMibId          String?
+  lldpMibId                String?
   monitorIntervalSec       Int? // Per-asset override for response-time probes; falls back to the resolved tier-3 setting
   // Per-asset override for the probe TCP/UDP/HTTP timeout in milliseconds.
   // Range 100..60000; null = inherit from the resolved tier-3 setting (default 5000ms).

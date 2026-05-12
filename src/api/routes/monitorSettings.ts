@@ -66,6 +66,11 @@ const TierSettingsSchema = z.object({
   telemetryPolling:          PollingMethodEnum.nullable().optional(),
   interfacesPolling:         PollingMethodEnum.nullable().optional(),
   lldpPolling:               PollingMethodEnum.nullable().optional(),
+  // Per-stream MIB IDs stored in the JSON blob ("std:<key>" | uploaded UUID | null)
+  responseTimeMibId:         z.string().nullable().optional(),
+  telemetryMibId:            z.string().nullable().optional(),
+  interfacesMibId:           z.string().nullable().optional(),
+  lldpMibId:                 z.string().nullable().optional(),
 });
 
 // Override shape — every field optional/nullable, null = inherit from tier
@@ -83,6 +88,16 @@ const OverrideSettingsSchema = z.object({
   telemetryPolling:          PollingMethodEnum.nullable().optional(),
   interfacesPolling:         PollingMethodEnum.nullable().optional(),
   lldpPolling:               PollingMethodEnum.nullable().optional(),
+  // Per-stream credential IDs (FK to Credential, null = inherit)
+  responseTimeCredentialId:  z.string().uuid().nullable().optional(),
+  telemetryCredentialId:     z.string().uuid().nullable().optional(),
+  interfacesCredentialId:    z.string().uuid().nullable().optional(),
+  lldpCredentialId:          z.string().uuid().nullable().optional(),
+  // Per-stream MIB IDs ("std:<key>" | uploaded UUID | null = inherit)
+  responseTimeMibId:         z.string().nullable().optional(),
+  telemetryMibId:            z.string().nullable().optional(),
+  interfacesMibId:           z.string().nullable().optional(),
+  lldpMibId:                 z.string().nullable().optional(),
 });
 
 // Polling-method compatibility check shared by integration-tier and

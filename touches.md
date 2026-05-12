@@ -121,8 +121,8 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **Readers** (files that consume it):
 - `src/services/monitoringService.ts:runMonitorPass` — per-stream (probe/telemetry/systemInfo/fastFiltered) dispatch branches consult resolved settings to pick method + timeout + retry logic
 - `src/jobs/monitorAssets.ts` — publishDueWork() and light/heavy loops call resolveMonitorSettings() to determine which assets are due for each cadence
-- `public/js/assets.js` — Asset Monitoring tab UI renders manual override tier (per-asset dropdowns)
-- `public/js/integrations.js` — Integration Monitoring tab renders the integration tier (Cadence & Retention + per-stream polling dropdowns) and the Discovery Defaults section (FortiGates / FortiSwitches / FortiAPs subtabs with reactive SNMP / SSH credential pickers). Class overrides have moved to the Assets-page Monitoring Settings modal
+- `public/js/assets.js` — Asset Monitoring tab UI renders manual override tier (per-asset dropdowns + per-stream SNMP credential pickers + per-stream MIB pickers); class override editor renders all three sub-rows (polling, credential, MIB) per stream
+- `public/js/integrations.js` — Integration Monitoring tab renders the integration tier (Cadence & Retention + per-stream polling dropdowns + per-stream MIB pickers when stream = SNMP). Class overrides have moved to the Assets-page Monitoring Settings modal. Shared helpers: `_polarisPollingFourStreamHTML` (4-stream polling block with optional cred/MIB sub-rows), `_polarisReadPollingFourStream` / `_polarisReadCredFourStream` / `_polarisReadMibFourStream`, `_mibOptionsHTML`, `_populateUploadedMibsInDropdowns`
 - `src/api/routes/assets.ts` — GET /assets/:id/effective-monitor-settings endpoint returns full resolved stack + provenance (used by System tab intermittency-bar replay, by per-stream chart badges to label which tier supplied each polling method — see _streamBadgeText in public/js/assets.js — AND by the stale-data banner threshold; the three callers in assets.js cache `eff.resolved` in `_effectiveResolvedByAssetId` so banner slots can re-evaluate against the class/integration cadence after first paint)
 - `src/api/routes/assets.ts` — GET /assets/:id exposes `discoveredByIntegration.useProxy` (FMG only) so the System tab chart badges can render "Proxy via <fmg>" vs "Direct" without a second round-trip; integration `config` otherwise stripped to keep API tokens out of the response
 
@@ -783,7 +783,7 @@ Listed alphabetically.
 - SNMP v2c requires community; v3 requires username + security level + auth/priv keys per level.
 - SSH requires username + (password OR privateKey); WinRM requires both username + password.
 - REST API requires baseUrl (http/https only, no trailing slash stored) + apiToken; verifyTls defaults false.
-- Delete fails with 409 if any asset.monitorCredentialId points to it; check all five credential type columns (monitorCredentialId, responseTimeCredentialId, telemetryCredentialId, interfacesCredentialId, lldpCredentialId).
+- Delete fails with 409 if any asset.monitorCredentialId points to it; check all five Asset credential type columns (monitorCredentialId, responseTimeCredentialId, telemetryCredentialId, interfacesCredentialId, lldpCredentialId). MonitorClassOverride also has four per-stream credential FK columns (responseTimeCredentialId … lldpCredentialId) with ON DELETE SET NULL — Postgres nulls those automatically, no application 409 needed.
 - validateConfig is called on CREATE and on PUT (after merge), catching type/field mismatches early.
 
 **When changing this:**

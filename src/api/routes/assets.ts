@@ -137,6 +137,11 @@ const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   telemetryCredentialId:        z.string().uuid().nullable().optional(),
   interfacesCredentialId:       z.string().uuid().nullable().optional(),
   lldpCredentialId:             z.string().uuid().nullable().optional(),
+  // Per-stream MIB overrides ("std:<key>" | uploaded MIB UUID | null = inherit)
+  responseTimeMibId:            z.string().nullable().optional(),
+  telemetryMibId:               z.string().nullable().optional(),
+  interfacesMibId:              z.string().nullable().optional(),
+  lldpMibId:                    z.string().nullable().optional(),
   monitorIntervalSec:           z.number().int().min(5).max(86400).nullable().optional(),
   // Per-asset probe timeout override. 100..60000 ms; null inherits from the
   // resolved tier-3 setting. The frontend renders a soft warning at <500 ms.
@@ -516,6 +521,14 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
         telemetryPolling:          true,
         interfacesPolling:         true,
         lldpPolling:               true,
+        responseTimeMibId:         true,
+        telemetryMibId:            true,
+        interfacesMibId:           true,
+        lldpMibId:                 true,
+        responseTimeCredentialId:  true,
+        telemetryCredentialId:     true,
+        interfacesCredentialId:    true,
+        lldpCredentialId:          true,
       },
     });
     if (!asset) throw new AppError(404, "Asset not found");

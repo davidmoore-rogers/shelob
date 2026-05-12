@@ -63,17 +63,132 @@ function _polarisReadPollingDropdown(id) {
   return el.value || null;
 }
 
+// Standard MIBs selectable without uploading anything. Kept in lockstep with
+// the _SNMP_STANDARD_MIBS array in assets.js (SNMP Walk tab).
+var _SNMP_STANDARD_MIBS = [
+  { id: "std:system",         label: "System (RFC 1213)",              oid: "1.3.6.1.2.1.1"         },
+  { id: "std:interfaces",     label: "Interfaces — IF-MIB (RFC 2863)", oid: "1.3.6.1.2.1.2"         },
+  { id: "std:if-ext",         label: "IF-MIB Extended (RFC 2863)",     oid: "1.3.6.1.2.1.31"        },
+  { id: "std:host-resources", label: "HOST-RESOURCES-MIB (RFC 2790)",  oid: "1.3.6.1.2.1.25"        },
+  { id: "std:entity",         label: "ENTITY-MIB (RFC 4133)",          oid: "1.3.6.1.2.1.47"        },
+  { id: "std:entity-sensor",  label: "ENTITY-SENSOR-MIB (RFC 3433)",   oid: "1.3.6.1.2.1.99"        },
+  { id: "std:lldp",           label: "LLDP-MIB (IEEE 802.1AB)",        oid: "1.0.8802.1.1.2"        },
+  { id: "std:fortinet-fg",    label: "Fortinet FORTIGATE-MIB",         oid: "1.3.6.1.4.1.12356.101" },
+];
+
+// Cache of uploaded MIBs for per-stream MIB pickers. null = not yet loaded.
+var _uploadedMibsCache = null;
+
+// Build <option> HTML for a MIB <select>. selectedId: null/"" = Automatic,
+// "std:..." = standard built-in, UUID = uploaded MIB from the MIB database.
+function _mibOptionsHTML(selectedId) {
+  var sel = selectedId || "";
+  var html = '<option value=""' + (sel === "" ? " selected" : "") + '>Automatic (let Polaris choose)</option>';
+  html += '<optgroup label="Standard MIBs">';
+  _SNMP_STANDARD_MIBS.forEach(function (m) {
+    html += '<option value="' + escapeHtml(m.id) + '"' + (sel === m.id ? " selected" : "") + '>' + escapeHtml(m.label) + '</option>';
+  });
+  html += '</optgroup>';
+  if (_uploadedMibsCache && _uploadedMibsCache.length > 0) {
+    html += '<optgroup label="Uploaded MIBs">';
+    _uploadedMibsCache.forEach(function (m) {
+      var lbl = m.moduleName + (m.manufacturer ? " (" + m.manufacturer + (m.model ? "/" + m.model : "") + ")" : " (generic)");
+      html += '<option value="' + escapeHtml(m.id) + '"' + (sel === m.id ? " selected" : "") + '>' + escapeHtml(lbl) + '</option>';
+    });
+    html += '</optgroup>';
+  }
+  return html;
+}
+
+// Populate every MIB <select> on the page (identified by data-mib-picker="1")
+// with the current uploaded-MIB list. Lazy-loads from the API on first call.
+function _populateUploadedMibsInDropdowns() {
+  function repopulate() {
+    var sels = document.querySelectorAll("[data-mib-picker='1']");
+    for (var i = 0; i < sels.length; i++) {
+      var el = sels[i];
+      var current = el.getAttribute("data-current-id") || "";
+      el.innerHTML = _mibOptionsHTML(current);
+    }
+  }
+  if (_uploadedMibsCache !== null) {
+    repopulate();
+  } else {
+    repopulate(); // render standard MIBs immediately; uploaded group appears once loaded
+    api.serverSettings.listMibs({}).then(function (mibs) {
+      _uploadedMibsCache = Array.isArray(mibs) ? mibs : [];
+      repopulate();
+    }).catch(function () {
+      _uploadedMibsCache = [];
+    });
+  }
+}
+
 // Renders the four-stream polling block (response-time, telemetry, interfaces,
-// lldp) for a given source kind. Used by the manual tier modal, the class
-// override editor, and the asset edit modal.
-function _polarisPollingFourStreamHTML(idPrefix, source, current) {
+// lldp) for a given source kind. Used by the integration Monitoring tab, the
+// class override editor, and the asset edit modal.
+//
+// opts.showMibRows  — emit a per-stream MIB sub-row (shown when SNMP selected)
+// opts.showCredRows — emit a per-stream credential sub-row (class override tier)
+// opts.credentials  — array of {id,name,type} for the credential sub-row
+// opts.credValues   — object with {responseTimeCredentialId, ...} current values
+// opts.mibValues    — object with {responseTimeMibId, ...} current values
+function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
   current = current || {};
+  opts    = opts    || {};
+  var showMibRows  = !!opts.showMibRows;
+  var showCredRows = !!opts.showCredRows;
+  var credentials  = opts.credentials || [];
+  var credValues   = opts.credValues  || {};
+  var mibValues    = opts.mibValues   || {};
+
+  var streams = [
+    { key: "responseTime",  label: "Response time",  pollField: "responseTimePolling",  credField: "responseTimeCredentialId",  mibField: "responseTimeMibId"  },
+    { key: "telemetry",     label: "Telemetry",      pollField: "telemetryPolling",     credField: "telemetryCredentialId",     mibField: "telemetryMibId"     },
+    { key: "interfaces",    label: "Interfaces",     pollField: "interfacesPolling",    credField: "interfacesCredentialId",    mibField: "interfacesMibId"    },
+    { key: "lldp",          label: "LLDP neighbors", pollField: "lldpPolling",          credField: "lldpCredentialId",          mibField: "lldpMibId"          },
+  ];
+
+  var rows = "";
+  streams.forEach(function (s) {
+    var pollIsSnmp = (current[s.pollField] === "snmp");
+
+    // Optional per-stream credential sub-row (class override tier).
+    var credSubRow = "";
+    if (showCredRows) {
+      var currentCredId = credValues[s.credField] || "";
+      var credOpts = '<option value="">— Inherit (use integration credential) —</option>';
+      credentials.forEach(function (c) {
+        if (c.type !== "snmp") return;
+        credOpts += '<option value="' + escapeHtml(c.id) + '"' + (currentCredId === c.id ? " selected" : "") + '>' + escapeHtml(c.name) + '</option>';
+      });
+      credSubRow = '<div id="' + idPrefix + s.key + '-cred-wrap" style="display:' + (pollIsSnmp ? "flex" : "none") + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
+        '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">Credential</label>' +
+        '<select id="' + idPrefix + s.key + 'Cred" style="flex:1">' + credOpts + '</select>' +
+      '</div>';
+    }
+
+    // Optional per-stream MIB sub-row.
+    var mibSubRow = "";
+    if (showMibRows) {
+      var currentMibId = mibValues[s.mibField] || "";
+      mibSubRow = '<div id="' + idPrefix + s.key + '-mib-wrap" style="display:' + (pollIsSnmp ? "flex" : "none") + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
+        '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">MIB</label>' +
+        '<select id="' + idPrefix + s.key + 'Mib" data-current-id="' + escapeHtml(currentMibId) + '" data-mib-picker="1" style="flex:1">' +
+          _mibOptionsHTML(currentMibId) +
+        '</select>' +
+      '</div>';
+    }
+
+    rows += '<label style="margin:0">' + escapeHtml(s.label) + '</label>' +
+      _polarisPollingDropdownHTML(idPrefix + s.pollField, source, s.key, current[s.pollField]) +
+      credSubRow +
+      mibSubRow;
+  });
+
   return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.5rem 0 0.5rem 0">Polling Methods</p>' +
     '<div style="display:grid;grid-template-columns:200px 1fr;gap:0.5rem 1rem;align-items:center;margin-bottom:0.75rem">' +
-      '<label style="margin:0">Response time</label>' + _polarisPollingDropdownHTML(idPrefix + "responseTimePolling", source, "responseTime", current.responseTimePolling) +
-      '<label style="margin:0">Telemetry</label>'      + _polarisPollingDropdownHTML(idPrefix + "telemetryPolling",    source, "telemetry",    current.telemetryPolling) +
-      '<label style="margin:0">Interfaces</label>'     + _polarisPollingDropdownHTML(idPrefix + "interfacesPolling",   source, "interfaces",   current.interfacesPolling) +
-      '<label style="margin:0">LLDP neighbors</label>' + _polarisPollingDropdownHTML(idPrefix + "lldpPolling",         source, "lldp",         current.lldpPolling) +
+      rows +
     '</div>';
 }
 
@@ -83,6 +198,37 @@ function _polarisReadPollingFourStream(idPrefix) {
     telemetryPolling:    _polarisReadPollingDropdown(idPrefix + "telemetryPolling"),
     interfacesPolling:   _polarisReadPollingDropdown(idPrefix + "interfacesPolling"),
     lldpPolling:         _polarisReadPollingDropdown(idPrefix + "lldpPolling"),
+  };
+}
+
+// Read per-stream MIB IDs from selects rendered by _polarisPollingFourStreamHTML.
+// Returns {responseTimeMibId, telemetryMibId, interfacesMibId, lldpMibId} with
+// null for streams whose select is absent or set to "Automatic".
+function _polarisReadMibFourStream(idPrefix) {
+  function mibVal(stream) {
+    var el = document.getElementById(idPrefix + stream + "Mib");
+    return el ? (el.value || null) : undefined;
+  }
+  return {
+    responseTimeMibId: mibVal("responseTime"),
+    telemetryMibId:    mibVal("telemetry"),
+    interfacesMibId:   mibVal("interfaces"),
+    lldpMibId:         mibVal("lldp"),
+  };
+}
+
+// Read per-stream credential IDs from selects rendered by _polarisPollingFourStreamHTML
+// (class override tier only — opts.showCredRows must have been true).
+function _polarisReadCredFourStream(idPrefix) {
+  function credVal(stream) {
+    var el = document.getElementById(idPrefix + stream + "Cred");
+    return el ? (el.value || null) : undefined;
+  }
+  return {
+    responseTimeCredentialId: credVal("responseTime"),
+    telemetryCredentialId:    credVal("telemetry"),
+    interfacesCredentialId:   credVal("interfaces"),
+    lldpCredentialId:         credVal("lldp"),
   };
 }
 
@@ -556,8 +702,8 @@ function _integrationCadenceSectionHTML(s, integrationType) {
     num("failureThreshold",  "Failure threshold (consecutive misses)", s.failureThreshold, 3,     1,   100,   "Consecutive failed probes before an asset is marked Down — and consecutive successes needed to recover from Warning / Pending back to Up.", false) +
     num("probeTimeoutMs",    "Probe timeout (ms)",                     s.probeTimeoutMs,   5000,  100, 60000, "Per-probe timeout for ICMP/SNMP/REST/WinRM/SSH. Default 5000 ms.", true) +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    _polarisPollingFourStreamHTML("f-mon-tier-", sourceKind, s) +
-    '<p class="hint" style="margin:0 0 0.75rem 0">Per-stream polling method. "Inherit" falls through to the source default. Only methods compatible with this integration type are offered.</p>' +
+    _polarisPollingFourStreamHTML("f-mon-tier-", sourceKind, s, { showMibRows: true, mibValues: s }) +
+    '<p class="hint" style="margin:0 0 0.75rem 0">Per-stream polling method. "Inherit" falls through to the source default. When SNMP is selected, optionally pin a specific MIB (default: Automatic).</p>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Telemetry (CPU + memory + temperature)</p>' +
     num("telemetryIntervalSeconds", "Telemetry interval (seconds)", s.telemetryIntervalSeconds, 60,  15,  86400, "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
@@ -1001,13 +1147,21 @@ function _wireProbeTimeoutWarning() {
 // SSH rows appear iff any is set to SSH. Run on initial render and on every
 // dropdown change so the UI reflects the live selection without a save.
 function _syncCredentialPickerVisibility() {
-  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-telemetryPolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
+  var streamDefs = [
+    { pollId: "f-mon-tier-responseTimePolling", mibWrapId: "f-mon-tier-responseTime-mib-wrap" },
+    { pollId: "f-mon-tier-telemetryPolling",    mibWrapId: "f-mon-tier-telemetry-mib-wrap"    },
+    { pollId: "f-mon-tier-interfacesPolling",   mibWrapId: "f-mon-tier-interfaces-mib-wrap"   },
+    { pollId: "f-mon-tier-lldpPolling",         mibWrapId: "f-mon-tier-lldp-mib-wrap"         },
+  ];
   var anySnmp = false, anySsh = false;
-  for (var i = 0; i < ids.length; i++) {
-    var el = document.getElementById(ids[i]);
+  for (var i = 0; i < streamDefs.length; i++) {
+    var el = document.getElementById(streamDefs[i].pollId);
     if (!el) continue;
     if (el.value === "snmp") anySnmp = true;
     if (el.value === "ssh")  anySsh  = true;
+    // Show/hide the per-stream MIB sub-row for this stream.
+    var mibWrap = document.getElementById(streamDefs[i].mibWrapId);
+    if (mibWrap) mibWrap.style.display = (el.value === "snmp") ? "flex" : "none";
   }
   var snmpRowIds = ["f-mon-credential-row", "f-mon-fortiswitch-credentialId-row", "f-mon-fortiap-credentialId-row"];
   var sshRowIds  = ["f-mon-credential-ssh-row", "f-mon-fortiswitch-sshCredentialId-row", "f-mon-fortiap-sshCredentialId-row"];
@@ -1069,6 +1223,7 @@ function _readIntegrationCadenceForm() {
     systemInfoRetentionDays:   n("systemInfoRetentionDays"),
   };
   Object.assign(out, _polarisReadPollingFourStream("f-mon-tier-"));
+  Object.assign(out, _polarisReadMibFourStream("f-mon-tier-"));
   return out;
 }
 
@@ -1793,6 +1948,7 @@ async function openCreateModal(type) {
     wireAutoMonitorCards(null);
     _wireProbeTimeoutWarning();
     _wireCredentialPickerVisibility();
+    _populateUploadedMibsInDropdowns();
   } else if (isAd || isEntra || isWin) {
     _intWireModalTabs("intg-edit");
     _wireProbeTimeoutWarning();
@@ -2137,6 +2293,7 @@ async function openEditModal(id) {
       wireAutoMonitorCards(id);
       _wireProbeTimeoutWarning();
       _wireCredentialPickerVisibility();
+      _populateUploadedMibsInDropdowns();
     } else if (isAd || isEntra || isWin) {
       _intWireModalTabs("intg-edit");
       _wireProbeTimeoutWarning();
