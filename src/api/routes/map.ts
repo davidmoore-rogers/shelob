@@ -683,6 +683,72 @@ router.get("/sites/:id/topology", async (req, res, next) => {
     for (const s of switches) idxSibling(s.hostname, s.id);
     for (const a of aps) idxSibling(a.hostname, a.id);
 
+    // Backfill the source-side port on controller-data edges that LLDP can
+    // now tell us about. managed-switch/status reports the switch's view of
+    // its uplink (fgt_peer_intf_name) but not the FortiGate's view of its
+    // downlink, so the FG→switch edges were stuck with "unknown" on the FG
+    // side. LLDP from the FortiGate (newly populated by the SNMP path)
+    // reports its local port — match it against the matched-sibling target
+    // and replace the source half of the edge label.
+    const siblingLldpPort = new Map<string, string>(); // `${source}|${matchedSibling}` → local port
+    for (const n of lldpRows) {
+      if (!n.matchedAsset || !n.matchedAsset.id) continue;
+      if (!siblingIds.has(n.matchedAsset.id)) continue;
+      if (!n.localIfName) continue;
+      const k = `${n.assetId}|${n.matchedAsset.id}`;
+      if (!siblingLldpPort.has(k)) siblingLldpPort.set(k, n.localIfName);
+    }
+    for (const e of edges) {
+      const localPort = siblingLldpPort.get(`${e.source}|${e.target}`);
+      if (!localPort) continue;
+      const parts = String(e.label || "").split(" ↔ ");
+      const sourceHalf = parts[0] ?? "unknown";
+      // Only overwrite when the source half was previously "unknown" —
+      // controller-data set a real value (rare) wins over an LLDP guess.
+      if (sourceHalf !== "unknown") continue;
+      const targetHalf = parts[1] ?? "unknown";
+      e.label = portLabel(localPort, targetHalf);
+    }
+
+    // Demote FG→switch controller edges when a more-specific signal puts
+    // the switch downstream of another switch. FortiOS reports `fortilink`
+    // on every managed switch — direct or chained — so the controller
+    // signal alone over-connects multi-switch fleets (every switch hangs
+    // off the FG). Dagre LR then has to route long FG→deep-switch edges
+    // around the chained switches, visually breaking the operator's "daisy
+    // chain runs left-to-right" mental model and pushing tail switches
+    // off-rank. Stripping the redundant FG edge gives dagre a clean
+    // single-parent DAG so the chain lays out as FG → -1 → -2 → -3.
+    //
+    // Chain-head identification: a sibling switch is "directly connected"
+    // to the FG iff the FG's LLDP advertises it as a neighbor. FortiLink
+    // peer-aggregate interface names exist on BOTH ends of an inter-switch
+    // link (each side names the peer's serial), so interfaceEdges alone
+    // can't tell us which side is upstream — but LLDP from the FG can,
+    // since LLDP is single-hop. If FG LLDP has no sibling neighbors at all
+    // (data hasn't landed yet from the SNMP-LLDP fix, or LLDP is disabled
+    // on FortiLink), every FG→switch edge is preserved — same behavior as
+    // before so a fresh install isn't suddenly missing edges.
+    const fgSiblingNeighbors = new Set<string>();
+    for (const n of lldpRows) {
+      if (n.assetId !== fg.id) continue;
+      if (!n.matchedAsset || !n.matchedAsset.id) continue;
+      if (!siblingIds.has(n.matchedAsset.id)) continue;
+      fgSiblingNeighbors.add(n.matchedAsset.id);
+    }
+    if (fgSiblingNeighbors.size > 0) {
+      const chainedTargets = new Set<string>();
+      for (const e of interfaceEdges) {
+        if (e.source === fg.id || e.target === fg.id) continue;
+        chainedTargets.add(e.target);
+      }
+      edges = edges.filter((e) => {
+        if (e.source !== fg.id) return true;
+        // Demote when the target is in a chain AND not a chain head.
+        return !(chainedTargets.has(e.target) && !fgSiblingNeighbors.has(e.target));
+      });
+    }
+
     for (const n of lldpRows) {
       let targetId: string;
       let targetLabel: string;
