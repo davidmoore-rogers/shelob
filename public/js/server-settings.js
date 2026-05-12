@@ -4298,11 +4298,23 @@ function mibProfileStatusHTML() {
         var icon = s.resolved
           ? '<span style="color:#16a34a">&#x2713;</span>'
           : '<span style="color:#d97706">&#x26A0;</span>';
-        var fromText = s.resolved && s.fromModuleName
-          ? '<span style="color:var(--color-text-secondary)">from <span class="mono">' + escapeHtml(s.fromModuleName) + '</span>' +
-              (s.fromScope && s.fromScope !== "seed" ? ' (' + escapeHtml(s.fromScope) + ')' : '') +
-            '</span>'
-          : '<span style="color:#d97706">unresolved &mdash; upload the MIB defining <span class="mono">' + escapeHtml(s.symbol) + '</span></span>';
+        // Three states, not two: resolved-from-uploaded-MIB, resolved-from-
+        // built-in seed (oidRegistry preloads a handful of high-value symbols
+        // like fgSysCpuUsage so they work without an upload), and unresolved.
+        // The seed case used to fall through to "unresolved" because the
+        // fromModuleName is null for seed entries — but the resolved flag is
+        // true, so the row already had a green check and the "unresolved"
+        // banner alongside was a UI contradiction.
+        var fromText;
+        if (s.resolved && s.fromModuleName) {
+          fromText = '<span style="color:var(--color-text-secondary)">from <span class="mono">' + escapeHtml(s.fromModuleName) + '</span>' +
+            (s.fromScope && s.fromScope !== "seed" ? ' (' + escapeHtml(s.fromScope) + ')' : '') +
+            '</span>';
+        } else if (s.resolved) {
+          fromText = '<span style="color:var(--color-text-secondary)">from built-in seed</span>';
+        } else {
+          fromText = '<span style="color:#d97706">unresolved &mdash; upload the MIB defining <span class="mono">' + escapeHtml(s.symbol) + '</span></span>';
+        }
         html += '<tr>' +
           '<td style="padding:1px 8px 1px 0">' + icon + '</td>' +
           '<td style="padding:1px 8px 1px 0;color:var(--color-text-secondary)">' + escapeHtml(s.metric) + '</td>' +
