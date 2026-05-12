@@ -2657,6 +2657,13 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   padding: 1rem 1.25rem 1rem 2.5rem;
 }
 
+/* IP panel (reservations slide-in) content padding — match the asset details
+   slide-in's doubled left margin so headers/rows align with the slide-over
+   header/footer. slideover-body itself stays at padding:0 globally. */
+.ip-panel-content {
+  padding-left: 2.5rem;
+}
+
 /* IP list table inside the slide-over */
 .ip-table {
   width: 100%;

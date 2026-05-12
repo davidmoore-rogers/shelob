@@ -8,6 +8,25 @@ var _ipPanelPageSize = 256;
 var _ipPanelData = null;
 var _ipPanelDirty = false;
 var _panelSelected = new Set();
+var _ipPanelLayout = null;
+
+function _saveIpPanelPrefs() {
+  if (!currentUsername || !_ipPanelLayout) return;
+  try {
+    var prefs = _ipPanelLayout.getPrefs();
+    localStorage.setItem("polaris-prefs-ip-panel-" + currentUsername, JSON.stringify({ layout: prefs }));
+  } catch (_) {}
+}
+
+function _restoreIpPanelPrefs() {
+  if (!currentUsername || !_ipPanelLayout) return;
+  try {
+    var raw = localStorage.getItem("polaris-prefs-ip-panel-" + currentUsername);
+    if (!raw) return;
+    var p = JSON.parse(raw);
+    if (p && p.layout) _ipPanelLayout.setPrefs(p.layout);
+  } catch (_) {}
+}
 // When set, _renderIpList scrolls to and highlights the row whose IP matches.
 // Cleared after a single render so subsequent page navigations don't keep
 // re-scrolling.
@@ -200,16 +219,16 @@ function _renderIpList(data) {
     return !ip.type && ip.reservation && ip.reservation.status === "active" && canManageNetworks();
   });
 
-  var html = '<table class="ip-table"><thead><tr>' +
+  var html = '<div class="ip-panel-content"><table class="ip-table" data-sf-table-id="ip-panel"><thead><tr>' +
     '<th class="cb-col">' + (hasReleasable ? '<input type="checkbox" id="panel-select-all" title="Select all active">' : '') + '</th>' +
-    '<th style="width:36px"></th>' +
-    '<th>IP Address</th>' +
-    '<th>Hostname</th>' +
-    '<th>MAC Address</th>' +
-    '<th>Owner</th>' +
-    '<th>Lease Expiry</th>' +
-    '<th>Status</th>' +
-    '<th style="width:140px">Actions</th>' +
+    '<th data-col-id="__dot" style="width:36px"></th>' +
+    '<th data-col-id="ip">IP Address</th>' +
+    '<th data-col-id="hostname">Hostname</th>' +
+    '<th data-col-id="mac">MAC Address</th>' +
+    '<th data-col-id="owner">Owner</th>' +
+    '<th data-col-id="expiry">Lease Expiry</th>' +
+    '<th data-col-id="status">Status</th>' +
+    '<th data-col-id="actions" style="width:140px">Actions</th>' +
     '</tr></thead><tbody>';
 
   data.ips.forEach(function (ip) {
@@ -330,7 +349,16 @@ function _renderIpList(data) {
       '</div>';
   }
 
+  html += '</div>'; // close .ip-panel-content
+
   body.innerHTML = html;
+
+  // Wire column resize (per-user persisted widths)
+  var table = body.querySelector(".ip-table");
+  if (table && typeof setupColumnLayout === "function") {
+    _ipPanelLayout = setupColumnLayout(table, { onChange: _saveIpPanelPrefs });
+    _restoreIpPanelPrefs();
+  }
 
   // Wire up bulk selection
   var panelSelectAll = document.getElementById("panel-select-all");
