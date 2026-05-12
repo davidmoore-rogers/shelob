@@ -28,7 +28,10 @@
  *   prismaTarget     = workerCeiling + discoveryReserve + httpOverhead
  *   pgbossTarget     = 20  (fixed; queue mechanics only)
  *
- *   polarisNeeded    = prismaTarget + pgbossTarget
+ *   DATABASE_POOL_SIZE      = roundUpToNearest(max(prismaTarget, current), 50)
+ *   POLARIS_PGBOSS_POOL_SIZE = roundUpToNearest(max(pgbossTarget, current), 50)
+ *
+ *   polarisNeeded    = effective prisma pool + effective pgboss pool
  *   polarisFloor     = max(polarisNeeded, peakObserved)
  *   recommendedMax   = roundUpToNearest(ceil(polarisFloor / 0.65), 50)
  *
@@ -208,6 +211,9 @@ const POLARIS_FRACTION_OF_MAX = 0.65;
 
 /** Round up to nearest multiple — operator-friendly recommendations. */
 const MAX_CONNECTIONS_ROUNDING = 50;
+
+/** Round pool-size recommendations to this multiple for cleaner .env values. */
+const POOL_ROUNDING = 50;
 
 /** Asset-count threshold above which pgboss is the recommended queue mode. */
 const PGBOSS_RECOMMEND_ASSETS = 500;
@@ -472,7 +478,7 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
 
   // ── Recommendation: Prisma + pg-boss pool ─────────────────────────────
   const prismaCurrent = currentEnv.DATABASE_POOL_SIZE;
-  const prismaRecommended = Math.max(prismaTarget, prismaCurrent);
+  const prismaRecommended = roundUpToNearest(Math.max(prismaTarget, prismaCurrent), POOL_ROUNDING);
   recommendations.push({
     key: "DATABASE_POOL_SIZE",
     applyMode: "env",
@@ -495,7 +501,7 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
   const pgbossCurrent = currentEnv.POLARIS_PGBOSS_POOL_SIZE;
   // Never shrink. Recommend the scaled `pgbossTarget` (sized to worker count
   // above) unless the operator has already configured something larger.
-  const pgbossRecommended = Math.max(pgbossTarget, pgbossCurrent);
+  const pgbossRecommended = roundUpToNearest(Math.max(pgbossTarget, pgbossCurrent), POOL_ROUNDING);
   recommendations.push({
     key: "POLARIS_PGBOSS_POOL_SIZE",
     applyMode: "env",
@@ -974,5 +980,6 @@ export const __testing = {
   PGBOSS_POOL_TARGET,
   POLARIS_FRACTION_OF_MAX,
   MAX_CONNECTIONS_ROUNDING,
+  POOL_ROUNDING,
   PGBOSS_RECOMMEND_ASSETS,
 };
