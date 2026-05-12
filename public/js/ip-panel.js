@@ -518,6 +518,41 @@ function _renderPanelFooter(data) {
 
 // ─── Reservation modals (reuse existing modal system) ───────────────────────
 
+// Generate a locally-administered unicast MAC for placeholder use when the
+// real client MAC isn't known yet (e.g. reserving an IP before the device is
+// racked). First octet is fixed at "02" so the locally-administered bit is
+// set and the multicast bit is clear — matches the convention used by KVM,
+// Docker, FortiOS HA, etc. RFC 1918 is the IPv4 analogue.
+function _generateLocalMac() {
+  var bytes = ["02"];
+  for (var i = 0; i < 5; i++) {
+    var b = Math.floor(Math.random() * 256);
+    bytes.push((b < 16 ? "0" : "") + b.toString(16));
+  }
+  return bytes.join(":").toUpperCase();
+}
+
+function _macFieldMarkup(label, hint, valueAttr) {
+  return '<div class="form-group"><label>' + label + '</label>' +
+    '<div style="display:flex;gap:6px;align-items:stretch">' +
+      '<input type="text" id="f-macAddress"' + (valueAttr || "") + ' placeholder="aa:bb:cc:dd:ee:ff" style="flex:1">' +
+      '<button type="button" class="btn btn-secondary btn-sm" id="btn-gen-mac" title="Generate a locally-administered MAC (02:xx:xx:xx:xx:xx) — placeholder use when the device\'s real MAC isn\'t known yet">Generate</button>' +
+    '</div>' +
+    '<p class="hint">' + hint + '</p>' +
+  '</div>';
+}
+
+function _wireGenerateMacButton() {
+  var btn = document.getElementById("btn-gen-mac");
+  var input = document.getElementById("f-macAddress");
+  if (!btn || !input) return;
+  btn.addEventListener("click", function () {
+    input.value = _generateLocalMac();
+    input.focus();
+    input.select();
+  });
+}
+
 function _openAutoAllocateModal(subnetId) {
   var s = _ipPanelData ? _ipPanelData.subnet : null;
   var subnetLabel = s ? escapeHtml(s.name) + ' (' + escapeHtml(s.cidr) + ')' : subnetId;
@@ -531,7 +566,7 @@ function _openAutoAllocateModal(subnetId) {
     '<div class="form-group"><label>Network</label><input type="text" value="' + subnetLabel + '" disabled></div>' +
     '<p class="hint" style="margin-bottom:12px">The next available host IP will be reserved automatically.</p>' +
     '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
-    '<div class="form-group"><label>' + macLabel + '</label><input type="text" id="f-macAddress" placeholder="aa:bb:cc:dd:ee:ff"><p class="hint">' + macHint + '</p></div>' +
+    _macFieldMarkup(macLabel, macHint) +
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
@@ -539,6 +574,7 @@ function _openAutoAllocateModal(subnetId) {
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Auto-Allocate</button>';
   openModal("Auto-Allocate Next IP", body, footer);
+  _wireGenerateMacButton();
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
@@ -593,7 +629,7 @@ function _openReserveModal(subnetId, ipAddress) {
         : '<input type="text" id="f-ipAddress" placeholder="e.g. ' + (s ? escapeHtml(s.cidr.replace(/\/.*/, '').replace(/\.0$/, '.10')) : '10.0.1.10') + '">') +
     '</div>' +
     '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
-    '<div class="form-group"><label>' + macLabel + '</label><input type="text" id="f-macAddress" placeholder="aa:bb:cc:dd:ee:ff"><p class="hint">' + macHint + '</p></div>' +
+    _macFieldMarkup(macLabel, macHint) +
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
@@ -601,6 +637,7 @@ function _openReserveModal(subnetId, ipAddress) {
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create Reservation</button>';
   openModal("Reserve IP", body, footer);
+  _wireGenerateMacButton();
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
@@ -654,7 +691,7 @@ function _openLeaseReserveModal(subnetId, ipAddress, leaseId, prefillMac, prefil
     '<div class="form-group"><label>IP Address</label><input type="text" value="' + escapeHtml(ipAddress) + '" disabled></div>' +
     '<p class="hint" style="margin-bottom:12px">The existing DHCP lease will be released and replaced with a manual reservation.</p>' +
     '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(prefillHostname || "") + '" placeholder="e.g. web-server-01"></div>' +
-    '<div class="form-group"><label>' + macLabel + '</label><input type="text" id="f-macAddress" value="' + escapeHtml(prefillMac || "") + '" placeholder="aa:bb:cc:dd:ee:ff"><p class="hint">' + macHint + '</p></div>' +
+    _macFieldMarkup(macLabel, macHint, ' value="' + escapeHtml(prefillMac || "") + '"') +
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
@@ -662,6 +699,7 @@ function _openLeaseReserveModal(subnetId, ipAddress, leaseId, prefillMac, prefil
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create Reservation</button>';
   openModal("Reserve IP", body, footer);
+  _wireGenerateMacButton();
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
