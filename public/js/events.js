@@ -639,7 +639,21 @@ function getAlertsFormData() {
       }
       body.innerHTML = conflicts.map(function (c) { return renderConflictCard(c); }).join("");
 
-      // Bind accept/reject buttons
+      // Per-row winner pickers (asset conflicts only). Toggling a pill updates
+      // the winning side's highlight in the same row.
+      body.querySelectorAll("[data-conflict-winner]").forEach(function (el) {
+        el.addEventListener("click", function () {
+          var row = el.closest("tr");
+          if (!row) return;
+          var side = el.getAttribute("data-conflict-winner");
+          row.setAttribute("data-winner", side);
+          row.querySelectorAll("[data-conflict-winner]").forEach(function (b) {
+            b.classList.toggle("is-active", b.getAttribute("data-conflict-winner") === side);
+          });
+        });
+      });
+
+      // Bind accept/reject/merge buttons
       body.querySelectorAll("[data-conflict-action]").forEach(function (el) {
         el.addEventListener("click", async function () {
           var id = el.getAttribute("data-conflict-id");
@@ -649,6 +663,20 @@ function getAlertsFormData() {
             if (action === "accept") {
               await api.conflicts.accept(id);
               showToast("Conflict accepted — discovered values applied");
+            } else if (action === "merge") {
+              var card = el.closest(".conflict-card");
+              var fieldWinners = {};
+              if (card) {
+                card.querySelectorAll("tr[data-winner][data-field]").forEach(function (row) {
+                  var field = row.getAttribute("data-field");
+                  var winner = row.getAttribute("data-winner");
+                  if (field && (winner === "existing" || winner === "proposed")) {
+                    fieldWinners[field] = winner;
+                  }
+                });
+              }
+              await api.conflicts.merge(id, { fieldWinners: fieldWinners });
+              showToast("Conflict merged with selected values");
             } else {
               await api.conflicts.reject(id);
               showToast("Conflict rejected — existing values kept");
@@ -753,19 +781,58 @@ function getAlertsFormData() {
       ["assignedTo", "Primary User"],
     ];
 
-    // os/osVersion are always overwritten on Accept (authoritative from Entra/AD).
-    // Never highlight them as a conflict — just show as informational context.
+    // os/osVersion default to proposed-wins on Accept (authoritative from
+    // Entra/AD). Never highlight them as a conflict — just informational.
+    // ipAddress isn't written by the merge path; show it read-only.
     var autoUpdateFields = new Set(["os", "osVersion"]);
+    var readOnlyFields = new Set(["ipAddress"]);
+    // Default winner per row matches today's accept logic so an
+    // untouched merge produces the same result as Accept.
+    var existingHostLower = (existing.hostname || "").toLowerCase();
+    var proposedHostLower = (proposed.hostname || "").toLowerCase();
+    var isNetbiosUpgrade =
+      proposed.matchedVia === "netbios" &&
+      proposedHostLower.length > existingHostLower.length &&
+      existingHostLower.length > 0 &&
+      proposedHostLower.indexOf(existingHostLower) === 0;
+    var defaultWinnerFor = function (key, existingVal, proposedVal) {
+      if (key === "hostname") {
+        return ((!existingVal && proposedVal) || isNetbiosUpgrade) ? "proposed" : "existing";
+      }
+      if (key === "os" || key === "osVersion") return "proposed";
+      return (!existingVal && proposedVal) ? "proposed" : "existing";
+    };
+    var isResolvedForRows = c.status !== "pending";
     var rows = fields.map(function (pair) {
       var key = pair[0], label = pair[1];
       var existingVal = existing[key] || null;
       var proposedVal = proposed[key] || null;
       var differs = !autoUpdateFields.has(key) && existingVal && proposedVal && String(existingVal).toLowerCase() !== String(proposedVal).toLowerCase();
       var autoUpdate = autoUpdateFields.has(key) && proposedVal && String(existingVal || "").toLowerCase() !== String(proposedVal).toLowerCase();
-      return '<tr class="' + (differs ? "conflict-changed" : "") + '">' +
+      var readOnly = readOnlyFields.has(key);
+      var winner = defaultWinnerFor(key, existingVal, proposedVal);
+      var rowAttrs = readOnly || isResolvedForRows
+        ? ''
+        : ' data-field="' + escapeHtml(key) + '" data-winner="' + winner + '"';
+      var existingCellClass = winner === "existing" ? "conflict-winner-cell" : "conflict-loser-cell";
+      var proposedCellClass = winner === "proposed" ? "conflict-winner-cell" : "conflict-loser-cell";
+      // Picker cell — hidden for read-only fields and for resolved conflicts.
+      var pickerCell;
+      if (readOnly) {
+        pickerCell = '<td class="conflict-picker"><span style="color:var(--color-text-tertiary);font-size:0.7rem">read-only</span></td>';
+      } else if (isResolvedForRows) {
+        pickerCell = '<td class="conflict-picker"></td>';
+      } else {
+        pickerCell = '<td class="conflict-picker">' +
+          '<button type="button" class="conflict-winner-btn' + (winner === "existing" ? " is-active" : "") + '" data-conflict-winner="existing" title="Keep current value">◀</button>' +
+          '<button type="button" class="conflict-winner-btn' + (winner === "proposed" ? " is-active" : "") + '" data-conflict-winner="proposed" title="Use discovered value">▶</button>' +
+          '</td>';
+      }
+      return '<tr class="' + (differs ? "conflict-changed" : "") + '"' + rowAttrs + '>' +
         '<td class="conflict-field">' + escapeHtml(label) + (autoUpdate ? ' <span style="color:var(--color-text-tertiary);font-size:0.7rem">(auto)</span>' : '') + '</td>' +
-        '<td>' + (existingVal ? escapeHtml(existingVal) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
-        '<td>' + (proposedVal ? (differs ? '<strong>' + escapeHtml(proposedVal) + '</strong>' : escapeHtml(proposedVal)) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
+        '<td class="' + (readOnly || isResolvedForRows ? '' : existingCellClass) + '">' + (existingVal ? escapeHtml(existingVal) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
+        pickerCell +
+        '<td class="' + (readOnly || isResolvedForRows ? '' : proposedCellClass) + '">' + (proposedVal ? (differs ? '<strong>' + escapeHtml(proposedVal) + '</strong>' : escapeHtml(proposedVal)) : '<span style="color:var(--color-text-tertiary);font-style:italic">—</span>') + '</td>' +
         '</tr>';
     }).join("");
 
@@ -816,7 +883,7 @@ function getAlertsFormData() {
       ? '<span class="badge badge-' + c.status + '" style="text-transform:capitalize">' + escapeHtml(c.status) + '</span>' +
         (c.resolvedBy ? ' <span style="color:var(--color-text-tertiary);font-size:0.75rem">by ' + escapeHtml(c.resolvedBy) + '</span>' : '')
       : '<button class="btn btn-secondary btn-sm" data-conflict-action="reject" data-conflict-id="' + c.id + '" title="' + escapeHtml(rejectTitle) + '">Reject (keep separate)</button>' +
-        '<button class="btn btn-primary btn-sm" data-conflict-action="accept" data-conflict-id="' + c.id + '" title="' + escapeHtml(acceptTitle) + '">Accept (merge)</button>';
+        '<button class="btn btn-primary btn-sm" data-conflict-action="merge" data-conflict-id="' + c.id + '" title="' + escapeHtml(acceptTitle) + '">Apply merge</button>';
 
     return '<div class="conflict-card">' +
       '<div class="conflict-card-header">' +
@@ -825,11 +892,12 @@ function getAlertsFormData() {
         '<span class="conflict-card-subnet" style="font-family:var(--font-mono);font-size:0.78rem">' + escapeHtml(c.proposedDeviceId || "") + '</span>' +
         (badges.length ? '<span style="margin-left:auto;display:flex;gap:4px">' + badges.join("") + '</span>' : '') +
       '</div>' +
-      '<div style="padding:6px 14px;font-size:0.78rem;color:var(--color-text-secondary)">' + explainer + '</div>' +
-      '<div class="conflict-table" style="padding:0">' +
+      '<div style="padding:6px 14px;font-size:0.78rem;color:var(--color-text-secondary)">' + explainer + (isResolved ? '' : ' Use ◀ / ▶ between the columns to pick the winning value per field — defaults match the legacy Accept behavior.') + '</div>' +
+      '<div class="conflict-table conflict-table-picker" style="padding:0">' +
         '<table><thead><tr>' +
           '<th class="conflict-field">Field</th>' +
           '<th>Existing Asset</th>' +
+          '<th class="conflict-picker"></th>' +
           '<th>' + escapeHtml(rightColLabel) + '</th>' +
         '</tr></thead>' +
         '<tbody>' + rows + '</tbody>' +

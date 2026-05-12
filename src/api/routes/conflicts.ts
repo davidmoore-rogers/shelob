@@ -142,10 +142,50 @@ router.post("/:id/accept", async (req, res, next) => {
     }
 
     if (conflict.entityType === "asset") {
-      await acceptAssetConflict(conflict, req.session?.username);
+      await acceptAssetConflict(conflict, req.session?.username, {});
     } else {
       await acceptReservationConflict(conflict, req.session?.username);
     }
+
+    await prisma.conflict.update({
+      where: { id: conflict.id },
+      data: { status: "accepted", resolvedBy: req.session?.username ?? null, resolvedAt: new Date() },
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/v1/conflicts/:id/merge — asset conflicts only; per-field winner
+// selection. Body: { fieldWinners: { hostname: "existing"|"proposed", ... } }.
+// Fields not present in fieldWinners fall back to the default accept logic
+// (today's behavior — blank-fill for most, always-overwrite for os/osVersion,
+// NetBIOS upgrade for hostname). Resolves the conflict the same way Accept
+// does: stamps the AssetSource row, absorbs ghost assets, marks status accepted.
+router.post("/:id/merge", async (req, res, next) => {
+  try {
+    const conflict = await prisma.conflict.findUnique({
+      where: { id: req.params.id },
+      include: { reservation: true, asset: { include: { macAddressRows: { select: MAC_ROW_SELECT } } } },
+    });
+    if (!conflict) throw new AppError(404, "Conflict not found");
+    if (conflict.status !== "pending") throw new AppError(409, "Conflict is already resolved");
+    if (conflict.entityType !== "asset") {
+      throw new AppError(400, "Merge with per-field selection is only supported for asset conflicts");
+    }
+    if (!canResolve(req.session?.role, conflict.entityType)) {
+      throw new AppError(403, "You do not have permission to resolve this conflict");
+    }
+
+    const raw = (req.body && req.body.fieldWinners) || {};
+    const fieldWinners: Record<string, "existing" | "proposed"> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (v === "existing" || v === "proposed") fieldWinners[k] = v;
+    }
+
+    await acceptAssetConflict(conflict, req.session?.username, fieldWinners);
 
     await prisma.conflict.update({
       where: { id: conflict.id },
@@ -252,7 +292,11 @@ async function rejectReservationConflict(conflict: any, actor?: string) {
 
 // ─── Handlers — Asset ────────────────────────────────────────────────────────
 
-async function acceptAssetConflict(conflict: any, actor?: string) {
+async function acceptAssetConflict(
+  conflict: any,
+  actor?: string,
+  fieldWinners: Record<string, "existing" | "proposed"> = {},
+) {
   if (!conflict.asset || !conflict.assetId) {
     throw new AppError(500, "Asset conflict is missing its asset link");
   }
@@ -266,18 +310,17 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   const isAd = prefix === AD_ASSET_TAG_PREFIX;
   const sourceLabel = isAd ? "Active Directory computer" : "Entra device";
 
-  // Overlay proposed fields onto the existing asset, but only where the existing
-  // field is empty — respect any manually-entered data already on the record.
-  // Phase 4d: assetTag is no longer the source-of-truth identity link;
-  // AssetSource (sourceKind+externalId) is. We upsert that row at the end of
-  // this function instead of stamping `assetTag` here. Existing assetTag
-  // values on the row are preserved.
+  // Per-field merge. fieldWinners (from POST /:id/merge) overrides the default
+  // logic per field: "proposed" = write proposed value, "existing" = keep
+  // current. Fields not present in fieldWinners fall back to today's behavior
+  // (blank-fill for most, always-overwrite for os/osVersion, NetBIOS upgrade
+  // for hostname). Phase 4d: assetTag is no longer the source-of-truth
+  // identity link; AssetSource (sourceKind+externalId) is. The AssetSource
+  // row is upserted at the end of this function regardless of fieldWinners.
   const update: Record<string, unknown> = {};
-  // Hostname has one extra rule: when the conflict was raised via 15-char
-  // NetBIOS truncation (e.g. AD `cn` = "GORDONSVILLE-PL" matched against
-  // Entra displayName = "GORDONSVILLE-PLANT"), prefer the longer canonical
-  // form even if the existing hostname is non-empty — the truncated form is
-  // a quirk of the legacy NetBIOS limit, not a deliberate choice.
+  // Hostname default: NetBIOS-upgrade rule — when the conflict was raised via
+  // 15-char NetBIOS truncation, prefer the longer canonical form even if the
+  // existing hostname is non-empty.
   const existingHostLower = (existing.hostname || "").toLowerCase();
   const proposedHostLower = (proposed.hostname || "").toLowerCase();
   const isNetbiosUpgrade =
@@ -285,18 +328,26 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
     proposedHostLower.length > existingHostLower.length &&
     existingHostLower.length > 0 &&
     proposedHostLower.startsWith(existingHostLower);
-  if ((!existing.hostname && proposed.hostname) || isNetbiosUpgrade) {
-    update.hostname = proposed.hostname;
-  }
-  if (!existing.serialNumber && proposed.serialNumber) update.serialNumber = proposed.serialNumber;
-  if (!existing.macAddress && proposed.macAddress) update.macAddress = proposed.macAddress;
-  if (!existing.manufacturer && proposed.manufacturer) update.manufacturer = proposed.manufacturer;
-  if (!existing.model && proposed.model) update.model = proposed.model;
-  // os/osVersion are always overwritten — auto-discovered from Entra/AD, not
-  // user-entered, so the latest value from the source is always authoritative.
-  if (proposed.os) update.os = proposed.os;
-  if (proposed.osVersion) update.osVersion = proposed.osVersion;
-  if (!existing.assignedTo && proposed.assignedTo) update.assignedTo = proposed.assignedTo;
+  const hostnameWinner = fieldWinners.hostname
+    ?? ((!existing.hostname && proposed.hostname) || isNetbiosUpgrade ? "proposed" : "existing");
+  if (hostnameWinner === "proposed" && proposed.hostname) update.hostname = proposed.hostname;
+
+  const blankFill = (field: string) => {
+    const winner = fieldWinners[field] ?? (!existing[field] && proposed[field] ? "proposed" : "existing");
+    if (winner === "proposed" && proposed[field]) update[field] = proposed[field];
+  };
+  blankFill("serialNumber");
+  blankFill("macAddress");
+  blankFill("manufacturer");
+  blankFill("model");
+  blankFill("assignedTo");
+  // os/osVersion default to always-overwrite (proposed wins) — auto-discovered
+  // from Entra/AD, not user-entered, so the source is normally authoritative.
+  // The picker can still flip them to "existing" to opt out.
+  const osWinner = fieldWinners.os ?? "proposed";
+  if (osWinner === "proposed" && proposed.os) update.os = proposed.os;
+  const osVersionWinner = fieldWinners.osVersion ?? "proposed";
+  if (osVersionWinner === "proposed" && proposed.osVersion) update.osVersion = proposed.osVersion;
   if (!existing.dnsName && proposed.dnsName) update.dnsName = proposed.dnsName;
   if (!existing.location && !existing.learnedLocation && proposed.learnedLocation) update.learnedLocation = proposed.learnedLocation;
   if (!existing.notes && proposed.notes) update.notes = proposed.notes;
@@ -398,13 +449,17 @@ async function acceptAssetConflict(conflict: any, actor?: string) {
   await upsertConflictAssetSource(existing.id, conflict, proposed, prefix);
 
   const ghostNote = ghost ? ` (absorbed and removed ghost asset ${ghost.id})` : "";
+  const winnerEntries = Object.entries(fieldWinners);
+  const mergeNote = winnerEntries.length > 0
+    ? ` (merged with selections: ${winnerEntries.map(([k, v]) => `${k}=${v}`).join(", ")})`
+    : "";
   logEvent({
     action: "conflict.accepted",
     resourceType: "asset",
     resourceId: existing.id,
     resourceName: existing.hostname ?? undefined,
     actor,
-    message: `Asset conflict accepted — adopted existing asset ${existing.hostname || existing.id} as ${sourceLabel} ${conflict.proposedDeviceId}${ghostNote}`,
+    message: `Asset conflict accepted — adopted existing asset ${existing.hostname || existing.id} as ${sourceLabel} ${conflict.proposedDeviceId}${ghostNote}${mergeNote}`,
   });
 }
 

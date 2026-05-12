@@ -368,6 +368,7 @@ const api = {
     count:  ()       => request("GET", "/conflicts/count"),
     accept: (id)     => request("POST", `/conflicts/${id}/accept`),
     reject: (id)     => request("POST", `/conflicts/${id}/reject`),
+    merge:  (id, body) => request("POST", `/conflicts/${id}/merge`, body),
   },
   events: {
     list: (params) => request("GET", "/events" + toQuery(params)),
