@@ -602,18 +602,25 @@ function computeReasons(
   // Steady-state projection exceeds available disk on the DB volume. At current
   // settings the DB will fill the disk before reaching steady-state — the
   // per-volume disk-free thresholds above won't fire until it's already too late.
-  if (dbVolume && snap.workload.steadyStateSizeBytes > dbVolume.freeBytes) {
+  // Compare *additional growth needed* (steady-state minus current size) against
+  // free space — the bytes already on disk are part of the steady-state total
+  // but they're not future growth, so they shouldn't be double-counted.
+  const projectedGrowthBytes = Math.max(
+    0,
+    snap.workload.steadyStateSizeBytes - snap.database.sizeBytes,
+  );
+  if (dbVolume && projectedGrowthBytes > dbVolume.freeBytes) {
     reasons.push({
       severity: "red",
       code: "projected_exceeds_disk",
-      message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
+      message: `Projected database growth (${formatBytes(projectedGrowthBytes)} to reach steady-state of ${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
       suggestion: "Reduce sample retention or monitored asset count, or expand the database volume. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
     });
-  } else if (dbVolume && snap.workload.steadyStateSizeBytes > dbVolume.freeBytes * 0.75) {
+  } else if (dbVolume && projectedGrowthBytes > dbVolume.freeBytes * 0.75) {
     reasons.push({
       severity: "amber",
       code: "projected_approaches_disk",
-      message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) will consume more than 75% of free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
+      message: `Projected database growth (${formatBytes(projectedGrowthBytes)} to reach steady-state of ${formatBytes(snap.workload.steadyStateSizeBytes)}) will consume more than 75% of free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
       suggestion: "Consider reducing sample retention or expanding the database volume before it fills. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
     });
   }
