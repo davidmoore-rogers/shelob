@@ -3341,6 +3341,7 @@ async function collectLldpNeighborsSnmp(session: any): Promise<LldpNeighborSampl
     locSubtypes, locIds, locDescs,
     chSubtypes, chIds, ptSubtypes, ptIds, ptDescs,
     sysNames, sysDescs, capsEnabled, manAddrEnum,
+    ifNames,
   ] = await Promise.all([
     snmpWalk(session, OID.lldpLocPortIdSubtype).catch(() => new Map()),
     snmpWalk(session, OID.lldpLocPortId).catch(() => new Map()),
@@ -3356,11 +3357,21 @@ async function collectLldpNeighborsSnmp(session: any): Promise<LldpNeighborSampl
     // Walking lldpRemManAddrIfSubtype just to enumerate the table indexes —
     // the actual address is encoded in the index suffix, not the column value.
     snmpWalk(session, OID.lldpRemManAddr + ".3").catch(() => new Map()),
+    // IF-MIB ifName: fallback for the local port label when lldpLocPortTable
+    // is empty. FortiOS uses ifIndex as lldpLocPortNum, so a "port-2" label
+    // can be resolved to "internal1" / "wan2" / etc via the IF-MIB table that
+    // every SNMP-monitored asset already exposes.
+    snmpWalk(session, OID.ifName).catch(() => new Map()),
   ]);
 
-  // No local LLDP ports → device doesn't speak LLDP-MIB. Signal "leave rows
-  // alone" so we don't wipe stored neighbors on a transport that can't report.
-  if (locIds.size === 0 && locDescs.size === 0) return undefined;
+  // No local LLDP ports AND no remote neighbors → device doesn't speak
+  // LLDP-MIB. Signal "leave rows alone" so we don't wipe stored neighbors
+  // on a transport that can't report. The previous guard returned here on
+  // an empty local port table alone, but some FortiOS agents populate
+  // lldpRemTable while leaving lldpLocPortTable empty — those reports are
+  // authoritative for the remote side, and the per-row port label falls
+  // back to "port-<num>" naturally below.
+  if (locIds.size === 0 && locDescs.size === 0 && chIds.size === 0) return undefined;
 
   // localPortNum → friendly label. When the subtype is interfaceName(5) or
   // interfaceAlias(1), the id IS the ifName/alias and we want it. Otherwise
@@ -3380,6 +3391,16 @@ async function collectLldpNeighborsSnmp(session: any): Promise<LldpNeighborSampl
     } else {
       localPortLabel.set(portNum, `port-${portNum}`);
     }
+  }
+  // IF-MIB ifName fallback: rem-table-only agents (some FortiOS builds)
+  // leave lldpLocPortTable empty but lldpRemLocalPortNum lines up with the
+  // ifIndex of the physical port. Stamp any port number that the local-port
+  // pass didn't cover so neighbors render as e.g. "internal1 → CKYSMA-148F-1"
+  // instead of "port-2 → CKYSMA-148F-1".
+  for (const [ifIndex, nameVb] of ifNames.entries()) {
+    if (localPortLabel.has(ifIndex)) continue;
+    const name = snmpVbToString(nameVb).trim();
+    if (name) localPortLabel.set(ifIndex, name);
   }
 
   // (localPortNum, remIndex) → management IP. Decode the index suffix:
