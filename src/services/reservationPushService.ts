@@ -298,19 +298,32 @@ export async function pushReservation(
 
   // Pre-check for collision so we can fail with a clearer message than the
   // FortiOS error envelope would give us. FortiOS rejects duplicate MAC and
-  // duplicate IP within a scope.
+  // duplicate IP within a scope. Errors include the existing entry's MAC and
+  // description so the operator can find/remove it on the FortiGate if
+  // Polaris doesn't already know about it (e.g. pushed by a previous tool,
+  // added directly on the device, or pending discovery ingest).
   const existing = await listReservedAddresses(t, scopeId);
+  const describeEntry = (r: FortiOsReservedAddress): string => {
+    const parts: string[] = [`entry id ${r.id}`];
+    if (r.mac) parts.push(`MAC ${r.mac}`);
+    if (r.description) parts.push(`description "${r.description}"`);
+    return parts.join(", ");
+  };
   for (const r of existing) {
     if (r.ip && r.ip === params.ip) {
       throw new AppError(
         409,
-        `FortiGate already has a reservation for ${params.ip} on this scope (entry id ${r.id})`,
+        `FortiGate already has a reservation for ${params.ip} on this scope (${describeEntry(r)}). ` +
+          `If this entry is not in Polaris, run discovery for the FortiManager/FortiGate integration to ingest it, ` +
+          `or remove it from the FortiGate to free the IP.`,
       );
     }
     if (r.mac && normalizeMac(r.mac) === mac) {
       throw new AppError(
         409,
-        `FortiGate already has a reservation for MAC ${mac} on this scope (entry id ${r.id})`,
+        `FortiGate already has a reservation for MAC ${mac} on this scope (${describeEntry(r)}). ` +
+          `If this entry is not in Polaris, run discovery for the FortiManager/FortiGate integration to ingest it, ` +
+          `or remove it from the FortiGate to free the MAC.`,
       );
     }
   }
