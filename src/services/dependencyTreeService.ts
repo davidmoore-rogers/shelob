@@ -434,11 +434,25 @@ export async function recomputeDependencyTree(integrationId?: string): Promise<{
     // get null layer, e.g. an isolated firewall whose hostname doesn't
     // match any switch's controllerFortigate gets layer 1; an orphan
     // switch with no resolvable parent gets null).
+    //
+    // Bucket in-scope assets by their resolved layer value (including null)
+    // and issue ONE updateMany per distinct layer. The dependency DAG only
+    // grows a handful of layers deep on real fleets — firewall (1), direct
+    // switches/APs (2), chained switches (3), the occasional 4 — so this
+    // collapses ~1800 sequential per-row UPDATEs into 4–6 set-based ones.
+    // The previous per-asset `await tx.asset.update` loop was the dominant
+    // cost of Phase 12 finalize on large fleets (~minute on 1.8k assets).
+    const byLayer = new Map<number | null, string[]>();
     for (const a of inventory) {
       if (!inScope.has(a.id)) continue;
       const layer = layers.get(a.id) ?? null;
-      await tx.asset.update({
-        where: { id: a.id },
+      const list = byLayer.get(layer);
+      if (list) list.push(a.id);
+      else byLayer.set(layer, [a.id]);
+    }
+    for (const [layer, ids] of byLayer) {
+      await tx.asset.updateMany({
+        where: { id: { in: ids } },
         data:  { dependencyLayer: layer },
       });
     }
