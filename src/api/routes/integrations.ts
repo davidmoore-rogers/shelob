@@ -70,6 +70,15 @@ interface ActiveDiscoveryEntry {
   deviceStartedAt: Map<string, number>;   // FMG: per-FortiGate start timestamps
   slowAlerted: boolean;                   // overall-run slow event already emitted
   slowAlertedDevices: Set<string>;        // per-FortiGate slow event already emitted
+  // Rolling progress counters surfaced in the UI's "N/M complete, S skipped"
+  // line. FMG only — populated by parsing the existing onProgress events
+  // (`discover.devices` info message for the total, then `discover.device.*`
+  // events for the per-device terminal counts). Standalone FortiGate runs
+  // leave these at the initial values since there's exactly one device.
+  totalDevices: number | null;
+  completedCount: number;
+  skippedOfflineCount: number;             // conn_status !== 1 at roster time
+  skippedErrorCount: number;               // misconfig / unreachable / sync failure
 }
 const activeDiscovery = new Map<string, ActiveDiscoveryEntry>();
 
@@ -431,6 +440,10 @@ router.get("/discoveries", async (req, res) => {
       activeDevices: devices,
       slow: entry.slowAlerted,
       slowDevices: [...entry.slowAlertedDevices],
+      totalDevices: entry.totalDevices,
+      completedCount: entry.completedCount,
+      skippedOfflineCount: entry.skippedOfflineCount,
+      skippedErrorCount: entry.skippedErrorCount,
     };
   });
   res.json({ discoveries: running });
@@ -583,6 +596,10 @@ router.post("/", async (req, res, next) => {
         deviceStartedAt: new Map(),
         slowAlerted: false,
         slowAlertedDevices: new Set(),
+        totalDevices: null,
+        completedCount: 0,
+        skippedOfflineCount: 0,
+        skippedErrorCount: 0,
       });
       logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integration.id, resourceName: input.name, actor: req.session?.username, message: `DHCP discovery started for "${input.name}"` });
       try {
@@ -1312,6 +1329,10 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
     deviceStartedAt: new Map(),
     slowAlerted: false,
     slowAlertedDevices: new Set(),
+    totalDevices: null,
+    completedCount: 0,
+    skippedOfflineCount: 0,
+    skippedErrorCount: 0,
   });
 
   await prisma.integration.update({ where: { id: integrationId }, data: { lastDiscoveryAt: new Date() } });
@@ -1335,8 +1356,28 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         message,
       );
     }
+    const entry = activeDiscovery.get(integrationId);
+    // Progress-counter tracking. Driven off step+level alone (NOT the device
+    // param) because the offline skip at fortimanagerService:920 doesn't pass
+    // a device — the device.start event hasn't fired yet for those devices.
+    if (entry) {
+      if (step === "discover.devices" && level === "info" && entry.totalDevices === null) {
+        // Roster log: "Found N managed device(s) in ADOM ..." OR
+        // "Found N managed device(s) in ADOM ... — M included, K filtered".
+        // The first capture is always the total roster size before filtering.
+        const m = /Found (\d+) managed device/.exec(message);
+        if (m) entry.totalDevices = Number(m[1]);
+      } else if (step === "discover.device.complete") {
+        entry.completedCount++;
+      } else if (step === "discover.device.skip" && level === "info") {
+        entry.skippedOfflineCount++;
+      } else if (step === "discover.device.skip" && level === "error") {
+        entry.skippedErrorCount++;
+      } else if (step === "discover.device" && level === "error") {
+        entry.skippedErrorCount++;
+      }
+    }
     if (device) {
-      const entry = activeDiscovery.get(integrationId);
       if (entry) {
         // Any terminal per-device event clears the device from the active
         // set. `discover.device.complete` is the happy path; `.skip` and

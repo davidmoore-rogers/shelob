@@ -766,8 +766,26 @@ function renderQueryStatus() {
         if (d.slowDevices) d.slowDevices.forEach(function (name) { slowSet[name] = true; });
         var nameClass = d.slow ? 'query-status-name query-status-name-slow' : 'query-status-name';
         var nameTitle = d.slow ? ' title="This discovery is running longer than normal"' : '';
+        // FMG-only progress summary: "N/M complete · K skipped (offline)".
+        // Standalone FortiGate discoveries are a single device — counts add
+        // no information there. Skip-error count is rolled into the offline
+        // count only when non-zero so the common case stays compact.
+        var progressLine = '';
+        if (d.type === 'fortimanager' && d.totalDevices != null) {
+          var done = d.completedCount || 0;
+          var skipOff = d.skippedOfflineCount || 0;
+          var skipErr = d.skippedErrorCount || 0;
+          var skipTotal = skipOff + skipErr;
+          var parts = [done + '/' + d.totalDevices + ' complete'];
+          if (skipTotal > 0) {
+            var skipLabel = skipErr > 0 ? skipTotal + ' skipped' : skipOff + ' skipped (offline)';
+            parts.push(skipLabel);
+          }
+          progressLine = '<span class="query-status-progress">' + escapeHtml(parts.join(' · ')) + '</span>';
+        }
         return '<li><div style="min-width:0;flex:1">' +
           '<span class="' + nameClass + '"' + nameTitle + '>Discovering ' + escapeHtml(d.name) + (d.slow ? ' — slow' : '') + '</span>' +
+          progressLine +
           (d.activeDevices && d.activeDevices.length ? d.activeDevices.map(function (dev) {
             var cls = slowSet[dev] ? 'query-status-device query-status-device-slow' : 'query-status-device';
             var t = slowSet[dev] ? ' title="This FortiGate is taking longer than normal"' : '';
