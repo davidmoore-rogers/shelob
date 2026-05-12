@@ -325,7 +325,11 @@ async function openBulkEditSubnetsModal() {
           var existingTags = existing && existing.tags ? existing.tags : [];
           payload.tags = Array.from(new Set(existingTags.concat(selectedTags)));
         } else {
-          payload.tags = selectedTags;
+          var existingForReplace = _subnetsData.find(function (s) { return s.id === id; }) ||
+                                   _allSubnetsData.find(function (s) { return s.id === id; });
+          var preserved = (existingForReplace && existingForReplace.tags ? existingForReplace.tags : [])
+            .filter(isProtectedTag);
+          payload.tags = Array.from(new Set(selectedTags.concat(preserved)));
         }
       }
       try {

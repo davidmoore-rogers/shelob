@@ -1188,6 +1188,19 @@ function _ensureTagCache() {
   });
 }
 
+// Auto-managed tag prefixes. These are reconciled by the backend (firewall
+// breadcrumb tags by firewallTagService, region tags by mapRegionService) and
+// must never be added or removed through the UI — the picker hides them and
+// getTagFieldValue preserves them from the existing record on save.
+var PROTECTED_TAG_PREFIXES = ["firewall:", "region:"];
+
+function isProtectedTag(name) {
+  for (var i = 0; i < PROTECTED_TAG_PREFIXES.length; i++) {
+    if (name.indexOf(PROTECTED_TAG_PREFIXES[i]) === 0) return true;
+  }
+  return false;
+}
+
 /**
  * Build tag field HTML. Call _ensureTagCache() before using this.
  * selected: array of currently selected tag names
@@ -1195,6 +1208,7 @@ function _ensureTagCache() {
 function _renderTagChips(selected) {
   var cats = {};
   _tagCache.tags.forEach(function (t) {
+    if (isProtectedTag(t.name)) return;
     var cat = t.category || "General";
     if (!cats[cat]) cats[cat] = [];
     cats[cat].push(t);
@@ -1230,12 +1244,13 @@ function tagFieldHTML(selected, opts) {
 
   // Read-only: render selected tags as static badges, no checkboxes or "add new" row.
   if (opts.readOnly) {
-    if (selected.length === 0) {
+    var visibleSelected = selected.filter(function (n) { return !isProtectedTag(n); });
+    if (visibleSelected.length === 0) {
       return '<div class="form-group"><label>Tags</label><p style="color:var(--color-text-tertiary);margin:0">—</p></div>';
     }
     var tagsByName = {};
     _tagCache.tags.forEach(function (t) { tagsByName[t.name] = t; });
-    var chips = selected.map(function (name) {
+    var chips = visibleSelected.map(function (name) {
       var t = tagsByName[name];
       var color = t && t.color ? t.color : '';
       var style = color ? 'background:' + escapeHtml(color) + '44;border-color:' + escapeHtml(color) + ';color:' + escapeHtml(color) : '';
@@ -1244,8 +1259,16 @@ function tagFieldHTML(selected, opts) {
     return '<div class="form-group"><label>Tags</label><div class="tag-picker" style="pointer-events:none">' + chips + '</div></div>';
   }
 
+  // Stash protected tags from the original record on the picker element so
+  // getTagFieldValue can merge them back into the save payload — operators
+  // can neither add nor remove these through the UI.
+  var preservedTags = selected.filter(isProtectedTag);
+  var preservedAttr = preservedTags.length
+    ? ' data-preserved-tags="' + escapeHtml(JSON.stringify(preservedTags)) + '"'
+    : '';
+
   var html = '<div class="form-group"><label>Tags</label>' +
-    '<div class="tag-picker" id="f-tags-picker">' +
+    '<div class="tag-picker" id="f-tags-picker"' + preservedAttr + '>' +
     _renderTagChips(selected) +
     '</div>';
 
@@ -1273,12 +1296,25 @@ function tagFieldHTML(selected, opts) {
 
 /**
  * Read selected tags from the form — works for both enforced and free-text modes.
+ * Auto-managed tags (firewall:/region:) stashed on the picker at render time
+ * are merged back in so a save can neither add nor remove them.
  */
 function getTagFieldValue() {
   var checked = [];
   document.querySelectorAll('input[name="f-tags-cb"]:checked').forEach(function (cb) {
     checked.push(cb.value);
   });
+  var picker = document.getElementById("f-tags-picker");
+  if (picker && picker.dataset.preservedTags) {
+    try {
+      var preserved = JSON.parse(picker.dataset.preservedTags);
+      if (Array.isArray(preserved)) {
+        preserved.forEach(function (name) {
+          if (checked.indexOf(name) === -1) checked.push(name);
+        });
+      }
+    } catch (_) {}
+  }
   return checked;
 }
 

@@ -1301,7 +1301,10 @@ async function openBulkTagsModal() {
         var existingTags = existing && existing.tags ? existing.tags : [];
         payload.tags = Array.from(new Set(existingTags.concat(selectedTags)));
       } else {
-        payload.tags = selectedTags;
+        var existingForReplace = _assetsData.find(function (a) { return a.id === id; });
+        var preserved = (existingForReplace && existingForReplace.tags ? existingForReplace.tags : [])
+          .filter(isProtectedTag);
+        payload.tags = Array.from(new Set(selectedTags.concat(preserved)));
       }
       try {
         await api.assets.update(id, payload);
