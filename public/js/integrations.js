@@ -1118,23 +1118,40 @@ function _readFortigateMonitorBlock(prefix) {
 // Shared "Verbose debug logging" checkbox appended to the General tab of
 // every integration type. When ticked, the next discovery cycle + every
 // monitor worker job published for assets owned by this integration emits
-// step-by-step structured logs to journalctl. Off by default.
+// step-by-step structured logs to journalctl. Auto-disables after 30 minutes.
 function verboseLoggingFormHTML(defaults) {
   var d = defaults || {};
   var checked = d.verboseLogging === true ? "checked" : "";
-  return '<hr style="border:none;border-top:1px solid var(--color-border);margin:1.25rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.5rem">Debug</p>' +
-    '<div style="display:flex;align-items:flex-start;gap:0.55rem">' +
-      '<input type="checkbox" id="f-verboseLogging" ' + checked + ' style="margin-top:3px">' +
-      '<label for="f-verboseLogging" style="margin:0">' +
-        '<strong>Verbose debug logging</strong><br>' +
-        '<span style="font-size:0.8rem;color:var(--color-text-secondary)">' +
-        'Emits step-by-step discovery, sync, and worker pickup/finish logs to ' +
-        'journalctl for this integration. High log volume — flip on for diagnosis, ' +
-        'flip off when done. Effective on the next discovery cycle / monitor tick; no restart needed.' +
-        '</span>' +
-      '</label>' +
-    '</div>';
+
+  // When currently enabled with a known start time, show a countdown so the
+  // operator knows when it will auto-disable.
+  var expiryHint = "";
+  if (d.verboseLogging === true && d.verboseLoggingEnabledAt) {
+    var enabledAt = new Date(d.verboseLoggingEnabledAt);
+    var expiresAt = new Date(enabledAt.getTime() + 30 * 60 * 1000);
+    var remainingMs = expiresAt - Date.now();
+    if (remainingMs > 0) {
+      var remainingMin = Math.ceil(remainingMs / 60000);
+      expiryHint = " <span style=\"color:var(--color-warning,#ffb74d);font-size:0.78rem;font-weight:normal\">— auto-disables in " + remainingMin + " min</span>";
+    } else {
+      expiryHint = " <span style=\"color:var(--color-text-tertiary);font-size:0.78rem;font-weight:normal\">— auto-disabling shortly</span>";
+    }
+  }
+
+  return "<hr style=\"border:none;border-top:1px solid var(--color-border);margin:1.25rem 0\">" +
+    "<p style=\"font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.5rem\">Debug</p>" +
+    "<div style=\"display:flex;align-items:flex-start;gap:0.55rem\">" +
+      "<input type=\"checkbox\" id=\"f-verboseLogging\" " + checked + " style=\"margin-top:3px\">" +
+      "<label for=\"f-verboseLogging\" style=\"margin:0\">" +
+        "<strong>Verbose debug logging</strong>" + expiryHint + "<br>" +
+        "<span style=\"font-size:0.8rem;color:var(--color-text-secondary)\">" +
+        "Emits step-by-step discovery, sync, and worker pickup/finish logs to " +
+        "journalctl for this integration. High log volume — flip on for diagnosis, " +
+        "flip off when done. Auto-disables after 30 minutes. " +
+        "Effective on the next discovery cycle / monitor tick; no restart needed." +
+        "</span>" +
+      "</label>" +
+    "</div>";
 }
 
 // Read the verbose-logging checkbox from any integration form. Returns
@@ -2324,6 +2341,10 @@ async function runDiscovery(id) {
   if (wrap) wrap.innerHTML = _discoverBtnHTML(id, name, { id: id, name: name, currentDevice: null }, false);
   try {
     await api.integrations.discover(id, name);
+    // Immediately refresh the server discoveries list so the sidebar popup
+    // transitions seamlessly from the tracked POST to the running discovery
+    // entry without the up-to-4-second gap from the normal polling interval.
+    if (window._pollDiscoveries) window._pollDiscoveries();
     showToast("Discovery started — running in the background. Results will appear shortly.", "success");
     [15000, 45000, 120000].forEach(function (delay) {
       setTimeout(function () {

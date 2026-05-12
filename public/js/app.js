@@ -177,8 +177,9 @@ function renderNav() {
   pollDiscoveries();
   setInterval(pollDiscoveries, 4000);
 
-  // Expose for renderQueryStatus closure
+  // Expose for renderQueryStatus closure and for callers that need an immediate refresh
   window._getServerDiscoveries = function () { return _serverDiscoveries; };
+  window._pollDiscoveries = pollDiscoveries;
 
   // Inject global search bar + user badge into page header
   renderGlobalSearch();
