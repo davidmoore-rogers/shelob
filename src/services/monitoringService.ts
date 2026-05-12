@@ -3659,13 +3659,20 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
       await persistLldpNeighbors(assetId, d.lldpNeighbors, now, d.lldpSource ?? "fortios");
       stopWrite();
     }
-    // Only bump lastSystemInfoAt on a successful pass. The /system-info GET
-    // endpoint anchors its interface query to this timestamp so it can render
-    // every interface (including unpinned ones the fast cadence doesn't
-    // touch) — bumping it on a transport failure where no rows were inserted
-    // would point the query at a moment with zero samples and silently empty
-    // the Interfaces table on the System tab while the device is offline.
-    await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
+    // Only bump lastSystemInfoAt when the scrape returned interfaces. The
+    // /system-info GET endpoint anchors its interface query to this
+    // timestamp, so bumping it on an empty interfaces[] silently empties the
+    // System tab table — operators on REST API direct have seen FortiOS
+    // return 200 OK with an empty results object (token without monitor
+    // scope, VDOM weirdness, transient state) which used to slip past the
+    // earlier "result.data is set" guard. Preserving the prior interface set
+    // is strictly better than displaying nothing while the device is online.
+    // The other streams (storage / ipsec / temperatures / lldp) read their
+    // own latest-row timestamp and are written above unconditionally, so they
+    // still refresh on every successful pull.
+    if (d.interfaces.length > 0) {
+      await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
+    }
   }
 }
 
