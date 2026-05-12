@@ -3127,9 +3127,17 @@ function _renderInterfacesTable(container, si, asset) {
     return String(a.ifName).localeCompare(String(b.ifName), undefined, { numeric: true, sensitivity: "base" });
   });
 
-  // Groups
-  var aggGroup  = topLevel.filter(function (r) { return r.ifType === "aggregate"; });
-  var physGroup = topLevel.filter(function (r) { return r.ifType === "physical" || r.ifType == null; });
+  // Group physical + aggregate together so member ports nest under their
+  // aggregate inline (a "lag1" row sorts among "port1, port2..." and its
+  // member ports indent under it on expand). The previous split — separate
+  // "Aggregate Interfaces" and "Physical Interfaces" headers — fragmented
+  // the natural reading order and forced the operator to mentally stitch a
+  // physical port back to its aggregate two sections apart. "Other" (VLAN,
+  // loopback, tunnel) stays in its own group because those are conceptually
+  // distinct surfaces, not physical-layer ports.
+  var ifaceGroup = topLevel.filter(function (r) {
+    return r.ifType === "aggregate" || r.ifType === "physical" || r.ifType == null;
+  });
   var otherGroup = topLevel.filter(function (r) {
     return r.ifType && r.ifType !== "physical" && r.ifType !== "aggregate";
   });
@@ -3137,14 +3145,9 @@ function _renderInterfacesTable(container, si, asset) {
   // ── render ─────────────────────────────────────────────────────────────────
   var html = "";
 
-  if (aggGroup.length > 0) {
-    html += sectionRow("Aggregate Interfaces", aggGroup.length);
-    aggGroup.forEach(function (agg) { html += renderCluster(agg); });
-  }
-
-  if (physGroup.length > 0) {
-    html += sectionRow("Physical Interfaces", physGroup.length);
-    physGroup.forEach(function (phys) { html += renderCluster(phys); });
+  if (ifaceGroup.length > 0) {
+    html += sectionRow("Interfaces", ifaceGroup.length);
+    ifaceGroup.forEach(function (iface) { html += renderCluster(iface); });
   }
 
   if (otherGroup.length > 0) {
