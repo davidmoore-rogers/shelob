@@ -198,10 +198,14 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
     const telTransport   = eff.telemetryPolling    || "unknown";
     const ifTransport    = eff.interfacesPolling   || "unknown";
     // Per-integration verbose debug toggle — stamped on every job for assets
-    // owned by an integration with `config.verboseLogging === true`. Workers
-    // check this flag to decide whether to emit pickup/finish lines.
+    // owned by an integration with `config.verboseLogging === true` AND within
+    // the 30-minute auto-disable window. Workers check this flag to decide
+    // whether to emit pickup/finish lines.
     const intCfg = a.discoveredByIntegration?.config as Record<string, unknown> | null | undefined;
-    const verboseDebug = intCfg?.verboseLogging === true;
+    const verboseDebug = intCfg != null &&
+      intCfg.verboseLogging === true &&
+      (typeof intCfg.verboseLoggingEnabledAt !== "string" ||
+       Date.now() - new Date(intCfg.verboseLoggingEnabledAt as string).getTime() < 30 * 60 * 1000);
     const labels = { transport: probeTransport, assetType, verboseDebug };
     const telLabels = { transport: telTransport, assetType, verboseDebug };
     const ifLabels  = { transport: ifTransport,  assetType, verboseDebug };

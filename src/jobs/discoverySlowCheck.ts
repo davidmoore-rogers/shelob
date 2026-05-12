@@ -14,7 +14,7 @@
  * Import from app.ts to activate.
  */
 
-import { checkForSlowRuns } from "../api/routes/integrations.js";
+import { checkForSlowRuns, expireVerboseLogging } from "../api/routes/integrations.js";
 import { logger } from "../utils/logger.js";
 import { runInstrumentedJob } from "./_metrics.js";
 
@@ -24,6 +24,7 @@ async function tick(): Promise<void> {
   try {
     await runInstrumentedJob("discoverySlowCheck", async () => {
       await checkForSlowRuns();
+      await expireVerboseLogging();
     });
   } catch (err) {
     logger.error(err, "Discovery slow-check job failed");

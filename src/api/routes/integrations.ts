@@ -47,6 +47,54 @@ import { logger } from "../../utils/logger.js";
 
 const router = Router();
 
+/** Auto-disable window for per-integration verbose debug logging (30 minutes). */
+const VERBOSE_LOGGING_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Returns true when verbose logging is currently active for the given
+ * integration config — i.e. the flag is on AND the 30-minute window hasn't
+ * expired. Legacy rows that have `verboseLogging: true` but no timestamp
+ * (set before this feature existed) are treated as active so existing
+ * sessions aren't silently broken; the expiry job will clear them on the
+ * next tick once 30 minutes pass.
+ */
+export function isVerboseLoggingActive(cfg: Record<string, unknown>): boolean {
+  if (cfg.verboseLogging !== true) return false;
+  const at = cfg.verboseLoggingEnabledAt;
+  if (typeof at !== "string") return true; // legacy: no timestamp, treat as active
+  return Date.now() - new Date(at).getTime() < VERBOSE_LOGGING_TTL_MS;
+}
+
+/**
+ * Scan all integrations and clear `verboseLogging` for any that have had it
+ * enabled for more than 30 minutes. Called every 30 s from discoverySlowCheck.
+ * Integrations without a `verboseLoggingEnabledAt` timestamp (set before this
+ * feature) are left alone — they need a manual toggle to pick up the timestamp.
+ */
+export async function expireVerboseLogging(): Promise<void> {
+  const integrations = await prisma.integration.findMany({
+    select: { id: true, name: true, config: true },
+  });
+  for (const integration of integrations) {
+    const cfg = integration.config as Record<string, unknown>;
+    if (cfg.verboseLogging !== true) continue;
+    const at = cfg.verboseLoggingEnabledAt;
+    if (typeof at !== "string") continue; // no timestamp: skip (legacy row)
+    if (Date.now() - new Date(at).getTime() < VERBOSE_LOGGING_TTL_MS) continue;
+    // Window expired — disable verbose logging
+    const newCfg: Record<string, unknown> = { ...cfg, verboseLogging: false };
+    delete newCfg.verboseLoggingEnabledAt;
+    await prisma.integration.update({
+      where: { id: integration.id },
+      data: { config: newCfg as any },
+    });
+    logger.info(
+      { integrationId: integration.id, integrationName: integration.name },
+      "integration.verbose_logging.auto_expired",
+    );
+  }
+}
+
 // Detect the masked-secret sentinel the GET endpoints emit (eight or more
 // U+2022 BULLET characters). The integration edit modal pre-fills sensitive
 // fields with this string; if the operator saves without retyping, the form
@@ -558,11 +606,16 @@ router.post("/", async (req, res, next) => {
       // clear message instead of failing later in the apply pass.
       validateAutoMonitorPatterns(cfg);
     }
+    // Stamp verboseLoggingEnabledAt when creating with verbose logging already on.
+    const createConfig: Record<string, unknown> = { ...(input.config as any) };
+    if (createConfig.verboseLogging === true) {
+      createConfig.verboseLoggingEnabledAt = new Date().toISOString();
+    }
     const integration = await prisma.integration.create({
       data: {
         type: input.type,
         name: input.name,
-        config: input.config as any,
+        config: createConfig as any,
         enabled: input.enabled,
         autoDiscover: input.autoDiscover ?? true,
         pollInterval: input.pollInterval,
@@ -737,6 +790,15 @@ router.put("/:id", async (req, res, next) => {
           }
         }
         validateAutoMonitorPatterns(newConfig);
+      }
+      // Manage the 30-minute verbose-logging timestamp. Stamp it the first time
+      // verboseLogging is enabled (don't reset the clock on subsequent saves
+      // while it's already on). Clear it when verboseLogging is disabled so the
+      // window resets cleanly the next time the operator enables it.
+      if (newConfig.verboseLogging === true && !newConfig.verboseLoggingEnabledAt) {
+        newConfig.verboseLoggingEnabledAt = new Date().toISOString();
+      } else if (newConfig.verboseLogging === false) {
+        delete newConfig.verboseLoggingEnabledAt;
       }
       data.config = newConfig;
     }
@@ -1341,12 +1403,14 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
   const kindLabel = (integration.type === "entraid" || integration.type === "activedirectory") ? "device discovery" : "DHCP discovery";
   logEvent({ action: "integration.discover.started", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, message: `${label} ${kindLabel} started for "${integrationName}"` });
 
-  // Per-integration verbose flag — when on, every discovery step ALSO emits
-  // a pino info-level line so an operator running `journalctl -u polaris -f`
-  // sees the per-step trace in real time (in addition to the Events row).
-  const verboseLogging =
-    (integration.config && typeof integration.config === "object" &&
-     (integration.config as Record<string, unknown>).verboseLogging === true);
+  // Per-integration verbose flag — when on (and within its 30-minute window),
+  // every discovery step ALSO emits a pino info-level line so an operator
+  // running `journalctl -u polaris -f` sees the per-step trace in real time.
+  const verboseLogging = isVerboseLoggingActive(
+    (integration.config && typeof integration.config === "object")
+      ? (integration.config as Record<string, unknown>)
+      : {},
+  );
 
   const onProgress: DiscoveryProgressCallback = (step, level, message, device) => {
     logEvent({ action: `integration.${step}`, resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level, message: `[${integrationName}] ${message}` });
@@ -2055,7 +2119,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       select: { config: true },
     });
     const cfg = (cfgRow?.config ?? null) as Record<string, unknown> | null;
-    verboseLogging = cfg?.verboseLogging === true;
+    verboseLogging = cfg != null && isVerboseLoggingActive(cfg);
   } catch {
     // best-effort; absence falls through to false
   }
