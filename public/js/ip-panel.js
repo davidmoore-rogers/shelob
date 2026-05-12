@@ -316,6 +316,12 @@ function _renderIpList(data) {
     var freeBtn = canEditThis && r ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '';
     if (isSpecial) {
       actions = "";
+    } else if (r && r.status === "active" && (r.sourceType === "dhcp_reservation" || r.owner === "dhcp-reservation")) {
+      // Already a DHCP reservation on the device — no Reserve button.
+      // Precedence matches the status-pill logic above so a stale
+      // owner="dhcp-lease" placeholder on a dhcp_reservation row can't trip
+      // the lease branch below.
+      actions = freeBtn + assetBtn + editBtn;
     } else if (r && r.status === "active" && (r.sourceType === "dhcp_lease" || r.owner === "dhcp-lease")) {
       var reserveBtn = canReserveIps()
         ? '<button class="btn btn-sm btn-primary ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '">Reserve</button>'
@@ -957,7 +963,10 @@ function _openEditReservationModal(reservationId) {
       '<div class="form-group"><label>Status</label>' + statusBadge(r.status) + '</div>' +
       '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(r.hostname || "") + '"' + lock + '></div>' +
       '<div class="form-group"><label>' + macLabel + '</label>' +
-        '<input type="text" id="f-mac" placeholder="AA:BB:CC:DD:EE:FF" value="' + escapeHtml(r.macAddress || "") + '"' + lock + '>' +
+        '<div style="display:flex;gap:6px;align-items:stretch">' +
+          '<input type="text" id="f-mac" placeholder="AA:BB:CC:DD:EE:FF" value="' + escapeHtml(r.macAddress || "") + '" style="flex:1"' + lock + '>' +
+          (readOnly ? "" : '<button type="button" class="btn btn-secondary btn-sm" id="btn-gen-mac-edit" title="Generate a locally-administered MAC (02:xx:xx:xx:xx:xx) — placeholder when the device&#39;s real MAC isn&#39;t known yet">Generate</button>') +
+        '</div>' +
         '<p class="hint">' + macHint + '</p></div>' +
       '<div class="form-group"><label>Owner</label>' +
         '<input type="text" id="f-owner" value="' + escapeHtml(r.owner) + '"' + lock + '>' +
@@ -977,6 +986,19 @@ function _openEditReservationModal(reservationId) {
     var originalOwner = r.owner || "";
 
     if (!readOnly) {
+      // Wire the Generate button on the MAC field. Uses a modal-local id
+      // (`btn-gen-mac-edit`) so it doesn't collide with the reserve / auto-
+      // allocate modals' Generate button id from `_macFieldMarkup`.
+      var genBtn = document.getElementById("btn-gen-mac-edit");
+      var macInput = document.getElementById("f-mac");
+      if (genBtn && macInput) {
+        genBtn.addEventListener("click", function () {
+          macInput.value = _generateLocalMac();
+          macInput.focus();
+          macInput.select();
+        });
+      }
+
       document.getElementById("btn-save").addEventListener("click", async function () {
         var btn = this;
         btn.disabled = true;
