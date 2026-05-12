@@ -8097,7 +8097,7 @@ function _wireSnmpWalkTab(a) {
     _populateMibDropdown(_snmpMibCache);
   } else {
     _populateMibDropdown([]); // show standard MIBs immediately
-    api.mibs.listMibs({}).then(function (mibs) {
+    api.serverSettings.listMibs({}).then(function (mibs) {
       _snmpMibCache = Array.isArray(mibs) ? mibs : [];
       _populateMibDropdown(_snmpMibCache);
     }).catch(function () {
@@ -8153,7 +8153,7 @@ function _wireSnmpWalkTab(a) {
 
     try {
       if (uploaded) {
-        var mibResult = await api.mibs.walkMib(mibId, { assetId: a.id, credentialId: credId, objectName: oidOrObj, maxRows: maxRows });
+        var mibResult = await api.serverSettings.walkMib(mibId, { assetId: a.id, credentialId: credId, objectName: oidOrObj, maxRows: maxRows });
         lastMibResult = mibResult;
         statusEl.textContent = mibResult.rowCount + " row(s) in " + mibResult.durationMs + " ms" +
           (mibResult.truncated ? " (truncated)" : "") +
