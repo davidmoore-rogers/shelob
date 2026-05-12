@@ -218,14 +218,18 @@ async function addTagToAssets(assetIds: string[], tag: string): Promise<number> 
     where: { id: { in: assetIds } },
     select: { id: true, tags: true },
   });
-  let added = 0;
+  const updates: { id: string; tags: string[] }[] = [];
   for (const row of rows) {
     const tags = Array.isArray(row.tags) ? row.tags : [];
     if (tags.includes(tag)) continue;
-    await prisma.asset.update({ where: { id: row.id }, data: { tags: [...tags, tag] } });
-    added++;
+    updates.push({ id: row.id, tags: [...tags, tag] });
   }
-  return added;
+  if (updates.length > 0) {
+    await prisma.$transaction(
+      updates.map((u) => prisma.asset.update({ where: { id: u.id }, data: { tags: u.tags } })),
+    );
+  }
+  return updates.length;
 }
 
 async function removeTagFromAllAssets(tag: string): Promise<number> {
@@ -233,13 +237,16 @@ async function removeTagFromAllAssets(tag: string): Promise<number> {
     where: { tags: { has: tag } },
     select: { id: true, tags: true },
   });
-  for (const row of rows) {
-    const tags = Array.isArray(row.tags) ? row.tags : [];
-    await prisma.asset.update({
-      where: { id: row.id },
-      data: { tags: tags.filter((t) => t !== tag) },
-    });
-  }
+  if (rows.length === 0) return 0;
+  await prisma.$transaction(
+    rows.map((row) => {
+      const tags = Array.isArray(row.tags) ? row.tags : [];
+      return prisma.asset.update({
+        where: { id: row.id },
+        data: { tags: tags.filter((t) => t !== tag) },
+      });
+    }),
+  );
   return rows.length;
 }
 
