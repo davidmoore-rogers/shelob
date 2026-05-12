@@ -2388,6 +2388,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         data: {
           discoveredBy: integrationId,
           fortigateDevice: entry.fortigateDevice,
+          lastDiscoveredAt: new Date(),
           ...(entry.vlan != null ? { vlan: entry.vlan } : {}),
         },
       });
@@ -2421,6 +2422,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           status: "available",
           discoveredBy: integrationId,
           fortigateDevice: entry.fortigateDevice,
+          lastDiscoveredAt: new Date(),
           tags: ["dhcp-discovered", integrationType],
           ...(entry.vlan != null ? { vlan: entry.vlan } : {}),
         },

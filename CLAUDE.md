@@ -104,7 +104,8 @@ polaris/
 │   │   ├── blockService.ts          # Block business logic
 │   │   ├── subnetService.ts         # Subnet allocation logic
 │   │   ├── reservationService.ts    # Reservation business logic
-│   │   ├── reservationPushService.ts # Push manual DHCP reservations to FortiGate via an FMG integration (proxy or direct realtime, with read-back verify); used by reservationService on create + release
+│   │   ├── reservationPushService.ts # Push manual DHCP reservations to FortiGate via an FMG integration (proxy or direct realtime, with read-back verify); used by reservationService on create + release. Also exports `buildTransportForIntegration` / `findScopeIdForCidr` / `listReservedAddresses` / `callFortiOs` so subnetRefreshService can reuse the same FMG-proxy/direct-FortiGate transport for read-only single-scope reconciliation.
+│   │   ├── subnetRefreshService.ts   # Per-subnet "refresh from device" action (Refresh button in the IP panel slide-in). Queries the originating FortiGate for ONE DHCP scope (CMDB reservations + live leases) via the same transport reservationPushService uses, reconciles against Polaris's `dhcp_reservation` + `dhcp_lease` rows on this subnet (manual / VIP rows untouched), and bumps `Subnet.lastDiscoveredAt`. Narrower than `discoverDhcpSubnets` — doesn't recompute asset sightings / decommissions / map regions / etc.; those reconcile on the next full integration cycle. Writes one `subnet.refresh` Event.
 │   │   ├── reservationStaleService.ts # Stale-reservation detection: settings (staleAfterDays), alert lister (active|ignored), snooze/ignore mutators, and the job entry point that emits reservation.stale Events
 │   │   ├── utilizationService.ts    # Utilization reporting
 │   │   ├── fortimanagerService.ts   # FMG JSON-RPC client & discovery orchestration. All FMG-bound calls (rpc, fmgProxyRest, resolveDeviceMgmtIp, ...) accept an optional `integrationId` and route through `getFmgWorker(integrationId)` so cross-feature traffic (discovery + reservation push + quarantine push + manual proxy + connection test) stays serial against FMG's "one-request-at-a-time" constraint.
@@ -267,6 +268,14 @@ Subnet
   discoveredBy    UUID? FK → Integration (set null on delete)
   fortigateDevice String?         -- FortiGate hostname/device
   createdBy       String?         -- username
+  -- Bumped whenever discovery touches this subnet: the integration-wide
+  -- syncDhcpSubnets pass stamps it for every create/update, and the
+  -- per-subnet Refresh action (POST /subnets/:id/refresh, invoked by the
+  -- IP panel's Refresh button) stamps it on success. Seeded to updatedAt
+  -- for pre-existing discovered subnets via the column-add migration so
+  -- the slide-in's "Discovered N minutes ago" line has a value to render
+  -- without waiting for the next full discovery cycle.
+  lastDiscoveredAt DateTime?
   reservations    Reservation[]
 
 Reservation
@@ -795,6 +804,7 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `POST   /subnets/next-available`              — Auto-allocate next available subnet of given prefix length
 - `POST   /subnets/bulk-allocate`                — Allocate multiple subnets in one call from a template. Body: `{ blockId, prefix, entries: [{name, prefixLength, vlan?} | {skip: true, prefixLength}], tags?, anchorPrefix? }`. Each non-skip entry becomes a subnet named `<prefix>_<entry.name>` (e.g. `Jefferson_Hardware`). **Skip entries** reserve address space inside the packed region without creating a subnet — used to leave gaps between allocations. **Anchor-based, all-or-nothing:** entries are packed into a single contiguous region aligned to `max(anchorPrefix, smallest-block-containing-the-group)`; `anchorPrefix` defaults to 24 if omitted. The whole call happens in one transaction — either every subnet is created or none are. Response: `{ created, anchorCidr, effectiveAnchorPrefix }`.
 - `POST   /subnets/bulk-allocate/preview`        — Non-mutating preview of the above. Same body minus `prefix` and `tags`, with a lenient entry schema (no name required) so the modal can live-update footprint while the user is still filling rows. Response: `{ fits, anchorCidr, effectiveAnchorPrefix, assignments, totalAddresses, slashTwentyFourCount, blockCidr, error }`.
+- `POST   /subnets/:id/refresh`                  *(user-or-above)* — Per-subnet "refresh from device" action invoked by the **Refresh** button in the IP panel slide-in. Queries the originating FortiGate for ONE DHCP scope (CMDB reservations + live leases) using whichever transport the integration is configured for (FMG proxy / FMG direct / standalone FortiGate REST), reconciles against Polaris's reservation rows for the same subnet, and bumps `Subnet.lastDiscoveredAt` on success. Intentionally narrower than the full `discoverDhcpSubnets` pipeline — only touches `dhcp_reservation` + `dhcp_lease` rows on this subnet, leaves manual / VIP / interface-IP rows alone (the IP-level conflict reconciliation that the full sync runs is deferred to the next integration-wide discovery cycle). 400 when the subnet wasn't discovered by an FMG/FortiGate integration or has no `fortigateDevice`. Returns `{ lastDiscoveredAt, created, updated, released, skipped }`. Writes one `subnet.refresh` Event. See `subnetRefreshService.ts`.
 
 ### Reservations — `requireAuth`
 - `GET    /reservations`                        — List (filter by owner, projectRef, status, createdBy)

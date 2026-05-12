@@ -91,6 +91,11 @@ model Subnet {
   fortigateDevice String?
   createdBy       String?
 
+  // Bumped whenever discovery touches this subnet — both the integration-wide
+  // discoverDhcpSubnets pass and the per-subnet Refresh action stamp it.
+  // Drives the "Discovered N minutes ago" line in the IP panel slide-in.
+  lastDiscoveredAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

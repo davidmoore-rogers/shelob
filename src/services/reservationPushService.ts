@@ -62,7 +62,7 @@ type Transport =
  * proxy/direct toggle as before; standalone FortiGate integrations always
  * use direct REST with the integration's own credentials.
  */
-async function buildTransportForIntegration(
+export async function buildTransportForIntegration(
   integration: { id: string; type: string; config: unknown },
   deviceName: string,
 ): Promise<Transport> {
@@ -131,7 +131,9 @@ async function buildTransport(
   return { kind: "fmg-proxy", fmgConfig, deviceName, vdom, integrationId };
 }
 
-async function callFortiOs<T>(
+export type { Transport };
+
+export async function callFortiOs<T>(
   t: Transport,
   method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
@@ -176,7 +178,7 @@ function buildDescription(
   return candidate.length > 64 ? candidate.slice(0, 64) : candidate;
 }
 
-async function findScopeIdForCidr(
+export async function findScopeIdForCidr(
   t: Transport,
   cidr: string,
 ): Promise<{ scopeId: number; serverInterface?: string }> {
@@ -225,7 +227,9 @@ async function findScopeIdForCidr(
   );
 }
 
-async function listReservedAddresses(
+export type { FortiOsReservedAddress };
+
+export async function listReservedAddresses(
   t: Transport,
   scopeId: number,
 ): Promise<FortiOsReservedAddress[]> {

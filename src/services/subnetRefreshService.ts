@@ -1,0 +1,306 @@
+/**
+ * src/services/subnetRefreshService.ts — Per-subnet "refresh from device"
+ * action invoked by the Refresh button in the IP panel slide-in.
+ *
+ * Queries the originating FortiGate for ONE DHCP scope (CMDB reservations +
+ * live leases), reconciles against Polaris's reservation rows for the same
+ * subnet, and stamps subnet.lastDiscoveredAt so the slide-in's "Discovered N
+ * minutes ago" line updates. Reuses the same FMG-proxy / direct-FortiGate
+ * transport as reservationPushService.
+ *
+ * Intentionally narrower than the full discoverDhcpSubnets pipeline — only
+ * touches DHCP rows on this subnet, doesn't recompute asset sightings /
+ * decommissions / map regions / etc. Those reconcile on the next full
+ * integration discovery cycle.
+ */
+
+import { Netmask } from "netmask";
+import { prisma } from "../db.js";
+import { AppError } from "../utils/errors.js";
+import { logEvent } from "../api/routes/events.js";
+import {
+  buildTransportForIntegration,
+  findScopeIdForCidr,
+  listReservedAddresses,
+  callFortiOs,
+  normalizeMac,
+  type Transport,
+  type FortiOsReservedAddress,
+} from "./reservationPushService.js";
+
+// ─── FortiOS live monitor shape (subset) ────────────────────────────────────
+
+interface FortiOsDhcpLease {
+  ip: string;
+  mac?: string;
+  hostname?: string;
+  interface?: string;
+  reserved?: boolean;
+  expire_time?: number;
+  access_point?: string;
+  ssid?: string;
+}
+
+async function fetchLiveLeasesForScope(
+  t: Transport,
+  serverInterface: string | undefined,
+  subnetCidr: string,
+): Promise<FortiOsDhcpLease[]> {
+  // /api/v2/monitor/system/dhcp returns every active lease on the device,
+  // grouped by server entry; we filter to the matching server-interface (when
+  // known) and fall back to a CIDR-contains check for safety.
+  const res = await callFortiOs<unknown>(
+    t,
+    "GET",
+    "/api/v2/monitor/system/dhcp?format=ip|mac|hostname|interface|reserved|expire_time|access_point|ssid",
+  );
+  // FortiOS returns either an array of { server_interface, leases: [...] }
+  // groups or a flat list — handle both.
+  const flat: FortiOsDhcpLease[] = [];
+  const collect = (arr: unknown): void => {
+    if (!Array.isArray(arr)) return;
+    for (const entry of arr) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      if (Array.isArray(e.leases)) {
+        const iface = String((e.server_interface as string) ?? (e.interface as string) ?? "");
+        for (const lease of e.leases as unknown[]) {
+          if (lease && typeof lease === "object") {
+            const l = lease as Record<string, unknown>;
+            flat.push({
+              ip: String(l.ip ?? ""),
+              mac: l.mac ? String(l.mac) : undefined,
+              hostname: l.hostname ? String(l.hostname) : undefined,
+              interface: iface || (l.interface ? String(l.interface) : undefined),
+              reserved: l.reserved === true,
+              expire_time: typeof l.expire_time === "number" ? l.expire_time : undefined,
+              access_point: l.access_point ? String(l.access_point) : undefined,
+              ssid: l.ssid ? String(l.ssid) : undefined,
+            });
+          }
+        }
+      } else if (e.ip) {
+        flat.push({
+          ip: String(e.ip),
+          mac: e.mac ? String(e.mac) : undefined,
+          hostname: e.hostname ? String(e.hostname) : undefined,
+          interface: e.interface ? String(e.interface) : undefined,
+          reserved: e.reserved === true,
+          expire_time: typeof e.expire_time === "number" ? e.expire_time : undefined,
+          access_point: e.access_point ? String(e.access_point) : undefined,
+          ssid: e.ssid ? String(e.ssid) : undefined,
+        });
+      }
+    }
+  };
+  collect(res);
+  // FortiOS sometimes wraps the results under .results
+  if (res && typeof res === "object" && "results" in (res as Record<string, unknown>)) {
+    collect((res as Record<string, unknown>).results);
+  }
+
+  // Filter to this scope: prefer server-interface match (authoritative);
+  // fall back to CIDR-contains so old FortiOS builds that don't expose the
+  // interface group still narrow correctly.
+  let block: Netmask | null = null;
+  try {
+    block = new Netmask(subnetCidr);
+  } catch {
+    /* leave null */
+  }
+  return flat.filter((l) => {
+    if (!l.ip || l.ip === "0.0.0.0") return false;
+    if (serverInterface && l.interface && l.interface !== serverInterface) {
+      // If the lease reports an interface and it doesn't match, only keep
+      // when the IP still falls inside the subnet (handles VDOM weirdness).
+      if (block && !block.contains(l.ip)) return false;
+    } else if (block && !block.contains(l.ip)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+export interface RefreshSubnetResult {
+  lastDiscoveredAt: Date;
+  created: number;
+  updated: number;
+  released: number;
+  skipped: number;
+}
+
+/**
+ * Refresh ONE subnet's DHCP reservations + leases from the FortiGate that
+ * owns it. Bumps subnet.lastDiscoveredAt on success.
+ */
+export async function refreshSubnet(
+  subnetId: string,
+  actor: string | null,
+): Promise<RefreshSubnetResult> {
+  const subnet = await prisma.subnet.findUnique({
+    where: { id: subnetId },
+    include: { integration: true, reservations: true },
+  });
+  if (!subnet) throw new AppError(404, "Subnet not found");
+  if (!subnet.discoveredBy || !subnet.integration) {
+    throw new AppError(
+      400,
+      "Refresh is only supported for subnets discovered by an integration",
+    );
+  }
+  const integration = subnet.integration;
+  if (integration.type !== "fortimanager" && integration.type !== "fortigate") {
+    throw new AppError(
+      400,
+      `Refresh is not supported for integration type "${integration.type}"`,
+    );
+  }
+  if (!subnet.fortigateDevice) {
+    throw new AppError(
+      400,
+      "Subnet has no associated FortiGate device — cannot refresh",
+    );
+  }
+
+  const t = await buildTransportForIntegration(
+    { id: integration.id, type: integration.type, config: integration.config },
+    subnet.fortigateDevice,
+  );
+  const { scopeId, serverInterface } = await findScopeIdForCidr(t, subnet.cidr);
+  const [cmdb, leases] = await Promise.all([
+    listReservedAddresses(t, scopeId),
+    fetchLiveLeasesForScope(t, serverInterface, subnet.cidr),
+  ]);
+
+  // Build the fresh view of this scope, keyed by IP. CMDB reservations are
+  // authoritative — they win on overlap with a live lease for the same IP.
+  interface Fresh {
+    ip: string;
+    mac: string | null;
+    hostname: string | null;
+    sourceType: "dhcp_reservation" | "dhcp_lease";
+  }
+  const fresh = new Map<string, Fresh>();
+  for (const r of cmdb) {
+    if (!r.ip) continue;
+    fresh.set(r.ip, {
+      ip: r.ip,
+      mac: r.mac ? normalizeMac(r.mac) : null,
+      hostname: r.description ? extractHostnameFromDescription(r.description) : null,
+      sourceType: "dhcp_reservation",
+    });
+  }
+  for (const l of leases) {
+    if (fresh.has(l.ip)) continue;
+    fresh.set(l.ip, {
+      ip: l.ip,
+      mac: l.mac ? normalizeMac(l.mac) : null,
+      hostname: l.hostname || null,
+      sourceType: l.reserved ? "dhcp_reservation" : "dhcp_lease",
+    });
+  }
+
+  // Existing dhcp_*-sourced active reservations on this subnet.
+  const existing = subnet.reservations.filter(
+    (r) =>
+      r.status === "active" &&
+      r.ipAddress &&
+      (r.sourceType === "dhcp_reservation" || r.sourceType === "dhcp_lease"),
+  );
+  // Active manual / vip rows on this subnet — we leave these alone and skip
+  // creating a competing dhcp_* row on the same IP. The next full discovery
+  // is where conflict detection (upsertConflict) runs.
+  const manualByIp = new Map<string, (typeof subnet.reservations)[number]>();
+  for (const r of subnet.reservations) {
+    if (
+      r.status === "active" &&
+      r.ipAddress &&
+      r.sourceType !== "dhcp_reservation" &&
+      r.sourceType !== "dhcp_lease"
+    ) {
+      manualByIp.set(r.ipAddress, r);
+    }
+  }
+
+  let created = 0;
+  let updated = 0;
+  let released = 0;
+  let skipped = 0;
+
+  // Upsert each fresh entry.
+  for (const [ip, f] of fresh) {
+    if (manualByIp.has(ip)) {
+      skipped++;
+      continue;
+    }
+    const matched = existing.find((r) => r.ipAddress === ip);
+    if (matched) {
+      const diff: Record<string, unknown> = {};
+      if (matched.sourceType !== f.sourceType) diff.sourceType = f.sourceType;
+      if (f.mac && matched.macAddress !== f.mac) diff.macAddress = f.mac;
+      if (f.hostname && matched.hostname !== f.hostname) diff.hostname = f.hostname;
+      if (f.sourceType === "dhcp_reservation" || matched.sourceType === "dhcp_lease") {
+        diff.lastSeenLeased = new Date();
+      }
+      if (Object.keys(diff).length > 0) {
+        await prisma.reservation.update({ where: { id: matched.id }, data: diff });
+        updated++;
+      }
+    } else {
+      await prisma.reservation.create({
+        data: {
+          subnetId: subnet.id,
+          ipAddress: ip,
+          hostname: f.hostname,
+          macAddress: f.mac,
+          status: "active",
+          sourceType: f.sourceType,
+          lastSeenLeased: new Date(),
+          createdBy: actor || "refresh",
+        },
+      });
+      created++;
+    }
+  }
+
+  // Release dhcp_* rows that are no longer on the device.
+  for (const r of existing) {
+    if (!fresh.has(r.ipAddress!)) {
+      await prisma.reservation.update({
+        where: { id: r.id },
+        data: { status: "released" },
+      });
+      released++;
+    }
+  }
+
+  const lastDiscoveredAt = new Date();
+  await prisma.subnet.update({
+    where: { id: subnet.id },
+    data: { lastDiscoveredAt },
+  });
+
+  await logEvent({
+    level: "info",
+    action: "subnet.refresh",
+    resourceType: "subnet",
+    resourceId: subnet.id,
+    resourceName: `${subnet.name} (${subnet.cidr})`,
+    actor: actor || undefined,
+    message: `Refreshed ${subnet.cidr} from ${integration.name} (${subnet.fortigateDevice})`,
+    details: { created, updated, released, skipped, scopeId, serverInterface },
+  });
+
+  return { lastDiscoveredAt, created, updated, released, skipped };
+}
+
+// Reverse of buildDescription() in reservationPushService: the FortiOS
+// description follows "Polaris/<user>: <hostname>" or "Polaris: <hostname>",
+// so a hostname can be teased back out. Falls through to null for
+// non-Polaris-formatted descriptions.
+function extractHostnameFromDescription(desc: string): string | null {
+  const m = /^Polaris(?:\/[^:]+)?:\s*(.+)$/.exec(desc.trim());
+  return m ? m[1].trim() : null;
+}

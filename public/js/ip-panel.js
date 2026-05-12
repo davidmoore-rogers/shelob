@@ -156,7 +156,16 @@ function _renderPanelHeader(data) {
   if (s.vlan) meta += '<span class="badge badge-vlan">VLAN ' + s.vlan + '</span>';
   if (s.integration) meta += '<span style="font-size:0.78rem;color:var(--color-text-secondary)">Integration: <strong>' + escapeHtml(s.integration.name) + '</strong></span>';
   if (s.fortigateDevice && (!s.integration || s.integration.type !== 'windowsserver')) meta += '<span style="font-size:0.78rem;color:var(--color-text-secondary)">Server: <strong>' + escapeHtml(s.fortigateDevice) + '</strong></span>';
-  if (s.purpose) meta += '<span style="color:var(--color-text-tertiary)">' + escapeHtml(s.purpose) + '</span>';
+  // "Discovered N minutes ago from <integration> DHCP" replaces the static
+  // purpose string when we have both a lastDiscoveredAt timestamp and an
+  // integration. Static `s.purpose` still renders for non-integration subnets
+  // or rows that pre-date the lastDiscoveredAt column.
+  var discoveredLine = _renderDiscoveredLine(s);
+  if (discoveredLine) {
+    meta += discoveredLine;
+  } else if (s.purpose) {
+    meta += '<span style="color:var(--color-text-tertiary)">' + escapeHtml(s.purpose) + '</span>';
+  }
   if (data.ipv6) meta += '<span style="color:var(--color-warning);font-size:0.75rem">IPv6 — showing reservations only</span>';
 
   var headerBtns = '<span style="margin-left:auto;display:flex;gap:6px">' +
@@ -168,6 +177,7 @@ function _renderPanelHeader(data) {
         '<button data-fmt="csv">Export as CSV</button>' +
       '</div>' +
     '</div>' +
+    (s.refreshEligible && canReserveIps() ? '<button class="btn btn-sm btn-secondary" id="ip-panel-refresh-btn" title="Query the FortiGate and update Polaris">Refresh</button>' : '') +
     (canReserveIps() && !data.ipv6 ? '<button class="btn btn-sm btn-secondary" id="ip-panel-auto-alloc-btn">Auto-Allocate Next</button>' : '') +
     (canReserveIps() ? '<button class="btn btn-sm btn-primary" id="ip-panel-reserve-btn">+ Reserve IP</button>' : '') +
     '</span>';
@@ -185,6 +195,12 @@ function _renderPanelHeader(data) {
   if (btn) {
     btn.addEventListener("click", function () {
       _openReserveModal(_ipPanelSubnetId, null);
+    });
+  }
+  var refreshBtn = document.getElementById("ip-panel-refresh-btn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () {
+      _openRefreshConfirmModal(s);
     });
   }
   var freeBtn = document.getElementById("ip-panel-free-selected-btn");
@@ -608,6 +624,97 @@ function _openAutoAllocateModal(subnetId) {
       showToast(err.message, "error");
     } finally {
       btn.disabled = false;
+    }
+  });
+}
+
+// ─── Refresh ────────────────────────────────────────────────────────────────
+
+// Verbose "N minutes ago" used in the IP panel header — the more compact
+// `timeAgo()` from app.js reads as "5m ago" which the design here wants
+// spelled out ("5 minutes ago"). Falls back to a localized timestamp once
+// the gap crosses a week.
+function _ipPanelTimeAgoVerbose(dateStr) {
+  if (!dateStr) return null;
+  var t = new Date(dateStr).getTime();
+  if (!isFinite(t)) return null;
+  var diff = Math.floor((Date.now() - t) / 1000);
+  if (diff < 30) return "just now";
+  if (diff < 90) return "1 minute ago";
+  if (diff < 3600) return Math.floor(diff / 60) + " minutes ago";
+  if (diff < 5400) return "1 hour ago";
+  if (diff < 86400) return Math.floor(diff / 3600) + " hours ago";
+  if (diff < 86400 * 7) return Math.floor(diff / 86400) + " days ago";
+  return "on " + new Date(dateStr).toLocaleDateString();
+}
+
+function _renderDiscoveredLine(s) {
+  if (!s || !s.lastDiscoveredAt || !s.integration) return null;
+  var typeLabel = s.integration.type === "fortimanager"
+    ? "FortiManager"
+    : s.integration.type === "fortigate"
+      ? "FortiGate"
+      : s.integration.type === "windowsserver"
+        ? "Windows Server"
+        : (s.integration.name || "integration");
+  var ago = _ipPanelTimeAgoVerbose(s.lastDiscoveredAt) || "recently";
+  var iso = new Date(s.lastDiscoveredAt).toLocaleString();
+  return '<span id="ip-panel-discovered-line" style="color:var(--color-text-tertiary)" ' +
+    'title="' + escapeHtml(iso) + '">Discovered ' + escapeHtml(ago) +
+    ' from ' + escapeHtml(typeLabel) + ' DHCP</span>';
+}
+
+function _openRefreshConfirmModal(s) {
+  var device = (s && s.fortigateDevice) || "(unknown FortiGate)";
+  var integration = (s && s.integration && s.integration.name) || "the integration";
+  var lines = [
+    "Polaris will query <strong>" + escapeHtml(device) + "</strong> via " +
+      escapeHtml(integration) + " and reconcile this network&rsquo;s " +
+      "DHCP reservations and live leases.",
+    "Manual reservations on this network are not touched.",
+  ];
+  var body = '<div style="font-size:0.88rem;line-height:1.45">' +
+    lines.map(function (l) { return '<p style="margin:0 0 0.6rem 0">' + l + '</p>'; }).join('') +
+    '<p style="margin:0;color:var(--color-text-tertiary);font-size:0.78rem">' +
+      'Network: <strong>' + escapeHtml(s.name) + '</strong> ' +
+      '<code style="font-size:0.78rem">' + escapeHtml(s.cidr) + '</code>' +
+    '</p></div>';
+  var footer =
+    '<button class="btn btn-secondary" id="ip-panel-refresh-cancel">Cancel</button>' +
+    '<button class="btn btn-primary" id="ip-panel-refresh-confirm">Refresh now</button>';
+  openModal("Refresh this network?", body, footer);
+
+  document.getElementById("ip-panel-refresh-cancel").addEventListener("click", closeModal);
+  document.getElementById("ip-panel-refresh-confirm").addEventListener("click", async function () {
+    var confirmBtn = this;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Refreshing...";
+    try {
+      var result = await api.subnets.refresh(_ipPanelSubnetId);
+      closeModal();
+      // Patch the in-memory subnet data so the next render uses the new
+      // timestamp without waiting for a full reload, then re-render the
+      // header (cheap; only DOM under #ip-panel-meta). After that, kick a
+      // background _fetchIpPage so the IP list reflects new/released rows.
+      if (_ipPanelData && _ipPanelData.subnet) {
+        _ipPanelData.subnet.lastDiscoveredAt = result.lastDiscoveredAt;
+        _renderPanelHeader(_ipPanelData);
+      }
+      var summaryParts = [];
+      if (result.created) summaryParts.push(result.created + " added");
+      if (result.updated) summaryParts.push(result.updated + " updated");
+      if (result.released) summaryParts.push(result.released + " released");
+      if (result.skipped) summaryParts.push(result.skipped + " skipped (manual)");
+      var summary = summaryParts.length > 0
+        ? "Refreshed — " + summaryParts.join(", ")
+        : "Refreshed — no changes";
+      showToast(summary, "success");
+      _ipPanelDirty = true;
+      _fetchIpPage();
+    } catch (err) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Refresh now";
+      showToast(err.message || "Refresh failed", "error");
     }
   });
 }

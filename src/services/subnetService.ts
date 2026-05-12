@@ -501,6 +501,14 @@ export async function getSubnetIps(id: string, page: number, pageSize: number) {
     integrationConfig.pushReservations === true &&
     !!subnet.fortigateDevice;
 
+  // Refresh eligibility: only subnets discovered by an FMG / FortiGate
+  // integration with a known device can be refreshed via the IP panel button.
+  // Independent of pushReservations — refresh is a read-only reconcile.
+  const refreshEligible =
+    !isIpv6 &&
+    (integrationType === "fortimanager" || integrationType === "fortigate") &&
+    !!subnet.fortigateDevice;
+
   const subnetInfo = {
     name: subnet.name,
     cidr: subnet.cidr,
@@ -514,6 +522,8 @@ export async function getSubnetIps(id: string, page: number, pageSize: number) {
       : null,
     fortigateDevice: subnet.fortigateDevice,
     pushEligible,
+    refreshEligible,
+    lastDiscoveredAt: subnet.lastDiscoveredAt,
     hasConflict: subnet.reservations.some(r => r.conflictMessage),
     conflictMessage: subnet.reservations.some(r => r.conflictMessage)
       ? "One or more IPs have conflicts"

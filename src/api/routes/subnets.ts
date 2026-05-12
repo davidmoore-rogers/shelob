@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as subnetService from "../../services/subnetService.js";
+import { refreshSubnet } from "../../services/subnetRefreshService.js";
 import { requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
 import { AppError } from "../../utils/errors.js";
 import { logEvent, buildChanges } from "./events.js";
@@ -123,6 +124,23 @@ router.post("/bulk-allocate", requireUserOrAbove, async (req, res, next) => {
       details: { created: result.created, anchorCidr: result.anchorCidr, effectiveAnchorPrefix: result.effectiveAnchorPrefix },
     });
     res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /subnets/:id/refresh — Per-subnet "refresh from device" action used by
+// the IP panel's Refresh button. Queries the originating FortiGate for ONE
+// DHCP scope (CMDB reservations + live leases), reconciles against Polaris's
+// reservation rows for the same subnet, and bumps subnet.lastDiscoveredAt.
+// Requires user-or-above so the same role that can reserve IPs can also kick
+// a per-subnet refresh; full-fleet discovery still requires networkadmin via
+// /integrations/:id/discover.
+router.post("/:id/refresh", requireUserOrAbove, async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const result = await refreshSubnet(id, req.session?.username ?? null);
+    res.json(result);
   } catch (err) {
     next(err);
   }

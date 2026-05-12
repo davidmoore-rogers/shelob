@@ -1245,11 +1245,11 @@ Listed alphabetically.
 
 **What it owns:** DHCP reserved-address push/unpush to FortiGate via FMG proxy or direct REST.
 
-**Public API:** normalizeMac, pushReservation, unpushReservation, releaseDhcpLease.
+**Public API:** normalizeMac, pushReservation, unpushReservation, releaseDhcpLease, plus the transport helpers `buildTransportForIntegration` / `findScopeIdForCidr` / `listReservedAddresses` / `callFortiOs` (+ types `Transport`, `FortiOsReservedAddress`) exported so peer services can reuse the same FMG-proxy / direct-FortiGate dispatcher for read-only single-scope work.
 
 **Cross-service deps:** fortigateService (fgRequest), fortimanagerService (fmgProxyRest, resolveDeviceMgmtIpViaFmg).
 
-**Used by:** src/services/reservationService.ts:15 (pushReservation on create, unpushReservation on release, releaseDhcpLease on dhcp_lease release).
+**Used by:** src/services/reservationService.ts:15 (pushReservation on create, unpushReservation on release, releaseDhcpLease on dhcp_lease release); src/services/subnetRefreshService.ts:29 (read-only per-subnet refresh consumes the transport helpers).
 
 **Invariants:**
 - MAC address must be 48-bit (normalized to xx:xx:xx:xx:xx:xx)
@@ -1404,6 +1404,30 @@ Listed alphabetically.
 - Check self-signed cert generation doesn't fail on Windows (openssl path).
 - Confirm cert list dedup handles UUID collisions.
 - Test cascading delete: if a server cert is deleted, routes using it should gracefully skip TLS.
+
+---
+
+## services/subnetRefreshService.ts
+
+**What it owns:** Per-subnet "refresh from device" reconciler — the action behind the **Refresh** button in the IP panel slide-in. Queries the originating FortiGate for ONE DHCP scope (CMDB reservations + live leases), reconciles against Polaris's `dhcp_reservation` + `dhcp_lease` rows on the same subnet, and bumps `Subnet.lastDiscoveredAt`. Manual / VIP / interface-IP rows are left alone.
+
+**Public API:** refreshSubnet(subnetId, actor) → { lastDiscoveredAt, created, updated, released, skipped }.
+
+**Cross-service deps:** reservationPushService (buildTransportForIntegration, findScopeIdForCidr, listReservedAddresses, callFortiOs, normalizeMac), events.logEvent.
+
+**Used by:** src/api/routes/subnets.ts (POST /subnets/:id/refresh route handler — user-or-above).
+
+**Invariants:**
+- Only works on subnets whose `discoveredBy` integration is type fortimanager or fortigate, AND `fortigateDevice` is set; 400 otherwise.
+- CMDB reservations win on overlap with a live lease for the same IP (matching syncDhcpSubnets' source-of-truth ordering).
+- Manual / VIP / interface-IP rows on the same subnet are skipped — the next full integration discovery is where Polaris raises hostname/owner conflicts on those rows via upsertConflict.
+- Releases dhcp_*-sourced active rows whose IPs are no longer on the device (operator removed them on the FortiGate). Does NOT touch reservations on other subnets.
+- Bumps `Subnet.lastDiscoveredAt` only on success (so the IP panel's "Discovered N minutes ago" updates).
+
+**When changing this:**
+- Keep the scope narrow: don't reach into asset sightings / decommissions / map regions — those are owned by `syncDhcpSubnets` and reconcile on the next full integration cycle.
+- If the read shape from FortiOS `/api/v2/monitor/system/dhcp` changes, update both `fetchLiveLeasesForScope` here AND the corresponding shape in fortimanagerService.ts / fortigateService.ts so the partial refresh and full discovery stay in sync.
+- Description-to-hostname extraction (`extractHostnameFromDescription`) is the inverse of `buildDescription` in reservationPushService — keep them paired.
 
 ---
 

@@ -116,6 +116,7 @@ const api = {
     nextAvailable: (body)   => request("POST", "/subnets/next-available", body),
     bulkAllocate:  (body)   => request("POST", "/subnets/bulk-allocate", body),
     bulkAllocatePreview: (body) => request("POST", "/subnets/bulk-allocate/preview", body),
+    refresh:       (id)     => request("POST", `/subnets/${id}/refresh`),
     update:        (id, b)  => request("PUT", `/subnets/${id}`, b),
     delete:        (id)     => request("DELETE", `/subnets/${id}`),
   },
