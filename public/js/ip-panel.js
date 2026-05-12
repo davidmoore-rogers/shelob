@@ -255,9 +255,9 @@ function _renderIpList(data) {
       vipBadge = ' <span class="vip-badge" title="' + vipTip + '">VIP</span>';
     }
     var hostname = hostnameText + vipBadge;
-    var macMatch = r && r.notes ? r.notes.match(/MAC:\s*([\w:]+)/) : null;
-    var macDisplay = macMatch
-      ? '<span class="mono" style="font-size:0.75rem">' + escapeHtml(macMatch[1]) + '</span>'
+    var macRaw = (r && r.macAddress) || (r && r.notes ? (r.notes.match(/MAC:\s*([\w:]+)/) || [])[1] : null) || null;
+    var macDisplay = macRaw
+      ? '<span class="mono" style="font-size:0.75rem">' + escapeHtml(macRaw) + '</span>'
       : '<span style="color:var(--color-text-tertiary)">-</span>';
     var ownerDisplay = !r
       ? '<span style="color:var(--color-text-tertiary)">-</span>'
@@ -272,6 +272,12 @@ function _renderIpList(data) {
       : '';
     if (isSpecial) {
       actions = "";
+    } else if (r && r.status === "active" && (r.sourceType === "dhcp_lease" || r.owner === "dhcp-lease")) {
+      actions =
+        assetBtn +
+        (canReserveIps() ? '<button class="btn btn-sm btn-primary ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '">Reserve</button>' : '') +
+        (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
+        (canEditThis ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
     } else if (r && r.status === "active") {
       actions =
         assetBtn +
@@ -372,6 +378,17 @@ function _renderIpList(data) {
   body.querySelectorAll(".ip-reserve-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
       _openReserveModal(_ipPanelSubnetId, btn.getAttribute("data-ip"));
+    });
+  });
+  body.querySelectorAll(".ip-lease-reserve-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      _openLeaseReserveModal(
+        _ipPanelSubnetId,
+        btn.getAttribute("data-ip"),
+        btn.getAttribute("data-rid"),
+        btn.getAttribute("data-mac"),
+        btn.getAttribute("data-hostname")
+      );
     });
   });
   body.querySelectorAll(".ip-asset-btn").forEach(function (btn) {
@@ -574,6 +591,102 @@ function _openReserveModal(subnetId, ipAddress) {
     } finally {
       btn.disabled = false;
     }
+  });
+}
+
+function _openLeaseReserveModal(subnetId, ipAddress, leaseId, prefillMac, prefillHostname) {
+  var s = _ipPanelData ? _ipPanelData.subnet : null;
+  var subnetLabel = s ? escapeHtml(s.name) + ' (' + escapeHtml(s.cidr) + ')' : subnetId;
+  var pushEligible = !!(s && s.pushEligible);
+  var fortigateDevice = (s && s.fortigateDevice) || '';
+
+  var macLabel = pushEligible ? 'MAC Address *' : 'MAC Address';
+  var macHint = pushEligible
+    ? 'Required &mdash; this network is configured to push reservations to FortiGate "' + escapeHtml(fortigateDevice) + '". DHCP reservations are MAC&rarr;IP.'
+    : 'Optional unless this network\'s integration pushes reservations to a FortiGate.';
+
+  var body =
+    '<div class="form-group"><label>Network</label><input type="text" value="' + subnetLabel + '" disabled></div>' +
+    '<div class="form-group"><label>IP Address</label><input type="text" value="' + escapeHtml(ipAddress) + '" disabled></div>' +
+    '<p class="hint" style="margin-bottom:12px">The existing DHCP lease will be released and replaced with a manual reservation.</p>' +
+    '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(prefillHostname || "") + '" placeholder="e.g. web-server-01"></div>' +
+    '<div class="form-group"><label>' + macLabel + '</label><input type="text" id="f-macAddress" value="' + escapeHtml(prefillMac || "") + '" placeholder="aa:bb:cc:dd:ee:ff"><p class="hint">' + macHint + '</p></div>' +
+    '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
+    '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
+    '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
+    '<div class="form-group"><label>Notes</label><textarea id="f-notes" placeholder="Optional notes"></textarea></div>';
+  var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" id="btn-save">Create Reservation</button>';
+  openModal("Reserve IP", body, footer);
+
+  document.getElementById("btn-save").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+
+    // Capture all values before any modal manipulation
+    var macVal = document.getElementById("f-macAddress").value.trim();
+    var hostname = document.getElementById("f-hostname").value.trim();
+    var expiresVal = document.getElementById("f-expiresAt").value;
+    var owner = document.getElementById("f-owner").value.trim();
+    var projectRef = document.getElementById("f-projectRef").value.trim();
+    var notes = document.getElementById("f-notes").value.trim();
+
+    if (pushEligible && !macVal) {
+      showToast("MAC address is required for reservations on this network", "error");
+      btn.disabled = false;
+      return;
+    }
+
+    var input = {
+      subnetId: subnetId,
+      ipAddress: ipAddress,
+      hostname: hostname || undefined,
+      owner: owner || undefined,
+      projectRef: projectRef || undefined,
+      expiresAt: expiresVal ? new Date(expiresVal).toISOString() : undefined,
+      notes: notes || undefined,
+      macAddress: macVal || undefined,
+    };
+
+    closeModal();
+
+    if (pushEligible) {
+      var confirmed = await _confirmPushReservation(ipAddress, macVal, fortigateDevice);
+      if (!confirmed) return;
+    }
+
+    try {
+      await api.reservations.release(leaseId);
+      var reservation = await api.reservations.create(input);
+      var pushed = reservation && reservation.pushStatus === "synced";
+      showToast(pushed ? "Reservation created and pushed to FortiGate" : "Reservation created");
+      _ipPanelDirty = true;
+      _fetchIpPage();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+}
+
+function _confirmPushReservation(ipAddress, macAddress, fortigateDevice) {
+  return new Promise(function (resolve) {
+    var body =
+      '<p>This network pushes DHCP reservations to FortiGate <strong>' + escapeHtml(fortigateDevice) + '</strong>.</p>' +
+      '<p style="margin-top:8px">The reservation for <code>' + escapeHtml(ipAddress) + '</code>' +
+      (macAddress ? ' (MAC <code>' + escapeHtml(macAddress) + '</code>)' : '') +
+      ' will be written to the FortiGate\'s DHCP server. If the push fails, the reservation will not be created.</p>';
+    var footer =
+      '<button class="btn btn-secondary" id="btn-push-cancel">Cancel</button>' +
+      '<button class="btn btn-primary" id="btn-push-confirm">Push &amp; Create</button>';
+    openModal("Push to FortiGate?", body, footer);
+    document.getElementById("btn-push-confirm").addEventListener("click", function () {
+      closeModal();
+      resolve(true);
+    });
+    document.getElementById("btn-push-cancel").addEventListener("click", function () {
+      closeModal();
+      resolve(false);
+    });
   });
 }
 
