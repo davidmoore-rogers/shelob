@@ -7859,6 +7859,20 @@ async function openImportPdfModal(file) {
 
 var _snmpWalkLastOid = "1.3.6.1.2.1.1";
 var _snmpWalkLastCredId = null;
+var _snmpWalkLastMibId = "";        // "" = no MIB, "std:..." = standard, UUID = uploaded
+var _snmpWalkLastObjectName = "";   // persists object name across tab open/close
+var _snmpMibCache = null;           // null = not yet loaded; [] = loaded (may be empty)
+
+var _SNMP_STANDARD_MIBS = [
+  { id: "std:system",         label: "System (RFC 1213)",              oid: "1.3.6.1.2.1.1"          },
+  { id: "std:interfaces",     label: "Interfaces — IF-MIB (RFC 2863)", oid: "1.3.6.1.2.1.2"          },
+  { id: "std:if-ext",         label: "IF-MIB Extended (RFC 2863)",     oid: "1.3.6.1.2.1.31"         },
+  { id: "std:host-resources", label: "HOST-RESOURCES-MIB (RFC 2790)",  oid: "1.3.6.1.2.1.25"         },
+  { id: "std:entity",         label: "ENTITY-MIB (RFC 4133)",          oid: "1.3.6.1.2.1.47"         },
+  { id: "std:entity-sensor",  label: "ENTITY-SENSOR-MIB (RFC 3433)",   oid: "1.3.6.1.2.1.99"         },
+  { id: "std:lldp",           label: "LLDP-MIB (IEEE 802.1AB)",        oid: "1.0.8802.1.1.2"         },
+  { id: "std:fortinet",       label: "Fortinet FORTIGATE-MIB",         oid: "1.3.6.1.4.1.12356.101"  },
+];
 
 function _snmpCredentialOptions(selectedId) {
   var snmpCreds = (_credentialCache.list || []).filter(function (c) { return c.type === "snmp"; });
@@ -7883,15 +7897,24 @@ function assetSnmpWalkViewHTML(a) {
   // the dropdown.
   var monCred = a.monitorCredential;
   var seedCredId = (monCred && monCred.type === "snmp") ? monCred.id : null;
+  var oidVal = _snmpWalkLastMibId.startsWith("std:")
+    ? (_SNMP_STANDARD_MIBS.find(function (m) { return m.id === _snmpWalkLastMibId; }) || {}).oid || _snmpWalkLastOid
+    : (_snmpWalkLastMibId ? _snmpWalkLastObjectName : _snmpWalkLastOid);
+  var oidLabelText = _snmpWalkLastMibId && !_snmpWalkLastMibId.startsWith("std:") ? "Object name" : "Base OID";
+  var oidPlaceholder = _snmpWalkLastMibId && !_snmpWalkLastMibId.startsWith("std:") ? "e.g. sysDescr, ifTable, lldpRemTable" : "1.3.6.1.2.1.1";
   return (
     '<div style="display:flex;flex-direction:column;gap:0.75rem">' +
       '<div style="font-size:0.85rem;color:var(--color-text-secondary)">' +
         'Walks <code>' + escapeHtml(a.ipAddress) + '</code> using the selected SNMP credential. Admin-only — every walk is audited. Walks are capped at 5,000 rows.' +
       '</div>' +
+      '<div>' +
+        '<label class="form-label" for="snmp-walk-mib" style="font-size:0.8rem">MIB <span style="color:var(--color-text-secondary);font-weight:normal">(optional — select to decode values)</span></label>' +
+        '<select class="form-control" id="snmp-walk-mib"><option value="">— No MIB (raw numeric walk) —</option></select>' +
+      '</div>' +
       '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:0.5rem;align-items:end">' +
         '<div>' +
-          '<label class="form-label" for="snmp-walk-oid" style="font-size:0.8rem">Base OID</label>' +
-          '<input class="form-control" id="snmp-walk-oid" type="text" value="' + escapeHtml(_snmpWalkLastOid) + '" placeholder="1.3.6.1.2.1.1">' +
+          '<label class="form-label" for="snmp-walk-oid" style="font-size:0.8rem" id="snmp-walk-oid-label">' + oidLabelText + '</label>' +
+          '<input class="form-control" id="snmp-walk-oid" type="text" value="' + escapeHtml(oidVal || "") + '" placeholder="' + escapeHtml(oidPlaceholder) + '">' +
         '</div>' +
         '<div>' +
           '<label class="form-label" for="snmp-walk-cred" style="font-size:0.8rem">Credential</label>' +
@@ -7939,44 +7962,215 @@ function _renderSnmpWalkRows(result) {
     '</div>';
 }
 
+function _renderMibWalkResult(result) {
+  var container = document.getElementById("snmp-walk-results");
+  if (!container) return;
+
+  var header = "";
+  if (result.rowCount > 0 && result.decodedCount < result.rowCount / 2) {
+    header += '<div style="font-size:0.8rem;background:var(--color-warning-bg,rgba(212,162,58,0.12));color:var(--color-warning,#d4a23a);border-radius:4px;padding:0.4rem 0.6rem;margin-bottom:0.5rem">' +
+      'Decoded ' + result.decodedCount + ' / ' + result.rowCount + ' values — this MIB may not match the asset’s manufacturer.' +
+    '</div>';
+  }
+  if (result.truncated) {
+    header += '<div style="font-size:0.8rem;color:var(--color-warning,#d4a23a);margin-bottom:0.4rem">Truncated at ' + result.rowCount + ' rows — raise Max rows or narrow the object to see more.</div>';
+  }
+
+  if (result.kind === "table" && result.table) {
+    var t = result.table;
+    if (!t.rows.length) {
+      container.innerHTML = header + '<p class="empty-state" style="padding:0.75rem 0">No table rows returned.</p>';
+      return;
+    }
+    var cols = t.columns;
+    var thHtml = "<th>Index</th>" + cols.map(function (c) { return "<th>" + escapeHtml(c) + "</th>"; }).join("");
+    var rowsHtml = t.rows.map(function (row) {
+      var cells = '<td style="font-family:var(--font-mono,monospace);font-size:0.78rem;white-space:nowrap">' + escapeHtml(row.index) + "</td>";
+      cells += cols.map(function (col) {
+        var cell = row.cells[col];
+        if (!cell) return '<td style="color:var(--color-text-secondary)">—</td>';
+        var display = escapeHtml(cell.decoded);
+        if (cell.raw !== cell.decoded) {
+          display = '<span title="raw: ' + escapeHtml(cell.raw) + '" style="cursor:help;border-bottom:1px dotted var(--color-border)">' + display + "</span>";
+        }
+        return '<td style="font-size:0.78rem">' + display + "</td>";
+      }).join("");
+      return "<tr>" + cells + "</tr>";
+    }).join("");
+    container.innerHTML = header +
+      '<div class="table-wrapper" style="max-height:60vh;overflow:auto">' +
+        '<table class="data-table" style="font-size:0.82rem">' +
+          "<thead><tr>" + thHtml + "</tr></thead>" +
+          "<tbody>" + rowsHtml + "</tbody>" +
+        "</table>" +
+      "</div>";
+    return;
+  }
+
+  // scalars
+  var entries = result.entries || [];
+  if (!entries.length) {
+    container.innerHTML = header + '<p class="empty-state" style="padding:0.75rem 0">No varbinds returned.</p>';
+    return;
+  }
+  var rowsHtml = entries.map(function (e) {
+    var symHtml = e.symbol
+      ? escapeHtml(e.symbol) + (e.suffix ? '<span style="color:var(--color-text-secondary)">.' + escapeHtml(e.suffix) + "</span>" : "")
+      : '<span style="color:var(--color-text-secondary)">—</span>';
+    var decoded = escapeHtml(e.decoded || e.raw);
+    var rawHint = (e.decoded && e.decoded !== e.raw)
+      ? ' <span style="font-size:0.75rem;color:var(--color-text-secondary)">(' + escapeHtml(e.raw) + ")</span>"
+      : "";
+    return "<tr>" +
+      '<td style="font-family:var(--font-mono,monospace);font-size:0.78rem;white-space:nowrap">' + escapeHtml(e.oid) + "</td>" +
+      '<td style="font-size:0.78rem">' + symHtml + "</td>" +
+      '<td style="font-family:var(--font-mono,monospace);font-size:0.78rem;word-break:break-all">' + decoded + rawHint + "</td>" +
+    "</tr>";
+  }).join("");
+  container.innerHTML = header +
+    '<div class="table-wrapper" style="max-height:60vh;overflow:auto">' +
+      '<table class="data-table" style="font-size:0.82rem">' +
+        "<thead><tr><th>OID</th><th>Symbol</th><th>Value</th></tr></thead>" +
+        "<tbody>" + rowsHtml + "</tbody>" +
+      "</table>" +
+    "</div>";
+}
+
 function _wireSnmpWalkTab(a) {
   var walkBtn = document.getElementById("btn-snmp-walk");
   if (!walkBtn) return; // tab not rendered (e.g. asset has no IP)
-  var abortBtn = document.getElementById("btn-snmp-walk-abort");
-  var copyBtn = document.getElementById("btn-snmp-walk-copy");
-  var statusEl = document.getElementById("snmp-walk-status");
-  var lastResult = null;
+  var abortBtn    = document.getElementById("btn-snmp-walk-abort");
+  var copyBtn     = document.getElementById("btn-snmp-walk-copy");
+  var statusEl    = document.getElementById("snmp-walk-status");
+  var mibSel      = document.getElementById("snmp-walk-mib");
+  var oidLabel    = document.getElementById("snmp-walk-oid-label");
+  var oidInput    = document.getElementById("snmp-walk-oid");
+  var lastResult    = null; // raw walk result
+  var lastMibResult = null; // MIB-aware walk result
   var activeController = null;
 
-  walkBtn.addEventListener("click", async function () {
-    var oid = (document.getElementById("snmp-walk-oid").value || "").trim();
-    var credId = document.getElementById("snmp-walk-cred").value;
-    var maxRows = parseInt(document.getElementById("snmp-walk-max").value, 10) || 500;
-    if (!oid) { showToast("Enter a base OID", "error"); return; }
-    if (!credId) { showToast("Select an SNMP credential", "error"); return; }
-    if (!/^\d+(\.\d+)*$/.test(oid)) { showToast("OID must be numeric (e.g. 1.3.6.1.2.1.1)", "error"); return; }
+  // ── Helpers ──────────────────────────────────────────────────────────────
 
-    _snmpWalkLastOid = oid;
-    _snmpWalkLastCredId = credId;
+  function _isUploadedMib(mibId) { return mibId && !mibId.startsWith("std:"); }
+
+  function _updateOidMode(mibId) {
+    if (_isUploadedMib(mibId)) {
+      oidLabel.textContent = "Object name";
+      oidInput.placeholder = "e.g. sysDescr, ifTable, lldpRemTable";
+      oidInput.value = _snmpWalkLastObjectName || "";
+    } else if (mibId && mibId.startsWith("std:")) {
+      oidLabel.textContent = "Base OID";
+      var stdMib = _SNMP_STANDARD_MIBS.find(function (m) { return m.id === mibId; });
+      oidInput.placeholder = stdMib ? stdMib.oid : "1.3.6.1.2.1.1";
+      oidInput.value = stdMib ? stdMib.oid : _snmpWalkLastOid;
+    } else {
+      oidLabel.textContent = "Base OID";
+      oidInput.placeholder = "1.3.6.1.2.1.1";
+      oidInput.value = _snmpWalkLastOid;
+    }
+  }
+
+  function _populateMibDropdown(uploadedMibs) {
+    var html = '<option value="">— No MIB (raw numeric walk) —</option>';
+    html += '<optgroup label="Standard MIBs">';
+    _SNMP_STANDARD_MIBS.forEach(function (m) {
+      html += '<option value="' + escapeHtml(m.id) + '"' + (_snmpWalkLastMibId === m.id ? " selected" : "") + '>' + escapeHtml(m.label) + "</option>";
+    });
+    html += "</optgroup>";
+    if (uploadedMibs && uploadedMibs.length) {
+      html += '<optgroup label="Uploaded MIBs">';
+      uploadedMibs.forEach(function (m) {
+        var label = m.manufacturer
+          ? m.manufacturer + (m.model ? " / " + m.model : "") + " — " + m.moduleName
+          : m.moduleName;
+        html += '<option value="' + escapeHtml(m.id) + '"' + (_snmpWalkLastMibId === m.id ? " selected" : "") + '>' + escapeHtml(label) + "</option>";
+      });
+      html += "</optgroup>";
+    }
+    mibSel.innerHTML = html;
+    _updateOidMode(mibSel.value);
+  }
+
+  // ── Load uploaded MIBs into dropdown ─────────────────────────────────────
+
+  if (_snmpMibCache !== null) {
+    _populateMibDropdown(_snmpMibCache);
+  } else {
+    _populateMibDropdown([]); // show standard MIBs immediately
+    api.mibs.listMibs({}).then(function (mibs) {
+      _snmpMibCache = Array.isArray(mibs) ? mibs : [];
+      _populateMibDropdown(_snmpMibCache);
+    }).catch(function () {
+      _snmpMibCache = [];
+    });
+  }
+
+  // ── MIB select change ─────────────────────────────────────────────────────
+
+  mibSel.addEventListener("change", function () {
+    _snmpWalkLastMibId = mibSel.value;
+    _updateOidMode(mibSel.value);
+    document.getElementById("snmp-walk-results").innerHTML = "";
+    statusEl.textContent = "";
+    if (copyBtn) copyBtn.disabled = true;
+    lastResult = null;
+    lastMibResult = null;
+  });
+
+  // ── Walk button ───────────────────────────────────────────────────────────
+
+  walkBtn.addEventListener("click", async function () {
+    var mibId   = mibSel.value;
+    var oidOrObj = (oidInput.value || "").trim();
+    var credId  = document.getElementById("snmp-walk-cred").value;
+    var maxRows = parseInt(document.getElementById("snmp-walk-max").value, 10) || 500;
+    var uploaded = _isUploadedMib(mibId);
+
+    if (!oidOrObj) { showToast(uploaded ? "Enter an object name" : "Enter a base OID", "error"); return; }
+    if (!credId)   { showToast("Select an SNMP credential", "error"); return; }
+    if (!uploaded && !/^\d+(\.\d+)*$/.test(oidOrObj)) {
+      showToast("OID must be numeric (e.g. 1.3.6.1.2.1.1)", "error");
+      return;
+    }
+
+    // Persist state
+    _snmpWalkLastMibId   = mibId;
+    _snmpWalkLastCredId  = credId;
+    if (uploaded) { _snmpWalkLastObjectName = oidOrObj; } else { _snmpWalkLastOid = oidOrObj; }
+
     walkBtn.disabled = true;
     walkBtn.textContent = "Walking…";
     if (copyBtn) copyBtn.disabled = true;
-    if (abortBtn) { abortBtn.style.display = ""; abortBtn.disabled = false; }
-    statusEl.textContent = "Walking " + a.ipAddress + " " + oid + "…";
+    // Abort only works for raw walks (MIB-aware endpoint has no signal support)
+    if (abortBtn) { abortBtn.style.display = uploaded ? "none" : ""; abortBtn.disabled = false; }
+    statusEl.textContent = "Walking " + a.ipAddress + "…";
     document.getElementById("snmp-walk-results").innerHTML = "";
+    lastResult = null;
+    lastMibResult = null;
 
     activeController = new AbortController();
     var thisController = activeController;
 
     try {
-      var result = await api.assets.snmpWalk(a.id, { credentialId: credId, oid: oid, maxRows: maxRows }, thisController.signal);
-      lastResult = result;
-      statusEl.textContent = result.rows.length + " row(s) in " + result.durationMs + " ms" + (result.truncated ? " (truncated)" : "");
-      _renderSnmpWalkRows(result);
-      if (copyBtn) copyBtn.disabled = !result.rows.length;
+      if (uploaded) {
+        var mibResult = await api.mibs.walkMib(mibId, { assetId: a.id, credentialId: credId, objectName: oidOrObj, maxRows: maxRows });
+        lastMibResult = mibResult;
+        statusEl.textContent = mibResult.rowCount + " row(s) in " + mibResult.durationMs + " ms" +
+          (mibResult.truncated ? " (truncated)" : "") +
+          " — decoded " + mibResult.decodedCount + "/" + mibResult.rowCount;
+        _renderMibWalkResult(mibResult);
+        if (copyBtn) copyBtn.disabled = !mibResult.rowCount;
+      } else {
+        var result = await api.assets.snmpWalk(a.id, { credentialId: credId, oid: oidOrObj, maxRows: maxRows }, thisController.signal);
+        lastResult = result;
+        statusEl.textContent = result.rows.length + " row(s) in " + result.durationMs + " ms" + (result.truncated ? " (truncated)" : "");
+        _renderSnmpWalkRows(result);
+        if (copyBtn) copyBtn.disabled = !result.rows.length;
+      }
     } catch (err) {
       lastResult = null;
-      var aborted = err && (err.name === "AbortError" || thisController.signal.aborted);
+      lastMibResult = null;
+      var aborted = !uploaded && err && (err.name === "AbortError" || thisController.signal.aborted);
       if (aborted) {
         statusEl.textContent = "Walk aborted.";
         document.getElementById("snmp-walk-results").innerHTML =
@@ -7987,7 +8181,7 @@ function _wireSnmpWalkTab(a) {
         document.getElementById("snmp-walk-results").innerHTML =
           '<p class="empty-state" style="padding:0.75rem 0;color:var(--color-danger,#c0392b)">' +
             escapeHtml(err.message || "SNMP walk failed") +
-          '</p>';
+          "</p>";
       }
     } finally {
       if (activeController === thisController) activeController = null;
@@ -7996,6 +8190,8 @@ function _wireSnmpWalkTab(a) {
       if (abortBtn) { abortBtn.style.display = "none"; abortBtn.disabled = false; }
     }
   });
+
+  // ── Abort (raw walks only) ────────────────────────────────────────────────
 
   if (abortBtn) {
     abortBtn.addEventListener("click", function () {
@@ -8006,15 +8202,36 @@ function _wireSnmpWalkTab(a) {
     });
   }
 
+  // ── Copy results ──────────────────────────────────────────────────────────
+
   if (copyBtn) {
     copyBtn.addEventListener("click", async function () {
-      if (!lastResult || !lastResult.rows.length) return;
-      var text = lastResult.rows.map(function (r) {
-        return r.oid + " = " + r.type + ": " + r.value;
-      }).join("\n");
+      var text = "";
+      if (lastMibResult) {
+        if (lastMibResult.kind === "table" && lastMibResult.table) {
+          var t = lastMibResult.table;
+          var cols = t.columns;
+          text = ["Index"].concat(cols).join("\t") + "\n" +
+            t.rows.map(function (row) {
+              return [row.index].concat(cols.map(function (c) {
+                var cell = row.cells[c];
+                return cell ? cell.decoded : "";
+              })).join("\t");
+            }).join("\n");
+        } else if (lastMibResult.entries) {
+          text = lastMibResult.entries.map(function (e) {
+            var sym = e.symbol ? e.symbol + (e.suffix ? "." + e.suffix : "") : e.oid;
+            return sym + " = " + (e.decoded || e.raw) + (e.decoded !== e.raw ? " (" + e.raw + ")" : "");
+          }).join("\n");
+        }
+      } else if (lastResult) {
+        text = lastResult.rows.map(function (r) { return r.oid + " = " + r.type + ": " + r.value; }).join("\n");
+      }
+      if (!text) return;
       try {
         await navigator.clipboard.writeText(text);
-        showToast("Copied " + lastResult.rows.length + " row(s)", "success");
+        var count = lastMibResult ? lastMibResult.rowCount : lastResult.rows.length;
+        showToast("Copied " + count + " row(s)", "success");
       } catch (_) {
         showToast("Copy failed", "error");
       }
