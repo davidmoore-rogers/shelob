@@ -83,6 +83,7 @@ Per-pattern sections:
 - Header is the drag handle (mousedown anywhere outside `.modal-close`).
 - Backdrop click flashes the close button instead of dismissing — explicit close only, to protect in-progress edits.
 - Confirms use `showConfirm()`, which returns a Promise — never use `window.confirm()` (won't render in some browser/embed contexts).
+- Z-index layering: `.modal-overlay` is 1000 by default; if `openModal` detects an open `.slideover-overlay` (1050), it adds the `.above-slideover` class to bump the modal to 1075. Lets modals opened from inside a slide-in (e.g. Reserve IP from the IP panel) render in front. `closeModal` clears the class.
 
 **When adding a new instance:**
 - Call `openModal(title, bodyHTML, footerHTML, options)` — do not hand-roll a new overlay element.

@@ -1569,6 +1569,12 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   opacity: 1;
   pointer-events: auto;
 }
+/* When a modal is opened from inside a slide-over (e.g. the Reserve IP modal
+   launched from the IP panel slide-in), bump above the slideover-overlay
+   (1050) but stay under the monitor-confirm popover (1100). */
+.modal-overlay.above-slideover {
+  z-index: 1075;
+}
 .modal {
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border);

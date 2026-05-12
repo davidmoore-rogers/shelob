@@ -1014,12 +1014,17 @@ function openModal(title, bodyHTML, footerHTML, options) {
   overlay.querySelector(".modal-header h3").textContent = title;
   overlay.querySelector(".modal-body").innerHTML = bodyHTML;
   overlay.querySelector(".modal-footer").innerHTML = footerHTML || "";
+  var slideoverOpen = !!document.querySelector(".slideover-overlay.open");
+  overlay.classList.toggle("above-slideover", slideoverOpen);
   requestAnimationFrame(function () { overlay.classList.add("open"); });
 }
 
 function closeModal() {
   var overlay = document.getElementById("modal-overlay");
-  if (overlay) overlay.classList.remove("open");
+  if (overlay) {
+    overlay.classList.remove("open");
+    overlay.classList.remove("above-slideover");
+  }
 }
 
 // ─── Confirm Dialog ───────────────────────────────────────────────────────────
