@@ -252,6 +252,9 @@ function _renderIpList(data) {
     } else if (r && r.status === "active" && (r.sourceType === "dhcp_lease" || r.owner === "dhcp-lease")) {
       dotClass = "ip-dot-dhcp-lease";
       statusLabel = "DHCP Lease";
+    } else if (r && r.status === "active" && r.sourceType === "vip") {
+      dotClass = "ip-dot-active";
+      statusLabel = "VIP";
     } else if (r && r.status === "active") {
       dotClass = "ip-dot-active";
       statusLabel = "Active";
@@ -297,6 +300,14 @@ function _renderIpList(data) {
         (canReserveIps() ? '<button class="btn btn-sm btn-primary ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '">Reserve</button>' : '') +
         (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
         (canEditThis ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '');
+    } else if (r && r.status === "active" && r.sourceType === "vip") {
+      // VIPs are FortiGate NAT config — they cannot be Freed from Polaris.
+      // Reserve lets the operator attach editable metadata (hostname / owner /
+      // notes) that survives across discovery cycles.
+      actions =
+        assetBtn +
+        (canEditThis ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '') +
+        (canReserveIps() ? '<button class="btn btn-sm btn-primary ip-vip-reserve-btn" data-rid="' + escapeHtml(r.id) + '">Reserve</button>' : '');
     } else if (r && r.status === "active") {
       actions =
         assetBtn +
@@ -419,6 +430,11 @@ function _renderIpList(data) {
       );
     });
   });
+  body.querySelectorAll(".ip-vip-reserve-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      _openVipReserveModal(btn.getAttribute("data-rid"));
+    });
+  });
   body.querySelectorAll(".ip-asset-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var aid = btn.getAttribute("data-aid");
@@ -519,7 +535,7 @@ function _openAutoAllocateModal(subnetId) {
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
-    '<div class="form-group"><label>Notes</label><textarea id="f-notes" placeholder="Optional notes"></textarea></div>';
+    '<div class="form-group"><label>Reservation notes</label><textarea id="f-notes" placeholder="e.g. web-server-01"></textarea></div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Auto-Allocate</button>';
   openModal("Auto-Allocate Next IP", body, footer);
@@ -581,7 +597,7 @@ function _openReserveModal(subnetId, ipAddress) {
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
-    '<div class="form-group"><label>Notes</label><textarea id="f-notes" placeholder="Optional notes"></textarea></div>';
+    '<div class="form-group"><label>Reservation notes</label><textarea id="f-notes" placeholder="e.g. web-server-01"></textarea></div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create Reservation</button>';
   openModal("Reserve IP", body, footer);
@@ -642,7 +658,7 @@ function _openLeaseReserveModal(subnetId, ipAddress, leaseId, prefillMac, prefil
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
-    '<div class="form-group"><label>Notes</label><textarea id="f-notes" placeholder="Optional notes"></textarea></div>';
+    '<div class="form-group"><label>Reservation notes</label><textarea id="f-notes" placeholder="e.g. web-server-01"></textarea></div>';
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" id="btn-save">Create Reservation</button>';
   openModal("Reserve IP", body, footer);
@@ -718,6 +734,54 @@ function _confirmPushReservation(ipAddress, macAddress, fortigateDevice) {
   });
 }
 
+function _openVipReserveModal(reservationId) {
+  api.reservations.get(reservationId).then(function (r) {
+    var subnetLabel = r.subnet ? escapeHtml(r.subnet.name) + " (" + escapeHtml(r.subnet.cidr) + ")" : r.subnetId;
+    var expiresVal = r.expiresAt ? _toDatetimeLocal(r.expiresAt) : "";
+    var vip = r.vipInfo || {};
+    var vipBlurb = '<p class="hint" style="margin-bottom:12px">Attach a reservation to this FortiGate VIP. Hostname, owner, and notes are operator-editable and survive discovery cycles.' +
+      (vip.name ? ' <strong>VIP:</strong> ' + escapeHtml(vip.name) + (vip.device ? ' on ' + escapeHtml(vip.device) : '') : '') +
+      '</p>';
+    var body = vipBlurb +
+      '<div class="form-group"><label>Network</label><input type="text" value="' + subnetLabel + '" disabled></div>' +
+      '<div class="form-group"><label>IP Address</label><input type="text" value="' + escapeHtml(r.ipAddress || "") + '" disabled></div>' +
+      '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(r.hostname || "") + '" placeholder="e.g. web-server-01"></div>' +
+      '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" value="' + escapeHtml(r.owner || "") + '" placeholder="e.g. platform-team"></div>' +
+      '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" value="' + escapeHtml(r.projectRef || "") + '" placeholder="e.g. INFRA-001"></div>' +
+      '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt" value="' + expiresVal + '"><p class="hint">Optional TTL</p></div>' +
+      '<div class="form-group"><label>Reservation notes</label><textarea id="f-notes" placeholder="Reservation notes — e.g. web-server-01">' + escapeHtml(r.notes || "") + '</textarea></div>';
+    var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+      '<button class="btn btn-primary" id="btn-save">Save Reservation</button>';
+    openModal("Reserve VIP IP", body, footer);
+
+    document.getElementById("btn-save").addEventListener("click", async function () {
+      var btn = this;
+      btn.disabled = true;
+      try {
+        var expires = document.getElementById("f-expiresAt").value;
+        var input = {
+          hostname: document.getElementById("f-hostname").value.trim() || undefined,
+          owner: document.getElementById("f-owner").value.trim() || undefined,
+          projectRef: document.getElementById("f-projectRef").value.trim() || undefined,
+          expiresAt: expires ? new Date(expires).toISOString() : undefined,
+          notes: document.getElementById("f-notes").value.trim() || undefined,
+        };
+        await api.reservations.update(reservationId, input);
+        closeModal();
+        showToast("VIP reservation updated");
+        _ipPanelDirty = true;
+        _fetchIpPage();
+      } catch (err) {
+        showToast(err.message, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }).catch(function (err) {
+    showToast(err.message, "error");
+  });
+}
+
 function _openEditReservationModal(reservationId) {
   // Owners of dhcp-reservation / dhcp-lease records can edit their own entries
   // even without canManageNetworks. For simple read-only detection, we treat
@@ -739,7 +803,7 @@ function _openEditReservationModal(reservationId) {
       '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" value="' + escapeHtml(r.owner) + '"' + lock + '></div>' +
       '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" value="' + escapeHtml(r.projectRef) + '"' + lock + '></div>' +
       '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt" value="' + expiresVal + '"' + lock + '></div>' +
-      '<div class="form-group"><label>Notes</label><textarea id="f-notes"' + lock + '>' + escapeHtml(r.notes || "") + '</textarea></div>';
+      '<div class="form-group"><label>Reservation notes</label><textarea id="f-notes" placeholder="e.g. web-server-01"' + lock + '>' + escapeHtml(r.notes || "") + '</textarea></div>';
     var footer = readOnly
       ? '<button class="btn btn-secondary" onclick="closeModal()">Close</button>'
       : '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
