@@ -1696,10 +1696,26 @@ function assetMonitoringFormHTML(asset) {
   var ifMibId   = (asset && asset.interfacesMibId)    || "";
   var lldpMibId = (asset && asset.lldpMibId)          || "";
 
+  // Auto MIB names for the "Automatic" option label — vendor-aware for telemetry.
+  var _mfr = ((asset && asset.manufacturer) || "").toLowerCase();
+  var _autoTelMib = "HOST-RESOURCES-MIB";
+  if (/fortinet/.test(_mfr))          _autoTelMib = "FORTINET-FORTIGATE-MIB";
+  else if (/cisco/.test(_mfr))        _autoTelMib = "CISCO-PROCESS-MIB";
+  else if (/juniper/.test(_mfr))      _autoTelMib = "JUNIPER-MIB";
+  else if (/mikrotik/.test(_mfr))     _autoTelMib = "MIKROTIK-MIB";
+  else if (/hp|aruba|hewlett/.test(_mfr)) _autoTelMib = "HP-ICF-OID-MIB";
+  else if (/dell/.test(_mfr))         _autoTelMib = "DELL-MIB";
+  var _autoMibNames = {
+    responseTime: "SNMPv2-MIB",
+    telemetry:    _autoTelMib,
+    interfaces:   "IF-MIB",
+    lldp:         "LLDP-MIB",
+  };
+
   // Build each stream row: [label | polling dropdown] then optional credential
   // and MIB sub-rows. Sub-rows are hidden and shown/hidden by JS in
   // _wireMonitorEditTab whenever the polling method changes.
-  function streamRow(label, streamName, pollingId, credSelectId, mibSelectId, currentPoll, currentCredId, currentMibId) {
+  function streamRow(label, streamName, pollingId, credSelectId, mibSelectId, currentPoll, currentCredId, currentMibId, autoMibName) {
     var needsCred = currentPoll && currentPoll !== "icmp" && currentPoll !== "disabled";
     var isSnmp    = currentPoll === "snmp";
     var credDisplay = needsCred ? "flex" : "none";
@@ -1712,8 +1728,8 @@ function assetMonitoringFormHTML(asset) {
       '</div>' +
       '<div id="' + pollingId + '-mib-wrap" style="display:' + mibDisplay + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
         '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">MIB</label>' +
-        '<select id="' + mibSelectId + '" data-current-id="' + escapeHtml(currentMibId) + '" data-mib-picker="1" style="flex:1">' +
-          _mibOptionsHTML(currentMibId) +
+        '<select id="' + mibSelectId + '" data-current-id="' + escapeHtml(currentMibId) + '" data-auto-mib-name="' + escapeHtml(autoMibName || "") + '" data-mib-picker="1" style="flex:1">' +
+          _mibOptionsHTML(currentMibId, autoMibName) +
         '</select>' +
       '</div>';
   }
@@ -1722,10 +1738,10 @@ function assetMonitoringFormHTML(asset) {
     '<div id="f-transport-wrap" style="margin-top:0.5rem;padding-top:0.75rem;border-top:1px solid var(--color-border)">' +
       '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.5rem 0 0.5rem 0">Polling Methods</p>' +
       '<div style="display:grid;grid-template-columns:200px 1fr;gap:0.5rem 1rem;align-items:center;margin-bottom:0.75rem">' +
-        streamRow("Response time",  "responseTime", "f-responseTimePolling", "f-responseTimeCredential", "f-responseTimeMib", pollingCurrent.responseTimePolling, rtCredId,   rtMibId) +
-        streamRow("Telemetry",      "telemetry",    "f-telemetryPolling",    "f-telemetryCredential",    "f-telemetryMib",    pollingCurrent.telemetryPolling,    telCredId,  telMibId) +
-        streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   "f-interfacesMib",   pollingCurrent.interfacesPolling,   ifCredId,   ifMibId) +
-        streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         "f-lldpMib",         pollingCurrent.lldpPolling,         lldpCredId, lldpMibId) +
+        streamRow("Response time",  "responseTime", "f-responseTimePolling", "f-responseTimeCredential", "f-responseTimeMib", pollingCurrent.responseTimePolling, rtCredId,   rtMibId,   _autoMibNames.responseTime) +
+        streamRow("Telemetry",      "telemetry",    "f-telemetryPolling",    "f-telemetryCredential",    "f-telemetryMib",    pollingCurrent.telemetryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
+        streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   "f-interfacesMib",   pollingCurrent.interfacesPolling,   ifCredId,   ifMibId,   _autoMibNames.interfaces) +
+        streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         "f-lldpMib",         pollingCurrent.lldpPolling,         lldpCredId, lldpMibId, _autoMibNames.lldp) +
       '</div>' +
       '<p class="hint" style="margin-top:0.25rem">Per-asset overrides win over class / integration / source-default tiers. When a method needs a credential, "Source default" lets the asset inherit the integration\'s configured credential at runtime.</p>' +
     '</div>';

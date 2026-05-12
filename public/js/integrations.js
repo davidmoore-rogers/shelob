@@ -81,9 +81,26 @@ var _uploadedMibsCache = null;
 
 // Build <option> HTML for a MIB <select>. selectedId: null/"" = Automatic,
 // "std:..." = standard built-in, UUID = uploaded MIB from the MIB database.
-function _mibOptionsHTML(selectedId) {
+// Derive per-stream auto MIB names from the source kind (integration / class override tiers).
+// Only telemetry varies by vendor; the other three streams always use standard MIBs.
+var _SOURCE_TELEMETRY_MIB = {
+  fortimanager: "FORTINET-FORTIGATE-MIB",
+  fortigate:    "FORTINET-FORTIGATE-MIB",
+};
+function _autoMibNamesForSource(sourceKind) {
+  return {
+    responseTime: "SNMPv2-MIB",
+    telemetry:    _SOURCE_TELEMETRY_MIB[sourceKind] || "HOST-RESOURCES-MIB",
+    interfaces:   "IF-MIB",
+    lldp:         "LLDP-MIB",
+  };
+}
+
+// autoName is optional — when provided, replaces "let Polaris choose" with the resolved name.
+function _mibOptionsHTML(selectedId, autoName) {
   var sel = selectedId || "";
-  var html = '<option value=""' + (sel === "" ? " selected" : "") + '>Automatic (let Polaris choose)</option>';
+  var autoLabel = "Automatic" + (autoName ? " (" + autoName + ")" : " (let Polaris choose)");
+  var html = '<option value=""' + (sel === "" ? " selected" : "") + ">" + escapeHtml(autoLabel) + "</option>";
   html += '<optgroup label="Standard MIBs">';
   _SNMP_STANDARD_MIBS.forEach(function (m) {
     html += '<option value="' + escapeHtml(m.id) + '"' + (sel === m.id ? " selected" : "") + '>' + escapeHtml(m.label) + '</option>';
@@ -108,7 +125,8 @@ function _populateUploadedMibsInDropdowns() {
     for (var i = 0; i < sels.length; i++) {
       var el = sels[i];
       var current = el.getAttribute("data-current-id") || "";
-      el.innerHTML = _mibOptionsHTML(current);
+      var autoName = el.getAttribute("data-auto-mib-name") || "";
+      el.innerHTML = _mibOptionsHTML(current, autoName);
     }
   }
   if (_uploadedMibsCache !== null) {
@@ -172,10 +190,11 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
     var mibSubRow = "";
     if (showMibRows) {
       var currentMibId = mibValues[s.mibField] || "";
+      var autoMibName  = (opts.autoMibNames || _autoMibNamesForSource(source))[s.key] || "";
       mibSubRow = '<div id="' + idPrefix + s.key + '-mib-wrap" style="display:' + (pollIsSnmp ? "flex" : "none") + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
         '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">MIB</label>' +
-        '<select id="' + idPrefix + s.key + 'Mib" data-current-id="' + escapeHtml(currentMibId) + '" data-mib-picker="1" style="flex:1">' +
-          _mibOptionsHTML(currentMibId) +
+        '<select id="' + idPrefix + s.key + 'Mib" data-current-id="' + escapeHtml(currentMibId) + '" data-auto-mib-name="' + escapeHtml(autoMibName) + '" data-mib-picker="1" style="flex:1">' +
+          _mibOptionsHTML(currentMibId, autoMibName) +
         '</select>' +
       '</div>';
     }
