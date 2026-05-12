@@ -2605,10 +2605,15 @@ function assetSystemViewHTML(a) {
       { value: "custom", label: "Custom…", id: "btn-asset-system-custom" },
     ], "assetSystem", "1h");
   // CPU/Memory + Temperatures share the Telemetry stream — the same toggle
-  // controls both, so they get the same source badge. Interfaces is its
-  // own stream. Storage and LLDP ride the same stream as Interfaces.
+  // controls both, so they get the same source badge. Interfaces and Storage
+  // share the Interfaces stream. LLDP is its own stream (it can independently
+  // be REST API or SNMP per integration / class / asset) so it gets its own
+  // badge — sharing the Interfaces badge masked a real polling method
+  // difference and stripped the cadence (which the async refresh of the
+  // shared span resolved against the wrong stream).
   var telemetryBadge   = _streamSourceBadgeHTML(a, "telemetry");
   var interfacesBadge  = _streamSourceBadgeHTML(a, "interfaces");
+  var lldpBadge        = _streamSourceBadgeHTML(a, "lldp");
   var telUpdatedAt = a.lastTelemetryAt
     ? ('<span style="font-size:0.72rem;color:var(--color-text-tertiary)" title="' + escapeHtml(new Date(a.lastTelemetryAt).toLocaleString()) + '">updated ' + timeAgo(a.lastTelemetryAt) + '</span>')
     : '';
@@ -2617,6 +2622,7 @@ function assetSystemViewHTML(a) {
     : '';
   var telemetryBadgeFull  = telemetryBadge  + (telemetryBadge  && telUpdatedAt     ? " " : "") + telUpdatedAt;
   var interfacesBadgeFull = interfacesBadge + (interfacesBadge && sysInfoUpdatedAt ? " " : "") + sysInfoUpdatedAt;
+  var lldpBadgeFull       = lldpBadge       + (lldpBadge       && sysInfoUpdatedAt ? " " : "") + sysInfoUpdatedAt;
   // FortiOS REST API never exposes storage — hide Storage for any asset on the
   // REST API interfaces stream (firewalls as well as managed switches/APs).
   var isRestApiInterfaces = (function () {
@@ -2655,7 +2661,7 @@ function assetSystemViewHTML(a) {
     '<div id="asset-system-interfaces"><span class="empty-state">Loading…</span></div>' +
     (isRestApiInterfaces ? '' : sectionHeader("Storage", interfacesBadgeFull, false) +
     '<div id="asset-system-storage"><span class="empty-state">Loading…</span></div>') +
-    sectionHeader("LLDP Neighbors", interfacesBadgeFull, false) +
+    sectionHeader("LLDP Neighbors", lldpBadgeFull, false) +
     '<div id="asset-system-lldp"><span class="empty-state">Loading…</span></div>'
   );
 }
@@ -4764,7 +4770,19 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
     var stream = span.getAttribute("data-stream");
     if (!stream) return;
     var resolved = eff.resolved[stream + "Polling"];
-    if (!resolved) return;
+    // Tier-3 leaves polling null when the operator picked "Inherit" at every
+    // tier — fall back to the source default the resolver applies at probe
+    // time. The sync render already does this; without the parallel fallback
+    // here, the async refresh would early-return and skip the cadence update,
+    // leaving the badge stuck on "REST API (Direct) · Integration" without
+    // the "every Nm" slot that the telemetry badge gets for free.
+    if (!resolved) {
+      var integration = asset.discoveredByIntegration;
+      var sourceKind = (integration && integration.type) || "manual";
+      if (!_POLLING_COMPAT[sourceKind]) sourceKind = "manual";
+      resolved = _polarisSourceDefaultPolling(sourceKind, stream);
+      if (!resolved) return; // truly not delivered (e.g. AD/Entra telemetry)
+    }
     var prov = eff.provenance && eff.provenance[stream + "Polling"];
     var intervalField = _streamIntervalEffectiveField(stream);
     var intervalSeconds = intervalField ? eff.resolved[intervalField] : null;
