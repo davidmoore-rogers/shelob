@@ -13,7 +13,7 @@
  * where the DB is on the verge of dying and the UI is moments from
  * becoming unreachable.
  *
- * Best-effort. The `pgTuningNeeded` / `ramInsufficient` inputs to the
+ * Best-effort. The `pgTuningNeeded` / `recommendedRamGb` inputs to the
  * snapshot are passed in as false here rather than re-running the full
  * pg-settings query — the job's value is in catching disk + autovacuum
  * transitions out-of-band, not in re-running the tuning advice on a timer.
@@ -39,7 +39,7 @@ async function runCapacityWatch(): Promise<void> {
       // Disk + autovacuum + projected-size transitions are still caught — and
       // those are the ones operators actually need to hear about between
       // page loads. The full route still surfaces pgTuningNeeded for admins.
-      const snap = await getCapacitySnapshot({ ramInsufficient: false, pgTuningNeeded: false });
+      const snap = await getCapacitySnapshot({ recommendedRamGb: 0, pgTuningNeeded: false });
       await recordCapacityTransition(snap);
       setDbPoolGauges(snap.database.connectionPool);
       setCapacityGauges({

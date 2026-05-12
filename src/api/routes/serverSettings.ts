@@ -853,8 +853,8 @@ function parsePgBytes(val: string): number {
 
 /**
  * Compute the pg-tuning data: per-setting current vs recommended pairs, the
- * pg_settings config-file path, plus the `ramInsufficient` and `pgTuningNeeded`
- * flags consumed by capacityService.
+ * pg_settings config-file path, plus the `recommendedRamGb` and `pgTuningNeeded`
+ * values consumed by capacityService.
  *
  * Extracted into a helper so both `/pg-tuning` and `/capacity-advisor` can
  * reuse it without duplicating the PG_SETTINGS query. Returns null when no
@@ -869,7 +869,8 @@ interface PgTuningRow {
 interface PgTuningResult {
   settings: PgTuningRow[];
   pgConfigFile: string | null;
-  ramInsufficient: boolean;
+  /** 0 = RAM is sufficient; positive = the recommended minimum GB (next power-of-2 above 2× DB size). */
+  recommendedRamGb: number;
   pgTuningNeeded: boolean;
 }
 async function computePgTuning(): Promise<PgTuningResult | null> {
@@ -894,12 +895,19 @@ async function computePgTuning(): Promise<PgTuningResult | null> {
     "SELECT pg_database_size(current_database()) AS size"
   );
   const dbSizeBytes = Number(dbSizeResult[0]?.size ?? 0);
-  const minRam = getMinRecommendedRamBytes(dbSizeBytes);
-  const currentRam = totalmem();
   const GB = 1024 * 1024 * 1024;
-  const currentRamGb = detectInstalledRamGb(currentRam);
-  const recommendedRamGb = minRam / GB;
-  const ramInsufficient = currentRamGb < recommendedRamGb;
+  const currentRam = totalmem();
+  // Compare against the raw 2× target so pow2 rounding doesn't create a
+  // false positive: a 20 GB DB has a raw target of 40 GB. If the server has
+  // 32 GB the warning fires correctly (32 < 40); if the DB is 15 GB the
+  // target is 30 GB and 32 GB is sufficient — no false positive.
+  // The display value (next power-of-2 above the raw target) is used only
+  // in the suggestion text so it names a standard server RAM tier to aim for.
+  const rawTargetBytes = Math.max(4 * GB, dbSizeBytes * 2);
+  const ramInsufficient = currentRam < rawTargetBytes;
+  const recommendedRamGb = ramInsufficient
+    ? Math.pow(2, Math.ceil(Math.log2(rawTargetBytes / GB)))
+    : 0;
 
   const PG_RECOMMENDED = buildPgRecommended();
   const settings: PgTuningRow[] = pgSettings.map((s) => {
@@ -929,7 +937,7 @@ async function computePgTuning(): Promise<PgTuningResult | null> {
   }).filter((s): s is PgTuningRow => s !== null);
 
   const allOk = settings.every((s) => s.ok);
-  return { settings, pgConfigFile, ramInsufficient, pgTuningNeeded: !allOk };
+  return { settings, pgConfigFile, recommendedRamGb, pgTuningNeeded: !allOk };
 }
 
 /** Project the pg-tuning rows into the shape the Capacity Advisor consumes. */
@@ -969,7 +977,7 @@ router.get("/pg-tuning", async (_req, res, next) => {
   try {
     const tuning = await computePgTuning();
     if (!tuning) {
-      const capacity = await getCapacitySnapshot({ ramInsufficient: false, pgTuningNeeded: false });
+      const capacity = await getCapacitySnapshot({ recommendedRamGb: 0, pgTuningNeeded: false });
       void recordCapacityTransition(capacity);
       return res.json({ settings: [], pgConfigFile: null, capacity });
     }
@@ -980,7 +988,7 @@ router.get("/pg-tuning", async (_req, res, next) => {
     // alongside `capacity` to render the inline pg-tuning rows under the
     // `pg_tuning_needed` reason.
     const capacity = await getCapacitySnapshot({
-      ramInsufficient: tuning.ramInsufficient,
+      recommendedRamGb: tuning.recommendedRamGb,
       pgTuningNeeded: tuning.pgTuningNeeded,
     });
 
@@ -1062,7 +1070,7 @@ router.get("/capacity-advisor", async (_req, res, next) => {
     const pgTuningExternal = pgTuningToAdvisorShape(tuning);
     const { getCapacitySnapshotWithAdvisor } = await import("../../services/capacityService.js");
     const { snapshot, advisor } = await getCapacitySnapshotWithAdvisor({
-      ramInsufficient: tuning?.ramInsufficient ?? false,
+      recommendedRamGb: tuning?.recommendedRamGb ?? 0,
       pgTuningNeeded: tuning?.pgTuningNeeded ?? false,
       pgTuning: pgTuningExternal,
     });
@@ -1094,7 +1102,7 @@ router.post("/capacity-advisor/stage", async (req, res, next) => {
     const pgTuningExternal = pgTuningToAdvisorShape(tuning);
     const { getCapacitySnapshotWithAdvisor } = await import("../../services/capacityService.js");
     const { advisor } = await getCapacitySnapshotWithAdvisor({
-      ramInsufficient: tuning?.ramInsufficient ?? false,
+      recommendedRamGb: tuning?.recommendedRamGb ?? 0,
       pgTuningNeeded: tuning?.pgTuningNeeded ?? false,
       pgTuning: pgTuningExternal,
     });

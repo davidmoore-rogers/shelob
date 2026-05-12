@@ -26,7 +26,7 @@
  *            volume, autovacuum stale >7d on a populated sample table,
  *            projected size > 8× host RAM
  *   amber  — disk 10–20% on any volume, dead-tup >20%, projected > 4× RAM,
- *            ramInsufficient, pgTuningNeeded
+ *            recommendedRamGb, pgTuningNeeded
  *   watch  — disk 20–30% on any volume. Drives the transition Event to
  *            syslog/SFTP archival but NOT the navbar banner — gives ops a
  *            "you have weeks, not minutes" signal before amber.
@@ -540,7 +540,7 @@ export interface AdvisorGapsForReasons {
 
 function computeReasons(
   snap: CapacitySnapshot,
-  ramInsufficient: boolean,
+  recommendedRamGb: number,
   pgTuningNeeded: boolean,
   advisor?: AdvisorGapsForReasons,
 ): CapacityReason[] {
@@ -821,12 +821,13 @@ function computeReasons(
 
   // RAM-insufficient and PG-tuning are amber card reasons — the route handler
   // computes the inputs and passes them in here.
-  if (ramInsufficient) {
+  if (recommendedRamGb > 0) {
+    const installedGb = Math.round(snap.appHost.totalMemoryBytes / (1024 * 1024 * 1024));
     reasons.push({
       severity: "amber",
       code: "ram_insufficient",
       message: `Host RAM is below the recommended minimum for the current database size.`,
-      suggestion: "Add RAM to reach the recommended minimum (see the host card for the target).",
+      suggestion: `Add RAM to reach at least ${recommendedRamGb} GB (installed: ${installedGb} GB).`,
     });
   }
   if (pgTuningNeeded) {
@@ -854,7 +855,8 @@ function deriveSeverity(reasons: CapacityReason[]): Severity {
  * the audit-log Event on severity changes.
  */
 export async function getCapacitySnapshot(opts: {
-  ramInsufficient: boolean;
+  /** 0 = RAM is sufficient; positive = the recommended minimum GB (displayed in the reason). */
+  recommendedRamGb: number;
   pgTuningNeeded: boolean;
   /** Optional advisor-driven gap data. When provided, populates the
    *  `monitor_workers_undersized` / `max_connections_undersized` reasons.
@@ -1002,7 +1004,7 @@ export async function getCapacitySnapshot(opts: {
     },
   };
 
-  snap.reasons = computeReasons(snap, opts.ramInsufficient, opts.pgTuningNeeded, opts.advisor);
+  snap.reasons = computeReasons(snap, opts.recommendedRamGb, opts.pgTuningNeeded, opts.advisor);
   snap.severity = deriveSeverity(snap.reasons);
   return snap;
 }
@@ -1022,7 +1024,8 @@ export async function getCapacitySnapshot(opts: {
  */
 export async function getCapacitySnapshotWithAdvisor(
   opts: {
-    ramInsufficient: boolean;
+    /** 0 = RAM is sufficient; positive = the recommended minimum GB. */
+    recommendedRamGb: number;
     pgTuningNeeded: boolean;
     pgTuning: import("./capacityAdvisorService.js").PgTuningExternal;
   },
@@ -1039,7 +1042,7 @@ export async function getCapacitySnapshotWithAdvisor(
   // the full snapshot just to inject advisor reasons was doubling the
   // Maintenance tab's first-paint latency.
   const snapshot = await getCapacitySnapshot({
-    ramInsufficient: opts.ramInsufficient,
+    recommendedRamGb: opts.recommendedRamGb,
     pgTuningNeeded: opts.pgTuningNeeded,
   });
   // Compute the advisor state against this snapshot.
@@ -1057,7 +1060,7 @@ export async function getCapacitySnapshotWithAdvisor(
   };
   // Re-derive reasons + severity in place with the advisor gaps wired in,
   // so the advisor-driven reasons fire without doing a second snapshot pass.
-  snapshot.reasons = computeReasons(snapshot, opts.ramInsufficient, opts.pgTuningNeeded, gapsForReasons);
+  snapshot.reasons = computeReasons(snapshot, opts.recommendedRamGb, opts.pgTuningNeeded, gapsForReasons);
   snapshot.severity = deriveSeverity(snapshot.reasons);
   return { snapshot, advisor };
 }
