@@ -824,7 +824,7 @@ function computeReasons(
   if (recommendedRamGb > 0) {
     const installedGb = Math.round(snap.appHost.totalMemoryBytes / (1024 * 1024 * 1024));
     reasons.push({
-      severity: "amber",
+      severity: "watch",
       code: "ram_insufficient",
       message: `Host RAM is below the recommended minimum for the current database size.`,
       suggestion: `Add RAM to reach at least ${recommendedRamGb} GB (installed: ${installedGb} GB).`,
