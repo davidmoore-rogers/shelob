@@ -862,6 +862,17 @@ code {
   background: rgba(255,23,68,0.25);
   border-color: rgba(255,23,68,0.5);
 }
+.btn-warning {
+  background: rgba(255,214,0,0.15);
+  color: var(--color-warning);
+  border-color: rgba(255,214,0,0.4);
+  font-weight: 600;
+}
+[data-theme="light"] .btn-warning {
+  background: rgba(245,127,23,0.12);
+  color: var(--color-warning);
+  border-color: rgba(245,127,23,0.35);
+}
 .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 .btn-icon {
   padding: 0.35rem;

@@ -965,6 +965,7 @@ async function deleteServerCert(id, name) {
 // ─── Maintenance Tab ───────────────────────────────────────────────────────
 
 var _dbLoaded = false;
+var _advisorJustStaged = false;
 
 function _capacityFormatBytes(b) {
   if (b == null) return "—";
@@ -1225,9 +1226,14 @@ function renderCapacityAdvisorCard(advisor, pgConfigFile, dbConnectionMode) {
   }
 
   var staged = recs.filter(function (r) { return r.applyMode !== "advisory-only" && r.changeRequired; }).length;
-  var stageBtn = staged > 0
-    ? '<button class="btn btn-primary" id="capacity-advisor-stage-btn" data-staged-count="' + staged + '">Stage selected</button>'
-    : '<button class="btn btn-primary" disabled>Stage selected</button>';
+  var stageBtn;
+  if (_advisorJustStaged && staged === 0) {
+    stageBtn = '<button class="btn btn-warning" disabled>Restart Polaris to apply</button>';
+  } else if (staged > 0) {
+    stageBtn = '<button class="btn btn-primary" id="capacity-advisor-stage-btn" data-staged-count="' + staged + '">Stage selected</button>';
+  } else {
+    stageBtn = '<button class="btn btn-primary" disabled>Stage selected</button>';
+  }
 
   var pgConfigHint = pgConfigFile
     ? '<p class="hint" style="margin:0.4rem 0 0 0;font-size:0.78rem">Advisory-only settings live in <code>' + escapeHtml(pgConfigFile) + '</code>. Edit and restart PostgreSQL to apply.</p>'
@@ -1680,6 +1686,7 @@ function initCapacityAdvisorActions() {
   if (!stageBtn || stageBtn.disabled) return;
 
   stageBtn.addEventListener("click", async function () {
+    _advisorJustStaged = false;
     var checked = Array.prototype.slice.call(
       card.querySelectorAll('input.advisor-stage-checkbox:checked')
     ).map(function (el) { return el.getAttribute("data-key"); });
@@ -1701,6 +1708,7 @@ function initCapacityAdvisorActions() {
       if (errored.length > 0) {
         showToast("Staged " + applied + ", " + errored.length + " error" + (errored.length === 1 ? "" : "s") + ": " + errored.map(function (r) { return r.key + " — " + (r.reason || "unknown"); }).join("; "), "error");
       } else {
+        _advisorJustStaged = true;
         showToast("Staged " + applied + " value" + (applied === 1 ? "" : "s") + ". Restart Polaris to apply.", "success");
       }
       _dbLoaded = false;
