@@ -2547,7 +2547,11 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,.45);
-  z-index: 999;
+  /* Sits above .modal-overlay (z-index 1000) so an asset details slide-in
+     opened from inside a modal (Device Map topology, conflict review) is
+     visible. The monitor-confirm popover (1100) still wins because it
+     anchors to a specific row and shouldn't be obscured. */
+  z-index: 1050;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.25s;
