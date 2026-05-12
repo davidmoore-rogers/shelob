@@ -194,27 +194,47 @@ async function acceptReservationConflict(conflict: any, actor?: string) {
   if (!conflict.reservation || !conflict.reservationId) {
     throw new AppError(500, "Reservation conflict is missing its reservation link");
   }
+  const existing = conflict.reservation;
+  // Merge mode: VIP + DHCP collision (neither side is a manual reservation).
+  // Final sourceType is "vip" (load-bearing FortiGate config). Existing fields
+  // that are non-empty are preserved; blanks get filled from the proposed
+  // values. vipInfo + macAddress were already populated by discovery before
+  // the conflict was raised, so we don't touch them here.
+  const isMergeMode = existing.sourceType !== "manual";
   const updateData: Record<string, unknown> = {};
-  for (const field of conflict.conflictFields as string[]) {
-    if (field === "hostname") updateData.hostname = conflict.proposedHostname;
-    if (field === "owner") updateData.owner = conflict.proposedOwner;
-    if (field === "projectRef") updateData.projectRef = conflict.proposedProjectRef;
-    if (field === "notes") updateData.notes = conflict.proposedNotes;
-  }
-  if (conflict.proposedSourceType) updateData.sourceType = conflict.proposedSourceType;
 
-  await prisma.reservation.update({
-    where: { id: conflict.reservationId },
-    data: updateData,
-  });
+  if (isMergeMode) {
+    if (!existing.hostname && conflict.proposedHostname) updateData.hostname = conflict.proposedHostname;
+    if (!existing.owner && conflict.proposedOwner) updateData.owner = conflict.proposedOwner;
+    if (!existing.projectRef && conflict.proposedProjectRef) updateData.projectRef = conflict.proposedProjectRef;
+    if (!existing.notes && conflict.proposedNotes) updateData.notes = conflict.proposedNotes;
+    if (existing.sourceType !== "vip") updateData.sourceType = "vip";
+  } else {
+    for (const field of conflict.conflictFields as string[]) {
+      if (field === "hostname") updateData.hostname = conflict.proposedHostname;
+      if (field === "owner") updateData.owner = conflict.proposedOwner;
+      if (field === "projectRef") updateData.projectRef = conflict.proposedProjectRef;
+      if (field === "notes") updateData.notes = conflict.proposedNotes;
+    }
+    if (conflict.proposedSourceType) updateData.sourceType = conflict.proposedSourceType;
+  }
+
+  if (Object.keys(updateData).length > 0) {
+    await prisma.reservation.update({
+      where: { id: conflict.reservationId },
+      data: updateData,
+    });
+  }
 
   logEvent({
     action: "conflict.accepted",
     resourceType: "reservation",
     resourceId: conflict.reservationId,
-    resourceName: conflict.reservation.ipAddress ?? undefined,
+    resourceName: existing.ipAddress ?? undefined,
     actor,
-    message: `Conflict accepted for reservation ${conflict.reservation.ipAddress} — applied discovered values (${(conflict.conflictFields as string[]).join(", ")})`,
+    message: isMergeMode
+      ? `Conflict merged for reservation ${existing.ipAddress} — folded ${conflict.proposedSourceType || "discovered"} metadata into VIP record`
+      : `Conflict accepted for reservation ${existing.ipAddress} — applied discovered values (${(conflict.conflictFields as string[]).join(", ")})`,
   });
 }
 

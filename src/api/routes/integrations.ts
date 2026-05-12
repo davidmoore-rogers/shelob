@@ -1841,6 +1841,29 @@ async function upsertConflict(
     where: { reservationId, status: "pending" },
   });
 
+  // Merge-type collisions (VIP + DHCP) where the existing reservation is
+  // already non-manual: once the operator has resolved one of these within
+  // the last 30 days, don't re-raise on every subsequent discovery cycle.
+  // Without this guard, the existing-vs-proposed values stay different
+  // forever (the "fold in blanks only" merge intentionally leaves the
+  // existing values alone), so upsertConflict would otherwise re-create
+  // the same conflict every poll. Scoped narrowly: only when proposed is
+  // vip/dhcp_* so the existing manual-overwrite re-raise behavior is
+  // preserved.
+  const MERGE_TYPES = new Set(["vip", "dhcp_reservation", "dhcp_lease"]);
+  if (!existingConflict && MERGE_TYPES.has(proposed.sourceType)) {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const recentResolved = await prisma.conflict.findFirst({
+      where: {
+        reservationId,
+        status: { in: ["accepted", "rejected"] },
+        proposedSourceType: { in: ["vip", "dhcp_reservation", "dhcp_lease"] },
+        resolvedAt: { gte: cutoff },
+      },
+    });
+    if (recentResolved) return;
+  }
+
   const conflictData = {
     integrationId,
     proposedHostname: proposed.hostname ?? null,
@@ -3233,16 +3256,11 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           if (existingRes.sourceType === "manual") {
             await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: proposedProjectRef, notes: proposedNotes, sourceType: "vip" }, existingRes);
           } else if (existingRes.sourceType === "vip") {
-            // Update existing VIP reservation if the name changed
-            if (existingRes.hostname !== proposedHostname || existingRes.notes !== proposedNotes) {
-              await prisma.reservation.update({
-                where: { id: existingRes.id },
-                data: { hostname: proposedHostname, owner: proposedOwner, notes: proposedNotes, projectRef: proposedProjectRef },
-              });
-              existingRes.hostname = proposedHostname;
-            }
-          } else if (existingRes.sourceType === "dhcp_reservation" || existingRes.sourceType === "dhcp_lease") {
-            // DHCP reservation takes precedence — store VIP metadata for display in the UI
+            // VIP rename (or first vipInfo snapshot) — refresh canonical VIP
+            // metadata only. hostname / owner / notes / projectRef are
+            // operator-editable via the Reserve modal, so discovery must not
+            // overwrite them; the VIP's current name stays visible via the
+            // vip badge tooltip rendered from vipInfo.
             const newVipInfo = { name: vip.name, device: vip.device, extip: vip.extip, role };
             const cur = existingRes.vipInfo as any;
             if (!cur || cur.name !== newVipInfo.name || cur.device !== newVipInfo.device || cur.role !== newVipInfo.role) {
@@ -3252,6 +3270,28 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
               });
               existingRes.vipInfo = newVipInfo;
             }
+          } else if (existingRes.sourceType === "dhcp_reservation" || existingRes.sourceType === "dhcp_lease") {
+            // VIP + DHCP collision: same IP is both a DHCP lease/reservation
+            // AND a VIP external on the FortiGate. Update vipInfo so the
+            // operator sees the VIP badge immediately, then raise a merge
+            // conflict so they can review folding the VIP metadata into
+            // this row. upsertConflict's 30-day re-raise guard prevents
+            // nagging every discovery cycle once resolved.
+            const newVipInfo = { name: vip.name, device: vip.device, extip: vip.extip, role };
+            const cur = existingRes.vipInfo as any;
+            if (!cur || cur.name !== newVipInfo.name || cur.device !== newVipInfo.device || cur.role !== newVipInfo.role) {
+              await prisma.reservation.update({
+                where: { id: existingRes.id },
+                data: { vipInfo: newVipInfo },
+              });
+              existingRes.vipInfo = newVipInfo;
+            }
+            await upsertConflict(
+              existingRes.id,
+              integrationId,
+              { hostname: proposedHostname, owner: proposedOwner, projectRef: proposedProjectRef, notes: proposedNotes, sourceType: "vip" },
+              existingRes,
+            );
           }
           continue;
         }
@@ -3395,6 +3435,27 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           } else {
             await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
           }
+        } else if (existingRes.sourceType === "vip") {
+          // VIP + DHCP collision (DHCP arriving second): the FortiGate has a
+          // VIP external IP that also shows up as a DHCP lease/reservation.
+          // Silent fill of macAddress (technical observation; no operator
+          // decision needed), then raise a merge conflict for the metadata
+          // fold-in review. upsertConflict's 30-day guard prevents re-raise
+          // once the operator resolves.
+          const macNormalized = entry.macAddress ? entry.macAddress.toUpperCase().replace(/-/g, ":") : null;
+          if (macNormalized && !existingRes.macAddress) {
+            await prisma.reservation.update({
+              where: { id: existingRes.id },
+              data: { macAddress: macNormalized },
+            });
+            existingRes.macAddress = macNormalized;
+          }
+          await upsertConflict(
+            existingRes.id,
+            integrationId,
+            { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType },
+            existingRes,
+          );
         } else if (entry.seenLeased && isDhcpReservation) {
           // Static reservation we already know about; bump the
           // last-seen-leased timestamp so the stale-reservation job knows
