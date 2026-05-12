@@ -534,6 +534,11 @@ export async function getSubnetIps(id: string, page: number, pageSize: number) {
     id: r.id,
     hostname: r.hostname,
     owner: r.owner,
+    // macAddress feeds the IP panel's MAC column directly. Without this the
+    // column relies on a `MAC: …` substring inside `notes` (the legacy
+    // discovery-side breadcrumb), which means operator-edited MACs that
+    // landed on the dedicated column don't render.
+    macAddress: r.macAddress,
     status: r.status,
     sourceType: r.sourceType,
     notes: r.notes,

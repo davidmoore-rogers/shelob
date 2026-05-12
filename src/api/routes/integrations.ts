@@ -3458,21 +3458,47 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType },
             existingRes,
           );
-        } else if (entry.seenLeased && isDhcpReservation) {
-          // Static reservation we already know about; bump the
-          // last-seen-leased timestamp so the stale-reservation job knows
-          // its target was online at this discovery run. Cleared both
-          // staleNotifiedAt (so a freshly-online reservation re-arms the
-          // alert if it goes silent again later) and staleSnoozedUntil (so
-          // an operator snooze on a now-online reservation doesn't linger).
-          await prisma.reservation.update({
-            where: { id: existingRes.id },
-            data: {
-              lastSeenLeased: new Date(),
-              staleNotifiedAt: null,
-              staleSnoozedUntil: null,
-            },
-          });
+        } else if (
+          existingRes.sourceType === "dhcp_lease" ||
+          existingRes.sourceType === "dhcp_reservation"
+        ) {
+          // Existing dhcp_* row: keep sourceType honest as the device-side
+          // state shifts (e.g. a lease IP gets promoted to a static
+          // reservation, or a static reservation is removed and only a
+          // lease remains). When sourceType flips, also flip the
+          // conventional owner placeholder ("dhcp-lease" ↔
+          // "dhcp-reservation") so the UI status pill and owner column
+          // stay aligned. Operator-stamped owners (anything outside that
+          // allowlist) survive untouched.
+          const update: Record<string, unknown> = {};
+          if (existingRes.sourceType !== proposedSourceType) {
+            update.sourceType = proposedSourceType;
+            if (
+              existingRes.owner === "dhcp-lease" ||
+              existingRes.owner === "dhcp-reservation"
+            ) {
+              update.owner =
+                proposedSourceType === "dhcp_reservation"
+                  ? "dhcp-reservation"
+                  : "dhcp-lease";
+            }
+          }
+          if (entry.seenLeased && isDhcpReservation) {
+            // Bump the last-seen-leased timestamp so the stale-reservation
+            // job knows the target was online at this discovery run.
+            // Clear staleNotifiedAt (re-arm the alert if it goes silent
+            // again later) and staleSnoozedUntil (a snooze on a now-online
+            // row shouldn't linger).
+            update.lastSeenLeased = new Date();
+            update.staleNotifiedAt = null;
+            update.staleSnoozedUntil = null;
+          }
+          if (Object.keys(update).length > 0) {
+            await prisma.reservation.update({
+              where: { id: existingRes.id },
+              data: update,
+            });
+          }
         }
         continue;
       }

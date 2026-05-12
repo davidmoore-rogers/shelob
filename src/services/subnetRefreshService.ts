@@ -238,7 +238,16 @@ export async function refreshSubnet(
     const matched = existing.find((r) => r.ipAddress === ip);
     if (matched) {
       const diff: Record<string, unknown> = {};
-      if (matched.sourceType !== f.sourceType) diff.sourceType = f.sourceType;
+      if (matched.sourceType !== f.sourceType) {
+        diff.sourceType = f.sourceType;
+        // Flip the conventional owner placeholder ("dhcp-lease" / "dhcp-
+        // reservation") alongside the sourceType so the IP panel status pill
+        // and the owner column don't disagree. Operator-stamped owners
+        // (anything not in this allowlist) survive untouched.
+        if (matched.owner === "dhcp-lease" || matched.owner === "dhcp-reservation") {
+          diff.owner = f.sourceType === "dhcp_reservation" ? "dhcp-reservation" : "dhcp-lease";
+        }
+      }
       if (f.mac && matched.macAddress !== f.mac) diff.macAddress = f.mac;
       if (f.hostname && matched.hostname !== f.hostname) diff.hostname = f.hostname;
       if (f.sourceType === "dhcp_reservation" || matched.sourceType === "dhcp_lease") {
