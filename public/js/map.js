@@ -1011,7 +1011,12 @@
   function renderTopologyInfo(data) {
     var fg = data.fortigate || {};
     var parts = [];
-    parts.push('<h4>' + escapeHtml(fg.hostname || "FortiGate") + '</h4>');
+    var fgLabel = escapeHtml(fg.hostname || "FortiGate");
+    if (fg.id) {
+      parts.push('<h4><a href="/assets.html#asset=' + encodeURIComponent(fg.id) + '">' + fgLabel + '</a></h4>');
+    } else {
+      parts.push('<h4>' + fgLabel + '</h4>');
+    }
 
     parts.push('<div class="detail-row"><span class="label">Serial</span><span class="value">' + escapeHtml(fg.serial || "—") + '</span></div>');
     parts.push('<div class="detail-row"><span class="label">Model</span><span class="value">' + escapeHtml(fg.model || "—") + '</span></div>');
