@@ -31,6 +31,22 @@ export interface RecentReservation {
   expiresAt: Date | null;
 }
 
+export interface RecentManualReservation {
+  id: string;
+  subnetId: string;
+  subnetCidr: string;
+  subnetName: string;
+  vlan: number | null;
+  ipAddress: string | null;
+  hostname: string | null;
+  owner: string | null;
+  projectRef: string | null;
+  macAddress: string | null;
+  createdAt: Date;
+  createdBy: string | null;
+  expiresAt: Date | null;
+}
+
 export interface BlockUtilizationSummary {
   id: string;
   name: string;
@@ -143,6 +159,39 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
     recentReservations,
     blockUtilization,
   };
+}
+
+// ─── Recent manual (user-created) reservations ───────────────────────────────
+//
+// Drives the Dashboard's "Recently Reserved" card. Filters to sourceType=manual
+// so DHCP discoveries / leases / VIP echoes don't crowd out reservations a
+// person actually typed in. Returns hostname + MAC + createdBy so the card
+// can show full attribution without a second fetch.
+
+export async function getRecentManualReservations(limit = 10): Promise<RecentManualReservation[]> {
+  const rows = await prisma.reservation.findMany({
+    where: { status: "active", sourceType: "manual" },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: {
+      subnet: { select: { id: true, cidr: true, name: true, vlan: true } },
+    },
+  });
+  return rows.map((r) => ({
+    id:           r.id,
+    subnetId:     r.subnet.id,
+    subnetCidr:   r.subnet.cidr,
+    subnetName:   r.subnet.name,
+    vlan:         r.subnet.vlan,
+    ipAddress:    r.ipAddress,
+    hostname:     r.hostname,
+    owner:        r.owner,
+    projectRef:   r.projectRef,
+    macAddress:   r.macAddress,
+    createdAt:    r.createdAt,
+    createdBy:    r.createdBy,
+    expiresAt:    r.expiresAt,
+  }));
 }
 
 // ─── Per-block utilization ────────────────────────────────────────────────────

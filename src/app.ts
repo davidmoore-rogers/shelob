@@ -50,6 +50,7 @@ import "./jobs/scrubLegacySidGuidTags.js";
 import "./jobs/backfillFortigateEndpointSources.js";
 import "./jobs/fixInfraAssetTypes.js";
 import "./jobs/backfillDependencyTree.js";
+import "./jobs/backfillMonitorStatusChangedAt.js";
 import "./jobs/dependencyReconciler.js";
 import "./jobs/reconcileMapRegions.js";
 import { ensureRegistryLoaded } from "./services/oidRegistry.js";

@@ -4138,6 +4138,10 @@ export async function recordProbeResult(
       lastResponseTimeMs: result.success ? result.responseTimeMs : null,
       consecutiveFailures: newCf,
       consecutiveSuccesses: newCs,
+      // Stamp on every state change (up↔warning↔recovering↔down, including
+      // unknown→anything). The Event log still fires only on up↔down; this
+      // column is the source for the Dashboard Monitor Alerts duration.
+      ...(previousStatus !== nextStatus ? { monitorStatusChangedAt: now } : {}),
     },
   });
 

@@ -24,6 +24,7 @@ import credentialsRouter from "./routes/credentials.js";
 import manufacturerAliasesRouter from "./routes/manufacturerAliases.js";
 import monitorSettingsRouter from "./routes/monitorSettings.js";
 import apiTokensRouter from "./routes/apiTokens.js";
+import dashboardRouter from "./routes/dashboard.js";
 import { requireAuth, requireAdmin, requireNetworkAdmin, attachApiToken } from "./middleware/auth.js";
 
 export const router = Router();
@@ -53,6 +54,7 @@ router.use("/subnets", subnetsRouter);
 router.use("/allocation-templates", allocationTemplatesRouter);
 router.use("/reservations", reservationsRouter);
 router.use("/utilization", utilizationRouter);
+router.use("/dashboard", dashboardRouter);
 router.use("/users", requireAdmin, usersRouter);
 router.use("/integrations", requireNetworkAdmin, integrationsRouter);
 router.use("/assets", assetsRouter);

@@ -185,6 +185,9 @@ const api = {
     block:   (id) => request("GET", `/utilization/blocks/${id}`),
     subnet:  (id) => request("GET", `/utilization/subnets/${id}`),
   },
+  dashboard: {
+    summary: () => request("GET", "/dashboard/summary"),
+  },
   users: {
     list:          ()       => request("GET", "/users"),
     create:        (body)   => request("POST", "/users", body),

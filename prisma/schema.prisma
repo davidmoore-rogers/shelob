@@ -228,16 +228,16 @@ model Credential {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  assets           Asset[] @relation("AssetMonitorCred") // default credential back-relation
-  rtAssets         Asset[] @relation("AssetRTCred")
-  telemetryAssets  Asset[] @relation("AssetTelemetryCred")
-  interfacesAssets Asset[] @relation("AssetInterfacesCred")
-  lldpAssets       Asset[] @relation("AssetLldpCred")
+  assets                  Asset[]                @relation("AssetMonitorCred") // default credential back-relation
+  rtAssets                Asset[]                @relation("AssetRTCred")
+  telemetryAssets         Asset[]                @relation("AssetTelemetryCred")
+  interfacesAssets        Asset[]                @relation("AssetInterfacesCred")
+  lldpAssets              Asset[]                @relation("AssetLldpCred")
   // Back-relations for per-stream class override credentials
-  classOverrideRTAssets    MonitorClassOverride[] @relation("ClassOverrideRTCred")
-  classOverrideTelAssets   MonitorClassOverride[] @relation("ClassOverrideTelCred")
-  classOverrideIfAssets    MonitorClassOverride[] @relation("ClassOverrideIfCred")
-  classOverrideLldpAssets  MonitorClassOverride[] @relation("ClassOverrideLldpCred")
+  classOverrideRTAssets   MonitorClassOverride[] @relation("ClassOverrideRTCred")
+  classOverrideTelAssets  MonitorClassOverride[] @relation("ClassOverrideTelCred")
+  classOverrideIfAssets   MonitorClassOverride[] @relation("ClassOverrideIfCred")
+  classOverrideLldpAssets MonitorClassOverride[] @relation("ClassOverrideLldpCred")
 
   @@index([type])
   @@map("credentials")
@@ -426,6 +426,10 @@ model Asset {
   // false-fail on healthy networks under transient latency.
   probeTimeoutMs           Int?
   monitorStatus            String? // "up" | "warning" | "recovering" | "down" | "unknown"
+  // Bumped whenever monitorStatus changes value (any transition, not just
+  // up<->down). Drives the "how long has this been warning/down" duration on
+  // the Dashboard's Monitor Alerts card. Null until the first transition.
+  monitorStatusChangedAt   DateTime?
   lastMonitorAt            DateTime?
   lastResponseTimeMs       Int?
   consecutiveFailures      Int         @default(0)
@@ -514,8 +518,8 @@ model Asset {
   // also auto-clears expired rows (sets dependencyTestUntil back to null).
   // Only admins can set or clear this — assets-admin and network-admin do
   // not have the privilege. See routes/assets.ts ":id/dependency-test".
-  dependencyTestUntil      DateTime?
-  dependencyTestStartedBy  String?
+  dependencyTestUntil     DateTime?
+  dependencyTestStartedBy String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
