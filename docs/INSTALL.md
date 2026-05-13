@@ -573,39 +573,39 @@ The Polaris Agent is a small Go binary you can install on Linux / macOS / Window
 
 ### Build the binaries
 
-The repo ships agent source under `agent/`. The release tarball does NOT pre-build the binaries (operators on hardened build hosts often can't add Go to their toolchain). Build them once and drop the output into Polaris's state directory.
+**The default path:** the install scripts in this guide (`deploy/setup-{rhel,ubuntu,windows}.{sh,ps1}` and their `-nodb` variants) provision Go 1.22+ alongside Node 20+, so a freshly-installed Polaris server is ready to produce agent binaries on demand. From the web UI:
 
-On any host with Go 1.22+ installed:
+1. Sign in as admin
+2. Server Settings → **Maintenance** → **Polaris Agent** card → **Build agent binaries (vX.Y.Z)**
+3. Watch the progress strip; all six platforms reach ✓ within ~90 s on a 2-vCPU host
 
-```sh
-cd /opt/polaris/agent           # or wherever the release tarball lives
-go mod tidy                     # one-time: fetch dependency checksums
-make all                        # produces dist/<VERSION>/polaris-agent-*
-```
+The button is hidden + replaced by a yellow notice ("install Go 1.22+ and reload") when Go isn't on the server's PATH. The card also shows a per-platform inventory grid and surfaces a drift hint when `agent/VERSION` has moved past `manifest.json` (the auto-build job fires this build for you on the next boot if you don't click it sooner).
 
-Output lands under `agent/dist/<version>/` as six platform binaries:
+**Build queueing + cancellation:** A second click while a build is running enqueues (FIFO depth 3); the 4th simultaneous click gets a "queue full" 409. Each build's row carries a × button that cancels (SIGTERM with SIGKILL 5s grace for the active build; splice-from-queue for queued ones). The on-disk manifest only updates after all six platforms succeed, so a cancelled build leaves no operator-visible artifact.
 
-```
-polaris-agent-linux-amd64
-polaris-agent-linux-arm64
-polaris-agent-darwin-amd64
-polaris-agent-darwin-arm64
-polaris-agent-windows-amd64.exe
-polaris-agent-windows-arm64.exe
-```
+**Auto-build:** Polaris fires Build automatically 60 s after every boot when `agent/VERSION` has moved past the on-disk manifest. Disable via the toggle on the same card when shop policy requires human-initiated builds. The auto-build is gated on Go being installed (logs a warning Event if not), an existing manifest (operator must have built at least once — fresh installs don't get surprised), and the kill-switch Setting.
 
-### Stage the binaries for Polaris to use
+**Per-version cleanup:** After every successful build Polaris auto-prunes old version directories. The prune helper NEVER removes the manifest's currentVersion, NEVER removes versions in use by a live agent (so rollback works), and ALWAYS keeps the most recent N (env `POLARIS_AGENT_KEEP_VERSIONS`, default 3). The "Clean up old binaries" button on the card fires the same helper manually.
 
-Move the entire `dist/<version>/` directory under Polaris's state path, plus a `manifest.json` that names the current version + the per-platform filenames:
+### Build the binaries (fallback: build on a separate host)
+
+When Polaris itself runs on a host that can't have Go installed (strict supply chain, air-gapped CI, etc.), build on a separate host and copy the artifacts in:
 
 ```sh
-# RHEL / Debian / Ubuntu (POLARIS_STATE_DIR unset → state lives under the project root)
-sudo mkdir -p /opt/polaris/data/agents/0.1.0
-sudo cp agent/dist/0.1.0/* /opt/polaris/data/agents/0.1.0/
+# On any host with Go 1.22+ installed
+cd /path/to/polaris/agent
+go mod tidy
+make all                        # → dist/<version>/polaris-agent-*
+```
+
+```sh
+# On the Polaris host
+sudo mkdir -p /opt/polaris/data/agents/<version>
+sudo cp dist/<version>/* /opt/polaris/data/agents/<version>/
 sudo tee /opt/polaris/data/agents/manifest.json <<'EOF'
 {
-  "currentVersion": "0.1.0",
-  "minimumCompatible": "0.1.0",
+  "currentVersion": "<version>",
+  "minimumCompatible": "<version>",
   "binaries": {
     "linux-amd64":   "polaris-agent-linux-amd64",
     "linux-arm64":   "polaris-agent-linux-arm64",
@@ -653,6 +653,16 @@ The install status pill flips `pending → uploading → enrolling → active` o
 
 - **Linux / macOS:** SSH reachable from Polaris on port 22 (or whatever the credential's port field specifies); the credential's user must be able to `sudo -n` (passwordless sudo) — the installer creates a systemd unit / launchd plist.
 - **Windows:** WinRM enabled on port 5986 (HTTPS) or 5985 (HTTP). Run `Enable-PSRemoting -Force` on a fresh host. The credential must have local admin rights — the installer creates a Windows Service under `%ProgramFiles%\Polaris\Agent\`.
+
+### Upgrade agents on already-installed hosts
+
+When `agent/VERSION` advances and you build (or auto-build fires), existing installed agents stay on their old binaries until you push the upgrade.
+
+**Per-asset:** Asset details modal → System tab → Polaris Agent panel → **Upgrade…** button. Confirm and watch the install-state pill flip `active → upgrading → active` within ~10 s. The agent's bearer + cert pin survive the swap — no re-enrollment, no need to repick a credential (the install credential stored on the row is reused).
+
+**Fleet-wide:** Server Settings → Maintenance → Polaris Agent card. When any installed agents lag the current build, the card shows an "N of M installed agents running an older version" line with an **Upgrade all** button. Click → confirm → Polaris fans out to every out-of-date host with a Promise pool of 4 (the SSH/WinRM connections are the bottleneck; higher parallelism risks tripping per-host concurrent-connection limits — Windows WinRM caps at ~5 by default).
+
+Failures land per-row as `installStatus="upgrade_failed"` with the error captured in `installError`; an audit Event (`agent.upgrade_failed`) goes out per failed host. The operator retries individuals via the Retry Upgrade button on the asset details panel, or just clicks Upgrade-all again (already-current hosts are silently skipped by the eligibility filter).
 
 ---
 

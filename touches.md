@@ -194,6 +194,152 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Cert-pin algorithm change: update `httpsManager.getServerCertFingerprint()` AND the Go agent's TLS verifier in lockstep — server pin AND agent pin both compute fingerprint the same way (sha256 of leaf DER).
 - New /agents/* route: decide whether it's public (mount under `agentsEnrollRouter`) or bearer-gated (mount under `agentsRouter`). Both are wired in `src/api/router.ts` BEFORE the blanket `requireAuth` gate.
 
+**Agent code changes MUST bump `agent/VERSION`.** The agent has its own
+version string (decoupled from Polaris's version) tracked in the one-line
+text file `agent/VERSION`. Any commit that touches files under
+`agent/cmd/polaris-agent/`, `agent/internal/collectors/`,
+`agent/internal/transport/`, `agent/internal/pinned/`, or `agent/go.mod`
+MUST also bump `agent/VERSION` (semver: patch for fixes, minor for new
+features, major for breaking wire-protocol changes). The version flows
+through three places:
+
+1. Stamped into the binary via `-ldflags='-X main.version=...'` so
+   `polaris-agent` reports it and the agent's /heartbeat sends it as
+   `ManagedAgent.agentVersion`.
+2. Used as the directory name under `data/agents/<version>/` so a
+   rebuild produces a new directory rather than overwriting the old
+   binaries (the per-version cleanup helper retains a rollback target).
+3. Compared by the auto-build job (`src/jobs/autoBuildAgents.ts`) at
+   boot. The job fires Build ONLY when `manifest.currentVersion !==
+   agent/VERSION` (and a manifest exists, and Go is installed, and the
+   `agent.autoBuildOnVersionMismatch` Setting isn't false). Polaris
+   patch releases that don't touch agent/ produce zero auto-build
+   noise — the load-bearing decoupling.
+
+Forgetting to bump VERSION means:
+- The auto-build won't fire.
+- Upgrade buttons on installed agents stay hidden (they compare
+  `managedAgent.agentVersion` against `manifest.currentVersion`).
+- Operators won't see the new behavior until they manually click Build.
+
+When bumping `agent/go.mod`'s `go 1.x` directive, also bump the install
+scripts' Go-version pin in `deploy/setup-{rhel,ubuntu,windows}{,-nodb}.{sh,ps1}`
+and the Dockerfile's `golang-go` source (currently bookworm-backports)
+in lockstep, or operators will get cryptic "missing go.sum entry"
+errors when the build runs.
+
+The rebuild + redistribute paths after bumping VERSION:
+1. **From the UI:** Server Settings → Maintenance → Polaris Agent →
+   Build. Polaris regenerates all 6 binaries using the installed Go
+   toolchain. The auto-build job does this for you on the next server
+   boot. Existing installed agents do NOT auto-upgrade — operators
+   trigger that per-asset via the Upgrade button on the asset details
+   modal OR fleet-wide via the "Upgrade all out-of-date" line on the
+   Maintenance Polaris Agent card.
+2. **From a shell:** `make -C agent all` then copy `dist/<version>/*`
+   into `<STATE_DIR>/data/agents/<version>/` + update `manifest.json`.
+
+---
+
+## cross-cutting/polaris-agent-build
+
+**What it is:** In-app build pipeline that produces the six platform
+agent binaries (linux/darwin/windows × amd64/arm64) and writes the
+`manifest.json` consumed by the install/upgrade flows. Runs `go build`
+directly in a child process (no `make` dependency — Windows hosts don't
+ship GNU make). FIFO queue (depth 3) + per-build cancellation + post-
+build auto-prune + boot-time auto-build are layered on top.
+
+**Writers** (state that mutates):
+- `src/services/agentBuildService.ts` — owns everything: state map,
+  FIFO queue, mutex, per-build child-process handle, version reads,
+  manifest writes, post-build prune. Exports:
+  - `goAvailable()` — runs `go version`, no cache. UI / route gate on this.
+  - `startBuild({actor})` — queues or runs immediately. 400 on no-Go,
+    409 on queue-full (`BuildQueueFullError`). Emits `agent.build.started`
+    (immediate) or `agent.build.queued` (enqueued).
+  - `cancelBuild(buildId, actor)` — three branches: queued (splice from
+    queue), in-flight (SIGTERM + SIGKILL after 5s grace, set
+    `state.cancelled` so runBuild sees CancelledError), already-finished
+    (`BuildAlreadyFinishedError` → route 409). Emits `agent.build.cancelled`.
+  - `pruneOldAgentVersions()` — policy is keep-current + keep-in-use +
+    keep-last-N (env `POLARIS_AGENT_KEEP_VERSIONS`, default 3). Fires
+    after every successful build + on operator click of the Clean-up
+    button on the Maintenance card. Emits `agent.versions.pruned` with
+    `trigger: "post-build"|"manual"`.
+- `src/api/routes/serverSettings.ts:/agents/*` — eight admin-only routes
+  exposing the service: inventory, build start/poll/current/cancel,
+  prune, installed-summary, upgrade-all, auto-build-setting GET+PUT.
+- `src/jobs/autoBuildAgents.ts` — one-shot startup job, fires 60s after
+  boot. Five gates in order: manifest exists, version drift, Go
+  available, kill-switch off, then `startBuild({actor: "system:auto-
+  build-on-version-change"})`. Emits `agent.build.auto_started` (info)
+  or `agent.build.auto_skipped` (warning, with reason).
+- `src/services/agentInstallService.ts:startUpgrade({managedAgentId,
+  credentialId?, actor})` — SSH/WinRM-driven binary swap that preserves
+  agent.conf. Transitions installStatus active → upgrading → active.
+  Emits `agent.upgrade_kickoff`, `agent.upgrade_succeeded`,
+  `agent.upgrade_failed`. The bulk path lives in
+  `/server-settings/agents/upgrade-all` (Promise pool of 4 over eligible
+  ManagedAgent rows).
+- `src/utils/version.ts:getAgentVersion()` / `getAgentSourceDir()` —
+  readers of `agent/VERSION` (not writers, but documenting here for
+  proximity). 5s mtime-checked cache; format-validated; fallback
+  `"0.0.0-no-version-file"`.
+- `deploy/setup-{rhel,ubuntu,windows}{,-nodb}.{sh,ps1}` — install Go
+  alongside Node + mkdir `$APP_DIR/data/agents` + `$APP_DIR/.cache/go-build`.
+- `Dockerfile` — pulls `golang-go` from bookworm-backports; pre-creates
+  `/app/state/.cache/go-build`.
+
+**Readers** (consume state):
+- `public/js/server-settings.js:initAgentBuildCard` — Maintenance-tab
+  Polaris Agent card. Three states (inventory / progress / progress-
+  queued-behind). Auto-poll every 2s while running. Sub-features:
+  Upgrade-all line, Clean-up button, Auto-build toggle, × cancel buttons
+  on in-flight + queued rows.
+- `public/js/assets.js:assetAgentSubpanelHTML` — Upgrade button on
+  active agents; Retry Upgrade on `upgrade_failed`. `_isTransientAgentState`
+  includes `"upgrading"` so the existing 3s poll picks it up.
+- `src/api/routes/agents.ts:agentsBinaryRouter` — `GET /api/v1/agents/binary/:filename`
+  serves binaries the Build command produced. Whitelist-checked against
+  the current manifest's `binaries` map.
+
+**Invariants:**
+- `agent/VERSION` (text file) is the single source of truth. `getAgentVersion()`
+  reads it server-side; `agent/Makefile`'s `VERSION` directive reads it shell-side.
+  Both feed the same `-ldflags '-X main.version=…'` flag so the in-binary version,
+  the manifest's currentVersion, and the directory name all match.
+- Single-slot active build + FIFO queue (depth 3). Queue overflow → 409;
+  Go missing → 400.
+- Per-platform `go build` invocations are serial. Parallel builds would
+  thrash the shared GOCACHE for negligible wall-clock win.
+- `manifest.json` is written atomically (write `.tmp` + rename) AFTER all
+  six platforms succeed. Cancelled mid-flight builds leave a partial
+  set under `data/agents/<version>/` but the existing manifest still
+  points at the previous version's filenames.
+- Prune helper NEVER touches the current version, NEVER touches versions
+  in use by a live ManagedAgent (`installStatus !== "revoked"`), and
+  ALWAYS keeps the most recent N (default 3, env `POLARIS_AGENT_KEEP_VERSIONS`).
+- Auto-build refuses to fire on a fresh install (no manifest = operator
+  hasn't opted in). Also refuses when Go isn't available (logs warning
+  Event) or when `Setting.agent.autoBuildOnVersionMismatch === false`.
+- Upgrade does NOT touch agent.conf. Bearer + cert pin survive; agent
+  reconnects with the same identity after the binary swap.
+
+**When changing this:**
+- Adding a new platform/arch: extend `PLATFORMS` in `agentBuildService.ts`
+  AND `manifest.binaries` shape in `agent/internal/transport/client.go`
+  enroll request AND the install/upgrade script templates AND `Dockerfile`'s
+  GOARCH support if shipping Polaris on that platform.
+- Adding state to BuildState that isn't JSON-serializable: extend `publicView()`
+  to drop it before returning to API consumers.
+- Touching the install script templates: bump agent/VERSION so deployed
+  agents pull the new bytes; the install path is templated server-side so
+  changes ship via the next server release, not via agent rebuild.
+- Adding a new upgrade-class action (e.g. config-only refresh): add it to
+  `_isTransientAgentState` so the asset-details panel's auto-poll picks
+  it up.
+
 ---
 
 ## cross-cutting/fmg-fortigate-parity-surfaces
