@@ -15,22 +15,22 @@
     <main class="main">
       <div class="page-header"><h2>Dashboard</h2></div>
 
-      <div class="kpi-grid" id="kpi-grid"></div>
-
-      <div class="card" id="bar-card" style="margin-bottom:1.5rem">
-        <p class="card-title">Networks per block</p>
-        <div id="bar-chart-legend" style="display:flex;gap:12px;margin-bottom:10px"></div>
-        <div id="bar-chart"></div>
-      </div>
-
-      <div class="overview-grid-2col">
-        <div class="card">
-          <p class="card-title">Block utilization</p>
-          <div id="block-util"></div>
+      <div class="dashboard-grid">
+        <div class="card dashboard-card" id="card-monitor-alerts">
+          <p class="card-title">Monitor alerts</p>
+          <div id="monitor-alerts"></div>
         </div>
-        <div class="card">
+        <div class="card dashboard-card" id="card-recent-reservations">
           <p class="card-title">Recently reserved</p>
           <div id="recent-reservations"></div>
+        </div>
+        <div class="card dashboard-card" id="card-asset-types">
+          <p class="card-title">Assets by type</p>
+          <div id="asset-types"></div>
+        </div>
+        <div class="card dashboard-card" id="card-block-util">
+          <p class="card-title">Block utilization</p>
+          <div id="block-util"></div>
         </div>
       </div>
     </main>
