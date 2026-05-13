@@ -748,13 +748,47 @@
     });
 
     cyInstance.elements().not(pathElements).addClass("dimmed");
-    topoState.pathOverlay = { endpointId: ep.id, edgeId: syntheticEdgeId };
+
+    // Snapshot the path nodes' original positions, then collapse them into a
+    // tight vertical chain (firewall on top → endpoint on bottom) just for
+    // the overlay. The base dagre layout spaces nodes across the whole site
+    // graph, so path nodes can land far apart with empty space between them —
+    // even after fit-to-path zooms in, the operator still has to scan a huge
+    // canvas. Positions are restored on overlay clear and before any save so
+    // the persisted layout is untouched.
+    var savedPositions = {};
+    pathNodeIds.forEach(function (id) {
+      var n = cyInstance.getElementById(id);
+      if (n.length > 0) {
+        var p = n.position();
+        if (p && typeof p.x === "number" && typeof p.y === "number") {
+          savedPositions[id] = { x: p.x, y: p.y };
+        }
+      }
+    });
+    var orderedTopDown = pathNodeIds.slice().reverse(); // firewall → endpoint
+    var anchorX = 0;
+    if (orderedTopDown.length > 0) {
+      var topNode = cyInstance.getElementById(orderedTopDown[0]);
+      if (topNode.length > 0) anchorX = topNode.position().x;
+    }
+    var chainSpacing = 160;
+    orderedTopDown.forEach(function (id, idx) {
+      var n = cyInstance.getElementById(id);
+      if (n.length > 0) n.position({ x: anchorX, y: idx * chainSpacing });
+    });
+
+    topoState.pathOverlay = {
+      endpointId: ep.id,
+      edgeId: syntheticEdgeId,
+      savedPositions: savedPositions,
+    };
 
     var btn = document.getElementById("topology-show-full");
     if (btn) btn.hidden = false;
 
     try {
-      cyInstance.animate({ fit: { eles: pathElements, padding: 60 }, duration: 350 });
+      cyInstance.animate({ fit: { eles: pathElements, padding: 80 }, duration: 350 });
     } catch (e) { /* fit may fail if pathElements is empty / single node */ }
   }
 
@@ -765,6 +799,15 @@
     cyInstance.elements().removeClass("dimmed");
     var overlay = topoState.pathOverlay;
     if (overlay) {
+      // Restore original positions BEFORE removing synthetic nodes so the
+      // operator's previous layout (whether persisted or just from the
+      // current dagre run) snaps back into place when they "Show full site".
+      if (overlay.savedPositions) {
+        Object.keys(overlay.savedPositions).forEach(function (id) {
+          var n = cyInstance.getElementById(id);
+          if (n.length > 0) n.position(overlay.savedPositions[id]);
+        });
+      }
       if (overlay.edgeId) {
         var edge = cyInstance.getElementById(overlay.edgeId);
         try { if (edge.length > 0) cyInstance.remove(edge); } catch (e) {}
@@ -806,6 +849,16 @@
   }
 
   function closeTopology() {
+    // If the connection-path overlay is active, restore the operator's
+    // original node positions BEFORE saving — otherwise the temporary tight
+    // chain would replace their persisted layout on close.
+    if (topoState.pathOverlay && topoState.pathOverlay.savedPositions && cyInstance) {
+      var saved = topoState.pathOverlay.savedPositions;
+      Object.keys(saved).forEach(function (id) {
+        var n = cyInstance.getElementById(id);
+        if (n.length > 0) n.position(saved[id]);
+      });
+    }
     // Persist current node positions before tear-down so reopening the
     // same site restores the operator's manual layout.
     if (topoState.siteId && cyInstance) saveNodePositions(topoState.siteId);
@@ -927,6 +980,12 @@
     var saveTimer = null;
     cyInstance.on("dragfree", "node", function () {
       if (!topoState.siteId) return;
+      // Suppress auto-save while the connection-path overlay is active —
+      // the path nodes are sitting in a temporary tight-chain layout (not
+      // their persisted positions), and any drag in that mode is in the
+      // overlay's coordinate space. Letting it persist would clobber the
+      // operator's saved layout.
+      if (topoState.pathOverlay) return;
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(function () {
         saveNodePositions(topoState.siteId);
