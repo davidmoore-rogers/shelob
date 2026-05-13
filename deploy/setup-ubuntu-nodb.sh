@@ -94,6 +94,22 @@ fi
 info "Granting Node.js low-port binding capability..."
 setcap cap_net_bind_service=+ep "$(which node)"
 
+# ─── 1b. Install Go 1.22+ ────────────────────────────────────────────────────
+# Required by the Polaris Agent build feature. Ubuntu 24.04 ships golang-go
+# 1.22 in main; 22.04 ships 1.18 which is too old — fall back to snap.
+if command -v go &>/dev/null && go version | grep -qE 'go1\.(2[2-9]|[3-9][0-9])'; then
+  info "Go $(go version | awk '{print $3}') already installed"
+else
+  info "Installing Go..."
+  if apt-get install -y golang-go && go version | grep -qE 'go1\.(2[2-9]|[3-9][0-9])'; then
+    info "Go $(go version | awk '{print $3}') installed via apt"
+  else
+    info "Default apt golang-go is too old (<1.22); installing via snap..."
+    snap install --classic --channel=1.22/stable go
+    info "Go $(go version | awk '{print $3}') installed via snap"
+  fi
+fi
+
 # ─── 2. Install git ──────────────────────────────────────────────────────────
 if command -v git &>/dev/null; then
   info "Git already installed"
@@ -120,6 +136,10 @@ else
   useradd --system --shell /bin/false --home-dir "$APP_DIR" --create-home "$APP_USER"
   info "User '$APP_USER' created"
 fi
+
+# ─── 4b. Bootstrap Polaris Agent build directories ──────────────────────────
+mkdir -p "$APP_DIR/data/agents" "$APP_DIR/.cache/go-build"
+chown -R "$APP_USER:$APP_GROUP" "$APP_DIR/data/agents" "$APP_DIR/.cache"
 
 # ─── 5. Test database connectivity ──────────────────────────────────────────
 info "Testing database connectivity..."

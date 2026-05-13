@@ -97,6 +97,42 @@ if ((Test-Command "node") -and ((node -v) -match "^v(20|22)\.")) {
     Write-Info "Node.js $(node -v) installed"
 }
 
+# ─── 1b. Install Go 1.22+ ────────────────────────────────────────────────────
+# Required by the Polaris Agent build feature (Server Settings → Maintenance
+# → Polaris Agent → Build). winget installs to C:\Program Files\Go\bin; we
+# add it to Machine PATH so the NSSM service user sees it.
+Refresh-Path
+if ((Test-Command "go") -and ((go version) -match "go1\.(2[2-9]|[3-9][0-9])")) {
+    Write-Info "Go $(go version) already installed"
+} else {
+    Write-Info "Installing Go 1.22..."
+    if ($hasWinget) {
+        winget install --id GoLang.Go.1.22 --accept-source-agreements --accept-package-agreements --silent
+    } else {
+        $goUrl = "https://go.dev/dl/go1.22.7.windows-amd64.msi"
+        $goMsi = "$env:TEMP\go-1.22.7.windows-amd64.msi"
+        Write-Info "Downloading Go installer..."
+        Invoke-WebRequest -Uri $goUrl -OutFile $goMsi -UseBasicParsing
+        Write-Info "Running Go installer..."
+        Start-Process msiexec.exe -ArgumentList "/i `"$goMsi`" /qn /norestart" -Wait -NoNewWindow
+        Remove-Item $goMsi -Force -ErrorAction SilentlyContinue
+    }
+    $goBin = "C:\Program Files\Go\bin"
+    if (Test-Path $goBin) {
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($currentPath -notlike "*$goBin*") {
+            [Environment]::SetEnvironmentVariable("Path", "$currentPath;$goBin", "Machine")
+            Write-Info "Added $goBin to Machine PATH"
+        }
+    }
+    Refresh-Path
+    if (-not (Test-Command "go")) {
+        Write-Err "Go installation failed — 'go' not found in PATH. You may need to restart the terminal and re-run."
+    } else {
+        Write-Info "Go $(go version) installed"
+    }
+}
+
 # ─── 2. Test database connectivity ──────────────────────────────────────────
 Write-Info "Testing database connectivity..."
 try {
@@ -131,6 +167,13 @@ if (Test-Path (Join-Path $AppDir ".git")) {
         Write-Err "git is not installed. Install Git for Windows, or manually copy the application to $AppDir"
     }
 }
+
+# ─── 3b. Bootstrap Polaris Agent build directories ──────────────────────────
+$agentDataDir = Join-Path $AppDir "data\agents"
+$goCacheDir   = Join-Path $AppDir ".cache\go-build"
+New-Item -ItemType Directory -Force -Path $agentDataDir | Out-Null
+New-Item -ItemType Directory -Force -Path $goCacheDir   | Out-Null
+Write-Info "Created agent build dirs: $agentDataDir, $goCacheDir"
 
 # ─── 4. Configure environment ────────────────────────────────────────────────
 $envFile = Join-Path $AppDir ".env"

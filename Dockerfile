@@ -48,6 +48,17 @@ RUN apt-get update \
       tini \
  && rm -rf /var/lib/apt/lists/*
 
+# Install Go 1.22+ for the Polaris Agent build feature (Server Settings →
+# Maintenance → Polaris Agent → Build). bookworm-slim ships golang 1.21.x
+# which is too old for agent/go.mod; bookworm-backports has 1.22+.
+# Image size grows from ~50 MB to ~350 MB (one-time hit, not per-tag).
+RUN echo "deb http://deb.debian.org/debian bookworm-backports main" \
+      > /etc/apt/sources.list.d/backports.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends -t bookworm-backports \
+      golang-go \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules
@@ -59,13 +70,17 @@ COPY public ./public
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
- && mkdir -p /app/state/data/backups /app/state/public/uploads /app/state/data/agents
-# /app/state/data/agents is where Polaris Agent binaries live (per-version
-# subdir + manifest.json). Operators who want to use the Polaris Agent
-# feature drop the platform binaries here via volume mount or `docker cp`
-# after running `make -C agent all` on a host with Go installed. Empty
-# directory is fine — the agent-install path surfaces a clear "no binaries
-# available" error to the operator until binaries are present.
+ && mkdir -p /app/state/data/backups /app/state/public/uploads /app/state/data/agents /app/state/.cache/go-build
+# /app/state/data/agents holds Polaris Agent binaries (per-version subdir
+# + manifest.json). With Go now pre-installed in the image, operators
+# can click Build agent binaries on Server Settings → Maintenance and
+# the binaries land here automatically. The directory is still empty
+# at boot — the install path surfaces a clear "no binaries available"
+# error until the first Build click completes.
+#
+# /app/state/.cache/go-build is the GOCACHE the build subprocess uses
+# (HOME=/app/state is set when the build runs). Pre-creating keeps the
+# first build from racing on mkdir.
 
 EXPOSE 3000
 

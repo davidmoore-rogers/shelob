@@ -50,6 +50,20 @@ fi
 info "Granting Node.js low-port binding capability..."
 setcap cap_net_bind_service=+ep "$(which node)"
 
+# ─── 1b. Install Go 1.22+ ────────────────────────────────────────────────────
+# Required by the Polaris Agent build feature (Server Settings → Maintenance
+# → Polaris Agent → Build). The agent's go.mod pins go 1.22 as the minimum;
+# RHEL 9's default golang AppStream module ships 1.21.x which is too old,
+# so pull from the go-toolset module instead.
+if command -v go &>/dev/null && go version | grep -qE 'go1\.(2[2-9]|[3-9][0-9])'; then
+  info "Go $(go version | awk '{print $3}') already installed"
+else
+  info "Installing Go (go-toolset)..."
+  dnf module enable -y go-toolset
+  dnf install -y golang
+  info "Go $(go version | awk '{print $3}') installed"
+fi
+
 # ─── 2. Install PostgreSQL 15 ────────────────────────────────────────────────
 if command -v psql &>/dev/null; then
   info "PostgreSQL already installed"
@@ -81,6 +95,14 @@ else
   useradd --system --shell /bin/false --home-dir "$APP_DIR" --create-home "$APP_USER"
   info "User '$APP_USER' created"
 fi
+
+# ─── 3b. Bootstrap Polaris Agent build directories ──────────────────────────
+# The in-app Build button writes to $APP_DIR/data/agents/<version>/ and
+# uses $APP_DIR/.cache/go-build as Go's build cache (HOME=$APP_DIR for the
+# build subprocess). Create both upfront with the right ownership so the
+# first click doesn't crash trying to mkdir under root-owned ancestors.
+mkdir -p "$APP_DIR/data/agents" "$APP_DIR/.cache/go-build"
+chown -R "$APP_USER:$APP_GROUP" "$APP_DIR/data/agents" "$APP_DIR/.cache"
 
 # ─── 4. Create database and role ─────────────────────────────────────────────
 info "Setting up PostgreSQL database..."
