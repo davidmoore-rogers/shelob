@@ -94,10 +94,11 @@ const BUILT_IN_OIDS: Record<string, string> = {
   fgSysMemUsage: "1.3.6.1.4.1.12356.101.4.1.4",
   // FortiSwitch (FORTINET-FORTISWITCH-MIB). Unlike FortiGate, the .3/.4
   // pair here is the used/total *bytes* form, not CPU/MemPercent. Seeded so
-  // the vendor profile resolves memory without requiring the MIB upload.
-  // CPU OID for FortiSwitches isn't seeded yet — when identified, add it
-  // here and reference the symbol from VENDOR_TELEMETRY_PROFILES.
+  // the vendor profile resolves CPU/memory without requiring the MIB upload.
   fnFortiSwitchMib:  "1.3.6.1.4.1.12356.106",
+  // fsSysCpuUsage @ .2 → scalar percent (0..100). Distinct from FortiGate's
+  // fgSysCpuUsage which lives under the 12356.101 root.
+  fsSysCpuUsage:     "1.3.6.1.4.1.12356.106.4.1.2",
   fsSysMemUsage:     "1.3.6.1.4.1.12356.106.4.1.3",
   fsSysMemCapacity:  "1.3.6.1.4.1.12356.106.4.1.4",
   // Disk used/total bytes. FortiSwitches don't implement HOST-RESOURCES-MIB
