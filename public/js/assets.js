@@ -2449,24 +2449,32 @@ async function openViewModal(id) {
     '</div>' + dependencyTreeMountHTML;
 
     var monitoringHTML = assetMonitoringViewHTML(a);
+    var agentSubpanelHTML = ""; // filled in after the parallel load below
     var systemHTML     = a.monitored
       ? monitoringHTML +
         '<hr style="margin:1.5rem 0;border:none;border-top:1px solid var(--color-border)">' +
+        '<div id="asset-agent-panel-mount"></div>' +
         assetSystemViewHTML(a)
-      : monitoringHTML;
+      : monitoringHTML +
+        '<div id="asset-agent-panel-mount"></div>'; // unmonitored assets still see the panel when an agent is mid-install
     var tabs = [
       { key: "general", label: "General", html: generalHTML },
       { key: "system",  label: "System",  html: systemHTML },
     ];
     // Sources tab + dependency tree block fetched in parallel — both feed
-    // the General-tab area and the Sources tab on first paint. Failures fall
-    // through to empty-state so the rest of the modal still works.
+    // the General-tab area and the Sources tab on first paint. Polaris
+    // Agent install state is fetched alongside on the same parallel pass;
+    // failures everywhere fall through to empty-state so the rest of the
+    // modal still works.
     var auxResults = await Promise.all([
       api.assets.getSources(a.id).catch(function (err) { console.warn("Failed to load asset sources", err); return []; }),
       api.assets.getDependencies(a.id).catch(function (err) { console.warn("Failed to load asset dependencies", err); return null; }),
+      api.assets.agent(a.id).catch(function (err) { console.warn("Failed to load managed agent", err); return null; }),
     ]);
     var sources         = auxResults[0] || [];
     var dependencies    = auxResults[1];
+    var managedAgent    = auxResults[2];
+    agentSubpanelHTML   = assetAgentSubpanelHTML(a, managedAgent);
     tabs.push({ key: "sources", label: "Sources", html: _assetSourcesTabHTML(sources, a.id) });
     // SNMP Walk tab — admin-only, mirrors the backend gate. Loads credentials
     // before render so the picker isn't empty on first paint.
@@ -2507,6 +2515,14 @@ async function openViewModal(id) {
     if (depMount) {
       depMount.innerHTML = renderDependencyTreeBlock(dependencies, a.id);
       _wireDependencyTreeLinks(depMount);
+    }
+    // Mount the Polaris Agent panel into the System tab placeholder + wire
+    // its buttons. The wiring helper also starts the install-progress
+    // polling loop when the agent is in a transient state.
+    var agentMount = document.getElementById("asset-agent-panel-mount");
+    if (agentMount) {
+      agentMount.innerHTML = agentSubpanelHTML;
+      _wireAgentSubpanel(a, managedAgent);
     }
     _wireHoverTriggersIn(bodyEl);
     bodyEl.addEventListener("click", _handleCopyClick);
@@ -2650,6 +2666,351 @@ async function openViewModal(id) {
     showToast(err.message, "error");
     closeAssetPanel();
   }
+}
+
+// ─── Polaris Agent sub-panel (System tab) ─────────────────────────────────
+//
+// Renders only when the operator has expressed agent-intent: either an
+// agent is already installed, OR at least one per-asset *Polling column
+// is "agent". Otherwise hidden — we don't want an "Install Agent" CTA
+// on every Linux/Windows asset for operators who haven't opted in.
+//
+// The panel's three states map to ManagedAgent.installStatus values:
+//   - No row at all                      → "Install Agent" button + cred picker.
+//   - pending / uploading / enrolling    → spinner + status text + Force-Remove (admin).
+//   - active                             → version + last-seen + WS state + Uninstall.
+//   - failed / uninstall_failed          → red banner + error text + Retry / Force-Remove.
+//   - revoked                            → "bearer revoked" notice + Force-Remove (admin).
+//
+// We poll GET /:id/agent every 3s while the row's state is one of the
+// transient install/uninstall ones, then stop. The poll is tied to a
+// data-asset-id sentinel on the panel so it auto-cancels when the modal
+// is closed.
+
+function _agentStatusLabel(s) {
+  switch (s) {
+    case "pending":          return "Pending — install queued";
+    case "uploading":        return "Uploading binary";
+    case "enrolling":        return "Awaiting enrollment";
+    case "active":           return "Active";
+    case "failed":           return "Install failed";
+    case "uninstalling":     return "Uninstalling";
+    case "uninstall_failed": return "Uninstall failed";
+    case "revoked":          return "Revoked (bearer killed)";
+    default:                 return s || "—";
+  }
+}
+
+function _agentStatusColor(s) {
+  if (s === "active") return "var(--color-success)";
+  if (s === "failed" || s === "uninstall_failed") return "var(--color-danger)";
+  if (s === "revoked") return "var(--color-warning)";
+  return "var(--color-text-secondary)";
+}
+
+// Decide whether the panel should render at all for this asset.
+function _assetHasAgentIntent(a, agent) {
+  if (agent) return true;
+  if (!a) return false;
+  return a.responseTimePolling === "agent" ||
+         a.telemetryPolling    === "agent" ||
+         a.interfacesPolling   === "agent" ||
+         a.lldpPolling         === "agent";
+}
+
+function assetAgentSubpanelHTML(a, agent) {
+  if (!_assetHasAgentIntent(a, agent)) return "";
+
+  var headerBadge = agent
+    ? '<span style="font-size:0.75rem;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,0.06);color:' +
+        _agentStatusColor(agent.installStatus) + '">' +
+        escapeHtml(_agentStatusLabel(agent.installStatus)) + '</span>'
+    : '';
+
+  var inFlight = agent && (
+    agent.installStatus === "pending"      ||
+    agent.installStatus === "uploading"    ||
+    agent.installStatus === "enrolling"    ||
+    agent.installStatus === "uninstalling"
+  );
+
+  var body;
+  if (!agent) {
+    // No row yet — operator opted in via a polling-method dropdown but
+    // hasn't kicked off the install. Single big CTA.
+    body =
+      '<p style="color:var(--color-text-secondary);margin:0 0 0.75rem">' +
+        'You picked "Polaris Agent" as a polling method but no agent is installed yet. ' +
+        'Click below to push the agent to this host via a stored SSH or WinRM credential.' +
+      '</p>' +
+      '<button type="button" class="btn btn-primary" id="btn-agent-install" data-asset-id="' + escapeHtml(a.id) + '">Install Agent…</button>';
+  } else {
+    // Row exists — show the diagnostic strip + action buttons relevant to
+    // the current state. We render the strip uniformly regardless of state
+    // so a transitioning row doesn't make UI elements jump.
+    var versionRow = agent.agentVersion
+      ? '<div>Version: <strong>' + escapeHtml(agent.agentVersion) + '</strong></div>'
+      : '<div style="color:var(--color-text-tertiary)">Version: not yet reported</div>';
+    var platformRow = '<div>Platform: <strong>' + escapeHtml(agent.osPlatform) + '/' + escapeHtml(agent.arch) + '</strong></div>';
+    var lastSeenRow = agent.lastSeenAt
+      ? '<div>Last seen: <strong>' + escapeHtml(timeAgo(agent.lastSeenAt)) + '</strong>' +
+        ' <span style="color:var(--color-text-tertiary)">(' + escapeHtml(new Date(agent.lastSeenAt).toLocaleString()) + ')</span></div>'
+      : '<div style="color:var(--color-text-tertiary)">Last seen: never</div>';
+    // WS state heuristic: connected if wsConnectedAt > wsDisconnectedAt (or
+    // disconnect is null). Not perfectly authoritative but cheap and right
+    // 99% of the time; the server's `agentChannelService.isAttached` is
+    // the source of truth but isn't exposed on this endpoint.
+    var wsConnected = agent.wsConnectedAt &&
+      (!agent.wsDisconnectedAt || new Date(agent.wsConnectedAt) > new Date(agent.wsDisconnectedAt));
+    var wsRow = '<div>WebSocket: <strong style="color:' + (wsConnected ? 'var(--color-success)' : 'var(--color-text-secondary)') + '">' +
+      (wsConnected ? 'Connected' : 'Disconnected') + '</strong></div>';
+
+    var errBlock = agent.installError
+      ? '<div style="margin:0.5rem 0;padding:0.5rem 0.75rem;background:rgba(255,80,80,0.08);' +
+        'border-left:3px solid var(--color-danger);border-radius:4px;font-family:monospace;font-size:0.8rem;' +
+        'color:var(--color-danger);white-space:pre-wrap;word-break:break-word">' +
+        escapeHtml(agent.installError) + '</div>'
+      : '';
+
+    var actions = '';
+    if (agent.installStatus === "active") {
+      actions =
+        '<button type="button" class="btn btn-secondary" id="btn-agent-uninstall" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Uninstall</button>';
+    } else if (agent.installStatus === "failed") {
+      actions =
+        '<button type="button" class="btn btn-primary" id="btn-agent-install" data-asset-id="' + escapeHtml(a.id) + '">Retry Install…</button>' +
+        ' <button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
+    } else if (agent.installStatus === "uninstall_failed") {
+      actions =
+        '<button type="button" class="btn btn-secondary" id="btn-agent-uninstall" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Retry Uninstall</button>' +
+        ' <button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
+    } else if (agent.installStatus === "revoked") {
+      actions =
+        '<button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
+    } else if (inFlight) {
+      // Operator can always bail out via force-remove while a transient
+      // state is in flight. The async work continues server-side; force-
+      // remove just drops the local row.
+      actions =
+        '<span style="color:var(--color-text-tertiary);font-size:0.85rem">Working…</span>' +
+        ' <button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
+    }
+
+    body =
+      errBlock +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem 1.25rem;margin:0.5rem 0">' +
+        versionRow + platformRow + lastSeenRow + wsRow +
+      '</div>' +
+      '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem">' + actions + '</div>';
+  }
+
+  return '<div id="asset-agent-panel" data-asset-id="' + escapeHtml(a.id) + '" style="margin:0 0 1.5rem;padding:1rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-1)">' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.5rem">' +
+      '<h4 style="margin:0;display:flex;align-items:baseline;gap:0.5rem">Polaris Agent ' + headerBadge + '</h4>' +
+    '</div>' +
+    body +
+  '</div>';
+}
+
+// Install-progress poll handle (one per modal open). Keyed on assetId so
+// reopening the same modal doesn't double-poll.
+var _agentPollAssetId = null;
+
+function _isTransientAgentState(s) {
+  return s === "pending" || s === "uploading" || s === "enrolling" || s === "uninstalling";
+}
+
+function _wireAgentSubpanel(a, agent) {
+  var panel = document.getElementById("asset-agent-panel");
+  if (!panel) return;
+
+  var installBtn = document.getElementById("btn-agent-install");
+  if (installBtn) {
+    installBtn.addEventListener("click", function () { _openInstallAgentModal(a); });
+  }
+
+  var uninstallBtn = document.getElementById("btn-agent-uninstall");
+  if (uninstallBtn) {
+    uninstallBtn.addEventListener("click", function () {
+      _confirmUninstallAgent(a, /* force */ false);
+    });
+  }
+
+  var forceBtn = document.getElementById("btn-agent-force-remove");
+  if (forceBtn) {
+    forceBtn.addEventListener("click", function () {
+      _confirmUninstallAgent(a, /* force */ true);
+    });
+  }
+
+  // Start the progress poll if the row is in a transient state. Stops
+  // automatically when state stabilizes or the modal closes (we re-check
+  // that the panel sentinel is still in the DOM each tick).
+  if (agent && _isTransientAgentState(agent.installStatus)) {
+    _startAgentPoll(a);
+  }
+}
+
+function _startAgentPoll(a) {
+  if (_agentPollAssetId === a.id) return; // already polling
+  _agentPollAssetId = a.id;
+  var tick = function () {
+    // Bail if the modal closed or the user navigated away.
+    var stillOpen = document.getElementById("asset-agent-panel");
+    if (!stillOpen || stillOpen.getAttribute("data-asset-id") !== a.id) {
+      _agentPollAssetId = null;
+      return;
+    }
+    api.assets.agent(a.id).then(function (agent) {
+      // Re-check we're still rendering the same asset.
+      var stillOpen2 = document.getElementById("asset-agent-panel");
+      if (!stillOpen2 || stillOpen2.getAttribute("data-asset-id") !== a.id) {
+        _agentPollAssetId = null;
+        return;
+      }
+      _rerenderAgentSubpanel(a, agent);
+      if (agent && _isTransientAgentState(agent.installStatus)) {
+        setTimeout(tick, 3000);
+      } else {
+        _agentPollAssetId = null;
+      }
+    }).catch(function () {
+      // Network blip — try again on the next tick.
+      setTimeout(tick, 5000);
+    });
+  };
+  setTimeout(tick, 3000);
+}
+
+function _rerenderAgentSubpanel(a, agent) {
+  var mount = document.getElementById("asset-agent-panel-mount");
+  if (!mount) return;
+  mount.innerHTML = assetAgentSubpanelHTML(a, agent);
+  _wireAgentSubpanel(a, agent);
+}
+
+function _openInstallAgentModal(a) {
+  // OS pre-fill: best-effort from Asset.os. Treat empty / unknown as
+  // Linux since that's the most common case operators install agents on;
+  // they can flip the dropdown if wrong.
+  var inferredOs = "linux";
+  var osText = (a.os || "").toLowerCase();
+  if (osText.indexOf("windows") >= 0)            inferredOs = "windows";
+  else if (osText.indexOf("mac") >= 0 ||
+           osText.indexOf("darwin") >= 0)         inferredOs = "darwin";
+
+  // Load credentials list so the picker isn't empty on open. Filter to
+  // ssh + winrm types — restapi/snmp credentials aren't relevant here.
+  _ensureCredentials().then(function () {
+    var sshOpts   = (_credentialCache.list || []).filter(function (c) { return c.type === "ssh"; });
+    var winrmOpts = (_credentialCache.list || []).filter(function (c) { return c.type === "winrm"; });
+    function credOptions(list) {
+      if (list.length === 0) {
+        return '<option value="">— No credentials of this type —</option>';
+      }
+      return '<option value="">— Select credential —</option>' +
+        list.map(function (c) {
+          return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
+        }).join("");
+    }
+
+    var modalBody =
+      '<p style="color:var(--color-text-secondary)">Polaris will SSH or WinRM into the host using the chosen credential, upload the agent binary, and register it as a system service. Status updates appear in the Agent panel while the install runs.</p>' +
+      '<div class="form-group" style="margin-top:0.75rem">' +
+        '<label for="agent-install-os">Operating system</label>' +
+        '<select id="agent-install-os">' +
+          '<option value="linux"' +   (inferredOs === "linux" ? " selected" : "") +   '>Linux</option>' +
+          '<option value="darwin"' +  (inferredOs === "darwin" ? " selected" : "") +  '>macOS</option>' +
+          '<option value="windows"' + (inferredOs === "windows" ? " selected" : "") + '>Windows</option>' +
+        '</select>' +
+        (a.os ? '' : '<p class="hint" style="color:var(--color-warning)">Asset OS is unknown — confirm the choice above before installing.</p>') +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label for="agent-install-arch">CPU architecture</label>' +
+        '<select id="agent-install-arch">' +
+          '<option value="amd64" selected>amd64 (x86_64)</option>' +
+          '<option value="arm64">arm64</option>' +
+        '</select>' +
+        '<p class="hint">Pick arm64 only for actually-ARM hosts (Apple Silicon, Raspberry Pi, AWS Graviton, etc.). Most x86 servers and most older Windows hosts are amd64.</p>' +
+      '</div>' +
+      '<div class="form-group">' +
+        '<label for="agent-install-cred-ssh">SSH credential (Linux / macOS)</label>' +
+        '<select id="agent-install-cred-ssh">' + credOptions(sshOpts) + '</select>' +
+      '</div>' +
+      '<div class="form-group" id="agent-install-cred-winrm-wrap">' +
+        '<label for="agent-install-cred-winrm">WinRM credential (Windows)</label>' +
+        '<select id="agent-install-cred-winrm">' + credOptions(winrmOpts) + '</select>' +
+        '<p class="hint" style="color:var(--color-warning)">Windows install is not yet supported in this release — pick Linux or macOS for now.</p>' +
+      '</div>';
+
+    // Match the canonical modal pattern (primaries.md → Modal): build the
+    // body + a footer string + use openModal directly, then bind the
+    // primary button's onclick. showFormModal is the right helper-of-
+    // last-resort for plain OK/Cancel forms, but we need to KEEP the
+    // modal open on validation failure (no credential picked) without
+    // dismissing it on every click, which showFormModal doesn't allow.
+    var modalTitle = "Install Polaris Agent on " + (a.hostname || a.ipAddress || "this asset");
+    var footerHTML =
+      '<button class="btn btn-secondary" id="btn-agent-install-cancel">Cancel</button>' +
+      '<button class="btn btn-primary"   id="btn-agent-install-go">Install</button>';
+    openModal(modalTitle, modalBody, footerHTML);
+
+    // Toggle credential row visibility based on OS picker.
+    function refreshCredRows() {
+      var os = document.getElementById("agent-install-os").value;
+      document.getElementById("agent-install-cred-ssh").parentElement.style.display = (os === "windows") ? "none" : "block";
+      document.getElementById("agent-install-cred-winrm-wrap").style.display        = (os === "windows") ? "block" : "none";
+    }
+    document.getElementById("agent-install-os").addEventListener("change", refreshCredRows);
+    refreshCredRows();
+
+    document.getElementById("btn-agent-install-cancel").onclick = closeModal;
+    document.getElementById("btn-agent-install-go").onclick = function () {
+      var osSel    = document.getElementById("agent-install-os");
+      var archSel  = document.getElementById("agent-install-arch");
+      var sshSel   = document.getElementById("agent-install-cred-ssh");
+      var winrmSel = document.getElementById("agent-install-cred-winrm");
+      var os = osSel.value;
+      var credentialId = (os === "windows") ? winrmSel.value : sshSel.value;
+      if (!credentialId) {
+        showToast("Pick a credential first", "error");
+        return; // keep modal open
+      }
+      api.assets.installAgent(a.id, {
+        credentialId: credentialId,
+        osPlatform:   os,
+        arch:         archSel.value,
+      }).then(function (r) {
+        showToast("Install started — managedAgentId=" + (r.managedAgentId || "?"), "success");
+        closeModal();
+        // Reload the agent panel and start polling.
+        api.assets.agent(a.id).then(function (agent) {
+          _rerenderAgentSubpanel(a, agent);
+        });
+      }).catch(function (err) {
+        showToast("Install failed: " + err.message, "error");
+      });
+    };
+  });
+}
+
+function _confirmUninstallAgent(a, force) {
+  // showConfirm returns a Promise<boolean>; never use window.confirm
+  // (per primaries.md → Modal canonical pattern).
+  var prompt = force
+    ? "Force-remove drops the local ManagedAgent row immediately without contacting the host. The agent's bearer has already been revoked, but the binary + service will remain on the host as an orphan — you'll need to clean those up manually. Continue?"
+    : "Polaris will SSH into the host using the credential stored at install time, stop the agent, and remove the binary + service. The local row will be hard-deleted on success.";
+  showConfirm(prompt).then(function (ok) {
+    if (!ok) return;
+    api.assets.deleteAgent(a.id, { force: !!force }).then(function () {
+      showToast(force ? "Agent force-removed" : "Uninstall started", "success");
+      api.assets.agent(a.id).then(function (agent) {
+        _rerenderAgentSubpanel(a, agent);
+      });
+    }).catch(function (err) {
+      showToast("Uninstall failed: " + err.message, "error");
+    });
+  });
 }
 
 // ─── System tab (system info section) ──────────────────────────────────────

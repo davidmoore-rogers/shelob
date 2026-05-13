@@ -318,6 +318,21 @@ const api = {
       }
       return request("GET", `/assets/${id}/ipsec-history?` + qs.join("&"));
     },
+    // Polaris Agent — operator-facing endpoints (see CLAUDE.md "Polaris
+    // Agent API surface"). `agent.get` returns 404 when no agent is
+    // installed yet; the caller should treat that as "no install" rather
+    // than an error, so this helper resolves null on the "No agent
+    // installed" response instead of throwing.
+    agent:                (id) => request("GET", `/assets/${id}/agent`).catch((err) => {
+      var msg = (err && err.message) ? err.message : "";
+      if (/no agent installed/i.test(msg)) return null;
+      throw err;
+    }),
+    installAgent:         (id, body) => request("POST",   `/assets/${id}/agent/install`, body),
+    deleteAgent:          (id, opts) => {
+      var qs = (opts && opts.force) ? "?force=true" : "";
+      return request("DELETE", `/assets/${id}/agent${qs}`);
+    },
   },
   integrations: {
     list:   ()       => request("GET", "/integrations"),
