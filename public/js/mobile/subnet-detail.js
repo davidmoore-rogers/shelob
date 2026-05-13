@@ -57,7 +57,7 @@
     body.innerHTML = ''
       + '<div id="subnet-host"><div class="loading-screen"><div class="spinner"></div></div></div>'
       + (canWrite(ctx.user)
-        ? '<button class="fab fab-ext" id="subnet-fab" style="position:fixed;right:16px;bottom:calc(var(--navbar-h) + 16px);z-index:30;display:none;"><svg viewBox="0 0 24 24"><use href="#i-add"/></svg>Reserve</button>'
+        ? '<button class="fab-ext" id="subnet-fab" style="position:fixed;right:16px;bottom:calc(var(--navbar-h) + 16px);z-index:30;display:none;"><svg viewBox="0 0 24 24"><use href="#i-add"/></svg>Reserve</button>'
         : '');
 
     var back = document.getElementById("subnet-back-btn");
