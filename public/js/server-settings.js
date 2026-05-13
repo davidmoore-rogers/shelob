@@ -2278,6 +2278,25 @@ function renderAgentBuildInventory(inv) {
     ? '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.5rem 0 0">Toolchain: ' + escapeHtml(inv.goVersion) + '</p>'
     : '';
 
+  // Old-versions cleanup line + button. Vanishes when there are none.
+  // The "freed" estimate is the on-disk total; the actual pruned set
+  // respects keep-last-N + in-use protection so the real freed bytes
+  // can be smaller. UI text says "up to" to set the right expectation.
+  var oldVersions = inv.oldVersions || [];
+  var cleanupLine = "";
+  if (oldVersions.length > 0) {
+    var totalBytes = oldVersions.reduce(function (s, v) { return s + (v.bytes || 0); }, 0);
+    cleanupLine =
+      '<div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--color-border);' +
+          'display:flex;align-items:center;gap:0.5rem;font-size:0.85rem">' +
+        '<span style="color:var(--color-text-secondary);flex:1">' +
+          oldVersions.length + ' old version' + (oldVersions.length > 1 ? 's' : '') +
+          ' on disk (up to ' + escapeHtml(humanBytes(totalBytes)) + ')' +
+        '</span>' +
+        '<button class="btn btn-secondary" id="btn-agent-prune" style="padding:4px 12px;font-size:0.8rem">Clean up</button>' +
+      '</div>';
+  }
+
   body.innerHTML =
     goNotice +
     drift +
@@ -2291,10 +2310,32 @@ function renderAgentBuildInventory(inv) {
       '<tbody>' + rows + '</tbody>' +
     '</table>' +
     '<div>' + buildBtn + '</div>' +
-    goVerLine;
+    goVerLine +
+    cleanupLine;
 
   var btn = document.getElementById("btn-agent-build");
   if (btn) btn.addEventListener("click", onAgentBuildClick);
+  var pruneBtn = document.getElementById("btn-agent-prune");
+  if (pruneBtn) pruneBtn.addEventListener("click", onAgentPruneClick);
+}
+
+function onAgentPruneClick() {
+  // No confirm — the policy explicitly preserves the current version,
+  // in-use versions, and the keep-last-N window, so there's no way this
+  // accidentally takes out something the operator needs. Toast names the
+  // freed bytes so the operator sees the impact.
+  api.serverSettings.agentPrune().then(function (r) {
+    var n = (r.removed || []).length;
+    if (n === 0) {
+      showToast("Nothing to clean up — old versions are in use or within the keep-last-N window", "info");
+    } else {
+      var bytes = r.removed.reduce(function (s, e) { return s + (e.bytes || 0); }, 0);
+      showToast("Removed " + n + " old version" + (n > 1 ? "s" : "") + " (" + humanBytes(bytes) + " freed)", "success");
+    }
+    api.serverSettings.agentInventory().then(renderAgentBuildInventory);
+  }).catch(function (err) {
+    showToast("Clean up failed: " + err.message, "error");
+  });
 }
 
 function onAgentBuildClick() {

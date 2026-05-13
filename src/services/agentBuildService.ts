@@ -25,13 +25,14 @@
 
 import { execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, rename, writeFile, stat } from "node:fs/promises";
+import { mkdir, rename, writeFile, stat, readdir, rm } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AGENT_BIN_DIR, STATE_DIR } from "../utils/paths.js";
 import { getAgentVersion, getAgentSourceDir } from "../utils/version.js";
 import { logEvent } from "../api/routes/events.js";
 import { logger } from "../utils/logger.js";
+import { prisma } from "../db.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -532,6 +533,25 @@ async function doRun(state: BuildState): Promise<void> {
       platforms:      state.steps.map((s) => ({ platform: s.platform, arch: s.arch, elapsedMs: s.elapsedMs })),
     },
   });
+
+  // Best-effort auto-prune: after a successful build the new version is
+  // safely on disk + manifest. Now's the time to drop older versions
+  // beyond the keep-last-N window. Failure here doesn't fail the build —
+  // the new binaries are already published; cleanup is bonus.
+  pruneOldAgentVersions().then((r) => {
+    if (r.removed.length > 0) {
+      const totalBytes = r.removed.reduce((sum, e) => sum + e.bytes, 0);
+      logger.info({ removed: r.removed.length, totalBytes }, "Auto-pruned old agent versions");
+      void logEvent({
+        action:       "agent.versions.pruned",
+        level:        "info",
+        actor:        state.actor,
+        resourceType: "polaris-agent",
+        message:      `Auto-pruned ${r.removed.length} old agent version(s), freed ${(totalBytes / (1024*1024)).toFixed(1)} MiB`,
+        details:      { removed: r.removed, protected: r.protected, trigger: "post-build" },
+      });
+    }
+  }).catch((err) => logger.warn({ err }, "Post-build prune failed"));
 }
 
 // ─── Read helpers (route layer + UI) ──────────────────────────────────
@@ -585,6 +605,14 @@ export interface InventoryResult {
   manifest:    { currentVersion: string; minimumCompatible?: string; binaries: Record<string, string> } | null;
   files:       InventoryFile[];
   agentSourceVersion: string;
+  /**
+   * Versions on disk that aren't manifest.currentVersion. Drives the
+   * "Clean up old binaries" line + button on the Maintenance card.
+   * Total bytes is what the operator sees as "freed if you click Clean up";
+   * the actual prune helper respects keep-last-N + in-use protection so
+   * the real freed bytes can be smaller. Cheap to compute (one readdir).
+   */
+  oldVersions: Array<{ version: string; bytes: number; mtime: string }>;
 }
 
 /**
@@ -627,6 +655,37 @@ export async function getInventory(): Promise<InventoryResult> {
     files.push({ platform: os, arch, filename, present, sizeBytes, mtime });
   }
 
+  // Scan data/agents/ subdirectories for versions OTHER than the current
+  // manifest version. We don't filter by the keep-last-N policy here —
+  // the UI shows "N old versions retained (X MiB)"; the prune helper
+  // applies the policy at prune time so the actual freed bytes can
+  // be lower.
+  const oldVersions: InventoryResult["oldVersions"] = [];
+  try {
+    const entries = await readdir(AGENT_BIN_DIR, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (!VERSION_DIR_RE.test(e.name)) continue;
+      if (manifest && e.name === manifest.currentVersion) continue;
+      const dir = resolvePath(AGENT_BIN_DIR, e.name);
+      let bytes = 0;
+      let mtimeMs = 0;
+      try {
+        const subEntries = await readdir(dir, { withFileTypes: true });
+        for (const f of subEntries) {
+          if (!f.isFile()) continue;
+          try {
+            const fs = await stat(resolvePath(dir, f.name));
+            bytes += fs.size;
+            if (fs.mtimeMs > mtimeMs) mtimeMs = fs.mtimeMs;
+          } catch { /* skip */ }
+        }
+      } catch { /* skip */ }
+      oldVersions.push({ version: e.name, bytes, mtime: new Date(mtimeMs || 0).toISOString() });
+    }
+    oldVersions.sort((a, b) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
+  } catch { /* directory missing — no old versions */ }
+
   return {
     goAvailable: go.ok,
     goVersion:   go.version,
@@ -634,6 +693,123 @@ export async function getInventory(): Promise<InventoryResult> {
     manifest,
     files,
     agentSourceVersion,
+    oldVersions,
+  };
+}
+
+// ─── Per-version cleanup ──────────────────────────────────────────────
+//
+// data/agents/ accumulates one subdirectory per Build click. Six binaries
+// per version at ~10 MB each = ~60 MB per build; over a year of agent/
+// edits that's gigabytes of orphan binaries. Policy: a version directory
+// is deletable iff
+//
+//   1. it is NOT the current manifest.currentVersion, AND
+//   2. it is NOT in use by any live ManagedAgent (installStatus !==
+//      "revoked"; the binary must remain serveable while an agent is
+//      still on disk somewhere), AND
+//   3. it is NOT within the most-recent N versions (default 3; env
+//      POLARIS_AGENT_KEEP_VERSIONS) ordered by directory mtime desc.
+//
+// (1) + (2) protect correctness; (3) is the rollback-comfort knob.
+
+export interface PruneResult {
+  scanned:    number;
+  protected:  string[];                              // version strings kept
+  removed:    Array<{ version: string; bytes: number }>;
+}
+
+const VERSION_DIR_RE = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
+
+function keepLastN(): number {
+  const raw = process.env.POLARIS_AGENT_KEEP_VERSIONS;
+  if (!raw) return 3;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return 3;
+  return n;
+}
+
+export async function pruneOldAgentVersions(): Promise<PruneResult> {
+  // Manifest current version is always protected.
+  const manifestPath = resolvePath(AGENT_BIN_DIR, "manifest.json");
+  let manifestCurrent: string | null = null;
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const parsed = JSON.parse(await readFile(manifestPath, "utf-8"));
+    if (parsed && typeof parsed.currentVersion === "string") manifestCurrent = parsed.currentVersion;
+  } catch { /* no manifest yet — nothing inherently protected by it */ }
+
+  // Live agents are protected — their hosts may still need to fetch the
+  // binary (e.g. install retry, uninstall script lookup, drift recovery).
+  // installStatus === "revoked" no longer needs the binary; everything
+  // else does.
+  let inUseVersions: Set<string>;
+  try {
+    const rows = await prisma.managedAgent.findMany({
+      where: { installStatus: { not: "revoked" } },
+      select: { agentVersion: true },
+    });
+    inUseVersions = new Set(rows.map((r) => r.agentVersion).filter((v): v is string => !!v));
+  } catch {
+    // Defensive: if we can't read the table, fail closed — protect
+    // everything and prune nothing.
+    inUseVersions = new Set();
+    return { scanned: 0, protected: [], removed: [] };
+  }
+
+  let entries;
+  try {
+    entries = await readdir(AGENT_BIN_DIR, { withFileTypes: true });
+  } catch {
+    return { scanned: 0, protected: [], removed: [] };
+  }
+  const versionDirs: Array<{ name: string; path: string; mtimeMs: number }> = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (!VERSION_DIR_RE.test(e.name)) continue;
+    const p = resolvePath(AGENT_BIN_DIR, e.name);
+    try {
+      const st = await stat(p);
+      versionDirs.push({ name: e.name, path: p, mtimeMs: st.mtimeMs });
+    } catch { /* race with rm — skip */ }
+  }
+
+  // Newest-first by mtime so the keep-last-N comparison reads naturally.
+  versionDirs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keep = keepLastN();
+  const recentlyMade = new Set(versionDirs.slice(0, keep).map((v) => v.name));
+
+  const protectedVersions = new Set<string>(recentlyMade);
+  if (manifestCurrent) protectedVersions.add(manifestCurrent);
+  for (const v of inUseVersions) protectedVersions.add(v);
+
+  const removed: Array<{ version: string; bytes: number }> = [];
+  for (const v of versionDirs) {
+    if (protectedVersions.has(v.name)) continue;
+    // Compute size before delete so the operator can see what they freed.
+    let bytes = 0;
+    try {
+      const sub = await readdir(v.path, { withFileTypes: true });
+      for (const f of sub) {
+        if (!f.isFile()) continue;
+        try {
+          const fs = await stat(resolvePath(v.path, f.name));
+          bytes += fs.size;
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+    try {
+      await rm(v.path, { recursive: true, force: true });
+      removed.push({ version: v.name, bytes });
+    } catch (err: any) {
+      logger.warn({ err, version: v.name }, "Failed to remove old agent version directory");
+    }
+  }
+
+  return {
+    scanned:    versionDirs.length,
+    protected:  Array.from(protectedVersions).filter((p) => versionDirs.some((v) => v.name === p)),
+    removed,
   };
 }
 

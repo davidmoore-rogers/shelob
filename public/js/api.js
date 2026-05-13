@@ -410,6 +410,7 @@ const api = {
     agentBuildCurrent: ()        => request("GET",    "/server-settings/agents/build/current"),
     agentBuildStatus:  (id)      => request("GET",    `/server-settings/agents/build/${id}`),
     agentBuildCancel:  (id)      => request("DELETE", `/server-settings/agents/build/${id}`),
+    agentPrune:        ()        => request("POST",   "/server-settings/agents/prune"),
     getNtp:      ()       => request("GET", "/server-settings/ntp"),
     updateNtp:   (body)   => request("PUT", "/server-settings/ntp", body),
     testNtp:     (body)   => trackedRequest("Testing NTP sync", "POST", "/server-settings/ntp/test", body),

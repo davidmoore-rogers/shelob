@@ -1415,6 +1415,27 @@ router.get("/agents/build/:buildId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.post("/agents/prune", async (req, res, next) => {
+  try {
+    const { pruneOldAgentVersions } = await import("../../services/agentBuildService.js");
+    const { logEvent } = await import("./events.js");
+    const actor = req.session?.username || "unknown";
+    const result = await pruneOldAgentVersions();
+    if (result.removed.length > 0) {
+      const totalBytes = result.removed.reduce((sum, e) => sum + e.bytes, 0);
+      await logEvent({
+        action:       "agent.versions.pruned",
+        level:        "info",
+        actor,
+        resourceType: "polaris-agent",
+        message:      `Manually pruned ${result.removed.length} old agent version(s), freed ${(totalBytes / (1024*1024)).toFixed(1)} MiB`,
+        details:      { removed: result.removed, protected: result.protected, trigger: "manual" },
+      });
+    }
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
 router.delete("/agents/build/:buildId", async (req, res, next) => {
   try {
     const { cancelBuild, BuildAlreadyFinishedError, BuildNotFoundError } =
