@@ -501,14 +501,24 @@ export async function startPgbossWorkers(): Promise<void> {
     telemetry:    180,  // SNMP walks for CPU/mem/sensors
     systemInfo:   300,  // full interface + storage + IPsec + LLDP walk
   };
+  // createQueue is idempotent on name but does NOT re-apply config to an
+  // existing queue — the stored `expire_seconds` / `retry_limit` / etc on
+  // `pgboss.queue` are persisted on first create and ignored on subsequent
+  // calls. So after every createQueue we also issue updateQueue with the
+  // same options to force the config to converge on existing installs.
+  // updateQueue accepts every field on Queue except `name` / `partition`
+  // / `policy`, so policy is set only on createQueue. Cheap no-op when
+  // values already match.
   for (const cadence of Object.keys(QUEUE_NAMES) as MonitorCadence[]) {
-    await boss.createQueue(QUEUE_NAMES[cadence], {
-      policy: "singleton",
+    const name = QUEUE_NAMES[cadence];
+    const queueOptions = {
       retryLimit: 0,
       deleteAfterSeconds: 86_400,
       retentionSeconds: 3_600,
       expireInSeconds: EXPIRE_BY_QUEUE[cadence],
-    });
+    };
+    await boss.createQueue(name, { policy: "singleton", ...queueOptions });
+    await boss.updateQueue(name, queueOptions);
   }
 
   // pg-boss v12 renamed the concurrency knobs. `localConcurrency` is the
