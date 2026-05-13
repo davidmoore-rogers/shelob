@@ -177,25 +177,30 @@
           height: 44,
         },
       },
-      // Vendor logo overlay. Inset image sits on top of the per-role
-      // status color so BOTH signals are visible: the ring around the
-      // logo carries the monitor health (green/amber/red/grey), the
-      // logo itself identifies the vendor + model. Image is sized to
-      // ~68% of the node so a colored ring is always visible around it.
-      // `background-clip: node` keeps the image from bleeding past the
-      // circle; the role-specific node sizing rules above set the node
-      // width/height — we don't override those here.
+      // Vendor logo overlay. Both signals stay visible: the THICK
+      // colored border carries the monitor health (green/amber/red/
+      // grey — the same role/nodeColor used on plain nodes), the
+      // logo identifies the vendor + model. White interior fill so
+      // the logo's colors pop against any basemap (dark or light),
+      // and the image is shrunk to ~70% of the node so a square logo
+      // bounding box fits cleanly inside the circle without its
+      // corners clipping against the border (geometry: a square
+      // inscribed in a circle has side = diameter / √2 ≈ 70.7%).
       {
         selector: 'node[hasIcon = 1]',
         style: {
           "background-image": "data(iconUrl)",
           "background-fit": "contain",
           "background-clip": "node",
-          "background-width": "68%",
-          "background-height": "68%",
+          "background-width": "70%",
+          "background-height": "70%",
           "background-position-x": "50%",
           "background-position-y": "50%",
-          "background-image-opacity": 1,
+          "background-color": "#ffffff",
+          "background-opacity": 1,
+          "border-color": "data(nodeColor)",
+          "border-width": 5,
+          "border-opacity": 1,
         },
       },
       {
