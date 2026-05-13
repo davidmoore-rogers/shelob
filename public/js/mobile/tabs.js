@@ -274,13 +274,13 @@
     render: function (body) { body.innerHTML = placeholder("Assets module not loaded", "PolarisAssetsTab is missing — check script load order."); },
   };
 
-  // ─── Alerts ────────────────────────────────────────────────────────────
-  // Real spec lives in /js/mobile/alerts-tab.js.
-  var Alerts = (window.PolarisAlertsTab && window.PolarisAlertsTab.spec) || {
-    title: "Alerts",
-    icon: "#i-bell",
+  // ─── Reservations ──────────────────────────────────────────────────────
+  // Real spec lives in /js/mobile/reservations-tab.js.
+  var Reservations = (window.PolarisReservationsTab && window.PolarisReservationsTab.spec) || {
+    title: "Reservations",
+    icon: "#i-bookmark",
     renderTopbar: function () { return ''; },
-    render: function (body) { body.innerHTML = placeholder("Alerts module not loaded", "PolarisAlertsTab is missing."); },
+    render: function (body) { body.innerHTML = placeholder("Reservations module not loaded", "PolarisReservationsTab is missing."); },
   };
 
   // ─── More ──────────────────────────────────────────────────────────────
@@ -299,7 +299,7 @@
     { id: "search",  spec: Search },
     { id: "map",     spec: Map },
     { id: "assets",  spec: Assets },
-    { id: "alerts",  spec: Alerts },
+    { id: "reservations", spec: Reservations },
     { id: "more",    spec: More },
   ];
 

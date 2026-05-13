@@ -97,8 +97,10 @@
     renderTopbar: function () { return backTopbar("Subnets"); },
     render: function (body) {
       body.innerHTML = loadingHtml();
-      api.subnets.list().then(function (subnets) {
-        if (!Array.isArray(subnets) || subnets.length === 0) {
+      api.subnets.list({ limit: 200 }).then(function (resp) {
+        // listSubnets returns { subnets, total, limit, offset }
+        var subnets = (resp && resp.subnets) || [];
+        if (subnets.length === 0) {
           body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-subnet"/></svg></div><div class="ttl">No subnets</div><div class="desc">No subnets have been created yet.</div></div>';
           return;
         }
@@ -123,48 +125,6 @@
         body.innerHTML = html;
         body.querySelectorAll(".list-item").forEach(function (row) {
           row.addEventListener("click", function () { PolarisRouter.go("subnet/" + row.dataset.id); });
-        });
-      }).catch(function (err) { body.innerHTML = errorState(err && err.message ? err.message : "error"); });
-
-      wireBack();
-    },
-  });
-
-  // ─── Reservations sub-page ─────────────────────────────────────────────
-  registerSub("reservations", {
-    renderTopbar: function () { return backTopbar("Reservations"); },
-    render: function (body) {
-      body.innerHTML = loadingHtml();
-      api.reservations.list({ status: "active" }).then(function (rs) {
-        if (!Array.isArray(rs) || rs.length === 0) {
-          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-bookmark"/></svg></div><div class="ttl">No reservations</div><div class="desc">No active reservations on file.</div></div>';
-          return;
-        }
-        var html = "";
-        rs.forEach(function (r, i) {
-          var headline = r.hostname || r.ipAddress || "reservation";
-          var ipBit = r.ipAddress ? '<span class="mono">' + escapeHtml(r.ipAddress) + '</span>' : '';
-          var ownerBit = r.owner ? escapeHtml(r.owner) : '';
-          var sourceBit = r.sourceType && r.sourceType !== "manual" ? escapeHtml(r.sourceType.replace(/_/g, " ")) : '';
-          var subtitle = [ipBit, ownerBit, sourceBit].filter(Boolean).join(' · ');
-          html += ''
-            + '<button class="list-item two-line" data-subnet="' + escapeHtml(r.subnetId || "") + '">'
-            + '  <span class="leading"><svg viewBox="0 0 24 24"><use href="#i-bookmark"/></svg></span>'
-            + '  <div class="content">'
-            + '    <div class="headline">' + escapeHtml(headline) + '</div>'
-            + '    <div class="supporting">' + subtitle + '</div>'
-            + '  </div>'
-            + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
-            + '</button>'
-            + (i < rs.length - 1 ? '<div class="list-divider"></div>' : '');
-        });
-        body.innerHTML = html;
-        body.querySelectorAll(".list-item").forEach(function (row) {
-          row.addEventListener("click", function () {
-            var subnet = row.dataset.subnet;
-            if (subnet) PolarisRouter.go("subnet/" + subnet);
-            else PolarisTabs.showSnackbar("This reservation isn’t tied to a subnet.");
-          });
         });
       }).catch(function (err) { body.innerHTML = errorState(err && err.message ? err.message : "error"); });
 
@@ -233,8 +193,6 @@
       + menuRow("blocks", "i-block",   "Blocks",       "")
       + '<div class="list-divider"></div>'
       + menuRow("subnets", "i-subnet", "Subnets",      "")
-      + '<div class="list-divider"></div>'
-      + menuRow("reservations", "i-bookmark", "Reservations", "")
 
       + '<div class="section-head">Operations</div>'
       + menuRow("events", "i-event", "Events", "Audit log · last 7 days")
