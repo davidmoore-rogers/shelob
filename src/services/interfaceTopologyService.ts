@@ -85,12 +85,29 @@ export async function inferInterfaceTopology(
   // assetId is `String` in the schema → TEXT in Postgres (the
   // @default(uuid()) only affects the value generator, not the column
   // type), so the ANY cast must be text[] to match.
+  //
+  // The 1-hour timestamp window keeps this query off the bulk of the
+  // hypertable. asset_interface_samples is the largest sample table by
+  // far (interface rows per asset × every system-info pass — the prod
+  // box has ~90M rows in the active chunk alone). The function only
+  // needs ONE row per (assetId, ifName) — the latest — so the window
+  // exists purely to filter out interfaces that have stopped reporting
+  // (asset is down, decommissioned, or monitoring was disabled);
+  // drawing a topology edge from a stale sample would be wrong data.
+  // Default system-info cadence is 600s, so 1 hour tolerates ~5 missed
+  // scrapes (transient REST hiccups, brief network blips) without
+  // letting genuinely-stale interfaces through. Without the bound, the
+  // DISTINCT ON had to scan every sample in the active chunk and sort
+  // 6+ GB to keep the latest 88K (assetId, ifName) pairs — observed at
+  // 13.5 minutes / 90M rows fetched / 9 GB I/O on the prod box even
+  // though the existing schema index was being chosen correctly.
   const interfaceRows = await prisma.$queryRaw<
     Array<{ assetId: string; ifName: string; ifType: string | null }>
   >`
     SELECT DISTINCT ON ("assetId", "ifName") "assetId", "ifName", "ifType"
     FROM asset_interface_samples
     WHERE "assetId" = ANY(${seedAssetIds}::text[])
+      AND "timestamp" > NOW() - INTERVAL '1 hour'
     ORDER BY "assetId", "ifName", "timestamp" DESC
   `;
 

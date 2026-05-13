@@ -1021,10 +1021,10 @@ Listed alphabetically.
 
 **Cross-service deps:** None (reads AssetInterfaceSample rows and in-memory asset inventory; calls utility functions).
 
-**Used by:** src/api/routes/map.ts:19 — topology graph for Device Map (sites/:id/topology endpoint).
+**Used by:** src/api/routes/map.ts:19 — topology graph for Device Map (sites/:id/topology endpoint); src/services/dependencyTreeService.ts — Phase 12 of FMG/FortiGate sync via `recomputeDependencyTree`.
 
 **Invariants:**
-- Reads latest AssetInterfaceSample per (assetId, ifName) from seed asset set; no live discovery queries.
+- Reads latest AssetInterfaceSample per (assetId, ifName) from seed asset set within a 1-hour timestamp window; no live discovery queries. The window exists to filter out interfaces that have stopped reporting (asset down/decommissioned, monitoring disabled) — drawing a topology edge from a stale sample would be wrong data. Default system-info cadence is 600s, so 1 hour tolerates ~5 missed scrapes without admitting genuinely-stale interfaces. Without the bound the DISTINCT ON had to scan the entire active hypertable chunk and was observed at 13.5 min / 90M rows / 9 GB I/O on a fleet of ~600 infra assets.
 - Serial-match candidates filtered to exact 1 inventory hit (ambiguous matches skipped); hostname-match same rule.
 - Self-loops (asset's own serial/hostname) are rejected.
 - Infers both directions when both sides' interface names encode peer identity; targetIfName null when only source side is parseable.
@@ -1032,10 +1032,10 @@ Listed alphabetically.
 
 **When changing this:**
 - Verify parseFortinetPeerInterface still extracts serial + hostname patterns correctly.
-- Check AssetInterfaceSample query window (latest per ifName) doesn't miss topology artifacts from older samples.
 - Confirm ambiguity detection (multiple inventory matches) still blocks inference on both directions.
 - Test cross-site edge rendering (remoteAssets for peers outside seed set) in map.ts.
 - Validate serialMatchesPeerInterface and hostnameMatchesPeerInterface utility functions.
+- The 1-hour window is a perf gate, not a correctness one — if tightening further (e.g. 30 min), confirm the system-info cadence isn't longer than the window/2 for any tier-3 settings; widening it (e.g. back to 24h) re-incurs the Phase 12 scan cost.
 
 ---
 
