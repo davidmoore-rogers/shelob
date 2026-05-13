@@ -2297,6 +2297,21 @@ function renderAgentBuildInventory(inv) {
       '</div>';
   }
 
+  // Auto-build toggle row. Initial state is loaded async — render the
+  // checkbox unchecked, then flip it on settle so the toggle doesn't
+  // flash misleadingly. Defaults to ON when the Setting row is absent.
+  var autoBuildRow =
+    '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border);' +
+        'display:flex;align-items:center;gap:8px;font-size:0.85rem">' +
+      '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
+        '<input type="checkbox" id="agent-auto-build-toggle" style="width:15px;height:15px;flex-shrink:0">' +
+        '<span>Auto-build agent binaries when <code>agent/VERSION</code> changes</span>' +
+      '</label>' +
+    '</div>' +
+    '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.3rem 0 0 23px">' +
+      'Fires once on server boot when the on-disk manifest lags the agent source. Disable for strict supply-chain controls.' +
+    '</p>';
+
   body.innerHTML =
     goNotice +
     drift +
@@ -2311,12 +2326,28 @@ function renderAgentBuildInventory(inv) {
     '</table>' +
     '<div>' + buildBtn + '</div>' +
     goVerLine +
-    cleanupLine;
+    cleanupLine +
+    autoBuildRow;
 
   var btn = document.getElementById("btn-agent-build");
   if (btn) btn.addEventListener("click", onAgentBuildClick);
   var pruneBtn = document.getElementById("btn-agent-prune");
   if (pruneBtn) pruneBtn.addEventListener("click", onAgentPruneClick);
+
+  var autoToggle = document.getElementById("agent-auto-build-toggle");
+  if (autoToggle) {
+    api.serverSettings.agentAutoBuildSettingGet().then(function (s) {
+      autoToggle.checked = s.enabled !== false;
+    }).catch(function () {
+      autoToggle.checked = true;
+    });
+    autoToggle.addEventListener("change", function () {
+      api.serverSettings.agentAutoBuildSettingSet(autoToggle.checked).catch(function (err) {
+        showToast("Failed to save setting: " + err.message, "error");
+        autoToggle.checked = !autoToggle.checked;
+      });
+    });
+  }
 }
 
 function onAgentPruneClick() {

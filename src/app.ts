@@ -53,6 +53,7 @@ import "./jobs/backfillDependencyTree.js";
 import "./jobs/backfillMonitorStatusChangedAt.js";
 import "./jobs/dependencyReconciler.js";
 import "./jobs/reconcileMapRegions.js";
+import "./jobs/autoBuildAgents.js";
 import { ensureRegistryLoaded } from "./services/oidRegistry.js";
 import { detectTimescale, migrateToHypertables } from "./services/timescaleService.js";
 import { initializeQueue, startPgbossWorkers, stopPgbossWorkers } from "./services/queueService.js";

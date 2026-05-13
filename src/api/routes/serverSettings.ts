@@ -1415,6 +1415,29 @@ router.get("/agents/build/:buildId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.get("/agents/auto-build-setting", async (_req, res, next) => {
+  try {
+    const { prisma } = await import("../../db.js");
+    const row = await prisma.setting.findUnique({ where: { key: "agent.autoBuildOnVersionMismatch" } });
+    // Default ON when the Setting row is absent.
+    const v = row?.value as { enabled?: boolean } | null;
+    res.json({ enabled: v?.enabled !== false });
+  } catch (err) { next(err); }
+});
+
+router.put("/agents/auto-build-setting", async (req, res, next) => {
+  try {
+    const { prisma } = await import("../../db.js");
+    const enabled = !!(req.body && req.body.enabled);
+    await prisma.setting.upsert({
+      where:  { key: "agent.autoBuildOnVersionMismatch" },
+      update: { value: { enabled } as any },
+      create: { key: "agent.autoBuildOnVersionMismatch", value: { enabled } as any },
+    });
+    res.json({ enabled });
+  } catch (err) { next(err); }
+});
+
 router.post("/agents/prune", async (req, res, next) => {
   try {
     const { pruneOldAgentVersions } = await import("../../services/agentBuildService.js");
