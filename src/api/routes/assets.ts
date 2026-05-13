@@ -2760,6 +2760,29 @@ router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => 
         "Enable HTTPS in Server Settings → HTTPS first.");
     }
 
+    // The remote agent must be able to call back to Polaris. agent.conf's
+    // server_url gets stamped via inferOwnServerUrl() in agentInstallService,
+    // which falls back to https://localhost:<PORT> when neither
+    // POLARIS_PUBLIC_URL nor POLARIS_PUBLIC_HOST is set. That fallback is
+    // only valid when the agent host == this Polaris host; on every remote
+    // install it produces an agent that connection-refuses against its own
+    // localhost. Refuse early with a clear error pointing the operator at
+    // .env, rather than letting a broken install hit the systemd Restart
+    // loop on the target.
+    if (!process.env.POLARIS_PUBLIC_URL && !process.env.POLARIS_PUBLIC_HOST) {
+      const targetHost = asset.ipAddress || asset.dnsName || asset.hostname || "";
+      const isSameBox = targetHost === "127.0.0.1" || targetHost === "::1" ||
+                        targetHost === "localhost" || targetHost.toLowerCase() === "localhost.localdomain";
+      if (!isSameBox) {
+        throw new AppError(400,
+          "POLARIS_PUBLIC_URL is not set. Without it the agent.conf written to " +
+          `${targetHost || "the remote host"} would point at https://localhost:${process.env.PORT ?? "3000"}, ` +
+          "which the remote host can't reach. Set POLARIS_PUBLIC_URL in /opt/polaris/.env to your " +
+          "Polaris server's public URL (e.g. https://polaris.example.com:3000), restart Polaris, " +
+          "and retry the install.");
+      }
+    }
+
     const row = await prisma.managedAgent.create({
       data: {
         assetId,
