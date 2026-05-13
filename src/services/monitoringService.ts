@@ -167,6 +167,22 @@ export interface MonitorTierSettings {
   telemetryPolling:          PollingMethod | null;
   interfacesPolling:         PollingMethod | null;
   lldpPolling:               PollingMethod | null;
+  /**
+   * Per-stream MIB identifier hint. Either `"std:<key>"` referencing a
+   * built-in standard MIB (used by the asset-detail SNMP Walk tab UI for
+   * symbol resolution; ignored by the telemetry collector), or the UUID of
+   * an uploaded MibFile row. null at any tier = inherit from below.
+   *
+   * Consumed by `collectTelemetrySnmp` to override vendor-profile selection
+   * when an uploaded MIB is set — useful for assets whose
+   * `manufacturer + model` would otherwise fall into the wrong profile (the
+   * canonical case being FortiSwitches that pre-Phase-4d landed under the
+   * generic Fortinet profile and queried FortiGate-only OIDs).
+   */
+  responseTimeMibId:         string | null;
+  telemetryMibId:            string | null;
+  interfacesMibId:           string | null;
+  lldpMibId:                 string | null;
 }
 
 export type MonitorOverrideSettings = Partial<MonitorTierSettings>;
@@ -199,6 +215,12 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
   telemetryPolling:          null,
   interfacesPolling:         null,
   lldpPolling:               null,
+  // MIB ID hints default to null at the floor — vendor profile selection
+  // uses the asset's own manufacturer/model when no tier supplies a MIB.
+  responseTimeMibId:         null,
+  telemetryMibId:            null,
+  interfacesMibId:           null,
+  lldpMibId:                 null,
 };
 
 // ─── Legacy global-tier types (transitional, scheduled for removal) ────────
@@ -441,7 +463,17 @@ function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTie
     telemetryPolling:          readPollingFromJson(pollingBlock, "telemetry")    ?? readPollingFromJson(flat, "telemetryPolling"),
     interfacesPolling:         readPollingFromJson(pollingBlock, "interfaces")   ?? readPollingFromJson(flat, "interfacesPolling"),
     lldpPolling:               readPollingFromJson(pollingBlock, "lldp")         ?? readPollingFromJson(flat, "lldpPolling"),
+    responseTimeMibId:         readMibIdFromJson(flat.responseTimeMibId),
+    telemetryMibId:            readMibIdFromJson(flat.telemetryMibId),
+    interfacesMibId:           readMibIdFromJson(flat.interfacesMibId),
+    lldpMibId:                 readMibIdFromJson(flat.lldpMibId),
   };
+}
+
+function readMibIdFromJson(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t.length === 0 ? null : t;
 }
 
 /**
@@ -540,6 +572,10 @@ async function loadClassOverride(
       telemetryPolling:          true,
       interfacesPolling:         true,
       lldpPolling:               true,
+      responseTimeMibId:         true,
+      telemetryMibId:            true,
+      interfacesMibId:           true,
+      lldpMibId:                 true,
     },
   });
   let result: MonitorOverrideSettings | null = null;
@@ -594,6 +630,13 @@ export interface AssetMonitorContext {
   telemetryPolling?:         string | null;
   interfacesPolling?:        string | null;
   lldpPolling?:              string | null;
+  // Per-stream MIB id overrides on the asset itself. null = inherit.
+  // Either `"std:<key>"` (UI hint only) or an uploaded MibFile UUID
+  // (consumed by `collectTelemetrySnmp` to override vendor-profile selection).
+  responseTimeMibId?:        string | null;
+  telemetryMibId?:           string | null;
+  interfacesMibId?:          string | null;
+  lldpMibId?:                string | null;
 }
 
 /**
@@ -698,6 +741,24 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
     asset.lldpPolling,
   );
 
+  // Per-stream MIB id resolution. Same tier order as polling, but no
+  // compatibility check — the MIB id is a hint that gets consumed downstream
+  // (collectTelemetrySnmp looks up the MibFile to override profile selection).
+  function resolveMibId(
+    tier3Val: string | null,
+    classVal: string | null | undefined,
+    assetVal: string | null | undefined,
+  ): string | null {
+    let resolved: string | null = tier3Val ?? null;
+    if (classVal) resolved = classVal;
+    if (assetVal) resolved = assetVal;
+    return resolved;
+  }
+  merged.responseTimeMibId = resolveMibId(tier3.responseTimeMibId, classOverride?.responseTimeMibId, asset.responseTimeMibId);
+  merged.telemetryMibId    = resolveMibId(tier3.telemetryMibId,    classOverride?.telemetryMibId,    asset.telemetryMibId);
+  merged.interfacesMibId   = resolveMibId(tier3.interfacesMibId,   classOverride?.interfacesMibId,   asset.interfacesMibId);
+  merged.lldpMibId         = resolveMibId(tier3.lldpMibId,         classOverride?.lldpMibId,         asset.lldpMibId);
+
   return merged;
 }
 
@@ -759,6 +820,10 @@ export async function resolveMonitorSettingsWithProvenance(
     telemetryPolling:          tier3Source,
     interfacesPolling:         tier3Source,
     lldpPolling:               tier3Source,
+    responseTimeMibId:         tier3Source,
+    telemetryMibId:            tier3Source,
+    interfacesMibId:           tier3Source,
+    lldpMibId:                 tier3Source,
   };
 
   if (classOverride) {
@@ -780,6 +845,10 @@ export async function resolveMonitorSettingsWithProvenance(
     if (classOverride.telemetryPolling)           { resolved.telemetryPolling    = classOverride.telemetryPolling;    provenance.telemetryPolling    = "class"; }
     if (classOverride.interfacesPolling)          { resolved.interfacesPolling   = classOverride.interfacesPolling;   provenance.interfacesPolling   = "class"; }
     if (classOverride.lldpPolling)                { resolved.lldpPolling         = classOverride.lldpPolling;         provenance.lldpPolling         = "class"; }
+    if (classOverride.responseTimeMibId)          { resolved.responseTimeMibId   = classOverride.responseTimeMibId;   provenance.responseTimeMibId   = "class"; }
+    if (classOverride.telemetryMibId)             { resolved.telemetryMibId      = classOverride.telemetryMibId;      provenance.telemetryMibId      = "class"; }
+    if (classOverride.interfacesMibId)            { resolved.interfacesMibId     = classOverride.interfacesMibId;     provenance.interfacesMibId     = "class"; }
+    if (classOverride.lldpMibId)                  { resolved.lldpMibId           = classOverride.lldpMibId;           provenance.lldpMibId           = "class"; }
   }
 
   // Per-asset (only the four overridable fields).
@@ -822,6 +891,19 @@ export async function resolveMonitorSettingsWithProvenance(
   takeAssetPolling("telemetryPolling",    asset.telemetryPolling);
   takeAssetPolling("interfacesPolling",   asset.interfacesPolling);
   takeAssetPolling("lldpPolling",         asset.lldpPolling);
+
+  // Per-asset MIB id overrides. Empty strings are treated as inherit; only
+  // non-empty values take effect (matches the resolver's resolveMibId rule).
+  function takeAssetMibId(stream: keyof Pick<MonitorTierSettings, "responseTimeMibId" | "telemetryMibId" | "interfacesMibId" | "lldpMibId">, raw: string | null | undefined) {
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      resolved[stream] = raw;
+      provenance[stream] = "asset";
+    }
+  }
+  takeAssetMibId("responseTimeMibId", asset.responseTimeMibId);
+  takeAssetMibId("telemetryMibId",    asset.telemetryMibId);
+  takeAssetMibId("interfacesMibId",   asset.interfacesMibId);
+  takeAssetMibId("lldpMibId",         asset.lldpMibId);
 
   return { resolved, provenance, tier3Source, classOverrideId };
 }
@@ -1859,7 +1941,15 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
       } else {
         return { supported: true, error: "No SNMP credential selected" };
       }
-      const data = await collectTelemetrySnmp(targetIp, snmpCfg, asset.manufacturer, asset.model, asset.os, telemetryTimeout);
+      const data = await collectTelemetrySnmp(
+        targetIp,
+        snmpCfg,
+        asset.manufacturer,
+        asset.model,
+        asset.os,
+        telemetryTimeout,
+        effective.telemetryMibId,
+      );
       return { supported: true, data };
     }
     // winrm / ssh / icmp don't yet deliver telemetry. WinRM via WMI
@@ -2989,11 +3079,40 @@ async function collectTelemetrySnmp(
   model?: string | null,
   os?: string | null,
   timeoutMs?: number,
+  telemetryMibId?: string | null,
 ): Promise<TelemetrySample> {
   // Make sure the symbol table is populated before we try to resolve any
   // vendor symbols. ensureRegistryLoaded short-circuits after the first call.
   await ensureRegistryLoaded();
-  const profile = pickVendorProfile(manufacturer, os, model);
+
+  // When the operator pinned an uploaded MIB on this asset's telemetry stream
+  // (Asset / class-override / integration tier), look it up and feed its
+  // module name + manufacturer + model into pickVendorProfile *instead of*
+  // the asset's own identity. Lets operators redirect a misclassified asset
+  // (e.g. a FortiSwitch whose discovery sources stamped manufacturer=Fortinet
+  // with no model hint) into the right profile without renaming the asset.
+  // `"std:<key>"` ids are UI hints only — they don't bias selection here.
+  let profileManufacturer = manufacturer;
+  let profileModel        = model;
+  let profileOs           = os;
+  if (telemetryMibId && !telemetryMibId.startsWith("std:")) {
+    const mib = await prisma.mibFile.findUnique({
+      where:  { id: telemetryMibId },
+      select: { moduleName: true, manufacturer: true, model: true },
+    }).catch(() => null);
+    if (mib) {
+      profileManufacturer = mib.manufacturer ?? manufacturer;
+      profileModel        = mib.model        ?? model;
+      // Stuff the MIB's module name into the `os` slot so the existing
+      // haystack-based matcher can see it (e.g. "FORTINET-FORTISWITCH-MIB"
+      // contains "FortiSwitch" which the FortiSwitch profile matches).
+      profileOs           = mib.moduleName;
+    }
+  }
+  const profile = pickVendorProfile(profileManufacturer, profileOs, profileModel);
+  // Scope still uses the *asset's* manufacturer/model so symbol resolution
+  // through oidRegistry continues to pick up device-specific MIB overrides
+  // for the actual asset, not the MIB pointed at by telemetryMibId.
   const scope = { manufacturer, model };
 
   return await withSnmpSession(host, config, async (session) => {

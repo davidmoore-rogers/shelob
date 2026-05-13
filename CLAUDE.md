@@ -420,6 +420,20 @@ Asset
   telemetryPolling          String?
   interfacesPolling         String?
   lldpPolling               String?
+  -- Per-stream MIB id hints. Either `"std:<key>"` (built-in MIB; UI-only,
+  -- ignored by the collector) or an uploaded MibFile UUID. null = inherit
+  -- from the resolved tier. Consumed by `collectTelemetrySnmp`: when
+  -- `telemetryMibId` resolves to an uploaded MibFile, its `manufacturer +
+  -- moduleName + model` are fed into `pickVendorProfile` instead of the
+  -- asset's own identity — lets operators redirect a misclassified asset
+  -- (e.g. a FortiSwitch whose discovery sources stamped manufacturer=
+  -- Fortinet with no model hint) into the right profile without renaming.
+  -- Symbol resolution scope (oidRegistry) still uses the asset's own
+  -- manufacturer/model so per-device MIB uploads continue to win.
+  responseTimeMibId         String?
+  telemetryMibId            String?
+  interfacesMibId           String?
+  lldpMibId                 String?
   -- System tab cadences (asset details modal). Same monitorAssets job, but
   -- on independent timers from the response-time probe. Telemetry =
   -- CPU+memory snapshot (~60s default); systemInfo = full interface +
