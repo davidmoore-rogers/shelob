@@ -33,3 +33,10 @@ export const ENV_FILE = resolve(STATE_DIR, ".env");
 export const SETUP_COMPLETE_MARKER = resolve(STATE_DIR, ".setup-complete");
 export const BACKUP_DIR = resolve(STATE_DIR, "data", "backups");
 export const UPLOADS_DIR = resolve(STATE_DIR, "public", "uploads");
+
+// Polaris Agent binaries. The release tarball ships per-version directories
+// under data/agents/<version>/ (one binary per OS×arch) plus manifest.json
+// that names the current default version. The in-app updater preserves
+// data/ across self-updates so an in-progress agent install isn't broken
+// when Polaris itself upgrades.
+export const AGENT_BIN_DIR = resolve(STATE_DIR, "data", "agents");

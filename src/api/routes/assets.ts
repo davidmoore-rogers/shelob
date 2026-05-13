@@ -2762,16 +2762,9 @@ router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => 
         installedBy:           actor,
         installStatus:         "pending",
         serverCertFingerprint: fingerprint,
+        installCredentialId:   body.credentialId,
       },
     });
-
-    // Mint the one-shot enrollment token. Phase 4 will SSH/WinRM into
-    // the host with the stored credential and run the installer script,
-    // which carries this token in its argv. For Phase 2 the operator
-    // (or a curl smoke test) takes the token off the response below
-    // and stands the agent up by hand.
-    const { mintEnrollmentToken } = await import("../../services/agentTokenService.js");
-    const enrollmentToken = await mintEnrollmentToken(row.id);
 
     await logEvent({
       action:       "agent.install_kickoff",
@@ -2783,13 +2776,16 @@ router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => 
       details:      { managedAgentId: row.id, credentialId: body.credentialId },
     });
 
+    // Fire the async install. The service mints its own enrollment token,
+    // SFTPs the binary + agent.conf, runs the installer, and transitions
+    // installStatus as it goes. The UI polls GET /:id/agent to watch
+    // progress; failure lands as installStatus="failed" + installError.
+    const { startInstall } = await import("../../services/agentInstallService.js");
+    await startInstall({ managedAgentId: row.id, credentialId: body.credentialId });
+
     res.json({
-      managedAgentId:  row.id,
-      installStatus:   row.installStatus,
-      // Returned ONCE so the operator (Phase 2) can configure the agent's
-      // agent.conf manually. Phase 4 stops returning this and instead pipes
-      // it directly into the install script.
-      enrollmentToken,
+      managedAgentId:        row.id,
+      installStatus:         row.installStatus,
       serverCertFingerprint: fingerprint,
     });
   } catch (err) { next(err); }
@@ -2828,13 +2824,16 @@ router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
       return;
     }
 
-    // Phase 2: just mark revoked + leave the row in place. Phase 4 wires
-    // the async remote-uninstall path that, on success, hard-deletes
-    // this row and emits agent.uninstalled.
-    await prisma.managedAgent.update({
-      where: { id: row.id },
-      data: { installStatus: "revoked" },
-    });
+    // Default DELETE path: revoke + async remote uninstall using the
+    // credential stored at install time. On success, startUninstall
+    // hard-deletes the row and emits agent.uninstalled; on failure it
+    // transitions to installStatus="uninstall_failed" and emits
+    // agent.uninstall_failed (warning) — operator can retry or fall
+    // back to ?force=true.
+    //
+    // Emit the bearer-revoke event before kicking off the remote work
+    // so the audit trail captures the synchronous half regardless of
+    // what happens to the remote side. Bearer is already dead.
     await logEvent({
       action:       "agent.revoked",
       resourceType: "asset",
@@ -2844,7 +2843,31 @@ router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
       message:      "Polaris Agent bearer revoked",
       details:      { managedAgentId: row.id },
     });
-    res.json({ ok: true, forced: false, installStatus: "revoked" });
+
+    if (!row.installCredentialId) {
+      // No credential on file (e.g. it was deleted; SetNull cascade
+      // cleared the FK). Operator can either delete the credential
+      // back into existence then DELETE again, or use ?force=true.
+      // Leave the row in "revoked" — bearer is dead, host has an orphan
+      // binary, but Polaris won't keep retrying with no credential.
+      await prisma.managedAgent.update({
+        where: { id: row.id },
+        data: { installStatus: "revoked" },
+      });
+      res.json({
+        ok: true,
+        forced: false,
+        installStatus: "revoked",
+        warning: "No install credential on file — remote uninstall skipped. " +
+                 "Use ?force=true to drop the local row entirely, or restore the credential and DELETE again.",
+      });
+      return;
+    }
+
+    const { startUninstall } = await import("../../services/agentInstallService.js");
+    await startUninstall({ managedAgentId: row.id, credentialId: row.installCredentialId });
+
+    res.json({ ok: true, forced: false, installStatus: "uninstalling" });
   } catch (err) { next(err); }
 });
 

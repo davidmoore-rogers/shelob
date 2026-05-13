@@ -238,6 +238,11 @@ model Credential {
   classOverrideTelAssets  MonitorClassOverride[] @relation("ClassOverrideTelCred")
   classOverrideIfAssets   MonitorClassOverride[] @relation("ClassOverrideIfCred")
   classOverrideLldpAssets MonitorClassOverride[] @relation("ClassOverrideLldpCred")
+  // Back-relation for the Polaris Agent install credential (one per
+  // ManagedAgent row). SetNull on credential delete so removing a
+  // credential doesn't block a stuck agent install — operator falls
+  // back to DELETE /assets/:id/agent?force=true in that case.
+  managedAgents           ManagedAgent[]         @relation("AgentInstallCredential")
 
   @@index([type])
   @@map("credentials")
@@ -1269,6 +1274,14 @@ model ManagedAgent {
   agentVersion String? // semver reported on enroll; null until first enroll
   installedBy  String // username of operator who clicked Install
   installedAt  DateTime @default(now())
+
+  // Credential used at install time. Stored so the default DELETE path
+  // (remote uninstall via the same SSH/WinRM creds) doesn't have to ask
+  // the operator to re-pick it. Cleared on credential deletion via
+  // SetNull so an orphaned ManagedAgent doesn't block the credential's
+  // removal; the operator falls back to ?force=true in that case.
+  installCredentialId String?
+  installCredential   Credential? @relation("AgentInstallCredential", fields: [installCredentialId], references: [id], onDelete: SetNull)
 
   installStatus String  @default("pending") // see lifecycle comment above
   installError  String? // captured stderr / exception message on failure
