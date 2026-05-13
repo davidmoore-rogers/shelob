@@ -698,36 +698,47 @@ router.get("/sites/:id/topology", async (req, res, next) => {
     // and networkAddress port-id subtypes carry hardware identifiers, not
     // operator-readable port labels — skipped so they don't pollute the edge.
     const PORT_ID_NAME_SUBTYPES = new Set(["interfaceName", "interfaceAlias", "agentCircuitId", "local"]);
-    const siblingLldpPort = new Map<string, string>(); // `${source}|${matchedSibling}` → port name
+    // Three confidence tiers (lower wins):
+    //   1 — authoritative: the asset's own lldpLocPortTable / IF-MIB ifName
+    //       lookup resolved (real port label that the asset reports for
+    //       itself).
+    //   2 — cross-advertised: portId in the neighbor's LLDP frame, name-form
+    //       subtype (the asset doesn't have it locally but its peer just told
+    //       it what the link's far end is called).
+    //   3 — synthetic: collectLldpNeighborsSnmp couldn't resolve the local
+    //       port number to a real name and fell through to `port-${num}`.
+    //       Useful as a last resort (it's at least non-empty) but should
+    //       always lose to a real label from either side. Detected by the
+    //       `port-<digits>` pattern the collector uses for the fallback.
+    type PortLabel = { value: string; conf: 1 | 2 | 3 };
+    const siblingLldpPort = new Map<string, PortLabel>();
+    const SYNTHETIC_FALLBACK_RE = /^port-\d+$/;
+    const writeLabel = (k: string, value: string, conf: 1 | 2 | 3) => {
+      const cur = siblingLldpPort.get(k);
+      if (!cur || conf < cur.conf) siblingLldpPort.set(k, { value, conf });
+    };
     for (const n of lldpRows) {
       if (!n.matchedAsset || !n.matchedAsset.id) continue;
       if (!siblingIds.has(n.matchedAsset.id)) continue;
-      // Authoritative: source asset's own port name from its local-port table.
-      // localIfName from `assetId` toward `matchedAssetId` always wins.
       if (n.localIfName) {
-        const k = `${n.assetId}|${n.matchedAsset.id}`;
-        siblingLldpPort.set(k, n.localIfName);
+        const conf: 1 | 3 = SYNTHETIC_FALLBACK_RE.test(n.localIfName) ? 3 : 1;
+        writeLabel(`${n.assetId}|${n.matchedAsset.id}`, n.localIfName, conf);
       }
-      // Cross-advertised: target asset's port name as the source observed it.
-      // Only used when the source-authoritative entry hasn't been written —
-      // a `localIfName` from the target's own LLDP row, if it lands later, is
-      // more trustworthy than the source's portId view.
       if (n.portId && n.portIdSubtype && PORT_ID_NAME_SUBTYPES.has(n.portIdSubtype)) {
-        const k = `${n.matchedAsset.id}|${n.assetId}`;
-        if (!siblingLldpPort.has(k)) siblingLldpPort.set(k, n.portId);
+        writeLabel(`${n.matchedAsset.id}|${n.assetId}`, n.portId, 2);
       }
     }
     for (const e of edges) {
-      const fwdPort = siblingLldpPort.get(`${e.source}|${e.target}`); // source's view → fills source half
-      const revPort = siblingLldpPort.get(`${e.target}|${e.source}`); // target's view → fills target half
-      if (!fwdPort && !revPort) continue;
+      const fwd = siblingLldpPort.get(`${e.source}|${e.target}`); // source's view → fills source half
+      const rev = siblingLldpPort.get(`${e.target}|${e.source}`); // target's view → fills target half
+      if (!fwd && !rev) continue;
       const parts = String(e.label || "").split(" ↔ ");
       let sourceHalf = parts[0] ?? "unknown";
       let targetHalf = parts[1] ?? "unknown";
       // Only overwrite halves that were previously "unknown" — controller-
       // data set a real value (rare) wins over an LLDP cross-reference.
-      if (fwdPort && sourceHalf === "unknown") sourceHalf = fwdPort;
-      if (revPort && targetHalf === "unknown") targetHalf = revPort;
+      if (fwd && sourceHalf === "unknown") sourceHalf = fwd.value;
+      if (rev && targetHalf === "unknown") targetHalf = rev.value;
       e.label = portLabel(sourceHalf, targetHalf);
     }
 
