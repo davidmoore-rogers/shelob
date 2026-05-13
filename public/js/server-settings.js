@@ -3387,7 +3387,7 @@ function mibCardHTML() {
         '<td' + (importsTitle ? ' title="' + escapeHtml(importsTitle) + '"' : '') + ' style="font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(importsText) + '</td>' +
         '<td style="text-align:right;font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(sizeKb) + '</td>' +
         '<td style="font-size:0.82rem;color:var(--color-text-secondary)">' + escapeHtml(formatDate(m.uploadedAt)) + '</td>' +
-        '<td class="actions" style="white-space:nowrap">' +
+        '<td class="actions" style="white-space:nowrap;flex-wrap:nowrap">' +
           '<button class="btn btn-sm btn-primary mib-browse" data-id="' + escapeHtml(m.id) + '" data-name="' + escapeHtml(m.moduleName) + '">Browse</button> ' +
           '<a class="btn btn-sm btn-secondary" href="' + api.serverSettings.downloadMibUrl(m.id) + '" download="' + escapeHtml(m.filename) + '">Download</a> ' +
           (isAdmin()
@@ -3648,9 +3648,9 @@ function renderMibBrowseModal() {
   var rightPane = _mibBrowseDetailPane();
 
   var body =
-    '<div style="display:grid;grid-template-columns:minmax(280px,38%) 1fr;gap:1rem;min-height:60vh;max-height:70vh">' +
-      '<div id="mib-browse-left" style="overflow:auto;overscroll-behavior:contain;min-height:0;border-right:1px solid var(--color-border);padding-right:0.75rem">' + leftPane + '</div>' +
-      '<div id="mib-browse-right" style="overflow:auto;overscroll-behavior:contain;min-height:0">' + rightPane + '</div>' +
+    '<div style="display:grid;grid-template-columns:minmax(280px,38%) 1fr;gap:1rem;height:70vh;overflow:hidden;padding:1rem">' +
+      '<div id="mib-browse-left" style="overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;min-height:0;height:100%;border-right:1px solid var(--color-border);padding-right:0.75rem">' + leftPane + '</div>' +
+      '<div id="mib-browse-right" style="overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;min-height:0;height:100%">' + rightPane + '</div>' +
     '</div>';
 
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
