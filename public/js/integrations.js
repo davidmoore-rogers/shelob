@@ -2115,6 +2115,8 @@ async function openEditModal(id) {
         pollInterval: intg.pollInterval,
         ouInclude: config.ouInclude || [],
         ouExclude: config.ouExclude || [],
+        verboseLogging: config.verboseLogging === true,
+        verboseLoggingEnabledAt: config.verboseLoggingEnabledAt,
       };
       body = activeDirectoryFormHTML(defaults);
       formGetter = function () {
@@ -2135,6 +2137,8 @@ async function openEditModal(id) {
         pollInterval: intg.pollInterval,
         deviceInclude: config.deviceInclude || [],
         deviceExclude: config.deviceExclude || [],
+        verboseLogging: config.verboseLogging === true,
+        verboseLoggingEnabledAt: config.verboseLoggingEnabledAt,
       };
       body = entraIdFormHTML(defaults);
       formGetter = function () {
@@ -2156,6 +2160,8 @@ async function openEditModal(id) {
         pollInterval: intg.pollInterval,
         dhcpInclude: config.dhcpInclude || [],
         dhcpExclude: config.dhcpExclude || [],
+        verboseLogging: config.verboseLogging === true,
+        verboseLoggingEnabledAt: config.verboseLoggingEnabledAt,
       };
       body = windowsServerFormHTML(defaults);
       formGetter = function () {
@@ -2183,6 +2189,8 @@ async function openEditModal(id) {
         interfaceExclude: config.interfaceExclude || [],
         inventoryIncludeInterfaces: config.inventoryIncludeInterfaces || [],
         inventoryExcludeInterfaces: config.inventoryExcludeInterfaces || [],
+        verboseLogging: config.verboseLogging === true,
+        verboseLoggingEnabledAt: config.verboseLoggingEnabledAt,
       };
       body = fortiGateFormHTML(defaults);
       formGetter = function () {
@@ -2218,6 +2226,8 @@ async function openEditModal(id) {
         fortigateApiToken: "",
         fortigateApiTokenPlaceholder: "Leave blank to keep current token",
         fortigateVerifySsl: config.fortigateVerifySsl === true,
+        verboseLogging: config.verboseLogging === true,
+        verboseLoggingEnabledAt: config.verboseLoggingEnabledAt,
       };
       body = fortiManagerFormHTML(defaults);
       formGetter = function () {
