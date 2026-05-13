@@ -70,7 +70,17 @@
   // navigate via fallback — see hitClick).
   function hitTarget(group, hit) {
     if (group === "assets")       return "asset/" + hit.id;
-    if (group === "sites")        return "site/" + hit.id;
+    if (group === "sites") {
+      // Virtual map entry synthesized from an endpoint asset hit — open the
+      // origin FortiGate's topology graph focused on the endpoint instead of
+      // the firewall's own site sheet (which has no context for the asset).
+      var sctx = hit.context || {};
+      if (sctx.mapEntry && sctx.siteId) {
+        var focus = sctx.focusHostname || sctx.focusIpAddress || sctx.focusMacAddress;
+        return "topology/" + sctx.siteId + (focus ? "?q=" + encodeURIComponent(focus) : "");
+      }
+      return "site/" + hit.id;
+    }
     if (group === "subnets")      return "subnet/" + hit.id;
     if (group === "blocks")       return "block/" + hit.id;
     if (group === "reservations") {
@@ -139,6 +149,20 @@
       }
 
       function renderResults(data) {
+        // Mirror desktop: surface endpoint asset hits that resolved to a
+        // pinned FortiGate as virtual "Device Map" entries so a workstation
+        // search opens its origin site's topology graph, not just the asset
+        // details page. Without this the Device Map section only ever appears
+        // when the operator types a firewall hostname directly.
+        var virtualSites = (data.assets || [])
+          .filter(function (h) { return h.context && h.context.siteId; })
+          .map(function (h) {
+            var ctx = Object.assign({}, h.context, { mapEntry: true });
+            var subtitle = ctx.siteHostname ? ("On " + ctx.siteHostname) : (h.subtitle || "");
+            return Object.assign({}, h, { subtitle: subtitle, context: ctx });
+          });
+        data.sites = (data.sites || []).concat(virtualSites);
+
         var totalHits = 0;
         SEARCH_GROUP_ORDER.forEach(function (g) { totalHits += (data[g] || []).length; });
         if (totalHits === 0) {
