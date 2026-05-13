@@ -25,7 +25,7 @@ import manufacturerAliasesRouter from "./routes/manufacturerAliases.js";
 import monitorSettingsRouter from "./routes/monitorSettings.js";
 import apiTokensRouter from "./routes/apiTokens.js";
 import dashboardRouter from "./routes/dashboard.js";
-import { agentsEnrollRouter, agentsRouter } from "./routes/agents.js";
+import { agentsEnrollRouter, agentsRouter, agentsBinaryRouter } from "./routes/agents.js";
 import { requireAuth, requireAdmin, requireNetworkAdmin, attachApiToken } from "./middleware/auth.js";
 
 export const router = Router();
@@ -45,11 +45,14 @@ router.get("/server-settings/branding", async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Polaris Agent — /enroll is public (no bearer yet; the body carries a
-// one-shot enrollment token). The rest of /agents/* is gated by the
-// requireAgentBearer middleware mounted inside agentsRouter itself.
-// Mounted here BEFORE the blanket requireAuth so /enroll is reachable
-// without a session.
+// Polaris Agent — /enroll and /binary/:filename are public (no bearer
+// yet; the body or path carries everything needed). The rest of
+// /agents/* is gated by the requireAgentBearer middleware mounted
+// inside agentsRouter itself. Mounted here BEFORE the blanket
+// requireAuth so /enroll + /binary are reachable without a session.
+// /binary mounts BEFORE /enroll because both must be parsed before the
+// /agents catch-all; Express's first-match routing handles ordering.
+router.use("/agents/binary", agentsBinaryRouter);
 router.use("/agents/enroll", agentsEnrollRouter);
 router.use("/agents", agentsRouter);
 

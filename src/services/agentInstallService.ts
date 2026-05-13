@@ -41,6 +41,7 @@ import { AGENT_BIN_DIR } from "../utils/paths.js";
 import { getCredential } from "./credentialService.js";
 import { mintEnrollmentToken } from "./agentTokenService.js";
 import { logEvent } from "../api/routes/events.js";
+import { winrmRunOne, type WinRmConnection } from "../utils/winrm.js";
 
 // ─── Public entry points ──────────────────────────────────────────────
 
@@ -180,10 +181,19 @@ async function runInstall(input: StartInstallInput): Promise<void> {
       return failInstall(managedAgentId, row.assetId, err.message ?? String(err));
     }
   } else if (row.osPlatform === "windows") {
-    return failInstall(managedAgentId, row.assetId,
-      "Windows installs via WinRM not yet supported in this release. " +
-      "For now, manually copy the polaris-agent-windows-* binary + agent.conf to " +
-      "%ProgramData%\\Polaris\\agent\\ and register a Windows Service.");
+    try {
+      await winrmInstall({
+        host,
+        cred: cred.config as Record<string, unknown>,
+        agentConfBody,
+        binaryFilename: binaryName,
+        serverUrl: inferOwnServerUrl(),
+        certFingerprint: row.serverCertFingerprint,
+        testOverrides,
+      });
+    } catch (err: any) {
+      return failInstall(managedAgentId, row.assetId, err.message ?? String(err));
+    }
   } else {
     return failInstall(managedAgentId, row.assetId, `Unsupported osPlatform ${row.osPlatform}`);
   }
@@ -265,8 +275,15 @@ async function runUninstall(input: StartUninstallInput): Promise<void> {
       return failUninstall(managedAgentId, row.assetId, err.message ?? String(err));
     }
   } else if (row.osPlatform === "windows") {
-    return failUninstall(managedAgentId, row.assetId,
-      "Windows uninstall via WinRM not yet supported in this release");
+    try {
+      await winrmUninstall({
+        host,
+        cred: cred.config as Record<string, unknown>,
+        testOverrides,
+      });
+    } catch (err: any) {
+      return failUninstall(managedAgentId, row.assetId, err.message ?? String(err));
+    }
   }
 
   // Hard-delete on success (audit trail lives in Event).
@@ -658,3 +675,209 @@ async function loadManifest(): Promise<AgentManifest | null> {
     return null;
   }
 }
+
+// ─── WinRM (Windows) install/uninstall ────────────────────────────────
+//
+// Architecture (vs SSH/Linux): we DON'T do a SOAP-based file upload. The
+// PowerShell installer running on the host pulls the binary via HTTPS
+// from Polaris's public `/api/v1/agents/binary/:filename` endpoint, with
+// a cert-pin validation callback so it doesn't trust system CAs. WinRM
+// only needs to run ONE command — the PowerShell installer one-liner.
+// Saves us writing ~1000 lines of chunked WS-Management Send-verb code
+// that's only used here.
+
+interface WinRmInstallParams {
+  host: string;
+  cred: Record<string, unknown>;
+  agentConfBody: string;
+  binaryFilename: string;
+  serverUrl: string;
+  certFingerprint: string;
+  testOverrides?: TestOverrides;
+}
+
+interface WinRmUninstallParams {
+  host: string;
+  cred: Record<string, unknown>;
+  testOverrides?: TestOverrides;
+}
+
+async function winrmInstall(p: WinRmInstallParams): Promise<void> {
+  if (p.testOverrides?.fakeSshSucceed) return; // tests reuse the same flag for both transports
+  if (p.testOverrides?.fakeSshFail) throw new Error(p.testOverrides.fakeSshFail);
+
+  const conn = winrmConnectionFromCred(p.host, p.cred);
+
+  // Render the installer PowerShell. Base64-encoded agent.conf is
+  // embedded so command-line escaping rules don't bite us; pin +
+  // server URL + binary filename are passed as separate single-quoted
+  // strings (PowerShell's single quotes don't expand $vars).
+  const confB64 = Buffer.from(p.agentConfBody, "utf8").toString("base64");
+  const ps = WINDOWS_INSTALL_PS
+    .replace(/__SERVER_URL__/g,        p.serverUrl)
+    .replace(/__CERT_FINGERPRINT__/g,  p.certFingerprint)
+    .replace(/__BINARY_FILENAME__/g,   p.binaryFilename)
+    .replace(/__AGENT_CONF_B64__/g,    confB64);
+
+  // PowerShell accepts a base64-encoded script via -EncodedCommand; that
+  // avoids EVERY shell-escape problem on the way through cmd.exe and
+  // the WS-Management envelope. The encoding is UTF-16-LE, per the
+  // docs.
+  const encoded = Buffer.from(ps, "utf16le").toString("base64");
+  const out = await winrmRunOne(conn, "powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", encoded,
+  ]);
+  if (out.exitCode !== 0) {
+    throw new Error(`Windows installer exited ${out.exitCode}: ${truncate(out.stderr || out.stdout, 400)}`);
+  }
+}
+
+async function winrmUninstall(p: WinRmUninstallParams): Promise<void> {
+  if (p.testOverrides?.fakeSshSucceed) return;
+  if (p.testOverrides?.fakeSshFail) throw new Error(p.testOverrides.fakeSshFail);
+
+  const conn = winrmConnectionFromCred(p.host, p.cred);
+  const encoded = Buffer.from(WINDOWS_UNINSTALL_PS, "utf16le").toString("base64");
+  const out = await winrmRunOne(conn, "powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", encoded,
+  ]);
+  if (out.exitCode !== 0) {
+    throw new Error(`Windows uninstaller exited ${out.exitCode}: ${truncate(out.stderr || out.stdout, 400)}`);
+  }
+}
+
+function winrmConnectionFromCred(host: string, config: Record<string, unknown>): WinRmConnection {
+  const username = String(config.username || "");
+  const password = String(config.password || "");
+  if (!username || !password) {
+    throw new Error("WinRM credential is missing username or password");
+  }
+  return {
+    host,
+    port:     typeof config.port === "number" ? config.port : undefined,
+    useHttps: config.useHttps !== false,
+    username,
+    password,
+    timeoutMs: 120_000, // installer downloads a ~10 MB binary; default 60s is tight
+  };
+}
+
+// PowerShell install template — runs on the target host.
+//
+// Substitutions (literal text replace, no escaping needed because all
+// placeholder values are server-controlled and don't contain ': or `$):
+//   __SERVER_URL__         e.g. https://polaris.example.com:3000
+//   __CERT_FINGERPRINT__   e.g. sha256:ab12cd34...
+//   __BINARY_FILENAME__    e.g. polaris-agent-0.1.0-windows-amd64.exe
+//   __AGENT_CONF_B64__     base64 of the rendered agent.conf body
+//
+// The cert-pin callback uses ServerCertificateValidationCallback on
+// ServicePointManager — works on PowerShell 5.1 (the version that ships
+// with every Windows 10 / Server 2016+) AND on PowerShell 7. We
+// explicitly do NOT use `-SkipCertificateCheck` (Invoke-WebRequest on
+// PS5.1 doesn't support it; PS7 does but skipping checks entirely is
+// strictly worse than pinning).
+const WINDOWS_INSTALL_PS = `$ErrorActionPreference = 'Stop'
+
+$serverUrl     = '__SERVER_URL__'
+$pin           = '__CERT_FINGERPRINT__'.ToLower()
+$binaryName    = '__BINARY_FILENAME__'
+$confB64       = '__AGENT_CONF_B64__'
+
+$installDir = Join-Path $env:ProgramFiles 'Polaris\\Agent'
+$confDir    = Join-Path $env:ProgramData  'Polaris\\agent'
+$binaryPath = Join-Path $installDir 'polaris-agent.exe'
+$confPath   = Join-Path $confDir    'agent.conf'
+
+New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+New-Item -ItemType Directory -Force -Path $confDir    | Out-Null
+
+# Stop + remove any existing install so reinstall is idempotent.
+$svc = Get-Service -Name 'polaris-agent' -ErrorAction SilentlyContinue
+if ($svc) {
+  if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'polaris-agent' -Force -ErrorAction SilentlyContinue }
+  & sc.exe delete polaris-agent | Out-Null
+  # sc.exe is async — give it a moment to release the binary lock.
+  Start-Sleep -Seconds 2
+}
+
+# Cert-pin Invoke-WebRequest. We set a ServerCertificateValidationCallback
+# that compares the leaf SHA-256 against the pinned fingerprint, then
+# restore the previous callback after the download. TLS 1.2 is forced
+# for compatibility with older Windows defaults.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$prevCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+[Net.ServicePointManager]::ServerCertificateValidationCallback = {
+  param($sender, $cert, $chain, $errors)
+  $bytes = $cert.GetRawCertData()
+  $sha   = [Security.Cryptography.SHA256]::Create()
+  $hash  = $sha.ComputeHash($bytes)
+  $hex   = -join ($hash | ForEach-Object { $_.ToString('x2') })
+  $observed = 'sha256:' + $hex
+  if ($observed -ne $pin) {
+    Write-Host "Cert pin mismatch: expected $pin, got $observed"
+    return $false
+  }
+  return $true
+}
+try {
+  $downloadUrl = "$serverUrl/api/v1/agents/binary/$binaryName"
+  Invoke-WebRequest -Uri $downloadUrl -OutFile $binaryPath -UseBasicParsing
+} finally {
+  [Net.ServicePointManager]::ServerCertificateValidationCallback = $prevCallback
+}
+
+# Write agent.conf from the embedded base64. Atomic-ish via .tmp + Move-Item.
+$confBytes = [Convert]::FromBase64String($confB64)
+$tmpConf   = "$confPath.tmp"
+[IO.File]::WriteAllBytes($tmpConf, $confBytes)
+Move-Item -Force -LiteralPath $tmpConf -Destination $confPath
+
+# ACL: only Administrators + SYSTEM read the config (the bearer is in it).
+$acl = Get-Acl $confPath
+$acl.SetAccessRuleProtection($true, $false)
+$acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+$adminRule  = New-Object Security.AccessControl.FileSystemAccessRule('BUILTIN\\Administrators','FullControl','Allow')
+$systemRule = New-Object Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\\SYSTEM','FullControl','Allow')
+$acl.AddAccessRule($adminRule)
+$acl.AddAccessRule($systemRule)
+Set-Acl -Path $confPath -AclObject $acl
+
+# Register the Windows Service. New-Service is the canonical way to create
+# a Windows Service from PowerShell on every supported Windows version;
+# we explicitly avoid Get-WmiObject / Win32_Service which is DCOM-based
+# and deprecated in PowerShell 7+.
+New-Service -Name 'polaris-agent' \`
+            -DisplayName 'Polaris Agent' \`
+            -Description 'Polaris Agent — pushes monitoring samples to Polaris over HTTPS.' \`
+            -BinaryPathName ('"' + $binaryPath + '" -conf "' + $confPath + '"') \`
+            -StartupType Automatic | Out-Null
+
+# Service recovery actions: restart on first/second/third failure with a 5s delay.
+# sc.exe is the only well-supported path for this; New-Service doesn't expose it.
+& sc.exe failure polaris-agent reset= 86400 actions= restart/5000/restart/5000/restart/10000 | Out-Null
+
+Start-Service -Name 'polaris-agent'
+
+Write-Host "Polaris Agent installed and started"
+`;
+
+const WINDOWS_UNINSTALL_PS = `$ErrorActionPreference = 'Continue'
+
+$svc = Get-Service -Name 'polaris-agent' -ErrorAction SilentlyContinue
+if ($svc) {
+  if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'polaris-agent' -Force -ErrorAction SilentlyContinue }
+  & sc.exe delete polaris-agent | Out-Null
+  Start-Sleep -Seconds 2
+}
+
+$installDir = Join-Path $env:ProgramFiles 'Polaris\\Agent'
+$confDir    = Join-Path $env:ProgramData  'Polaris\\agent'
+if (Test-Path $installDir) { Remove-Item -Recurse -Force -LiteralPath $installDir }
+if (Test-Path $confDir)    { Remove-Item -Recurse -Force -LiteralPath $confDir }
+
+Write-Host "Polaris Agent removed"
+exit 0
+`;

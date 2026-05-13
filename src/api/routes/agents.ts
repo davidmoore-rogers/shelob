@@ -23,8 +23,12 @@
 import { Router } from "express";
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { resolve as resolvePath, basename } from "node:path";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
+import { AGENT_BIN_DIR } from "../../utils/paths.js";
 import { requireAgentBearer } from "../middleware/auth.js";
 import {
   consumeEnrollmentToken,
@@ -397,3 +401,69 @@ function computeEtag(payload: unknown): string {
 
 // Surface debug helper for tests / curl smoke-tests.
 export function __debugLogger() { return logger; }
+
+// ─── /binary/:filename (public — for WinRM install path) ──────────────
+//
+// The Windows install path can't easily SOAP-upload large files via
+// WinRM (the WS-Management `Send` shell verb caps stdin at ~8 KB per
+// frame and requires chunked envelope construction). Instead, the
+// PowerShell installer running on the host fetches the binary over
+// HTTPS from this endpoint — with a cert-pin verification callback so
+// it doesn't trust system CAs.
+//
+// Public on purpose:
+//
+//  - The binary is GENERIC across every Polaris deployment. Per-install
+//    identity (server URL, cert fingerprint, bearer) lives in agent.conf
+//    which is generated server-side and embedded in the install command
+//    over WinRM — never delivered through this endpoint. Knowing the
+//    binary bytes gets an attacker exactly nothing.
+//  - Operators in test environments install via `curl` smoke tests where
+//    bearer-mediated downloads would be annoying.
+//  - Whitelisted against manifest.json — only filenames the manifest
+//    declares are served; everything else 404s. No directory traversal.
+
+export const agentsBinaryRouter = Router();
+
+agentsBinaryRouter.get("/:filename", async (req, res, next) => {
+  try {
+    const filename = req.params.filename as string;
+    // Defense-in-depth path-traversal check (the whitelist below is the
+    // primary guard, but belt-and-suspenders for security review).
+    if (filename.includes("/") || filename.includes("\\") || filename.includes("..")) {
+      throw new AppError(400, "Invalid filename");
+    }
+    const manifestPath = resolvePath(AGENT_BIN_DIR, "manifest.json");
+    let manifestRaw: string;
+    try {
+      manifestRaw = await readFile(manifestPath, "utf8");
+    } catch {
+      throw new AppError(404, "Agent binaries not configured on this server");
+    }
+    const manifest = JSON.parse(manifestRaw) as { currentVersion: string; binaries: Record<string, string> };
+    // Whitelist: filename must match one of the binaries declared in the
+    // manifest for the current version. Operators rotating versions get
+    // automatic protection — old filenames stop serving when the
+    // manifest's currentVersion flips.
+    const valid = Object.values(manifest.binaries || {}).includes(filename);
+    if (!valid) throw new AppError(404, "Unknown binary");
+
+    const fullPath = resolvePath(AGENT_BIN_DIR, manifest.currentVersion, filename);
+    // Final guard: refuse to serve any path that escapes AGENT_BIN_DIR.
+    const expectedPrefix = resolvePath(AGENT_BIN_DIR) + (process.platform === "win32" ? "\\" : "/");
+    if (!fullPath.startsWith(expectedPrefix)) {
+      throw new AppError(400, "Invalid binary path");
+    }
+
+    const st = await stat(fullPath).catch(() => null);
+    if (!st || !st.isFile()) throw new AppError(404, "Binary not found");
+
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", String(st.size));
+    res.setHeader("Content-Disposition", `attachment; filename="${basename(fullPath)}"`);
+    // No caching — operators uploading a freshly-rebuilt binary expect
+    // the next install to pick up the new bytes.
+    res.setHeader("Cache-Control", "no-store");
+    createReadStream(fullPath).pipe(res);
+  } catch (err) { next(err); }
+});

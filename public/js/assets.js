@@ -2940,7 +2940,7 @@ function _openInstallAgentModal(a) {
       '<div class="form-group" id="agent-install-cred-winrm-wrap">' +
         '<label for="agent-install-cred-winrm">WinRM credential (Windows)</label>' +
         '<select id="agent-install-cred-winrm">' + credOptions(winrmOpts) + '</select>' +
-        '<p class="hint" style="color:var(--color-warning)">Windows install is not yet supported in this release — pick Linux or macOS for now.</p>' +
+        '<p class="hint">The credential needs admin rights on the target host (the installer creates a Windows Service and writes under <code>%ProgramFiles%\\Polaris\\Agent\\</code>). WinRM must be enabled and reachable on port 5986 (HTTPS) or 5985 (HTTP).</p>' +
       '</div>';
 
     // Match the canonical modal pattern (primaries.md → Modal): build the
