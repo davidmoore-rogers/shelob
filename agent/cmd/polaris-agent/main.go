@@ -20,6 +20,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -61,10 +62,16 @@ func main() {
 	ctx, cancel := signalContext()
 	defer cancel()
 
-	// Step 2 + 3: collect loop + heartbeat loop. Each runs on its own
-	// timer so a slow sample-push doesn't starve heartbeats.
+	// Step 2 + 3 + 4: three independent loops.
+	//   - responseTimeLoop pushes samples on a fixed interval.
+	//   - heartbeatLoop bumps lastSeenAt + reads any config etag change.
+	//   - wsLoop holds the outbound WebSocket open for on-demand probes.
+	// Each runs on its own goroutine so a stall in one doesn't starve
+	// the others (a probe-now stuck behind a hung-host check would
+	// silently block heartbeats otherwise).
 	go responseTimeLoop(ctx, cfg, client)
 	go heartbeatLoop(ctx, cfg, client)
+	go wsLoop(ctx, cfg, client)
 
 	<-ctx.Done()
 	log.Println("Polaris Agent: shutting down")
@@ -151,6 +158,59 @@ func heartbeatLoop(ctx context.Context, cfg *config.Config, client *transport.Cl
 			}
 		}
 	}
+}
+
+// wsLoop holds the outbound WebSocket to Polaris open. Server-pushed
+// frames land in handleServerFrame: `probe-now-request` runs the relevant
+// collector synchronously and writes a `probe-now-response` back through
+// the same socket; `refresh-config` triggers a /config refetch via the
+// HTTP transport.
+func wsLoop(ctx context.Context, cfg *config.Config, client *transport.Client) {
+	dialer, err := transport.NewWSDialer(cfg.ServerURL, cfg.CertFingerprint, cfg.BearerToken)
+	if err != nil {
+		log.Printf("ws: dialer setup failed: %v", err)
+		return
+	}
+	dialer.RunWithReconnect(ctx, func(_ context.Context, conn *transport.WSConn, f *transport.Frame) error {
+		switch f.Type {
+		case "hello":
+			// Server says it accepted the upgrade. Nothing to do.
+			return nil
+		case "refresh-config":
+			// Server is telling us something changed (operator edited
+			// cadences etc.). Best-effort refetch — failure here just
+			// means we'll see the change at the next normal poll.
+			if _, err := client.FetchConfig(""); err != nil {
+				log.Printf("ws: refresh-config: fetch failed: %v", err)
+			}
+			return nil
+		case "probe-now-request":
+			// Operator clicked "Probe now" on the asset details page.
+			// Run the appropriate collector synchronously and emit the
+			// response frame keyed by request id.
+			var payload struct {
+				Stream string `json:"stream"`
+			}
+			_ = json.Unmarshal(f.Payload, &payload)
+			var resp transport.ResponseTimeSample
+			if payload.Stream == "responseTime" {
+				resp = *collectors.ResponseTimeOnce()
+			}
+			resPayload, _ := json.Marshal(map[string]interface{}{
+				"success":        resp.Success,
+				"responseTimeMs": resp.ResponseTimeMs,
+				"error":          resp.Error,
+			})
+			return conn.SendFrame(&transport.Frame{
+				Type:    "probe-now-response",
+				ID:      f.ID,
+				Payload: resPayload,
+			})
+		default:
+			log.Printf("ws: unrecognized frame type %q", f.Type)
+			return nil
+		}
+	})
 }
 
 func signalContext() (context.Context, context.CancelFunc) {

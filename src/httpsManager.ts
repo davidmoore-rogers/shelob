@@ -141,6 +141,12 @@ function startHttps(
 
     httpsServer.listen(port, () => {
       logger.info({ port }, "HTTPS server listening");
+      // Same Polaris Agent WS handler we attach to the HTTP server gets
+      // mounted on HTTPS as well — that's how production talks to agents
+      // (the agent's pinned cert IS this server's cert).
+      void import("./api/routes/agentsWs.js").then((mod) => {
+        mod.attachAgentWsUpgradeHandler(httpsServer!);
+      }).catch((err) => logger.warn({ err }, "Failed to attach agent WS handler to HTTPS server"));
       resolve({ ok: true, message: `HTTPS server listening on port ${port}` });
     });
   });

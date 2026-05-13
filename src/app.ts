@@ -476,10 +476,15 @@ app.use(errorHandler);
 export async function startApp(): Promise<void> {
   const httpsSettings = await getHttpsSettings().catch(() => null);
   const PORT = process.env.PORT ?? httpsSettings?.httpPort ?? 3000;
-  app.listen(PORT, () => {
+  const httpServer = app.listen(PORT, () => {
     logger.info({ port: PORT }, "Polaris server listening");
     initHttps(app);
   });
+  // Attach the Polaris Agent WebSocket upgrade handler. Same server
+  // surface as the REST API — agents reach /api/v1/agents/ws over the
+  // same port and (in production) the same HTTPS cert their pin verifies.
+  const { attachAgentWsUpgradeHandler } = await import("./api/routes/agentsWs.js");
+  attachAgentWsUpgradeHandler(httpServer);
 }
 
 export { app };

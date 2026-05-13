@@ -5,11 +5,14 @@ Lightweight Go binary installed on remote hosts (Linux/macOS/Windows × amd64/ar
 ## Building
 
 ```sh
+go mod tidy     # one-time: resolve dependency checksums into go.sum
 make all        # produce all 6 platform binaries under dist/<version>/
 make dev        # local-arch build for quick iteration (./polaris-agent)
 ```
 
 Binaries are static (`CGO_ENABLED=0`); copying one file to the target host is sufficient.
+
+Dependencies: just one — `github.com/gorilla/websocket` for the outbound pull-side WebSocket. The HTTP push path uses only stdlib `net/http`.
 
 ## Configuration
 
@@ -69,7 +72,7 @@ For development you can run the binary directly:
 
 | Phase | Adds |
 |---|---|
-| 3a (current) | HTTP push: enroll, samples (responseTime), heartbeat, config-fetch |
-| 3b | WebSocket pull side (probe-now request/response, refresh-config) |
+| 3a | HTTP push: enroll, samples (responseTime), heartbeat, config-fetch |
+| 3b (current) | WebSocket pull side: outbound dial w/ pinned TLS, reconnect-with-backoff, probe-now-request / probe-now-response, refresh-config |
 | 4 | Remote install via SSH/WinRM from the Polaris UI |
 | 5 | Telemetry / interfaces / storage / LLDP collectors |
