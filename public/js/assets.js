@@ -2694,6 +2694,8 @@ function _agentStatusLabel(s) {
     case "enrolling":        return "Awaiting enrollment";
     case "active":           return "Active";
     case "failed":           return "Install failed";
+    case "upgrading":        return "Upgrading";
+    case "upgrade_failed":   return "Upgrade failed";
     case "uninstalling":     return "Uninstalling";
     case "uninstall_failed": return "Uninstall failed";
     case "revoked":          return "Revoked (bearer killed)";
@@ -2774,11 +2776,22 @@ function assetAgentSubpanelHTML(a, agent) {
 
     var actions = '';
     if (agent.installStatus === "active") {
+      // Upgrade is always shown on active agents. If the agent is already
+      // at manifest.currentVersion the route 409s with a clear message;
+      // we'd need a separate /inventory fetch to gate this client-side
+      // and the round-trip isn't worth it for a button operators rarely
+      // click on a current agent.
       actions =
-        '<button type="button" class="btn btn-secondary" id="btn-agent-uninstall" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Uninstall</button>';
+        '<button type="button" class="btn btn-secondary" id="btn-agent-upgrade" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Upgrade…</button>' +
+        ' <button type="button" class="btn btn-secondary" id="btn-agent-uninstall" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Uninstall</button>';
     } else if (agent.installStatus === "failed") {
       actions =
         '<button type="button" class="btn btn-primary" id="btn-agent-install" data-asset-id="' + escapeHtml(a.id) + '">Retry Install…</button>' +
+        ' <button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
+    } else if (agent.installStatus === "upgrade_failed") {
+      actions =
+        '<button type="button" class="btn btn-primary" id="btn-agent-upgrade" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Retry Upgrade</button>' +
+        ' <button type="button" class="btn btn-secondary" id="btn-agent-uninstall" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Uninstall</button>' +
         ' <button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
     } else if (agent.installStatus === "uninstall_failed") {
       actions =
@@ -2817,7 +2830,8 @@ function assetAgentSubpanelHTML(a, agent) {
 var _agentPollAssetId = null;
 
 function _isTransientAgentState(s) {
-  return s === "pending" || s === "uploading" || s === "enrolling" || s === "uninstalling";
+  return s === "pending" || s === "uploading" || s === "enrolling" ||
+         s === "uninstalling" || s === "upgrading";
 }
 
 function _wireAgentSubpanel(a, agent) {
@@ -2843,12 +2857,42 @@ function _wireAgentSubpanel(a, agent) {
     });
   }
 
+  var upgradeBtn = document.getElementById("btn-agent-upgrade");
+  if (upgradeBtn) {
+    upgradeBtn.addEventListener("click", function () {
+      _confirmUpgradeAgent(a, agent);
+    });
+  }
+
   // Start the progress poll if the row is in a transient state. Stops
   // automatically when state stabilizes or the modal closes (we re-check
   // that the panel sentinel is still in the DOM each tick).
   if (agent && _isTransientAgentState(agent.installStatus)) {
     _startAgentPoll(a);
   }
+}
+
+function _confirmUpgradeAgent(a, agent) {
+  // Upgrade reuses the credential stored at install time; no new modal
+  // needed. We do show a confirm so an operator who reflexively clicked
+  // can back out (the upgrade WILL bounce the agent service briefly).
+  var prompt =
+    "Upgrade the Polaris Agent on " + (a.hostname || a.ipAddress || "this asset") + "?\n\n" +
+    "Polaris will SSH/WinRM into the host using the install credential, " +
+    "stop the agent service, replace the binary, and restart. The agent's " +
+    "bearer and cert pin are preserved — no re-enrollment required. The " +
+    "agent will be offline for ~2 seconds while the service restarts.";
+  showConfirm(prompt).then(function (ok) {
+    if (!ok) return;
+    api.assets.upgradeAgent(a.id, {}).then(function (r) {
+      showToast("Upgrade started — v" + (r.fromVersion || "?") + " → v" + r.toVersion, "success");
+      api.assets.agent(a.id).then(function (ag) {
+        _rerenderAgentSubpanel(a, ag);
+      });
+    }).catch(function (err) {
+      showToast("Upgrade failed: " + err.message, "error");
+    });
+  });
 }
 
 function _startAgentPoll(a) {

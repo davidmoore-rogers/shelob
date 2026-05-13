@@ -98,6 +98,86 @@ export async function startUninstall(input: StartUninstallInput): Promise<void> 
   }));
 }
 
+export interface StartUpgradeInput {
+  managedAgentId: string;
+  credentialId?:  string; // defaults to ManagedAgent.installCredentialId
+  hostOverride?:  string;
+  actor:          string; // username for audit trail
+  testOverrides?: TestOverrides;
+}
+
+/**
+ * Fire-and-forget upgrade kickoff. Refuses synchronously (throws) when
+ * the agent is already at manifest.currentVersion or no binaries are
+ * staged. Otherwise transitions installStatus → "upgrading" and dispatches
+ * the platform-specific upgrade path. The agent's bearer + cert pin
+ * survive — we don't touch agent.conf; only the binary is replaced.
+ */
+export async function startUpgrade(input: StartUpgradeInput): Promise<{ fromVersion: string | null; toVersion: string }> {
+  const row = await prisma.managedAgent.findUnique({
+    where: { id: input.managedAgentId },
+    include: { asset: true },
+  });
+  if (!row) throw new AppError(404, "Managed agent not found");
+  if (row.installStatus !== "active") {
+    throw new AppError(409, `Agent installStatus is "${row.installStatus}"; only active agents can upgrade.`);
+  }
+
+  const manifest = await loadManifest();
+  if (!manifest) {
+    throw new AppError(400, "No agent binaries available — build them first.");
+  }
+  const binaryKey  = `${row.osPlatform}-${row.arch}`;
+  const binaryName = manifest.binaries[binaryKey];
+  if (!binaryName) {
+    throw new AppError(400, `No agent binary for platform ${binaryKey}`);
+  }
+  if (row.agentVersion === manifest.currentVersion) {
+    throw new AppError(409, `Agent is already at v${manifest.currentVersion}.`);
+  }
+
+  const credentialId = input.credentialId ?? row.installCredentialId ?? null;
+  if (!credentialId) {
+    throw new AppError(400, "No install credential on file for this agent; pass credentialId explicitly.");
+  }
+
+  // Sync-half: transition state + emit kickoff event. Then fire the
+  // async runner. UI starts polling immediately and sees "upgrading".
+  await prisma.managedAgent.update({
+    where: { id: row.id },
+    data:  { installStatus: "upgrading", installError: null },
+  });
+  await logEvent({
+    action:       "agent.upgrade_kickoff",
+    resourceType: "asset",
+    resourceId:   row.assetId,
+    actor:        input.actor,
+    level:        "info",
+    message:      `Polaris Agent upgrade kicked off (${row.agentVersion ?? "unknown"} → ${manifest.currentVersion})`,
+    details: {
+      managedAgentId: row.id,
+      credentialId,
+      fromVersion:    row.agentVersion ?? null,
+      toVersion:      manifest.currentVersion,
+      binaryFilename: binaryName,
+    },
+  });
+
+  setImmediate(() =>
+    runUpgrade({
+      managedAgentId: row.id,
+      credentialId,
+      hostOverride:   input.hostOverride,
+      testOverrides:  input.testOverrides,
+      actor:          input.actor,
+    }).catch((err) => {
+      logger.error({ err, managedAgentId: row.id }, "Agent upgrade crashed unexpectedly");
+    }),
+  );
+
+  return { fromVersion: row.agentVersion ?? null, toVersion: manifest.currentVersion };
+}
+
 // ─── Install runner ───────────────────────────────────────────────────
 
 async function runInstall(input: StartInstallInput): Promise<void> {
@@ -309,6 +389,129 @@ async function failUninstall(managedAgentId: string, assetId: string, reason: st
     resourceId:   assetId,
     level:        "warning",
     message:      `Agent uninstall failed: ${reason}`,
+    details:      { managedAgentId },
+  });
+}
+
+// ─── Upgrade runner ───────────────────────────────────────────────────
+//
+// SSH/WinRM-driven so it has root/admin context (the agent runs as a
+// non-root user and can't reliably replace its own binary while running).
+// CRUCIALLY does NOT touch agent.conf — the bearer + cert pin survive,
+// so the agent reconnects with the same identity.
+//
+// Success: installStatus flips active → upgrading → active. agentVersion
+// catches up via the agent's next heartbeat (≤ 5 min) or sooner via WS
+// reconnect (immediate after Start-Service / systemctl start).
+
+interface RunUpgradeInput {
+  managedAgentId: string;
+  credentialId:   string;
+  hostOverride?:  string;
+  testOverrides?: TestOverrides;
+  actor:          string;
+}
+
+async function runUpgrade(input: RunUpgradeInput): Promise<void> {
+  const row = await prisma.managedAgent.findUnique({
+    where: { id: input.managedAgentId },
+    include: { asset: true },
+  });
+  if (!row) {
+    logger.warn({ managedAgentId: input.managedAgentId }, "Upgrade kickoff: row not found");
+    return;
+  }
+
+  const host = input.hostOverride ?? row.asset.ipAddress ?? row.asset.dnsName ?? row.asset.hostname;
+  if (!host) {
+    return failUpgrade(input.managedAgentId, row.assetId, "Asset has no IP, dnsName, or hostname to connect to", input.actor);
+  }
+
+  const manifest = await loadManifest();
+  if (!manifest) {
+    return failUpgrade(input.managedAgentId, row.assetId, "No agent binaries available — build them first.", input.actor);
+  }
+  const binaryName = manifest.binaries[`${row.osPlatform}-${row.arch}`];
+  if (!binaryName) {
+    return failUpgrade(input.managedAgentId, row.assetId, `No agent binary for platform ${row.osPlatform}-${row.arch}`, input.actor);
+  }
+  const toVersion = manifest.currentVersion;
+
+  let cred;
+  try {
+    cred = await getCredential(input.credentialId, { revealSecrets: true });
+  } catch (err: any) {
+    return failUpgrade(input.managedAgentId, row.assetId, `Credential lookup failed: ${err.message ?? err}`, input.actor);
+  }
+
+  if (row.osPlatform === "linux" || row.osPlatform === "darwin") {
+    const binaryPath = resolvePath(AGENT_BIN_DIR, toVersion, binaryName);
+    let binaryBytes: Buffer;
+    try {
+      binaryBytes = await readFile(binaryPath);
+    } catch (err: any) {
+      return failUpgrade(input.managedAgentId, row.assetId,
+        `Failed to read agent binary at ${binaryPath}: ${err.message ?? err}`, input.actor);
+    }
+    try {
+      await sshUpgrade({
+        host,
+        cred:         cred.config as Record<string, unknown>,
+        binaryBytes,
+        platform:     row.osPlatform,
+        testOverrides: input.testOverrides,
+      });
+    } catch (err: any) {
+      return failUpgrade(input.managedAgentId, row.assetId, err.message ?? String(err), input.actor);
+    }
+  } else if (row.osPlatform === "windows") {
+    try {
+      await winrmUpgrade({
+        host,
+        cred:            cred.config as Record<string, unknown>,
+        binaryFilename:  binaryName,
+        serverUrl:       inferOwnServerUrl(),
+        certFingerprint: row.serverCertFingerprint,
+        testOverrides:   input.testOverrides,
+      });
+    } catch (err: any) {
+      return failUpgrade(input.managedAgentId, row.assetId, err.message ?? String(err), input.actor);
+    }
+  } else {
+    return failUpgrade(input.managedAgentId, row.assetId, `Unsupported osPlatform ${row.osPlatform}`, input.actor);
+  }
+
+  // Success. Transition back to "active". agentVersion stays at the
+  // existing value until the host's next heartbeat reports the new one;
+  // the route already returned the expected toVersion to the operator so
+  // the UI doesn't need to wait for that.
+  await prisma.managedAgent.update({
+    where: { id: row.id },
+    data:  { installStatus: "active", installError: null },
+  });
+  await logEvent({
+    action:       "agent.upgrade_succeeded",
+    resourceType: "asset",
+    resourceId:   row.assetId,
+    actor:        input.actor,
+    level:        "info",
+    message:      `Polaris Agent upgraded to v${toVersion}`,
+    details:      { managedAgentId: row.id, fromVersion: row.agentVersion ?? null, toVersion },
+  });
+}
+
+async function failUpgrade(managedAgentId: string, assetId: string, reason: string, actor: string): Promise<void> {
+  await prisma.managedAgent.update({
+    where: { id: managedAgentId },
+    data:  { installStatus: "upgrade_failed", installError: reason },
+  }).catch(() => { /* best-effort */ });
+  await logEvent({
+    action:       "agent.upgrade_failed",
+    resourceType: "asset",
+    resourceId:   assetId,
+    actor,
+    level:        "warning",
+    message:      `Agent upgrade failed: ${reason}`,
     details:      { managedAgentId },
   });
 }
@@ -880,4 +1083,168 @@ if (Test-Path $confDir)    { Remove-Item -Recurse -Force -LiteralPath $confDir }
 
 Write-Host "Polaris Agent removed"
 exit 0
+`;
+
+// ─── Upgrade SSH/WinRM helpers ────────────────────────────────────────
+//
+// In contrast to install, upgrade does NOT touch agent.conf — the bearer
+// + cert pin survive so the host-side agent reconnects with the same
+// identity. The Linux/macOS path SFTPs a fresh binary to /tmp then runs
+// a tiny upgrade shell script that stops the service, replaces the
+// binary, starts the service. The Windows path runs an embedded
+// PowerShell script that uses the same cert-pin-verified
+// Invoke-WebRequest the install path uses — so the binary is pulled
+// from the running Polaris server's /api/v1/agents/binary endpoint,
+// not from anywhere else on the network.
+
+interface SshUpgradeParams {
+  host: string;
+  cred: Record<string, unknown>;
+  binaryBytes: Buffer;
+  platform: "linux" | "darwin";
+  testOverrides?: TestOverrides;
+}
+
+async function sshUpgrade(p: SshUpgradeParams): Promise<void> {
+  if (p.testOverrides?.fakeSshSucceed) return;
+  if (p.testOverrides?.fakeSshFail) throw new Error(p.testOverrides.fakeSshFail);
+
+  await withSshClient(p.host, p.cred, async (client) => {
+    await sftpPut(client, "/tmp/polaris-agent.new",         p.binaryBytes, 0o755);
+    await sftpPut(client, "/tmp/polaris-agent-upgrade.sh",  upgradeScript(p.platform), 0o700);
+    const out = await sshExec(client, "sudo -n bash /tmp/polaris-agent-upgrade.sh", 60_000);
+    if (out.exitCode !== 0) {
+      throw new Error(`Upgrade exited ${out.exitCode}: ${truncate(out.stderr || out.stdout, 400)}`);
+    }
+  });
+}
+
+interface WinRmUpgradeParams {
+  host: string;
+  cred: Record<string, unknown>;
+  binaryFilename: string;
+  serverUrl: string;
+  certFingerprint: string;
+  testOverrides?: TestOverrides;
+}
+
+async function winrmUpgrade(p: WinRmUpgradeParams): Promise<void> {
+  if (p.testOverrides?.fakeSshSucceed) return;
+  if (p.testOverrides?.fakeSshFail) throw new Error(p.testOverrides.fakeSshFail);
+
+  const conn = winrmConnectionFromCred(p.host, p.cred);
+  const ps = WINDOWS_UPGRADE_PS
+    .replace(/__SERVER_URL__/g,       p.serverUrl)
+    .replace(/__CERT_FINGERPRINT__/g, p.certFingerprint)
+    .replace(/__BINARY_FILENAME__/g,  p.binaryFilename);
+  const encoded = Buffer.from(ps, "utf16le").toString("base64");
+  const out = await winrmRunOne(conn, "powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", encoded,
+  ]);
+  if (out.exitCode !== 0) {
+    throw new Error(`Windows upgrade exited ${out.exitCode}: ${truncate(out.stderr || out.stdout, 400)}`);
+  }
+}
+
+function upgradeScript(platform: "linux" | "darwin"): Buffer {
+  return Buffer.from(platform === "linux" ? LINUX_UPGRADE_SCRIPT : DARWIN_UPGRADE_SCRIPT, "utf8");
+}
+
+const LINUX_UPGRADE_SCRIPT = `#!/usr/bin/env bash
+# Polaris Agent upgrader (Linux/systemd). Run by polaris-agent-upgrade.sh
+# as root via sudo -n. Replaces the binary in place; leaves agent.conf
+# (which has the bearer + cert pin) untouched so the agent reconnects
+# with the same identity.
+set -euo pipefail
+
+BIN_NEW=/tmp/polaris-agent.new
+BIN_DST=/usr/local/bin/polaris-agent
+
+if [ ! -f "\${BIN_NEW}" ]; then
+  echo "Upgrade binary missing at \${BIN_NEW}" >&2
+  exit 1
+fi
+
+systemctl stop polaris-agent || true
+install -m 0755 -o root -g root "\${BIN_NEW}" "\${BIN_DST}"
+systemctl start polaris-agent
+rm -f "\${BIN_NEW}"
+echo "Polaris Agent upgraded"
+`;
+
+const DARWIN_UPGRADE_SCRIPT = `#!/usr/bin/env bash
+# Polaris Agent upgrader (macOS/launchd).
+set -euo pipefail
+
+BIN_NEW=/tmp/polaris-agent.new
+BIN_DST=/usr/local/bin/polaris-agent
+PLIST=/Library/LaunchDaemons/com.polaris.agent.plist
+
+if [ ! -f "\${BIN_NEW}" ]; then
+  echo "Upgrade binary missing at \${BIN_NEW}" >&2
+  exit 1
+fi
+if [ -f "\${PLIST}" ]; then
+  launchctl unload "\${PLIST}" 2>/dev/null || true
+fi
+install -m 0755 -o root -g wheel "\${BIN_NEW}" "\${BIN_DST}"
+if [ -f "\${PLIST}" ]; then
+  launchctl load "\${PLIST}"
+fi
+rm -f "\${BIN_NEW}"
+echo "Polaris Agent upgraded"
+`;
+
+const WINDOWS_UPGRADE_PS = `$ErrorActionPreference = 'Stop'
+
+$serverUrl  = '__SERVER_URL__'
+$pin        = '__CERT_FINGERPRINT__'.ToLower()
+$binaryName = '__BINARY_FILENAME__'
+
+$installDir = Join-Path $env:ProgramFiles 'Polaris\\Agent'
+$binaryPath = Join-Path $installDir 'polaris-agent.exe'
+$tmpPath    = Join-Path $installDir 'polaris-agent.new.exe'
+
+if (-not (Test-Path $installDir)) {
+  throw "Polaris Agent isn't installed at $installDir — upgrade refused. Use Install instead."
+}
+
+# Same cert-pinned download flow the installer uses. Pull the new binary
+# to a .new.exe alongside the live one, then atomic Move-Item over the
+# top after stopping the service.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$prevCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+[Net.ServicePointManager]::ServerCertificateValidationCallback = {
+  param($sender, $cert, $chain, $errors)
+  $bytes = $cert.GetRawCertData()
+  $sha   = [Security.Cryptography.SHA256]::Create()
+  $hash  = $sha.ComputeHash($bytes)
+  $hex   = -join ($hash | ForEach-Object { $_.ToString('x2') })
+  $observed = 'sha256:' + $hex
+  if ($observed -ne $pin) {
+    Write-Host "Cert pin mismatch: expected $pin, got $observed"
+    return $false
+  }
+  return $true
+}
+try {
+  $downloadUrl = "$serverUrl/api/v1/agents/binary/$binaryName"
+  Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpPath -UseBasicParsing
+} finally {
+  [Net.ServicePointManager]::ServerCertificateValidationCallback = $prevCallback
+}
+
+# Stop service, swap binary, restart. The agent.conf file is untouched
+# so the new binary keeps the same bearer + cert pin.
+$svc = Get-Service -Name 'polaris-agent' -ErrorAction SilentlyContinue
+if ($svc) {
+  if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'polaris-agent' -Force }
+}
+# Brief wait so the service truly releases the binary lock.
+Start-Sleep -Seconds 1
+Move-Item -Force -LiteralPath $tmpPath -Destination $binaryPath
+Start-Service -Name 'polaris-agent'
+
+Write-Host "Polaris Agent upgraded"
 `;

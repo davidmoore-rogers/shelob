@@ -2312,6 +2312,11 @@ function renderAgentBuildInventory(inv) {
       'Fires once on server boot when the on-disk manifest lags the agent source. Disable for strict supply-chain controls.' +
     '</p>';
 
+  // Reserved slot for the "N installed agents are out-of-date" line +
+  // Upgrade-all button. Populated by an async fetch right after the
+  // initial render so the layout is stable.
+  var installedSummarySlot = '<div id="agent-installed-summary"></div>';
+
   body.innerHTML =
     goNotice +
     drift +
@@ -2326,6 +2331,7 @@ function renderAgentBuildInventory(inv) {
     '</table>' +
     '<div>' + buildBtn + '</div>' +
     goVerLine +
+    installedSummarySlot +
     cleanupLine +
     autoBuildRow;
 
@@ -2348,6 +2354,51 @@ function renderAgentBuildInventory(inv) {
       });
     });
   }
+
+  // Installed-summary line + Upgrade-all button. Loaded async so the
+  // rest of the card paints first; on failure the slot stays empty
+  // (better than blocking the operator with a spinner that may never
+  // resolve when the DB is wedged).
+  api.serverSettings.agentInstalledSummary().then(function (s) {
+    var slot = document.getElementById("agent-installed-summary");
+    if (!slot) return;
+    if (!s.totalActive) return; // hide entirely when no agents are installed
+    if (!s.outOfDate) {
+      slot.innerHTML =
+        '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.5rem 0 0">' +
+          s.totalActive + ' installed agent' + (s.totalActive > 1 ? 's' : '') +
+          ' running v' + escapeHtml(s.currentVersion || "?") + ' (current).' +
+        '</p>';
+      return;
+    }
+    slot.innerHTML =
+      '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border);' +
+          'display:flex;align-items:center;gap:0.5rem;font-size:0.85rem">' +
+        '<span style="color:var(--color-text-secondary);flex:1">' +
+          s.outOfDate + ' of ' + s.totalActive + ' installed agent' + (s.totalActive > 1 ? 's' : '') +
+          ' running an older version' +
+          (s.currentVersion ? ' (current: v' + escapeHtml(s.currentVersion) + ')' : '') + '.' +
+        '</span>' +
+        '<button class="btn btn-secondary" id="btn-agent-upgrade-all" style="padding:4px 12px;font-size:0.8rem">Upgrade all</button>' +
+      '</div>';
+    var btn = document.getElementById("btn-agent-upgrade-all");
+    if (btn) btn.addEventListener("click", function () {
+      showConfirm(
+        "Push the new agent binary to all " + s.outOfDate + " out-of-date host" + (s.outOfDate > 1 ? 's' : '') + "?\n\n" +
+        "Each host briefly bounces its agent service while the binary is replaced. " +
+        "Bearers and cert pins are preserved — no re-enrollment required.",
+      ).then(function (ok) {
+        if (!ok) return;
+        api.serverSettings.agentUpgradeAll().then(function (r) {
+          showToast("Queued " + r.queued + " of " + r.eligible + " upgrade(s)", "success");
+          // Re-fetch summary so the line updates as upgrades complete.
+          api.serverSettings.agentInventory().then(renderAgentBuildInventory);
+        }).catch(function (err) {
+          showToast("Upgrade-all failed: " + err.message, "error");
+        });
+      });
+    });
+  }).catch(function () { /* leave the slot empty */ });
 }
 
 function onAgentPruneClick() {

@@ -329,6 +329,7 @@ const api = {
       throw err;
     }),
     installAgent:         (id, body) => request("POST",   `/assets/${id}/agent/install`, body),
+    upgradeAgent:         (id, body) => request("POST",   `/assets/${id}/agent/upgrade`, body || {}),
     deleteAgent:          (id, opts) => {
       var qs = (opts && opts.force) ? "?force=true" : "";
       return request("DELETE", `/assets/${id}/agent${qs}`);
@@ -413,6 +414,8 @@ const api = {
     agentPrune:        ()        => request("POST",   "/server-settings/agents/prune"),
     agentAutoBuildSettingGet: () => request("GET",    "/server-settings/agents/auto-build-setting"),
     agentAutoBuildSettingSet: (b)=> request("PUT",    "/server-settings/agents/auto-build-setting", { enabled: !!b }),
+    agentInstalledSummary:    () => request("GET",    "/server-settings/agents/installed-summary"),
+    agentUpgradeAll:          () => request("POST",   "/server-settings/agents/upgrade-all"),
     getNtp:      ()       => request("GET", "/server-settings/ntp"),
     updateNtp:   (body)   => request("PUT", "/server-settings/ntp", body),
     testNtp:     (body)   => trackedRequest("Testing NTP sync", "POST", "/server-settings/ntp/test", body),

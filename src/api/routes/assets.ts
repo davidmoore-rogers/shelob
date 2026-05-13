@@ -2791,6 +2791,37 @@ router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
+const AgentUpgradeSchema = z.object({
+  credentialId: z.string().uuid().optional(),
+});
+
+router.post("/:id/agent/upgrade", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const assetId = req.params.id as string;
+    const body = AgentUpgradeSchema.parse(req.body ?? {});
+    const actor = req.session?.username || "unknown";
+
+    const row = await prisma.managedAgent.findUnique({ where: { assetId } });
+    if (!row) throw new AppError(404, "No agent installed for this asset");
+
+    const { startUpgrade } = await import("../../services/agentInstallService.js");
+    // startUpgrade does its own AppError on no-credential / already-current /
+    // missing manifest; let those propagate to the global error handler so
+    // the operator sees the message inline.
+    const result = await startUpgrade({
+      managedAgentId: row.id,
+      credentialId:   body.credentialId,
+      actor,
+    });
+    res.json({
+      managedAgentId: row.id,
+      fromVersion:    result.fromVersion,
+      toVersion:      result.toVersion,
+      installStatus:  "upgrading",
+    });
+  } catch (err) { next(err); }
+});
+
 router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
   try {
     const assetId = req.params.id as string;
