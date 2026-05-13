@@ -154,6 +154,10 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **What it is:** Polaris-managed agent installed on remote hosts that pushes monitoring samples back to Polaris over HTTPS and holds a long-lived outbound WebSocket for on-demand probes. New `"agent"` polling-method value (7th) compatible only with AD / Entra / Windows Server / Manual sources. One `ManagedAgent` row per asset, FK cascade. See CLAUDE.md "Polaris Agent polling-method" / "Polaris Agent API surface" and the plan at `~/.claude/plans/the-app-needs-a-glowing-knuth.md`.
 
 **Writers** (state that mutates ManagedAgent / agent.* events):
+- `agent/cmd/polaris-agent/main.go` — host-side Go binary; loads agent.conf, runs /enroll on first boot (persists returned bearer back to agent.conf via Save), then ticks the response-time collect loop + heartbeat loop until SIGTERM. Generic across deployments; per-install identity (server URL, cert pin, bearer) lives entirely in agent.conf.
+- `agent/internal/config/config.go` — Load/Save the INI-style agent.conf. Save() is atomic (write-tempfile + rename) and chmods 0600.
+- `agent/internal/transport/client.go` — HTTP client that fires Enroll / PushSamples / Heartbeat / FetchConfig. Bearer stored on the Client struct; SetBearer() called once after enrollment.
+- `agent/internal/pinned/tls.go` — VerifyPeerCertificate that compares the leaf SHA-256 against the pin from agent.conf. tls.Config has InsecureSkipVerify=true so the standard chain check (which consults system roots) is skipped — pin verification is the only thing that fires.
 - `src/api/routes/assets.ts:POST /:id/agent/install` — create row in `pending`; mint enrollment token; capture cert pin; emit `agent.install_kickoff`.
 - `src/api/routes/assets.ts:DELETE /:id/agent` — synchronous revokeBearer + (force) hard-delete or (default) flip installStatus → "revoked"; emits `agent.revoked` or `agent.force_removed`.
 - `src/api/routes/agents.ts:POST /enroll` — consumes the enrollment token, mints a long-lived bearer, transitions installStatus → "active"; emits `agent.enrolled`. Cert-pin mismatch sets installStatus="failed" and emits `agent.install_failed`.

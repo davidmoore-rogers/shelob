@@ -1,0 +1,6 @@
+# Build artifacts — produced by `make all` / `make dev`.
+# Leading `/` anchors to agent/ root so the cmd/polaris-agent source dir
+# isn't matched.
+/dist/
+/polaris-agent
+/polaris-agent.exe

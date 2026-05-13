@@ -1,0 +1,59 @@
+# Polaris Agent build matrix — produces 6 static binaries from one go build
+# command per platform/arch. Output lands under dist/<VERSION>/; the parent
+# Polaris release tarball reads from there and ships agents matching the
+# server version.
+#
+# Run `make all` from agent/ to produce every platform. Run `make linux-amd64`
+# to produce just one. CGO_ENABLED=0 keeps the binaries static so they don't
+# depend on the host's glibc / musl version; the agent's footprint is small
+# enough that we don't need the runtime libraries glibc would link.
+#
+# The binary is GENERIC across customer deployments — per-install identity
+# lives in agent.conf, written server-side at install time. The same
+# polaris-agent-linux-amd64 binary works against any Polaris server.
+
+VERSION ?= 0.1.0
+PKG     := github.com/polaris/agent/cmd/polaris-agent
+OUTDIR  := dist/$(VERSION)
+
+GOFLAGS := -trimpath
+LDFLAGS := -s -w -X 'main.version=$(VERSION)'
+
+# CGO_ENABLED=0 → static binaries. Important for cross-compilation and for
+# the install path (we copy ONE file to the host; nothing else to link).
+BUILDENV := CGO_ENABLED=0
+
+all: linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64
+
+linux-amd64:
+	@mkdir -p $(OUTDIR)
+	$(BUILDENV) GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(OUTDIR)/polaris-agent-linux-amd64 $(PKG)
+
+linux-arm64:
+	@mkdir -p $(OUTDIR)
+	$(BUILDENV) GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(OUTDIR)/polaris-agent-linux-arm64 $(PKG)
+
+darwin-amd64:
+	@mkdir -p $(OUTDIR)
+	$(BUILDENV) GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(OUTDIR)/polaris-agent-darwin-amd64 $(PKG)
+
+darwin-arm64:
+	@mkdir -p $(OUTDIR)
+	$(BUILDENV) GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(OUTDIR)/polaris-agent-darwin-arm64 $(PKG)
+
+windows-amd64:
+	@mkdir -p $(OUTDIR)
+	$(BUILDENV) GOOS=windows GOARCH=amd64 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(OUTDIR)/polaris-agent-windows-amd64.exe $(PKG)
+
+windows-arm64:
+	@mkdir -p $(OUTDIR)
+	$(BUILDENV) GOOS=windows GOARCH=arm64 go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(OUTDIR)/polaris-agent-windows-arm64.exe $(PKG)
+
+clean:
+	rm -rf dist/
+
+# Quick local-arch build for dev iteration. Doesn't go into dist/.
+dev:
+	$(BUILDENV) go build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o polaris-agent $(PKG)
+
+.PHONY: all linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64 windows-arm64 clean dev
