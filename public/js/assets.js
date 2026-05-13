@@ -8276,7 +8276,10 @@ function _wireSnmpWalkTab(a) {
     var pick = function (name) {
       oidInput.value = name;
       _snmpWalkLastObjectName = name;
-      oidInput.focus();
+      // preventScroll: focusing the input would otherwise scroll-into-view it,
+      // jumping the modal's scroll container back to the top and yanking the
+      // tree out from under the operator who just clicked a symbol.
+      oidInput.focus({ preventScroll: true });
       _renderSnmpMibTree(_snmpMibStructureCache[mibId], pick, name);
     };
     var cached = _snmpMibStructureCache[mibId];
