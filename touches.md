@@ -1570,7 +1570,7 @@ Listed alphabetically.
 
 ## services/vendorTelemetryProfiles.ts
 
-**What it owns:** Built-in vendor telemetry profiles (Cisco, Juniper, Mikrotik, Fortinet, HP-Aruba, Dell) matching assets by manufacturer + OS regex and exposing symbolic OID queries for CPU/memory via oidRegistry resolution.
+**What it owns:** Built-in vendor telemetry profiles (Cisco, Juniper, Mikrotik, Fortinet FortiSwitch, Fortinet FortiGate, HP-Aruba, Dell) matching assets by manufacturer + OS + model regex and exposing symbolic OID queries for CPU/memory via oidRegistry resolution.
 
 **Public API:** `VENDOR_TELEMETRY_PROFILES`, `pickVendorProfile`, `VendorTelemetryProfile`, `CpuQuery`, `MemoryQuery`.
 
@@ -1579,8 +1579,8 @@ Listed alphabetically.
 **Used by:** `src/services/monitoringService.ts:45 — probe strategy selection for telemetry`, `src/services/mibService.ts:18 — profile status reporting in MIB database UI`.
 
 **Invariants:**
-- `match` regex is tested against `"${manufacturer ?? ''} ${os ?? ''}".trim()` (both fields optional).
-- Entries ordered in priority; first match wins (no fallback after).
+- `match` regex is tested against `"${manufacturer ?? ''} ${os ?? ''} ${model ?? ''}".trim()` (all three fields optional).
+- Entries ordered in priority; first match wins (no fallback after). FortiSwitch must precede the generic Fortinet entry because both match `manufacturer="Fortinet"`.
 - CPU/memory symbols must exist in uploaded MIBs for the profile to resolve; probes fall back to HOST-RESOURCES-MIB if missing.
 - Profile selection is read-only; no runtime mutations.
 

@@ -2993,7 +2993,7 @@ async function collectTelemetrySnmp(
   // Make sure the symbol table is populated before we try to resolve any
   // vendor symbols. ensureRegistryLoaded short-circuits after the first call.
   await ensureRegistryLoaded();
-  const profile = pickVendorProfile(manufacturer, os);
+  const profile = pickVendorProfile(manufacturer, os, model);
   const scope = { manufacturer, model };
 
   return await withSnmpSession(host, config, async (session) => {

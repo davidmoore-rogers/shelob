@@ -84,6 +84,21 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
     // memory profile empty and let the HRM fallback handle it.
   },
   {
+    // FortiSwitch sits BEFORE the generic Fortinet entry so FortiSwitches
+    // (manufacturer "Fortinet", model "FortiSwitch") don't fall into the
+    // FortiGate profile — its OIDs are under the FortiGate root (12356.101)
+    // which FortiSwitches don't expose. Matched on the model literal stamped
+    // by FMG/FortiGate discovery; haystack is `${manufacturer} ${os} ${model}`.
+    vendor: "Fortinet FortiSwitch (SNMP path)",
+    match: /fortiswitch/i,
+    // FORTINET-FORTISWITCH-MIB::fsSysCpuUsage / fsSysMemUsage — both scalars,
+    // both 0-100 percent. Mirrors the fgSys* shape under the FortiSwitch
+    // root (12356.106) instead of the FortiGate root (12356.101). Seeded
+    // into oidRegistry so the probe works even without uploading the MIB.
+    cpu: { symbol: "fsSysCpuUsage", mode: "scalar" },
+    memory: { pctSymbol: "fsSysMemUsage" },
+  },
+  {
     vendor: "Fortinet FortiOS (SNMP path)",
     match: /fortinet|fortigate|fortios/i,
     // FORTINET-FORTIGATE-MIB::fgSysCpuUsage / fgSysMemUsage — both scalars,
@@ -114,8 +129,9 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
 export function pickVendorProfile(
   manufacturer: string | null | undefined,
   os: string | null | undefined,
+  model?: string | null | undefined,
 ): VendorTelemetryProfile | null {
-  const haystack = `${manufacturer ?? ""} ${os ?? ""}`.trim();
+  const haystack = `${manufacturer ?? ""} ${os ?? ""} ${model ?? ""}`.trim();
   if (!haystack) return null;
   for (const p of VENDOR_TELEMETRY_PROFILES) {
     if (p.match.test(haystack)) return p;
