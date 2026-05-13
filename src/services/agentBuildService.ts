@@ -281,6 +281,57 @@ class CancelledError extends Error {
 }
 
 /**
+ * Resolve module dependencies before the per-platform loop. Two scenarios:
+ *
+ *   1. agent/go.sum is present + complete (the happy path on a fresh
+ *      release tarball where go.sum was committed). `go mod download`
+ *      is a fast no-op that confirms cache state.
+ *   2. agent/go.sum is missing or out of sync (operator added a
+ *      dependency, or — in our case during early agent rollouts —
+ *      go.sum was never committed). `go mod download` fetches every
+ *      module the source imports + writes the checksums.
+ *
+ * We deliberately don't run `go mod tidy` here. tidy would also REMOVE
+ * unused imports, which is fine in a developer workflow but unwelcome
+ * in a server-side build path (an in-flight refactor mid-PR could leave
+ * an import temporarily unreferenced + get rewritten without consent).
+ * `mod download` is read-only-against-source.
+ *
+ * Failure aborts the build with a clear error (usually "no network to
+ * proxy.golang.org" or "GOPROXY=off" misconfig).
+ */
+async function ensureGoModulesResolved(state: BuildState, agentSourceDir: string): Promise<void> {
+  if (state.cancelled) throw new CancelledError();
+  return new Promise<void>((resolve, reject) => {
+    const child = execFile(
+      "go",
+      ["mod", "download"],
+      {
+        cwd:     agentSourceDir,
+        timeout: 5 * 60_000, // first-cold-cache download can take a minute on slow links
+        env: {
+          ...process.env,
+          HOME:        STATE_DIR,
+          GOCACHE:     resolvePath(STATE_DIR, ".cache", "go-build"),
+          GOMODCACHE:  resolvePath(STATE_DIR, ".cache", "go-mod"),
+          GOTOOLCHAIN: process.env.GOTOOLCHAIN ?? "local",
+        },
+        maxBuffer: 4 * 1024 * 1024,
+      },
+      (err, _stdout, stderr) => {
+        state.activeChild = undefined;
+        if (err) {
+          if (state.cancelled) return reject(new CancelledError());
+          return reject(new Error(`go mod download failed: ${truncate(stderr || (err as any).message, 600)}`));
+        }
+        resolve();
+      },
+    );
+    state.activeChild = child;
+  });
+}
+
+/**
  * Run one `go build` for one platform/arch. Wraps execFile so we can
  * stash the ChildProcess on `state.activeChild` — cancelBuild() reaches
  * through that handle to SIGTERM / SIGKILL the running compiler.
@@ -313,6 +364,9 @@ function runGoBuild(
           GOARCH:      opts.arch,
           HOME:        STATE_DIR,
           GOCACHE:     resolvePath(STATE_DIR, ".cache", "go-build"),
+          // Match the GOMODCACHE we use in ensureGoModulesResolved so the
+          // build reads the same module cache the download just populated.
+          GOMODCACHE:  resolvePath(STATE_DIR, ".cache", "go-mod"),
           GOTOOLCHAIN: process.env.GOTOOLCHAIN ?? "local",
         },
         maxBuffer: 8 * 1024 * 1024,
@@ -454,6 +508,16 @@ async function doRun(state: BuildState): Promise<void> {
   const versionDir = resolvePath(AGENT_BIN_DIR, state.version);
   await mkdir(versionDir,          { recursive: true });
   await mkdir(resolvePath(STATE_DIR, ".cache", "go-build"), { recursive: true });
+
+  // Resolve module deps before the per-platform build loop. `go mod
+  // download` is idempotent + cheap when go.sum is already populated;
+  // when it's missing (e.g. agent/go.sum was never committed, or an
+  // operator added a new dep between Polaris releases), this fetches +
+  // checksums everything into the module cache so each subsequent
+  // `go build` sees a consistent state. Failure here aborts the build
+  // with a clear error — usually means the host has no network access
+  // to proxy.golang.org or the operator's GOPROXY is misconfigured.
+  await ensureGoModulesResolved(state, agentSourceDir);
 
   // Build each platform serially. Parallel `go build` calls thrash the
   // shared GOCACHE; serial keeps cache contention down + total time
