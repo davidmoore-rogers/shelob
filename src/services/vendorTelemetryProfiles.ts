@@ -95,12 +95,23 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
     // by FMG/FortiGate discovery; haystack is `${manufacturer} ${os} ${model}`.
     vendor: "Fortinet FortiSwitch (SNMP path)",
     match: /fortiswitch/i,
-    // FORTINET-FORTISWITCH-MIB::fsSysCpuUsage / fsSysMemUsage — both scalars,
-    // both 0-100 percent. Mirrors the fgSys* shape under the FortiSwitch
-    // root (12356.106) instead of the FortiGate root (12356.101). Seeded
-    // into oidRegistry so the probe works even without uploading the MIB.
-    cpu: { symbol: "fsSysCpuUsage", mode: "scalar" },
-    memory: { pctSymbol: "fsSysMemUsage" },
+    // FORTINET-FORTISWITCH-MIB shape:
+    //   fsSysMemUsage    @ 12356.106.4.1.3 → bytes USED  (not a percent — distinct
+    //                                                     from FortiGate's fgSysMemUsage)
+    //   fsSysMemCapacity @ 12356.106.4.1.4 → bytes TOTAL
+    // collectMemoryVendor derives memPct from used/total. Both symbols are
+    // seeded into oidRegistry so the probe works without uploading
+    // FORTINET-FORTISWITCH-MIB.
+    //
+    // CPU OID for FortiSwitches isn't seeded yet — when the right symbol is
+    // identified, add `cpu: { symbol: "fsSysCpuUsage", mode: "scalar" }` and
+    // seed the matching OID in oidRegistry. Until then the probe falls
+    // through to HOST-RESOURCES-MIB hrProcessorLoad (returns null on most
+    // FortiSwitch firmware → CPU chart stays empty, intentional).
+    memory: {
+      usedBytesSymbol:  "fsSysMemUsage",
+      totalBytesSymbol: "fsSysMemCapacity",
+    },
   },
   {
     vendor: "Fortinet FortiOS (SNMP path)",
