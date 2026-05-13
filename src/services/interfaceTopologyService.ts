@@ -102,14 +102,37 @@ export async function inferInterfaceTopology(
   // 13.5 minutes / 90M rows fetched / 9 GB I/O on the prod box even
   // though the existing schema index was being chosen correctly.
   const interfaceRows = await prisma.$queryRaw<
-    Array<{ assetId: string; ifName: string; ifType: string | null }>
+    Array<{ assetId: string; ifName: string; ifType: string | null; ifParent: string | null }>
   >`
-    SELECT DISTINCT ON ("assetId", "ifName") "assetId", "ifName", "ifType"
+    SELECT DISTINCT ON ("assetId", "ifName") "assetId", "ifName", "ifType", "ifParent"
     FROM asset_interface_samples
     WHERE "assetId" = ANY(${seedAssetIds}::text[])
       AND "timestamp" > NOW() - INTERVAL '1 hour'
     ORDER BY "assetId", "ifName", "timestamp" DESC
   `;
+
+  // Aggregate → physical member map. The aggregate name is the inference
+  // signal (the peer's serial fragment / hostname is encoded in it) but
+  // operators trace cables by physical port, not by the FortiOS-stamped
+  // peer-named aggregate label. When the aggregate has exactly one
+  // physical member, the cable terminates at a single physical port and
+  // we can swap the ifName cleanly. Multi-member aggregates (real LACP
+  // bundles) keep the aggregate name as the safe fallback — there's no
+  // single "the physical port" to display, and showing a comma-joined
+  // list would lie about the strict one-port-per-physical-link model.
+  const physicalByParent = new Map<string, string[]>();
+  for (const row of interfaceRows) {
+    if (row.ifType === "physical" && row.ifParent) {
+      const k = `${row.assetId}|${row.ifParent}`;
+      const list = physicalByParent.get(k);
+      if (list) list.push(row.ifName);
+      else physicalByParent.set(k, [row.ifName]);
+    }
+  }
+  const preferPhysical = (assetId: string, ifName: string): string => {
+    const members = physicalByParent.get(`${assetId}|${ifName}`);
+    return members && members.length === 1 ? members[0] : ifName;
+  };
 
   type Candidate = {
     sourceAssetId: string;
@@ -229,9 +252,11 @@ export async function inferInterfaceTopology(
     const reciprocal = byPair.get(reverseKey) ?? null;
     edges.push({
       sourceAssetId: h.sourceAssetId,
-      sourceIfName: h.sourceIfName,
+      sourceIfName: preferPhysical(h.sourceAssetId, h.sourceIfName),
       targetAssetId: h.targetAssetId,
-      targetIfName: reciprocal ? reciprocal.sourceIfName : null,
+      targetIfName: reciprocal
+        ? preferPhysical(reciprocal.sourceAssetId, reciprocal.sourceIfName)
+        : null,
       matchVia: h.matchVia,
       aggregateIndex: h.aggregateIndex,
     });

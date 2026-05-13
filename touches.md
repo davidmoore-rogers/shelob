@@ -1029,6 +1029,7 @@ Listed alphabetically.
 - Self-loops (asset's own serial/hostname) are rejected.
 - Infers both directions when both sides' interface names encode peer identity; targetIfName null when only source side is parseable.
 - Matches via parseFortinetPeerInterface utility; peer IP/MAC/model returned from remoteAssets even if outside seed set (cross-site edges).
+- Returned edge ifNames are translated from aggregate name to underlying physical member when the aggregate has EXACTLY one physical child (ifType="physical" + ifParent=aggregate). Multi-member aggregates fall back to the aggregate name. The aggregate is still the inference signal (peer identity is encoded there); only the display ifName on the edge is normalized so topology labels read as physical-port-to-physical-port instead of peer-serial-encoded aggregate names.
 
 **When changing this:**
 - Verify parseFortinetPeerInterface still extracts serial + hostname patterns correctly.
