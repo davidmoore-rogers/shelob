@@ -1510,10 +1510,41 @@ function mapSnmpPrivProtocol(value: unknown): unknown {
   }
 }
 
+// Per-SNMP-target serialization gate. Many switch/AP SNMP agents are
+// single-threaded — a heavy walk (IF-MIB + LLDP + storage) running in
+// parallel with a cheap sysUpTime probe pins the agent's request queue
+// and stretches the probe's response time from <50ms to several seconds,
+// occasionally past the probe timeout (reads as "packet loss"). All
+// SNMP entry points (probeSnmp / collectTelemetrySnmp / collectSystemInfoSnmp)
+// run through `withSnmpGate(host, port, ...)` so probe, telemetry,
+// systemInfo, and fastFiltered SNMP calls FIFO-serialize against the
+// same agent within this Polaris process. FortiOS REST and FMG calls
+// have their own concurrency models and aren't routed through this gate.
+const snmpGate = new Map<string, Promise<unknown>>();
+
+async function withSnmpGate<T>(host: string, port: number, fn: () => Promise<T>): Promise<T> {
+  const key = `${host}:${port}`;
+  const prev = snmpGate.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((res) => { release = res; });
+  const chained = prev.then(() => next);
+  snmpGate.set(key, chained);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+    // Best-effort cleanup: only delete if no further chain has been
+    // laid down on top of this one. Slight race is harmless — the Map
+    // entry will be reused / overwritten by a future acquire.
+    if (snmpGate.get(key) === chained) snmpGate.delete(key);
+  }
+}
+
 async function probeSnmp(host: string, config: Record<string, unknown>, start: number, timeoutMs: number): Promise<ProbeResult> {
   const port = toPositiveInt(config.port, 161);
   const version = config.version === "v3" ? "v3" : "v2c";
-  return await new Promise<ProbeResult>((resolve) => {
+  return withSnmpGate(host, port, () => new Promise<ProbeResult>((resolve) => {
     let resolved = false;
     const finishOnce = (r: ProbeResult) => {
       if (resolved) return;
@@ -1575,7 +1606,7 @@ async function probeSnmp(host: string, config: Record<string, unknown>, start: n
       clearTimeout(timer);
       finishOnce(finish(start, false, err?.message || "SNMP setup failed"));
     }
-  });
+  }));
 }
 
 async function probeWinRm(host: string, config: Record<string, unknown>, start: number, timeoutMs: number): Promise<ProbeResult> {
@@ -2979,16 +3010,24 @@ function snmpMacFromBuffer(v: unknown): string | null {
 }
 
 async function withSnmpSession<T>(host: string, config: Record<string, unknown>, fn: (s: any) => Promise<T>, timeoutMs?: number): Promise<T> {
-  const session = buildSnmpSession(host, config, timeoutMs);
-  // net-snmp emits 'error' rather than throwing for socket/listener errors;
-  // attach a no-op listener so a stray error doesn't kill the process. The
-  // walk itself will still propagate the error through its callback.
-  session.on?.("error", () => {});
-  try {
-    return await fn(session);
-  } finally {
-    try { session.close?.(); } catch {}
-  }
+  // Route every heavy SNMP collector (telemetry / systemInfo / LLDP overlay
+  // / operator snmp-walk) through the per-host SNMP gate so a heavy walk
+  // doesn't overlap with the cheap response-time probe on the same agent.
+  // probeSnmp (which builds its own session for the sysUpTime get) also
+  // acquires the same gate — both paths key on host:port so they FIFO.
+  const port = toPositiveInt(config.port, 161);
+  return withSnmpGate(host, port, async () => {
+    const session = buildSnmpSession(host, config, timeoutMs);
+    // net-snmp emits 'error' rather than throwing for socket/listener errors;
+    // attach a no-op listener so a stray error doesn't kill the process. The
+    // walk itself will still propagate the error through its callback.
+    session.on?.("error", () => {});
+    try {
+      return await fn(session);
+    } finally {
+      try { session.close?.(); } catch {}
+    }
+  });
 }
 
 export interface SnmpWalkRow {
