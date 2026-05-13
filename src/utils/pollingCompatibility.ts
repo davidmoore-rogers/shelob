@@ -12,18 +12,25 @@
  * asset source, with the most permissive matrix (any method) since the
  * operator chooses the credential when adding the asset.
  *
- *   FortiManager      → REST API, SNMP, SSH, ICMP        (no WinRM — FortiOS doesn't run it)
- *   FortiGate         → REST API, SNMP, SSH, ICMP        (same — FortiOS again)
- *   Active Directory  → ICMP, WinRM, SSH                 (no REST API — AD-bound hosts have no shared API)
- *   Entra ID / Intune → ICMP, WinRM, SSH                 (same — cloud-managed Windows / mobile)
- *   Windows Server    → ICMP, WinRM, SSH                 (DHCP discovery surfaces Windows hosts)
- *   Manual            → any                              (operator-chosen)
+ *   FortiManager      → REST API, SNMP, SSH, ICMP                (no WinRM — FortiOS doesn't run it; no Agent — appliance)
+ *   FortiGate         → REST API, SNMP, SSH, ICMP                (same — FortiOS again)
+ *   Active Directory  → ICMP, WinRM, SSH, Agent                  (no REST API — AD-bound hosts have no shared API)
+ *   Entra ID / Intune → ICMP, WinRM, SSH, Agent                  (same — cloud-managed Windows / mobile)
+ *   Windows Server    → ICMP, WinRM, SSH, Agent                  (DHCP discovery surfaces Windows hosts)
+ *   Manual            → any                                       (operator-chosen)
+ *
+ * The "agent" method represents a Polaris-managed agent installed locally
+ * on the target host (Linux/macOS/Windows × amd64/arm64) that pushes samples
+ * back to Polaris over HTTPS and holds an outbound WebSocket for on-demand
+ * probes. It's incompatible with appliance sources (FortiManager, FortiGate)
+ * because Fortinet appliances can't run third-party binaries. See the
+ * "Polaris Agent" section in CLAUDE.md.
  *
  * Locked with the user during the design exchange; see CLAUDE.md
  * "Polling-method compatibility matrix".
  */
 
-export type PollingMethod = "rest_api" | "snmp" | "winrm" | "ssh" | "icmp" | "disabled";
+export type PollingMethod = "rest_api" | "snmp" | "winrm" | "ssh" | "icmp" | "disabled" | "agent";
 export type AssetSourceKind =
   | "fortimanager"
   | "fortigate"
@@ -32,18 +39,20 @@ export type AssetSourceKind =
   | "windowsserver"
   | "manual";
 
-const ALL_METHODS: ReadonlyArray<PollingMethod> = ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"];
+const ALL_METHODS: ReadonlyArray<PollingMethod> = ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled", "agent"];
 
 // Each entry is the full set of valid methods for that source. A `Set` is
 // O(1) lookup which matters for the resolver running in the hot monitor
 // loop, even though the cardinality is small. "disabled" is universally
 // allowed — it means "do not poll this stream" and applies to any source.
+// "agent" is allowed wherever Polaris can install software (everything
+// except the Fortinet appliance sources).
 const COMPATIBILITY: Readonly<Record<AssetSourceKind, ReadonlySet<PollingMethod>>> = {
   fortimanager:    new Set<PollingMethod>(["rest_api", "snmp", "ssh", "icmp", "disabled"]),
   fortigate:       new Set<PollingMethod>(["rest_api", "snmp", "ssh", "icmp", "disabled"]),
-  activedirectory: new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled"]),
-  entraid:         new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled"]),
-  windowsserver:   new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled"]),
+  activedirectory: new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled", "agent"]),
+  entraid:         new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled", "agent"]),
+  windowsserver:   new Set<PollingMethod>(["icmp", "winrm", "ssh", "disabled", "agent"]),
   manual:          new Set<PollingMethod>(ALL_METHODS),
 };
 
@@ -94,5 +103,6 @@ export function pollingMethodLabel(method: PollingMethod): string {
     case "ssh":      return "SSH";
     case "icmp":     return "ICMP";
     case "disabled": return "Disabled";
+    case "agent":    return "Polaris Agent";
   }
 }

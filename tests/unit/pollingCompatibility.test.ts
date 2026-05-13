@@ -19,24 +19,27 @@ import {
 } from "../../src/utils/pollingCompatibility.js";
 
 describe("compatibility matrix — locked values per asset source", () => {
-  it("FortiManager: REST API + SNMP + SSH + ICMP + Disabled, no WinRM", () => {
+  it("FortiManager: REST API + SNMP + SSH + ICMP + Disabled, no WinRM or Agent", () => {
     expect(compatibleMethodsFor("fortimanager")).toEqual(["rest_api", "snmp", "ssh", "icmp", "disabled"]);
     expect(isPollingMethodCompatible("fortimanager", "winrm")).toBe(false);
+    expect(isPollingMethodCompatible("fortimanager", "agent")).toBe(false);
     expect(isPollingMethodCompatible("fortimanager", "disabled")).toBe(true);
   });
   it("FortiGate: same as FortiManager", () => {
     expect(compatibleMethodsFor("fortigate")).toEqual(["rest_api", "snmp", "ssh", "icmp", "disabled"]);
     expect(isPollingMethodCompatible("fortigate", "winrm")).toBe(false);
+    expect(isPollingMethodCompatible("fortigate", "agent")).toBe(false);
     expect(isPollingMethodCompatible("fortigate", "disabled")).toBe(true);
   });
-  it("Active Directory: WinRM + SSH + ICMP + Disabled (display order), no REST API or SNMP", () => {
-    expect(compatibleMethodsFor("activedirectory")).toEqual(["winrm", "ssh", "icmp", "disabled"]);
+  it("Active Directory: WinRM + SSH + ICMP + Disabled + Agent (display order), no REST API or SNMP", () => {
+    expect(compatibleMethodsFor("activedirectory")).toEqual(["winrm", "ssh", "icmp", "disabled", "agent"]);
     expect(isPollingMethodCompatible("activedirectory", "rest_api")).toBe(false);
     expect(isPollingMethodCompatible("activedirectory", "snmp")).toBe(false);
     expect(isPollingMethodCompatible("activedirectory", "winrm")).toBe(true);
     expect(isPollingMethodCompatible("activedirectory", "ssh")).toBe(true);
     expect(isPollingMethodCompatible("activedirectory", "icmp")).toBe(true);
     expect(isPollingMethodCompatible("activedirectory", "disabled")).toBe(true);
+    expect(isPollingMethodCompatible("activedirectory", "agent")).toBe(true);
   });
   it("Entra ID: same as AD", () => {
     expect(isPollingMethodCompatible("entraid", "rest_api")).toBe(false);
@@ -45,15 +48,17 @@ describe("compatibility matrix — locked values per asset source", () => {
     expect(isPollingMethodCompatible("entraid", "ssh")).toBe(true);
     expect(isPollingMethodCompatible("entraid", "icmp")).toBe(true);
     expect(isPollingMethodCompatible("entraid", "disabled")).toBe(true);
+    expect(isPollingMethodCompatible("entraid", "agent")).toBe(true);
   });
   it("Windows Server: same as AD", () => {
     expect(isPollingMethodCompatible("windowsserver", "rest_api")).toBe(false);
     expect(isPollingMethodCompatible("windowsserver", "winrm")).toBe(true);
     expect(isPollingMethodCompatible("windowsserver", "icmp")).toBe(true);
     expect(isPollingMethodCompatible("windowsserver", "disabled")).toBe(true);
+    expect(isPollingMethodCompatible("windowsserver", "agent")).toBe(true);
   });
   it("Manual: every method valid", () => {
-    expect(compatibleMethodsFor("manual")).toEqual(["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"]);
+    expect(compatibleMethodsFor("manual")).toEqual(["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled", "agent"]);
     allPollingMethods().forEach((m) => {
       expect(isPollingMethodCompatible("manual", m)).toBe(true);
     });
@@ -78,7 +83,7 @@ describe("integrationType -> AssetSourceKind mapping", () => {
 
 describe("isPollingMethod type guard", () => {
   it("accepts every valid polling method", () => {
-    ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"].forEach((m) => {
+    ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled", "agent"].forEach((m) => {
       expect(isPollingMethod(m)).toBe(true);
     });
   });
@@ -104,5 +109,6 @@ describe("pollingMethodLabel — UI strings", () => {
     expect(pollingMethodLabel("ssh")).toBe("SSH");
     expect(pollingMethodLabel("icmp")).toBe("ICMP");
     expect(pollingMethodLabel("disabled")).toBe("Disabled");
+    expect(pollingMethodLabel("agent")).toBe("Polaris Agent");
   });
 });

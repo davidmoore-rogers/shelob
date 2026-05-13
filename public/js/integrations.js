@@ -16,15 +16,16 @@ var _POLLING_LABELS = {
   ssh:      "SSH",
   icmp:     "ICMP",
   disabled: "Disabled",
+  agent:    "Polaris Agent",
 };
 
 var _POLLING_COMPAT = {
   fortimanager:    ["rest_api", "snmp", "ssh", "icmp", "disabled"],
   fortigate:       ["rest_api", "snmp", "ssh", "icmp", "disabled"],
-  activedirectory: ["icmp", "winrm", "ssh", "disabled"],
-  entraid:         ["icmp", "winrm", "ssh", "disabled"],
-  windowsserver:   ["icmp", "winrm", "ssh", "disabled"],
-  manual:          ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"],
+  activedirectory: ["icmp", "winrm", "ssh", "disabled", "agent"],
+  entraid:         ["icmp", "winrm", "ssh", "disabled", "agent"],
+  windowsserver:   ["icmp", "winrm", "ssh", "disabled", "agent"],
+  manual:          ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled", "agent"],
 };
 
 // Source-default polling for one stream. Mirrors defaultPollingForSource() in

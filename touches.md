@@ -114,7 +114,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ## cross-cutting/polling-method-resolver
 
-**What it is:** Four-tier cascade resolving which polling method (REST API / SNMP / WinRM / SSH / ICMP) is used for each asset's response-time / telemetry / system-info / fastFiltered probes (see "Monitor Settings Hierarchy" + "Polling-method compatibility matrix" in CLAUDE.md).
+**What it is:** Four-tier cascade resolving which polling method (REST API / SNMP / WinRM / SSH / ICMP / Disabled / Polaris Agent) is used for each asset's response-time / telemetry / system-info / fastFiltered probes (see "Monitor Settings Hierarchy" + "Polling-method compatibility matrix" in CLAUDE.md). The `"agent"` method short-circuits the periodic puller (probeAsset / collectTelemetry / collectSystemInfo / collectFastFiltered all early-return) because the Polaris Agent on the host pushes its own samples via `POST /api/v1/agents/samples`.
 
 **Writers** (files that mutate or emit this state):
 - `src/api/routes/assets.ts` — PUT /assets/:id sets per-asset override columns (responseTimePolling / telemetryPolling / interfacesPolling / lldpPolling)
@@ -138,6 +138,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Compatibility matrix is locked per CLAUDE.md "Polling-method compatibility matrix"; breaches must go through the design process.
 - AD-discovered assets default to ICMP for response-time unless the operator picks winrm/ssh on the per-asset tier (bind-creds fallback at probe time).
 - FMG/FortiGate-discovered firewalls default to REST API on response-time / telemetry / interfaces and `disabled` on LLDP (FortiOS REST `lldp-neighbors` is empty on most fleets — operators flip back to `rest_api` if their fleet has it enabled).
+- `"agent"` is never a source default — only an opt-in via the operator. Compatible only with AD / Entra / Windows Server / Manual sources (NOT fortimanager / fortigate). When set, probeAsset returns `finish(start, true)` synthetic-success, recordProbeResult early-returns to skip the state machine, and the three collect* dispatchers return `{supported: false}` — the agent on the host is the sole writer for those streams.
 
 **When changing this:**
 - Compatibility matrix changes require design review and manual tier updates across the codebase (four UI surfaces).

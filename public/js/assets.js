@@ -1767,8 +1767,12 @@ function assetMonitoringFormHTML(asset) {
   // Build each stream row: [label | polling dropdown] then optional credential
   // and MIB sub-rows. Sub-rows are hidden and shown/hidden by JS in
   // _wireMonitorEditTab whenever the polling method changes.
+  //
+  // "icmp" and "disabled" never need a credential; "agent" doesn't either —
+  // the Polaris Agent's own per-asset bearer (issued at install time) is
+  // implicit and never picked from the credential store.
   function streamRow(label, streamName, pollingId, credSelectId, mibSelectId, currentPoll, currentCredId, currentMibId, autoMibName) {
-    var needsCred = currentPoll && currentPoll !== "icmp" && currentPoll !== "disabled";
+    var needsCred = currentPoll && currentPoll !== "icmp" && currentPoll !== "disabled" && currentPoll !== "agent";
     var isSnmp    = currentPoll === "snmp";
     var credDisplay = needsCred ? "flex" : "none";
     var mibDisplay  = isSnmp   ? "flex" : "none";

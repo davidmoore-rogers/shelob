@@ -557,6 +557,7 @@ model Asset {
   macAddressRows      AssetMacAddress[]
   dependencyParents   AssetDependencyParent[]  @relation("AssetDependencyChild")
   dependencyChildren  AssetDependencyParent[]  @relation("AssetDependencyParent")
+  managedAgent        ManagedAgent?
 
   @@index([ipAddress])
   @@index([macAddress])
@@ -1229,4 +1230,75 @@ model DeviceIcon {
   @@unique([scope, key])
   @@index([scope])
   @@map("device_icons")
+}
+
+// Polaris Agent installation record. One row per (asset × agent install).
+// Independent of AssetSource — installing an agent doesn't change discovery
+// identity, it just adds a new polling transport (`responseTimePolling="agent"`
+// etc.) that the agent itself satisfies by pushing samples back to Polaris.
+//
+// Lifecycle (drives `installStatus`):
+//   Install:    pending → uploading → enrolling → active
+//                                         ↘ failed (install_failed event, row stays for retry)
+//   Uninstall:  active → uninstalling → (row hard-deleted on success)
+//                              ↘ uninstall_failed (row stays; operator retries or force-removes)
+//   Force:      any → (row hard-deleted, force_removed event)
+//   Reinstall:  uninstall + install run back-to-back; old row deleted, new row created
+//
+// Two token columns: `enrollmentToken*` is one-shot (10-min TTL) and NULLed
+// the moment the agent POSTs /api/v1/agents/enroll successfully; `bearer*` is
+// the long-lived per-agent token issued at that moment, used for every
+// subsequent /samples / /config / /heartbeat call and for the outbound
+// WebSocket. Both stored as argon2id hashes + a short prefix for indexed
+// lookup, matching the ApiToken pattern. The bearer is bound to this asset
+// via the @unique([assetId]) constraint — defense against stolen-bearer
+// cross-asset reuse (handler stamps the bearer's assetId, ignoring the body).
+//
+// `serverCertFingerprint` is the SHA-256 of the running Polaris HTTPS leaf
+// cert at install time, captured by agentInstallService and baked into the
+// host's agent.conf. The agent's TLS client uses this as a pin — it does NOT
+// trust system roots. POST /enroll cross-checks: client reports the cert it
+// observed, server matches against this column.
+model ManagedAgent {
+  id      String @id @default(uuid())
+  assetId String @unique
+  asset   Asset  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  osPlatform   String // "linux" | "darwin" | "windows"
+  arch         String // "amd64" | "arm64"
+  agentVersion String? // semver reported on enroll; null until first enroll
+  installedBy  String // username of operator who clicked Install
+  installedAt  DateTime @default(now())
+
+  installStatus String  @default("pending") // see lifecycle comment above
+  installError  String? // captured stderr / exception message on failure
+
+  // One-shot enrollment token. NULLed atomically when /enroll succeeds.
+  enrollmentTokenHash   String?
+  enrollmentTokenPrefix String?
+  enrollmentExpiresAt   DateTime?
+
+  // Long-lived bearer (argon2id, prefix-indexed). Wire format same as
+  // ApiToken: `polaris_<32-char-base62>`. Bound to assetId at issuance.
+  bearerHash      String?
+  bearerPrefix    String?
+  bearerIssuedAt  DateTime?
+  bearerRevokedAt DateTime?
+
+  lastSeenAt       DateTime?
+  lastSeenIp       String?
+  wsConnectedAt    DateTime?
+  wsDisconnectedAt DateTime?
+
+  // SHA-256 of the leaf cert as `sha256:<hex>`. Pinned at install; checked
+  // server-side at enrollment, client-side on every subsequent TLS handshake.
+  serverCertFingerprint String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([installStatus])
+  @@index([bearerPrefix])
+  @@index([enrollmentTokenPrefix])
+  @@map("managed_agents")
 }

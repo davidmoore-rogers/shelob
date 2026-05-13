@@ -997,6 +997,14 @@ export async function probeAsset(
     const polling   = effective.responseTimePolling;
     if (!polling) return finish(start, false, "No response-time polling method configured");
 
+    // Agent owns its own probe cadence and pushes samples directly via
+    // POST /api/v1/agents/samples. The hot monitor loop must not call out
+    // to the host; on-demand /probe-now is handled by agentChannelService
+    // over the WebSocket. Return a synthetic success so the probeTotal
+    // counter increments under transport="agent" but no DB write happens
+    // (recordProbeResult below early-returns for agent-mode assets).
+    if (polling === "agent") return finish(start, true);
+
     const integration  = asset.discoveredByIntegration ?? null;
     const sourceKind   = assetSourceKindFromIntegrationType(integration?.type ?? null);
     const isFortinetSrc = sourceKind === "fortimanager" || sourceKind === "fortigate";
@@ -1934,6 +1942,10 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
   });
   const polling = effective.telemetryPolling;
   if (!polling) return { supported: false };
+  // Agent-mode: the Polaris Agent on the host pushes telemetry via
+  // POST /api/v1/agents/samples on its own schedule. Periodic puller stays
+  // out of the way — `recordTelemetryResult` already no-ops on supported=false.
+  if (polling === "agent") return { supported: false };
   const telemetryTimeout = effective.telemetryTimeoutMs;
 
   // FQDN fallback for credentialed methods that resolve hostnames natively.
@@ -2025,6 +2037,9 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
   });
   const polling = effective.interfacesPolling;
   if (!polling) return { supported: false };
+  // Agent-mode: the Polaris Agent on the host pushes interface/storage/tunnel
+  // samples on its own schedule via POST /api/v1/agents/samples.
+  if (polling === "agent") return { supported: false };
   const sysInfoTimeout = effective.systemInfoTimeoutMs;
 
   const targetIp =
@@ -2181,6 +2196,9 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
   // interfaces context isn't meaningful (we'd have nothing to attach the
   // neighbors to in the System tab table).
   if (!interfacesPolling) return { supported: false };
+  // Agent-mode: the Polaris Agent on the host pushes interface + storage +
+  // LLDP samples on its own schedule. Periodic puller stays out of the way.
+  if (interfacesPolling === "agent") return { supported: false };
   const sysInfoTimeout = effective.systemInfoTimeoutMs;
 
   const targetIp =
@@ -4347,6 +4365,15 @@ export async function recordProbeResult(
   // transitions. Same number of confirmations either direction.
   const effective = await resolveMonitorSettings(asset);
   const threshold = effective.failureThreshold;
+
+  // Agent-mode response-time: the Polaris Agent runs on the host and pushes
+  // its own samples (with real RTTs) through POST /api/v1/agents/samples.
+  // Periodic-tick probeAsset for these assets returns a synthetic success;
+  // we MUST NOT let that synthetic result run the state machine or write
+  // an AssetMonitorSample row — it would clobber the agent's real signal.
+  // The /samples inbound route will call this function with the real
+  // sample data from the agent in Phase 2; for Phase 1b it just skips.
+  if (effective.responseTimePolling === "agent") return;
 
   const now = new Date();
   const previousStatus = asset.monitorStatus ?? "unknown";
