@@ -1,16 +1,21 @@
 /**
  * src/services/deviceIconService.ts — operator-uploaded device icons
  *
- * Used by the Device Map's topology graph to render hardware-specific
- * imagery (FortiGate-91G chassis, FortiSwitch-148E faceplate, etc.)
- * instead of generic colored circles. Resolution at render time is
- * most-specific-wins:
+ * Used by the Device Map's topology graph to overlay vendor-specific
+ * imagery on each node's colored status circle. Every icon is keyed
+ * to a manufacturer plus either a specific model or an asset type —
+ * standalone "just a type" / "just a model" / "just a manufacturer"
+ * uploads are intentionally not supported (a logo for "firewall"
+ * across every vendor would be meaningless). Resolution at render
+ * time is most-specific-wins:
  *
- *   1. scope="model"        key="<manufacturer>/<model>"  — most specific
- *   2. scope="model"        key="<model>"                 — manufacturer-agnostic
- *   3. scope="type"         key=<assetType>               — type-level
- *   4. scope="manufacturer" key=<manufacturer>            — vendor fallback
- *   5. no row → null (frontend uses default node style)
+ *   1. scope="manufacturer-model" key="<manufacturer>/<model>"     — specific chassis
+ *   2. scope="manufacturer-type"  key="<manufacturer>/<assetType>" — vendor + role
+ *   3. no row → null (frontend leaves the node as a plain status circle)
+ *
+ * The topology renderer overlays the resolved icon at ~70% of the node
+ * size so the operator sees BOTH the asset status (color of the ring)
+ * AND the vendor logo (inset image) at a glance.
  *
  * Manufacturer keys are canonicalized through the same alias map as
  * Asset.manufacturer (Fortinet, Inc. → Fortinet) so the picker and the
@@ -86,11 +91,16 @@ const SVG_REJECT_PATTERNS: Array<{ name: string; re: RegExp }> = [
   { name: "external url() in CSS", re: /url\s*\(\s*["']?(?!\s*#)(?:https?:|\/\/|data:|file:)/i },
 ];
 
-export type IconScope = "type" | "model" | "manufacturer";
+export type IconScope = "manufacturer-type" | "manufacturer-model";
 
 export interface UploadedIcon {
   scope: IconScope;
-  key: string;
+  // Caller-supplied raw inputs; the service builds the canonical key
+  // by alias-normalizing manufacturer and joining with `/`. The route
+  // layer collects these from separate form fields rather than asking
+  // the operator to type the slash themselves.
+  manufacturer: string;
+  typeOrModel: string;
   filename: string;
   mimeType: string;
   data: Buffer;
@@ -120,21 +130,10 @@ function detectMagicMime(data: Buffer): string | null {
   return null;
 }
 
-function normalizeKey(scope: IconScope, key: string): string {
-  const trimmed = key.trim();
-  if (scope === "type") return trimmed.toLowerCase();
-  if (scope === "manufacturer") {
-    return normalizeManufacturer(trimmed) ?? trimmed;
-  }
-  // Model keys: trim each side of the slash so "  Fortinet  /  FortiGate-91G  "
-  // canonicalizes to "Fortinet/FortiGate-91G". Manufacturer half goes through
-  // the alias map so "Fortinet, Inc./FortiGate-91G" → "Fortinet/FortiGate-91G".
-  if (trimmed.includes("/")) {
-    const [manuf, ...rest] = trimmed.split("/");
-    const manufCanonical = normalizeManufacturer(manuf.trim()) ?? manuf.trim();
-    return `${manufCanonical}/${rest.join("/").trim()}`;
-  }
-  return trimmed;
+function buildKey(scope: IconScope, manufacturer: string, typeOrModel: string): string {
+  const manufCanonical = normalizeManufacturer(manufacturer.trim()) ?? manufacturer.trim();
+  const tail = scope === "manufacturer-type" ? typeOrModel.trim().toLowerCase() : typeOrModel.trim();
+  return `${manufCanonical}/${tail}`;
 }
 
 const VALID_TYPE_KEYS = new Set([
@@ -166,13 +165,27 @@ function validateSvg(data: Buffer): void {
 }
 
 export function validateUpload(input: UploadedIcon): void {
-  if (input.scope !== "type" && input.scope !== "model" && input.scope !== "manufacturer") {
-    throw new AppError(400, `Invalid scope "${input.scope}" — must be "type", "model", or "manufacturer"`);
+  if (input.scope !== "manufacturer-type" && input.scope !== "manufacturer-model") {
+    throw new AppError(400, `Invalid scope "${input.scope}" — must be "manufacturer-type" or "manufacturer-model"`);
   }
-  const key = normalizeKey(input.scope, input.key);
-  if (!key) throw new AppError(400, "Key is required");
-  if (input.scope === "type" && !VALID_TYPE_KEYS.has(key)) {
-    throw new AppError(400, `Invalid type key "${key}" — must be one of: ${[...VALID_TYPE_KEYS].sort().join(", ")}`);
+  if (!input.manufacturer || !input.manufacturer.trim()) {
+    throw new AppError(400, "Manufacturer is required");
+  }
+  if (!input.typeOrModel || !input.typeOrModel.trim()) {
+    throw new AppError(400, input.scope === "manufacturer-type" ? "Asset type is required" : "Model is required");
+  }
+  const key = buildKey(input.scope, input.manufacturer, input.typeOrModel);
+  // After canonicalization the manufacturer half may have collapsed to
+  // empty (e.g. the alias map mapped to ""). The tail check above
+  // already covers an empty trailing segment.
+  if (key.startsWith("/")) {
+    throw new AppError(400, "Manufacturer is required");
+  }
+  if (input.scope === "manufacturer-type") {
+    const typeKey = key.split("/").slice(1).join("/");
+    if (!VALID_TYPE_KEYS.has(typeKey)) {
+      throw new AppError(400, `Invalid asset type "${typeKey}" — must be one of: ${[...VALID_TYPE_KEYS].sort().join(", ")}`);
+    }
   }
   if (!ALLOWED_MIME_TYPES.has(input.mimeType)) {
     throw new AppError(400, `Unsupported image format "${input.mimeType}" — allowed: PNG, JPEG, WebP, SVG`);
@@ -200,7 +213,7 @@ export function validateUpload(input: UploadedIcon): void {
 
 export async function uploadIcon(input: UploadedIcon): Promise<DeviceIconSummary> {
   validateUpload(input);
-  const key = normalizeKey(input.scope, input.key);
+  const key = buildKey(input.scope, input.manufacturer, input.typeOrModel);
   // Prisma 7 Bytes column wants Uint8Array<ArrayBuffer> strictly; the
   // Buffer type from multer is Buffer<ArrayBufferLike> (where ArrayBufferLike
   // includes SharedArrayBuffer). Copy into a fresh Uint8Array backed by a
@@ -317,28 +330,23 @@ export function resolveIconUrl(input: IconResolutionInput, cache: Map<string, st
 
 // Build the ordered candidate list for resolution. Priority (per project
 // decision, see CLAUDE.md "Device Icons"):
-//   1. model: <manufacturer>/<model>   (most specific)
-//   2. model: <model>
-//   3. type:  <assetType>
-//   4. manufacturer: <manufacturer>     (vendor-wide fallback)
-// Manufacturer values are canonicalized through the alias map so the
-// resolver and the picker agree on "Fortinet" vs "Fortinet, Inc.".
+//   1. manufacturer-model: <manufacturer>/<model>     (specific chassis)
+//   2. manufacturer-type:  <manufacturer>/<assetType> (vendor + role)
+// Both require a manufacturer — there is no plain-type / plain-model
+// fallback because a "firewall" logo across every vendor would be
+// meaningless. Assets with no manufacturer resolve to null and fall
+// back to the plain status circle in the renderer.
 function buildResolutionCandidates(input: IconResolutionInput): Array<{ scope: string; key: string }> {
   const candidates: Array<{ scope: string; key: string }> = [];
   const manufacturerCanonical = input.manufacturer
     ? (normalizeManufacturer(input.manufacturer.trim()) ?? input.manufacturer.trim())
     : null;
-  if (manufacturerCanonical && input.model) {
-    candidates.push({ scope: "model", key: `${manufacturerCanonical}/${input.model.trim()}` });
-  }
+  if (!manufacturerCanonical) return candidates;
   if (input.model) {
-    candidates.push({ scope: "model", key: input.model.trim() });
+    candidates.push({ scope: "manufacturer-model", key: `${manufacturerCanonical}/${input.model.trim()}` });
   }
   if (input.assetType) {
-    candidates.push({ scope: "type", key: input.assetType.trim().toLowerCase() });
-  }
-  if (manufacturerCanonical) {
-    candidates.push({ scope: "manufacturer", key: manufacturerCanonical });
+    candidates.push({ scope: "manufacturer-type", key: `${manufacturerCanonical}/${input.assetType.trim().toLowerCase()}` });
   }
   return candidates;
 }

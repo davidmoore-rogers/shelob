@@ -177,17 +177,25 @@
           height: 44,
         },
       },
+      // Vendor logo overlay. Inset image sits on top of the per-role
+      // status color so BOTH signals are visible: the ring around the
+      // logo carries the monitor health (green/amber/red/grey), the
+      // logo itself identifies the vendor + model. Image is sized to
+      // ~68% of the node so a colored ring is always visible around it.
+      // `background-clip: node` keeps the image from bleeding past the
+      // circle; the role-specific node sizing rules above set the node
+      // width/height — we don't override those here.
       {
         selector: 'node[hasIcon = 1]',
         style: {
           "background-image": "data(iconUrl)",
           "background-fit": "contain",
           "background-clip": "node",
-          "background-color": "#ffffff",
-          "background-opacity": 0.95,
-          width: 56,
-          height: 56,
-          "border-width": 1,
+          "background-width": "68%",
+          "background-height": "68%",
+          "background-position-x": "50%",
+          "background-position-y": "50%",
+          "background-image-opacity": 1,
         },
       },
       {

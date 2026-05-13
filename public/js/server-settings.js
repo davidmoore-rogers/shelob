@@ -4131,31 +4131,52 @@ var _deviceIconAssetTypes = [
 ];
 
 function deviceIconsCardHTML() {
-  var byScope = { type: [], model: [], manufacturer: [] };
+  var byScope = { "manufacturer-type": [], "manufacturer-model": [] };
   _deviceIcons.forEach(function (i) {
     if (byScope[i.scope]) byScope[i.scope].push(i);
   });
+
+  // Manufacturer datalist — pulled from the operator-curated alias map
+  // so the picker offers canonical names (Fortinet, Cisco, Juniper, ...)
+  // without forcing exact spelling. Free text is still allowed; the
+  // service alias-normalizes the value at write time.
+  var manufacturerOptions = "";
+  var seen = {};
+  (_manufacturerAliases || []).forEach(function (a) {
+    var c = (a.canonical || "").trim();
+    if (c && !seen[c]) { seen[c] = 1; manufacturerOptions += '<option value="' + escapeHtml(c) + '">'; }
+  });
+
+  var typeOptionsHtml = _deviceIconAssetTypes
+    .map(function (t) { return '<option value="' + escapeHtml(t) + '">' + escapeHtml(t) + '</option>'; })
+    .join("");
+
   var html = '<div class="settings-card">' +
     '<h4>Device Icons</h4>' +
     '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-      'Upload PNG / JPEG / WebP images (max 256 KB) or SVG (max 32 KB, strict validation — no scripts, no external refs) to render specific hardware models, asset types, or vendors on the Device Map\'s topology graph. ' +
-      'Resolution priority: <strong>manufacturer/model</strong> exact match → <strong>model</strong> alone → <strong>assetType</strong> → <strong>manufacturer</strong> fallback. ' +
-      'Re-uploading replaces the existing image for that scope+key.' +
+      'Upload PNG / JPEG / WebP images (max 256 KB) or SVG (max 32 KB, strict validation — no scripts, no external refs) to overlay vendor logos on the Device Map\'s topology graph. ' +
+      'Every icon is keyed to a <strong>manufacturer</strong> plus either an asset <strong>type</strong> or a specific <strong>model</strong>. ' +
+      'On render: <strong>manufacturer + model</strong> exact match wins over the <strong>manufacturer + type</strong> fallback. The asset\'s status (Up/Warning/Down/Recovering) keeps coloring the ring around the logo so both signals stay visible.' +
     '</p>';
 
-  // Upload form
-  html += '<div class="form-row" style="display:grid;grid-template-columns:160px 1fr 1fr auto;gap:8px;align-items:flex-end;margin-bottom:1rem">' +
+  // Upload form: manufacturer + scope (type|model) + type dropdown / model input + file
+  html += '<div class="form-row" style="display:grid;grid-template-columns:1fr 140px 1fr 1fr auto;gap:8px;align-items:flex-end;margin-bottom:0.5rem">' +
     '<div class="form-group" style="margin:0">' +
-      '<label style="font-size:0.78rem">Scope</label>' +
+      '<label style="font-size:0.78rem">Manufacturer</label>' +
+      '<input type="text" id="f-icon-mfr" list="f-icon-mfr-list" placeholder="Fortinet">' +
+      '<datalist id="f-icon-mfr-list">' + manufacturerOptions + '</datalist>' +
+    '</div>' +
+    '<div class="form-group" style="margin:0">' +
+      '<label style="font-size:0.78rem">Match by</label>' +
       '<select id="f-icon-scope">' +
-        '<option value="type">Asset type</option>' +
-        '<option value="model">Model</option>' +
-        '<option value="manufacturer">Manufacturer</option>' +
+        '<option value="manufacturer-type">Asset type</option>' +
+        '<option value="manufacturer-model">Model</option>' +
       '</select>' +
     '</div>' +
     '<div class="form-group" style="margin:0">' +
-      '<label style="font-size:0.78rem">Key</label>' +
-      '<input type="text" id="f-icon-key" placeholder="firewall">' +
+      '<label style="font-size:0.78rem" id="f-icon-key-label">Asset type</label>' +
+      '<select id="f-icon-type">' + typeOptionsHtml + '</select>' +
+      '<input type="text" id="f-icon-model" placeholder="FortiGate-91G" style="display:none">' +
     '</div>' +
     '<div class="form-group" style="margin:0">' +
       '<label style="font-size:0.78rem">Image file</label>' +
@@ -4165,21 +4186,26 @@ function deviceIconsCardHTML() {
   '</div>' +
   '<p id="icon-upload-status" style="margin:0 0 1rem;font-size:0.82rem"></p>';
 
-  // List by scope
-  function renderScopeList(scope, label) {
+  // List by scope. The key column is split into Manufacturer / Type-or-Model
+  // because the canonical key (e.g. "Fortinet/firewall") is opaque on its own.
+  function renderScopeList(scope, label, tailHeader) {
     var list = byScope[scope];
     var s = '<h5 class="mac-id-section-heading">' + escapeHtml(label) + ' (' + list.length + ')</h5>';
     if (list.length === 0) {
-      s += '<p class="empty-state" style="padding:0.5rem 0;margin:0 0 1rem">No ' + scope + '-scoped icons uploaded yet.</p>';
+      s += '<p class="empty-state" style="padding:0.5rem 0;margin:0 0 1rem">No icons uploaded yet for this scope.</p>';
       return s;
     }
     s += '<table class="data-table" style="font-size:0.85rem;margin-bottom:1rem"><thead><tr>' +
-      '<th style="width:60px">Preview</th><th>Key</th><th>Filename</th><th style="width:120px">Size</th><th style="width:160px">Uploaded</th><th style="width:80px"></th>' +
+      '<th style="width:60px">Preview</th><th>Manufacturer</th><th>' + escapeHtml(tailHeader) + '</th><th>Filename</th><th style="width:100px">Size</th><th style="width:160px">Uploaded</th><th style="width:80px"></th>' +
     '</tr></thead><tbody>';
     list.forEach(function (i) {
+      var slash = i.key.indexOf("/");
+      var mfr = slash >= 0 ? i.key.slice(0, slash) : i.key;
+      var tail = slash >= 0 ? i.key.slice(slash + 1) : "";
       s += '<tr>' +
         '<td><img src="' + escapeHtml(i.url) + '" alt="" style="width:40px;height:40px;object-fit:contain;background:#1c2029;border:1px solid var(--color-border);border-radius:4px"></td>' +
-        '<td><code class="mono" style="font-size:0.78rem">' + escapeHtml(i.key) + '</code></td>' +
+        '<td><code class="mono" style="font-size:0.78rem">' + escapeHtml(mfr) + '</code></td>' +
+        '<td><code class="mono" style="font-size:0.78rem">' + escapeHtml(tail) + '</code></td>' +
         '<td>' + escapeHtml(i.filename) + '</td>' +
         '<td>' + escapeHtml(formatBytesShort(i.size)) + '</td>' +
         '<td style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(formatDate(i.uploadedAt)) + (i.uploadedBy ? ' by ' + escapeHtml(i.uploadedBy) : '') + '</td>' +
@@ -4189,9 +4215,8 @@ function deviceIconsCardHTML() {
     s += '</tbody></table>';
     return s;
   }
-  html += renderScopeList("type", "By asset type");
-  html += renderScopeList("model", "By model");
-  html += renderScopeList("manufacturer", "By manufacturer");
+  html += renderScopeList("manufacturer-type", "Manufacturer + Type", "Asset type");
+  html += renderScopeList("manufacturer-model", "Manufacturer + Model", "Model");
 
   html += '</div>';
   return html;
@@ -4212,42 +4237,50 @@ function wireDeviceIconHandlers() {
     });
   });
 
-  // Hint dynamic placeholder for the key field based on scope.
+  // Toggle the third column between the asset-type dropdown and the
+  // model free-text input. Label flips too so the operator always sees
+  // which input applies to the current scope.
   var scopeSel = document.getElementById("f-icon-scope");
-  var keyInput = document.getElementById("f-icon-key");
-  if (scopeSel && keyInput) {
-    var refreshHint = function () {
-      if (scopeSel.value === "type") {
-        keyInput.placeholder = "firewall | switch | access_point | server | workstation | printer | router | other";
-      } else if (scopeSel.value === "manufacturer") {
-        keyInput.placeholder = "Fortinet  (matches every device from this vendor; aliased to canonical form)";
-      } else {
-        keyInput.placeholder = "Fortinet/FortiGate-91G  (or just FortiGate-91G to match any vendor)";
-      }
+  var typeSel = document.getElementById("f-icon-type");
+  var modelInput = document.getElementById("f-icon-model");
+  var keyLabel = document.getElementById("f-icon-key-label");
+  if (scopeSel && typeSel && modelInput && keyLabel) {
+    var refreshScope = function () {
+      var isModel = scopeSel.value === "manufacturer-model";
+      typeSel.style.display = isModel ? "none" : "";
+      modelInput.style.display = isModel ? "" : "none";
+      keyLabel.textContent = isModel ? "Model" : "Asset type";
     };
-    scopeSel.addEventListener("change", refreshHint);
-    refreshHint();
+    scopeSel.addEventListener("change", refreshScope);
+    refreshScope();
   }
 }
 
 async function uploadIconUI() {
   var scopeEl = document.getElementById("f-icon-scope");
-  var keyEl = document.getElementById("f-icon-key");
+  var mfrEl = document.getElementById("f-icon-mfr");
+  var typeEl = document.getElementById("f-icon-type");
+  var modelEl = document.getElementById("f-icon-model");
   var fileEl = document.getElementById("f-icon-file");
   var statusEl = document.getElementById("icon-upload-status");
   var btn = document.getElementById("btn-icon-upload");
-  if (!scopeEl || !keyEl || !fileEl) return;
+  if (!scopeEl || !mfrEl || !typeEl || !modelEl || !fileEl) return;
   var scope = scopeEl.value;
-  var key = (keyEl.value || "").trim();
-  if (!key) { showToast("Key is required", "error"); return; }
+  var manufacturer = (mfrEl.value || "").trim();
+  var typeOrModel = scope === "manufacturer-model"
+    ? (modelEl.value || "").trim()
+    : typeEl.value;
+  if (!manufacturer) { showToast("Manufacturer is required", "error"); return; }
+  if (!typeOrModel) { showToast(scope === "manufacturer-model" ? "Model is required" : "Asset type is required", "error"); return; }
   if (!fileEl.files || fileEl.files.length === 0) { showToast("Choose an image file first", "error"); return; }
   btn.disabled = true;
   if (statusEl) statusEl.innerHTML = '<span style="color:var(--color-text-tertiary)">Uploading…</span>';
   try {
-    var created = await api.deviceIcons.upload(scope, key, fileEl.files[0]);
-    showToast("Icon uploaded for " + created.scope + ":" + created.key, "success");
+    var created = await api.deviceIcons.upload(scope, manufacturer, typeOrModel, fileEl.files[0]);
+    showToast("Icon uploaded for " + created.key, "success");
     if (statusEl) statusEl.innerHTML = "";
-    keyEl.value = "";
+    mfrEl.value = "";
+    modelEl.value = "";
     fileEl.value = "";
     _deviceIcons = await api.deviceIcons.list();
     renderIdentificationTab();

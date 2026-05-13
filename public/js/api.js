@@ -144,11 +144,12 @@ const api = {
   // graph. Admin-only writes; image-serve is auth-only and cacheable.
   deviceIcons: {
     list:   ()        => request("GET",    "/device-icons"),
-    upload: (scope, key, file) => {
+    upload: (scope, manufacturer, typeOrModel, file) => {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("scope", scope);
-      formData.append("key", key);
+      formData.append("manufacturer", manufacturer);
+      formData.append("typeOrModel", typeOrModel);
       return fetch(API_BASE + "/device-icons", {
         method: "POST",
         headers: _csrfHeaders(),

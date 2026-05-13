@@ -801,7 +801,7 @@ Listed alphabetically.
 
 ## services/deviceIconService.ts
 
-**What it owns:** Operator-uploaded device icons (PNG/JPEG/WebP/SVG; 256KB cap raster, 32KB cap SVG; magic-byte check for raster, pattern-reject validation for SVG); bytes-in-DB storage; resolution by manufacturer/model/type/manufacturer priority. Manufacturer keys canonicalized through `manufacturerAlias` map.
+**What it owns:** Operator-uploaded device icons (PNG/JPEG/WebP/SVG; 256KB cap raster, 32KB cap SVG; magic-byte check for raster, pattern-reject validation for SVG); bytes-in-DB storage. Every icon is keyed to (manufacturer, type-or-model); resolution priority is `manufacturer-model: <mfr>/<model>` → `manufacturer-type: <mfr>/<assetType>`. Manufacturer values canonicalized through `manufacturerAlias` map at both upload and resolution time.
 
 **Public API:** `uploadIcon(), listIcons(), getIconImage(), deleteIcon(), resolveIconForAsset(), loadIconResolutionCache(), resolveIconUrl(), validateUpload()`
 
@@ -810,11 +810,12 @@ Listed alphabetically.
 **Used by:** `src/api/routes/deviceIcons.ts:32,56,83,105 — upload/list/delete CRUD + image serve`, `src/api/routes/map.ts:210,267,369,588,710,787 — icon resolution for topology switches/APs/firewalls (icon cache preloaded once per request)`
 
 **Invariants:**
-- Scope: "type" (asset type key, enum: server/switch/router/firewall/workstation/printer/access_point/other), "model" (manufacturer/model or model-only form), or "manufacturer" (vendor-wide).
-- Type keys normalized to lowercase; model keys trim each side of `/` separator and run the manufacturer half through normalizeManufacturer (e.g., "Fortinet, Inc./FortiGate-91G" → "Fortinet/FortiGate-91G"); manufacturer-scope keys run through normalizeManufacturer.
+- Scope: "manufacturer-type" (asset type key, enum: server/switch/router/firewall/workstation/printer/access_point/other) or "manufacturer-model" (vendor-specific chassis/model). Both require a manufacturer; standalone type/model/manufacturer uploads are not supported.
+- Canonical key form: `"<canonicalManufacturer>/<typeOrModel>"`. Manufacturer half always runs through normalizeManufacturer (alias map). Type tail lowercased; model tail preserved as typed.
 - Upload validation: mimeType must be PNG/JPEG/WebP/SVG; raster size ≤256KB, SVG size ≤32KB; raster requires magic-byte prefix matching declared mimeType; SVG is reject-on-pattern (refused if it contains <script>, <foreignObject>, <iframe>, <object>, <embed>, <!DOCTYPE>, <!ENTITY>, <?xml-stylesheet>, on*= event handlers, javascript: URLs, any non-#fragment href/xlink:href/src, @import, or external url()).
-- Resolution is most-specific-wins: manufacturer/model → model → type → manufacturer → null (frontend uses default circle). Manufacturer is intentionally the last fallback so a specific type override beats a vendor-wide one.
+- Resolution is most-specific-wins: manufacturer-model → manufacturer-type → null (frontend leaves node as a plain status circle). Assets with no manufacturer resolve to null directly — no fallback to "any vendor".
 - `resolveIconUrl()` is synchronous (used in hot topology path); operates against pre-loaded cache from `loadIconResolutionCache()`. Both call sites share `buildResolutionCandidates()` so the priority order can't drift between sync and async paths.
+- Topology renderer overlays the icon at 68% of the node size centered (not full-bleed) so the node's role-colored background ring stays visible around the logo. See `public/js/topology-render.js` `node[hasIcon=1]` style.
 - Bytes stored as Uint8Array in DeviceIcon.data column; `/api/v1/device-icons/:id/image` serves raw bytes with Content-Type + Cache-Control. SVG responses additionally carry X-Content-Type-Options: nosniff and a strict CSP (`default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox`) as defense-in-depth against validator bypass.
 
 **When changing this:**
@@ -825,6 +826,7 @@ Listed alphabetically.
 - Review map.ts topology rendering (resolveIconUrl call sites) if icon resolution priority changes — but priority is built once in `buildResolutionCandidates()`, so updates land in both sync and async paths together.
 - Ensure upload route multer fileSize limit (256KB) stays at or above the raster MAX_ICON_BYTES constant. SVG's tighter MAX_SVG_BYTES is enforced inside validateUpload after multer accepts.
 - Image-serve route: any new mimeType added to ALLOWED_MIME_TYPES that could execute (script-bearing text formats) needs the same CSP/nosniff treatment as SVG.
+- Topology renderer style for `node[hasIcon=1]` in `public/js/topology-render.js` deliberately does NOT override `background-color` so the role-colored status ring shows around the inset logo. If you make the icon full-bleed again, also restore the explicit white background fallback.
 
 ---
 

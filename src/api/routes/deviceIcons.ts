@@ -46,17 +46,24 @@ router.get("/", requireAdmin, async (_req, res, next) => {
 
 // POST /device-icons — multipart upload.
 //   field name: file (required)
-//   form fields: scope ("type" | "model"), key (string)
-// Re-uploading the same (scope, key) replaces the existing image.
+//   form fields:
+//     scope          ("manufacturer-type" | "manufacturer-model")
+//     manufacturer   (string, required; canonicalized via alias map)
+//     typeOrModel    (string, required; assetType enum value when
+//                     scope=manufacturer-type, free text when
+//                     scope=manufacturer-model)
+// Re-uploading the same canonical key replaces the existing image.
 router.post("/", requireAdmin, upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new AppError(400, "Missing 'file' upload");
     const scope = String(req.body?.scope || "");
-    const key = String(req.body?.key || "");
-    if (!scope || !key) throw new AppError(400, "scope and key are required");
+    const manufacturer = String(req.body?.manufacturer || "");
+    const typeOrModel = String(req.body?.typeOrModel || "");
+    if (!scope) throw new AppError(400, "scope is required");
     const summary = await uploadIcon({
-      scope: scope as "type" | "model" | "manufacturer",
-      key,
+      scope: scope as "manufacturer-type" | "manufacturer-model",
+      manufacturer,
+      typeOrModel,
       filename: req.file.originalname,
       mimeType: req.file.mimetype,
       data: req.file.buffer,
