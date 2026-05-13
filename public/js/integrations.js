@@ -19,13 +19,21 @@ var _POLLING_LABELS = {
   agent:    "Polaris Agent",
 };
 
+// "agent" is intentionally NOT in any of these arrays — the Polaris Agent
+// is installed via a dedicated button on the Monitoring tab, not picked
+// from the polling dropdown. When an agent is installed Polaris stamps
+// the four *Polling fields to "agent" server-side at enrollment time;
+// the polling-methods section is hidden in the UI for those assets. The
+// _POLLING_LABELS map still includes "agent" so the value renders
+// correctly on any surface that displays raw values (audit logs, the
+// asset-list status pill, etc.).
 var _POLLING_COMPAT = {
   fortimanager:    ["rest_api", "snmp", "ssh", "icmp", "disabled"],
   fortigate:       ["rest_api", "snmp", "ssh", "icmp", "disabled"],
-  activedirectory: ["icmp", "winrm", "ssh", "disabled", "agent"],
-  entraid:         ["icmp", "winrm", "ssh", "disabled", "agent"],
-  windowsserver:   ["icmp", "winrm", "ssh", "disabled", "agent"],
-  manual:          ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled", "agent"],
+  activedirectory: ["icmp", "winrm", "ssh", "disabled"],
+  entraid:         ["icmp", "winrm", "ssh", "disabled"],
+  windowsserver:   ["icmp", "winrm", "ssh", "disabled"],
+  manual:          ["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled"],
 };
 
 // Source-default polling for one stream. Mirrors defaultPollingForSource() in

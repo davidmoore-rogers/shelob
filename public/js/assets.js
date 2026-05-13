@@ -1712,7 +1712,7 @@ function getAssetFormData() {
 
 // ─── Tabbed asset modal scaffolding ────────────────────────────────────────
 
-function assetMonitoringFormHTML(asset) {
+function assetMonitoringFormHTML(asset, managedAgent) {
   var interval = asset && asset.monitorIntervalSec != null ? asset.monitorIntervalSec : "";
   var probeTimeout = asset && asset.probeTimeoutMs != null ? asset.probeTimeoutMs : "";
   var telemetryTimeout  = asset && asset.telemetryTimeoutMs  != null ? asset.telemetryTimeoutMs  : "";
@@ -1802,6 +1802,83 @@ function assetMonitoringFormHTML(asset) {
       '<p class="hint" style="margin-top:0.25rem">Per-asset overrides win over class / integration / source-default tiers. When a method needs a credential, "Source default" lets the asset inherit the integration\'s configured credential at runtime.</p>' +
     '</div>';
 
+  // ─── Polaris Agent block ───────────────────────────────────────────
+  //
+  // Three states:
+  //   - No agent + source supports agent  → "Install Polaris Agent…" button
+  //   - Agent in flight (pending/uploading/enrolling/upgrading/uninstalling)
+  //                                       → status pill + read-only banner
+  //   - Agent active                      → status pill + Upgrade / Uninstall
+  //
+  // When the agent is active OR in flight, the Polling Methods section
+  // is suppressed — the agent owns all four streams. The four *Polling
+  // fields on the Asset are stamped to "agent" server-side at enrollment
+  // time so the periodic puller cleanly no-ops; clicking Save on this
+  // modal does NOT overwrite them (the form ignores the dropdowns when
+  // the polling section is hidden).
+  var sourceSupportsAgent = (assetSourceKind === "manual" ||
+                             assetSourceKind === "activedirectory" ||
+                             assetSourceKind === "entraid" ||
+                             assetSourceKind === "windowsserver");
+  var agentInFlight = managedAgent && (
+    managedAgent.installStatus === "pending"      ||
+    managedAgent.installStatus === "uploading"    ||
+    managedAgent.installStatus === "enrolling"    ||
+    managedAgent.installStatus === "upgrading"    ||
+    managedAgent.installStatus === "uninstalling"
+  );
+  var agentActive = managedAgent && managedAgent.installStatus === "active";
+  var agentBlockHtml = "";
+  if (agentActive) {
+    agentBlockHtml =
+      '<div class="form-group" style="margin-top:1rem;padding:1rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-1)">' +
+        '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">' +
+          '<strong>Polaris Agent</strong>' +
+          '<span style="font-size:0.75rem;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,0.06);color:var(--color-success)">Active</span>' +
+        '</div>' +
+        '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin:0 0 0.5rem">' +
+          'Agent v' + escapeHtml(managedAgent.agentVersion || "?") + ' is installed on this host and owns all four monitoring streams. ' +
+          'The polling-methods section is hidden — the agent pushes samples directly. Manage the agent from the asset details modal → System tab.' +
+        '</p>' +
+        '<div style="font-size:0.78rem;color:var(--color-text-tertiary)">' +
+          'Platform: ' + escapeHtml(managedAgent.osPlatform || "?") + '/' + escapeHtml(managedAgent.arch || "?") +
+          (managedAgent.lastSeenAt ? ' · Last seen: ' + escapeHtml(new Date(managedAgent.lastSeenAt).toLocaleString()) : '') +
+        '</div>' +
+      '</div>';
+  } else if (agentInFlight) {
+    agentBlockHtml =
+      '<div class="form-group" style="margin-top:1rem;padding:1rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-1)">' +
+        '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">' +
+          '<strong>Polaris Agent</strong>' +
+          '<span style="font-size:0.75rem;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,0.06);color:var(--color-text-secondary)">' +
+            escapeHtml(_agentStatusLabel(managedAgent.installStatus)) + '</span>' +
+        '</div>' +
+        '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin:0">' +
+          'An install or uninstall is in flight. Watch progress on the asset details modal → System tab.' +
+        '</p>' +
+      '</div>';
+  } else if (sourceSupportsAgent && asset && asset.id) {
+    // No agent installed yet + asset already exists (we have an id to
+    // install on). On the CREATE flow asset.id is undefined; we hide
+    // the button there because the install service needs the row to
+    // exist first.
+    agentBlockHtml =
+      '<div class="form-group" style="margin-top:1rem;padding:1rem;border:1px dashed var(--color-border);border-radius:6px;background:var(--color-surface-1)">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap">' +
+          '<div style="flex:1;min-width:0">' +
+            '<strong>Polaris Agent</strong>' +
+            '<p class="hint" style="margin:0.25rem 0 0">Install a lightweight agent on this host. The agent pushes monitoring samples back to Polaris directly and replaces the polling-methods section below entirely.</p>' +
+          '</div>' +
+          '<button type="button" class="btn btn-secondary" id="btn-edit-modal-install-agent" data-asset-id="' + escapeHtml(asset.id) + '">Install Polaris Agent…</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  // Hide the polling-methods section entirely when an agent is active
+  // or in flight. Otherwise the operator could pick a method that gets
+  // ignored at resolution time + see misleading dropdown state.
+  var transportBlockShown = !(agentActive || agentInFlight);
+
   return (
     '<div class="form-group">' +
       '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">' +
@@ -1831,7 +1908,8 @@ function assetMonitoringFormHTML(asset) {
       '<input type="number" id="f-systemInfoTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(systemInfoTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
       '<p class="hint">Per-request timeout for the interface / storage / LLDP collector. Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
     '</div>' +
-    transportBlockHtml +
+    agentBlockHtml +
+    (transportBlockShown ? transportBlockHtml : '') +
     '<div class="form-group" id="f-asset-overrides-wrap"' + assetIdAttr + ' style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--color-border);display:none">' +
       '<button type="button" class="btn btn-secondary" id="btn-asset-overrides-list">Show other asset overrides under this scope</button>' +
       '<p class="hint" id="f-asset-overrides-hint">Lists every asset under the same (class, asset source) scope that has its own per-asset overrides.</p>' +
@@ -2164,12 +2242,22 @@ async function openCreateModal() {
 
 async function openEditModal(id) {
   try {
-    var results = await Promise.all([api.assets.get(id), _ensureTagCache()]);
+    // Fetch in parallel: asset, tag cache, and the agent state. The
+    // Monitoring tab branches on whether an agent is installed (active
+    // or in-flight) — when one is, we hide the per-stream polling
+    // dropdowns and show a status block instead, since the agent owns
+    // all four streams. api.assets.agent resolves to null on 404.
+    var results = await Promise.all([
+      api.assets.get(id),
+      _ensureTagCache(),
+      api.assets.agent(id).catch(function () { return null; }),
+    ]);
     var asset = results[0];
+    var managedAgent = results[2];
     asset._editing = true;
     var body = _renderTabbedBody("asset-edit", [
       { key: "general",    label: "General",    html: assetFormHTML(asset) },
-      { key: "monitoring", label: "Monitoring", html: assetMonitoringFormHTML(asset) },
+      { key: "monitoring", label: "Monitoring", html: assetMonitoringFormHTML(asset, managedAgent) },
     ]);
     var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
       '<button class="btn btn-primary" id="btn-save">Save Changes</button>';
@@ -2179,6 +2267,21 @@ async function openEditModal(id) {
     wireTagPicker();
     _wireMonitorEditTab(asset);
     _populateUploadedMibsInDropdowns();
+
+    // Wire the "Install Polaris Agent…" button when present (no agent
+    // installed + source supports agent). Reuses the same install modal
+    // the asset details panel surfaces, so the operator flow is
+    // consistent regardless of entry point. Closes this edit modal
+    // before opening the install modal so the operator doesn't end up
+    // with stacked modals; their unsaved changes would be lost, but
+    // the install flow is the meaningful work here.
+    var editInstallBtn = document.getElementById("btn-edit-modal-install-agent");
+    if (editInstallBtn) {
+      editInstallBtn.addEventListener("click", function () {
+        closeModal();
+        _openInstallAgentModal(asset);
+      });
+    }
     document.getElementById("btn-save").addEventListener("click", async function () {
       var btn = this;
       btn.disabled = true;

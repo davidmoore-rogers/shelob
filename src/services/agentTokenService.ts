@@ -120,24 +120,40 @@ export async function consumeEnrollmentToken(
     const bearerHash = await hashPassword(bearer);
     const bearerPrefix = bearer.slice(0, TOKEN_PREFIX_LEN);
 
-    // Single update: clear enrollment fields, write bearer, flip to active.
+    // Single transaction: clear enrollment fields + write bearer + flip
+    // ManagedAgent to active + stamp the asset's four *Polling fields to
+    // "agent" so the periodic puller no-ops cleanly. The polling stamp
+    // is what tells the resolver "this asset's monitoring is fully owned
+    // by the on-host agent; don't try to poll it from here." Source
+    // defaults (ICMP for AD/Entra etc.) would otherwise still fire.
     // The argon2 hashes are unique so even if two enrollment POSTs raced
     // for the same row (operator double-click on Reinstall), only one
     // would verify; the second loses on the verifyPassword check.
-    await prisma.managedAgent.update({
-      where: { id: row.id },
-      data: {
-        enrollmentTokenHash: null,
-        enrollmentTokenPrefix: null,
-        enrollmentExpiresAt: null,
-        bearerHash,
-        bearerPrefix,
-        bearerIssuedAt: new Date(),
-        bearerRevokedAt: null,
-        installStatus: "active",
-        installError: null,
-      },
-    });
+    await prisma.$transaction([
+      prisma.managedAgent.update({
+        where: { id: row.id },
+        data: {
+          enrollmentTokenHash: null,
+          enrollmentTokenPrefix: null,
+          enrollmentExpiresAt: null,
+          bearerHash,
+          bearerPrefix,
+          bearerIssuedAt: new Date(),
+          bearerRevokedAt: null,
+          installStatus: "active",
+          installError: null,
+        },
+      }),
+      prisma.asset.update({
+        where: { id: row.assetId },
+        data: {
+          responseTimePolling: "agent",
+          telemetryPolling:    "agent",
+          interfacesPolling:   "agent",
+          lldpPolling:         "agent",
+        },
+      }),
+    ]);
 
     return {
       managedAgent: {

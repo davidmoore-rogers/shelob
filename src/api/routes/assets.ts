@@ -2846,8 +2846,21 @@ router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
     if (force) {
       // Hard-delete the local row. Orphan binary remains on the host
       // (operator's choice when ?force=true); the bearer is dead so it
-      // can't talk to Polaris.
-      await prisma.managedAgent.delete({ where: { id: row.id } });
+      // can't talk to Polaris. Also clear the *Polling fields back to
+      // null so the periodic puller resumes per the source default —
+      // mirrors what runUninstall does on the non-force path.
+      await prisma.$transaction([
+        prisma.managedAgent.delete({ where: { id: row.id } }),
+        prisma.asset.update({
+          where: { id: assetId },
+          data: {
+            responseTimePolling: null,
+            telemetryPolling:    null,
+            interfacesPolling:   null,
+            lldpPolling:         null,
+          },
+        }),
+      ]);
       await logEvent({
         action:       "agent.force_removed",
         resourceType: "asset",

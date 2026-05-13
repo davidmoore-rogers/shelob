@@ -366,8 +366,25 @@ async function runUninstall(input: StartUninstallInput): Promise<void> {
     }
   }
 
-  // Hard-delete on success (audit trail lives in Event).
-  await prisma.managedAgent.delete({ where: { id: managedAgentId } });
+  // Hard-delete on success (audit trail lives in Event). Also clear the
+  // four *Polling fields back to null so the source-default resolver
+  // takes over again — the asset was "owned by the agent" while it was
+  // installed; with the agent gone we want ICMP / SNMP / etc. periodic
+  // polling to resume per the source default. Operators can re-pick a
+  // specific method on the Monitoring tab if they want a different
+  // post-uninstall config.
+  await prisma.$transaction([
+    prisma.managedAgent.delete({ where: { id: managedAgentId } }),
+    prisma.asset.update({
+      where: { id: row.assetId },
+      data: {
+        responseTimePolling: null,
+        telemetryPolling:    null,
+        interfacesPolling:   null,
+        lldpPolling:         null,
+      },
+    }),
+  ]);
   await logEvent({
     action:       "agent.uninstalled",
     resourceType: "asset",
