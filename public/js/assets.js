@@ -3128,12 +3128,20 @@ function _openInstallAgentModal(a) {
         osPlatform:   os,
         arch:         archSel.value,
       }).then(function (r) {
-        showToast("Install started — managedAgentId=" + (r.managedAgentId || "?"), "success");
+        showToast("Install started — watch progress on the System tab", "success");
         closeModal();
-        // Reload the agent panel and start polling.
-        api.assets.agent(a.id).then(function (agent) {
-          _rerenderAgentSubpanel(a, agent);
-        });
+        // Auto-open the asset details modal on the System tab so the
+        // operator sees the live install-progress strip without having
+        // to navigate. openViewModal renders the Agent sub-panel as part
+        // of its body, and the sub-panel's poll loop starts on its own
+        // when installStatus is in a transient state. Works regardless
+        // of entry point (asset list click, edit modal install button,
+        // or the details-modal install button reopening on the same
+        // panel — idempotent re-render in that case).
+        openViewModal(a.id).then(function () {
+          var sysBtn = document.querySelector('#asset-view-tabs [data-tab="system"]');
+          if (sysBtn && !sysBtn.classList.contains("active")) sysBtn.click();
+        }).catch(function () { /* openViewModal already surfaces its own errors */ });
       }).catch(function (err) {
         showToast("Install failed: " + err.message, "error");
       });
