@@ -60,6 +60,12 @@ const FLOOR = {
   telemetryPolling:          null,
   interfacesPolling:         null,
   lldpPolling:               null,
+  // Per-stream MIB id hints — tierFromJson always includes them on the
+  // resolved shape (null when unseeded). Mirrored here so toEqual() lines up.
+  responseTimeMibId:         null,
+  telemetryMibId:            null,
+  interfacesMibId:           null,
+  lldpMibId:                 null,
 };
 
 const TUNED_TIER = {
@@ -79,6 +85,10 @@ const TUNED_TIER = {
   telemetryPolling:          null,
   interfacesPolling:         null,
   lldpPolling:               null,
+  responseTimeMibId:         null,
+  telemetryMibId:            null,
+  interfacesMibId:           null,
+  lldpMibId:                 null,
 };
 
 // Per-stream polling defaults the resolver applies for a given source kind.
