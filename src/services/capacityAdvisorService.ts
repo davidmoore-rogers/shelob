@@ -42,13 +42,11 @@
  * current. Small downward drift isn't worth a restart.
  */
 
-import { totalmem } from "node:os";
-
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 import { setEnvVar } from "../utils/envFile.js";
 import { getMonitorWorkHistogramValues, type HistogramBucketValue } from "../metrics.js";
-import { setQueueMode, isPgbossInstalled } from "./queueService.js";
+import { setQueueMode, isPgbossInstalled, QUEUE_NAMES } from "./queueService.js";
 import type { CapacitySnapshot } from "./capacityService.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -114,6 +112,26 @@ export interface AdvisorState {
   activeQueueMode: "cursor" | "pgboss";
   /** What the advisor would recommend the queue mode be. */
   recommendedQueueMode: "cursor" | "pgboss";
+  /** Per-cadence pg-boss handler timeout cap (`pgboss.queue.expire_seconds`),
+   *  read live from the queue table so the advisor reflects what's actually in
+   *  effect — not just what `EXPIRE_BY_QUEUE` in queueService.ts would set on
+   *  a fresh install. Null when the queue row hasn't been created yet (cursor
+   *  mode pre-flip, or pg-boss hasn't booted) or the read failed. */
+  handlerTimeoutSec: Record<CadenceKey, number | null>;
+  /** Cadences whose observed p90 has climbed close to the handler timeout cap.
+   *  Empty list = healthy headroom. Non-empty drives the
+   *  `monitor_handler_timeout_pressure` watch reason in capacityService. */
+  handlerTimeoutPressure: HandlerTimeoutPressure[];
+}
+
+export interface HandlerTimeoutPressure {
+  cadence: CadenceKey;
+  /** Observed p90 in seconds (from the histogram, or COLD_START fallback). */
+  p90Sec: number;
+  /** Per-queue handler kill cap from pgboss.queue.expire_seconds. */
+  expireSec: number;
+  /** p90 / expireSec, 0..1 — UI displays as a percentage. */
+  utilization: number;
 }
 
 export interface IntegrationBreakdown {
@@ -140,6 +158,12 @@ export interface AdvisorInputs {
   cadence: Record<CadenceKey, CadenceObservation>;
   /** Per-cadence cadence-interval seconds (resolved from MonitorSettings). */
   cadenceIntervals: Record<CadenceKey, number>;
+  /** Per-cadence pg-boss handler timeout cap (`pgboss.queue.expire_seconds`),
+   *  read live from the queue table. Null when the queue row hasn't been
+   *  created yet (cursor mode pre-flip) or the read failed. Used both for
+   *  tooltip context (showing headroom vs. observed p90) and for the
+   *  `handlerTimeoutPressure` rollup that fires the matching watch reason. */
+  handlerTimeoutSec: Record<CadenceKey, number | null>;
   /** Already-resolved per-cadence applicable asset population. */
   applicable: Record<CadenceKey, number>;
   /** Current env-var values for the worker / pool levers (numeric). */
@@ -217,6 +241,15 @@ const POOL_ROUNDING = 50;
 
 /** Asset-count threshold above which pgboss is the recommended queue mode. */
 const PGBOSS_RECOMMEND_ASSETS = 500;
+
+/** Fraction of `pgboss.queue.expire_seconds` at which observed p90 starts
+ *  flagging timeout pressure. Below this the queue is healthy; above it,
+ *  the handler is starting to brush against the kill cap and operators get
+ *  a watch-severity nudge to either raise EXPIRE_BY_QUEUE for the cadence
+ *  or trim the per-asset payload. 0.7 is conservative — picked to fire
+ *  before any actual kills (which would corrupt the histogram-based p90
+ *  used elsewhere by the advisor). */
+const HANDLER_TIMEOUT_PRESSURE_RATIO = 0.7;
 
 const ADVISOR_CACHE_TTL_MS = 10 * 60 * 1000;
 const LAST_CHANGE_REQUIRED_SETTING_KEY = "capacity.advisor.lastChangeRequired";
@@ -321,17 +354,25 @@ async function observeCadences(): Promise<Record<CadenceKey, CadenceObservation>
 // ─── Pure compute: buildAdvisorState ──────────────────────────────────────
 
 export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
-  const { snapshot, integrations, cadence, cadenceIntervals, applicable, currentEnv, pgTuning } = inputs;
+  const { snapshot, integrations, cadence, cadenceIntervals, handlerTimeoutSec, applicable, currentEnv, pgTuning } = inputs;
   const recommendations: AdvisorRecommendation[] = [];
 
   // 1. Per-cadence worker needs.
   const cadenceKeys: CadenceKey[] = ["probe", "fastFiltered", "telemetry", "systemInfo"];
   const workersNeeded: Record<CadenceKey, number> = { probe: 0, fastFiltered: 0, telemetry: 0, systemInfo: 0 };
+  const handlerTimeoutPressure: HandlerTimeoutPressure[] = [];
   for (const c of cadenceKeys) {
     const p90 = cadence[c].p90 ?? COLD_START_P90_SEC[c];
     const interval = Math.max(1, cadenceIntervals[c]);
     const need = Math.ceil((applicable[c] * p90 * SAFETY_FACTOR) / interval);
     workersNeeded[c] = Math.max(need, PER_CADENCE_FLOOR);
+    // Timeout-pressure check: when observed p90 climbs toward the pg-boss
+    // handler kill cap, fire a watch reason BEFORE jobs start getting killed
+    // (which would corrupt the histogram the advisor reads).
+    const expire = handlerTimeoutSec[c];
+    if (expire && p90 >= expire * HANDLER_TIMEOUT_PRESSURE_RATIO) {
+      handlerTimeoutPressure.push({ cadence: c, p90Sec: p90, expireSec: expire, utilization: p90 / expire });
+    }
   }
   const sumWorkersNeeded = Object.values(workersNeeded).reduce((a, b) => a + b, 0);
   const floatingWorkers = Math.max(FLOATING_FLOOR, Math.ceil(sumWorkersNeeded * 0.25));
@@ -414,26 +455,42 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
   ];
   for (const lever of pgbossWorkerLevers) {
     const recommended = Math.max(lever.need, lever.current);
+    let rationale: string;
+    let breakdown: Record<string, number>;
+    if (lever.cad === "floating") {
+      rationale = `Floating pool absorbs cross-queue backlog. Sized at max(${FLOATING_FLOOR}, 25% of dedicated workers).`;
+      breakdown = { sumWorkersNeeded, floor: FLOATING_FLOOR, quarterOfDedicated: Math.ceil(sumWorkersNeeded * 0.25) };
+    } else {
+      const cad = lever.cad as CadenceKey;
+      const p90Sec = cadence[cad].p90 ?? COLD_START_P90_SEC[cad];
+      const cadenceIntervalSec = cadenceIntervals[cad];
+      const timeoutSec = handlerTimeoutSec[cad];
+      // The "/ 60s" part of the formula is the cadence interval (how often
+      // each asset is polled), NOT the pg-boss handler timeout. Label it
+      // explicitly so operators don't conflate the two — they were the same
+      // 60s value before bcd8d5e split the per-queue handler caps out.
+      const base = `Workers needed = ceil(applicable=${applicable[cad]} × p90=${p90Sec.toFixed(2)}s × ${SAFETY_FACTOR} / cadence-interval=${cadenceIntervalSec}s). Floored at ${PER_CADENCE_FLOOR}.`;
+      const timeoutNote = timeoutSec
+        ? ` Handler timeout cap: ${timeoutSec}s (p90 at ${((p90Sec / timeoutSec) * 100).toFixed(0)}%). p90 above this cap would cause jobs to be killed and re-queued.`
+        : " Handler timeout cap unknown (queue not yet created — fires on first pgboss boot).";
+      rationale = base + timeoutNote;
+      breakdown = {
+        applicable: applicable[cad],
+        p90Sec,
+        cadenceIntervalSec,
+        safetyFactor: SAFETY_FACTOR,
+        workersNeeded: lever.need,
+        floor: PER_CADENCE_FLOOR,
+        ...(timeoutSec ? { handlerTimeoutSec: timeoutSec, p90PctOfTimeout: Math.round((p90Sec / timeoutSec) * 100) } : {}),
+      };
+    }
     recommendations.push({
       key: lever.key,
       applyMode: "env",
       current: lever.current,
       recommended,
-      rationale:
-        lever.cad === "floating"
-          ? `Floating pool absorbs cross-queue backlog. Sized at max(${FLOATING_FLOOR}, 25% of dedicated workers).`
-          : `Workers needed = ceil(${applicable[lever.cad as CadenceKey]} × p90 × ${SAFETY_FACTOR} / ${cadenceIntervals[lever.cad as CadenceKey]}s). Floored at ${PER_CADENCE_FLOOR}.`,
-      breakdown:
-        lever.cad === "floating"
-          ? { sumWorkersNeeded, floor: FLOATING_FLOOR, quarterOfDedicated: Math.ceil(sumWorkersNeeded * 0.25) }
-          : {
-              applicable: applicable[lever.cad as CadenceKey],
-              p90Sec: cadence[lever.cad as CadenceKey].p90 ?? COLD_START_P90_SEC[lever.cad as CadenceKey],
-              cadenceSec: cadenceIntervals[lever.cad as CadenceKey],
-              safetyFactor: SAFETY_FACTOR,
-              workersNeeded: lever.need,
-              floor: PER_CADENCE_FLOOR,
-            },
+      rationale,
+      breakdown,
       changeRequired: recommended > lever.current,
       appliesAfterQueueModeFlip: activeMode === "cursor" && recommendedMode === "pgboss",
     });
@@ -588,7 +645,42 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     restartRequired,
     activeQueueMode: activeMode,
     recommendedQueueMode: recommendedMode,
+    handlerTimeoutSec,
+    handlerTimeoutPressure,
   };
+}
+
+/**
+ * Read the per-queue `expire_seconds` from `pgboss.queue` so the advisor sees
+ * what's actually in effect — not just what `EXPIRE_BY_QUEUE` in queueService.ts
+ * would write on a fresh install. In cursor mode the queues don't exist yet and
+ * every cadence comes back null; that's fine, the advisor just skips the
+ * timeout-pressure check.
+ */
+async function readQueueTimeouts(): Promise<Record<CadenceKey, number | null>> {
+  const out: Record<CadenceKey, number | null> = {
+    probe: null, fastFiltered: null, telemetry: null, systemInfo: null,
+  };
+  try {
+    const rows = await prisma.$queryRawUnsafe<Array<{ name: string; expire_seconds: number | bigint }>>(
+      `SELECT name, expire_seconds FROM pgboss.queue WHERE name = ANY($1::text[])`,
+      Object.values(QUEUE_NAMES),
+    );
+    const reverse: Record<string, CadenceKey> = {};
+    for (const c of Object.keys(QUEUE_NAMES) as CadenceKey[]) {
+      reverse[QUEUE_NAMES[c]] = c;
+    }
+    for (const r of rows) {
+      const c = reverse[r.name];
+      if (c) out[c] = Number(r.expire_seconds);
+    }
+  } catch (err: any) {
+    // Most common reason: pgboss schema doesn't exist yet (cursor-mode-only
+    // installs, fresh DB before first pgboss boot). Debug-level so it doesn't
+    // spam logs on those installs.
+    logger.debug({ err: err?.message }, "capacityAdvisor: pgboss.queue read failed; handler timeout context unavailable");
+  }
+  return out;
 }
 
 // ─── Snapshot-driven recompute ─────────────────────────────────────────────
@@ -684,10 +776,11 @@ export async function recomputeAdvisorFromSnapshot(
   snap: CapacitySnapshot,
   pgTuning: PgTuningExternal,
 ): Promise<AdvisorState> {
-  const [cadenceObs, integrations, applicable] = await Promise.all([
+  const [cadenceObs, integrations, applicable, handlerTimeoutSec] = await Promise.all([
     observeCadences(),
     readIntegrationBreakdown(),
     readApplicableCounts(snap),
+    readQueueTimeouts(),
   ]);
 
   const inputs: AdvisorInputs = {
@@ -700,6 +793,7 @@ export async function recomputeAdvisorFromSnapshot(
       telemetry:    snap.workload.cadences.telemetrySec,
       systemInfo:   snap.workload.cadences.systemInfoSec,
     },
+    handlerTimeoutSec,
     applicable,
     currentEnv: {
       DATABASE_POOL_SIZE:                readEnvInt("DATABASE_POOL_SIZE", 25),
@@ -740,6 +834,10 @@ export interface AdvisorGapSummary {
   maxConnectionsUndersized: boolean;
   /** Brief text naming the worst worker gap, for the reason message. */
   worstGap?: string;
+  /** Cadences whose observed p90 has climbed toward the pg-boss handler
+   *  timeout cap. Copied from AdvisorState; non-empty drives the
+   *  `monitor_handler_timeout_pressure` watch reason in capacityService. */
+  handlerTimeoutPressure?: HandlerTimeoutPressure[];
 }
 
 /** Levers that only apply in cursor mode. Excluded from gap rollups when
@@ -799,6 +897,9 @@ export function summarizeAdvisorGaps(state: AdvisorState): AdvisorGapSummary {
     }
   }
   if (worstGapText) out.worstGap = worstGapText;
+  if (state.handlerTimeoutPressure.length > 0) {
+    out.handlerTimeoutPressure = state.handlerTimeoutPressure;
+  }
   return out;
 }
 

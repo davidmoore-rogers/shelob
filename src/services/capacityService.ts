@@ -536,6 +536,10 @@ export interface AdvisorGapsForReasons {
   worstGap?: string;
   /** The recommended max_connections value, surfaced in the reason text. */
   recommendedMaxConnections?: number;
+  /** Cadences whose observed p90 has climbed toward the pg-boss handler timeout
+   *  cap (`pgboss.queue.expire_seconds`). Non-empty fires the
+   *  `monitor_handler_timeout_pressure` watch reason. */
+  handlerTimeoutPressure?: import("./capacityAdvisorService.js").HandlerTimeoutPressure[];
 }
 
 function computeReasons(
@@ -746,6 +750,27 @@ function computeReasons(
       suggestion:
         `Open the Capacity Advisor card and click Stage to write the recommended worker ` +
         `counts to .env. Takes effect on next Polaris restart.`,
+    });
+  }
+
+  // ── Watch: monitor handler timeout pressure (per-cadence) ───────────────
+  // Observed p90 has climbed toward the pg-boss handler kill cap
+  // (`pgboss.queue.expire_seconds`). Fires BEFORE actual kills so the
+  // operator can react before the histogram-based p90 the advisor reads
+  // starts getting truncated by killed jobs.
+  if (advisor?.handlerTimeoutPressure && advisor.handlerTimeoutPressure.length > 0) {
+    const parts = advisor.handlerTimeoutPressure
+      .map((p) => `${p.cadence} p90=${p.p90Sec.toFixed(1)}s vs cap ${p.expireSec}s (${Math.round(p.utilization * 100)}%)`)
+      .join("; ");
+    reasons.push({
+      severity: "watch",
+      code: "monitor_handler_timeout_pressure",
+      message: `Monitor handler runtime is brushing the pg-boss timeout cap on one or more cadences. ${parts}.`,
+      suggestion:
+        `Either raise EXPIRE_BY_QUEUE for the affected cadence in src/services/queueService.ts ` +
+        `(reapplies on restart via updateQueue), trim the per-asset payload ` +
+        `(fewer Asset.monitoredInterfaces / monitoredStorage / monitoredIpsecTunnels), ` +
+        `or lengthen the cadence so jobs complete before re-queueing.`,
     });
   }
 
@@ -1043,6 +1068,7 @@ export async function getCapacitySnapshotWithAdvisor(
       maxConnRec && typeof maxConnRec.recommended === "number"
         ? maxConnRec.recommended
         : undefined,
+    handlerTimeoutPressure: gaps.handlerTimeoutPressure,
   };
   // Re-derive reasons + severity in place with the advisor gaps wired in,
   // so the advisor-driven reasons fire without doing a second snapshot pass.

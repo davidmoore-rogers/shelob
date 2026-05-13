@@ -145,6 +145,7 @@ function buildInputs(snap: any, env?: Partial<AdvisorInputs["currentEnv"]>): Adv
       systemInfo:   fullObservation(1.0),
     },
     cadenceIntervals: { probe: 60, fastFiltered: 60, telemetry: 60, systemInfo: 600 },
+    handlerTimeoutSec: { probe: 30, fastFiltered: 60, telemetry: 180, systemInfo: 300 },
     applicable: {
       probe:        snap.workload.monitoredAssetCount,
       fastFiltered: snap.workload.monitoredInterfaceCount,
