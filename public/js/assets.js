@@ -8068,9 +8068,87 @@ function assetSnmpWalkViewHTML(a) {
         '<button type="button" class="btn btn-secondary btn-sm" id="btn-snmp-walk-copy" disabled>Copy results</button>' +
         '<span id="snmp-walk-status" style="font-size:0.8rem;color:var(--color-text-secondary)"></span>' +
       '</div>' +
+      '<div id="snmp-walk-mib-tree" style="display:none"></div>' +
       '<div id="snmp-walk-results"></div>' +
     '</div>'
   );
+}
+
+// Renders the symbol tree for an uploaded MIB into #snmp-walk-mib-tree.
+// Click-to-select-only: tapping a symbol fills the object-name input and
+// highlights the row, but does not auto-walk (walks can be slow).
+function _renderSnmpMibTree(structure, onPick, selectedName) {
+  var mount = document.getElementById("snmp-walk-mib-tree");
+  if (!mount) return;
+  if (!structure) {
+    mount.style.display = "none";
+    mount.innerHTML = "";
+    return;
+  }
+
+  var tableColumns = new Set();
+  var tableRows = new Set();
+  var tableNames = new Set();
+  (structure.tables || []).forEach(function (t) {
+    tableNames.add(t.name);
+    tableRows.add(t.rowSymbol);
+    (t.columns || []).forEach(function (c) { tableColumns.add(c); });
+  });
+
+  function rowHtml(name, suffixHtml) {
+    var isSel = name === selectedName;
+    var selStyle = isSel
+      ? "background:var(--color-primary-bg,rgba(99,179,237,0.18));color:var(--color-primary,#4fc3f7)"
+      : "";
+    return '<div class="snmp-mib-tree-row" data-name="' + escapeHtml(name) + '" ' +
+      'style="padding:0.3rem 0.5rem;cursor:pointer;border-radius:4px;font-family:var(--font-mono,monospace);font-size:0.78rem;' + selStyle + '">' +
+      escapeHtml(name) + (suffixHtml || "") +
+    "</div>";
+  }
+
+  var tableRowsHtml = (structure.tables || []).map(function (t) {
+    var colCount = t.columns ? t.columns.length : 0;
+    var suffix = ' <span style="color:var(--color-text-tertiary);font-size:0.72rem;font-family:inherit">(' + colCount + ' col' + (colCount === 1 ? "" : "s") + ")</span>";
+    return rowHtml(t.name, suffix);
+  }).join("");
+
+  var scalarRowsHtml = (structure.symbols || [])
+    .filter(function (s) { return !tableColumns.has(s.name) && !tableRows.has(s.name) && !tableNames.has(s.name); })
+    .map(function (s) {
+      var typeBadge = s.baseType && s.baseType !== "OTHER" && s.baseType !== "OBJECT IDENTIFIER"
+        ? ' <span style="color:var(--color-text-tertiary);font-size:0.72rem;font-family:inherit">' + escapeHtml(s.baseType) + "</span>"
+        : "";
+      var unresolved = s.fullOid === null
+        ? ' <span style="color:var(--color-warning,#d97706);font-size:0.72rem;font-family:inherit">(unresolved)</span>'
+        : "";
+      return rowHtml(s.name, typeBadge + unresolved);
+    }).join("");
+
+  function section(title, inner) {
+    if (!inner) return "";
+    return '<div style="margin-bottom:0.5rem">' +
+      '<div style="font-size:0.78rem;font-weight:600;color:var(--color-text-secondary);padding:0.25rem 0.5rem">' +
+        escapeHtml(title) +
+      "</div>" +
+      inner +
+    "</div>";
+  }
+
+  mount.style.display = "";
+  mount.innerHTML =
+    '<div style="border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-alt,rgba(127,127,127,0.04))">' +
+      '<div style="padding:0.4rem 0.6rem;font-size:0.78rem;color:var(--color-text-secondary);border-bottom:1px solid var(--color-border)">' +
+        "Browse " + escapeHtml(structure.moduleName || "MIB") + " — click a symbol to load it into the Object name field." +
+      "</div>" +
+      '<div style="max-height:32vh;overflow:auto;overscroll-behavior:contain;padding:0.5rem">' +
+        section("Tables", tableRowsHtml) +
+        section("Scalars / Other", scalarRowsHtml) +
+      "</div>" +
+    "</div>";
+
+  mount.querySelectorAll(".snmp-mib-tree-row").forEach(function (el) {
+    el.addEventListener("click", function () { onPick(el.getAttribute("data-name")); });
+  });
 }
 
 function _renderSnmpWalkRows(result) {
@@ -8190,6 +8268,44 @@ function _wireSnmpWalkTab(a) {
 
   function _isUploadedMib(mibId) { return mibId && !mibId.startsWith("std:"); }
 
+  function _loadAndRenderMibTree(mibId) {
+    if (!_isUploadedMib(mibId)) {
+      _renderSnmpMibTree(null);
+      return;
+    }
+    var pick = function (name) {
+      oidInput.value = name;
+      _snmpWalkLastObjectName = name;
+      oidInput.focus();
+      _renderSnmpMibTree(_snmpMibStructureCache[mibId], pick, name);
+    };
+    var cached = _snmpMibStructureCache[mibId];
+    if (cached) {
+      _renderSnmpMibTree(cached, pick, _snmpWalkLastObjectName || null);
+      return;
+    }
+    var mount = document.getElementById("snmp-walk-mib-tree");
+    if (mount) {
+      mount.style.display = "";
+      mount.innerHTML = '<div style="padding:0.5rem;font-size:0.8rem;color:var(--color-text-secondary)">Loading MIB structure…</div>';
+    }
+    api.serverSettings.getMibStructure(mibId).then(function (st) {
+      _snmpMibStructureCache[mibId] = st;
+      if (mibSel.value === mibId) {
+        _renderSnmpMibTree(st, pick, _snmpWalkLastObjectName || null);
+      }
+    }).catch(function (err) {
+      if (mibSel.value !== mibId) return;
+      var mt = document.getElementById("snmp-walk-mib-tree");
+      if (mt) {
+        mt.style.display = "";
+        mt.innerHTML = '<div style="padding:0.5rem;font-size:0.8rem;color:var(--color-danger,#c0392b)">' +
+          escapeHtml(err.message || "Failed to load MIB structure") +
+        "</div>";
+      }
+    });
+  }
+
   function _updateOidMode(mibId) {
     if (_isUploadedMib(mibId)) {
       oidLabel.textContent = "Object name";
@@ -8226,6 +8342,7 @@ function _wireSnmpWalkTab(a) {
     }
     mibSel.innerHTML = html;
     _updateOidMode(mibSel.value);
+    _loadAndRenderMibTree(mibSel.value);
   }
 
   // ── Load uploaded MIBs into dropdown ─────────────────────────────────────
@@ -8247,6 +8364,7 @@ function _wireSnmpWalkTab(a) {
   mibSel.addEventListener("change", function () {
     _snmpWalkLastMibId = mibSel.value;
     _updateOidMode(mibSel.value);
+    _loadAndRenderMibTree(mibSel.value);
     document.getElementById("snmp-walk-results").innerHTML = "";
     statusEl.textContent = "";
     if (copyBtn) copyBtn.disabled = true;

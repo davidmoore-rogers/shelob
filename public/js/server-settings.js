@@ -3649,8 +3649,8 @@ function renderMibBrowseModal() {
 
   var body =
     '<div style="display:grid;grid-template-columns:minmax(280px,38%) 1fr;gap:1rem;min-height:60vh;max-height:70vh">' +
-      '<div id="mib-browse-left" style="overflow:auto;border-right:1px solid var(--color-border);padding-right:0.75rem">' + leftPane + '</div>' +
-      '<div id="mib-browse-right" style="overflow:auto">' + rightPane + '</div>' +
+      '<div id="mib-browse-left" style="overflow:auto;overscroll-behavior:contain;min-height:0;border-right:1px solid var(--color-border);padding-right:0.75rem">' + leftPane + '</div>' +
+      '<div id="mib-browse-right" style="overflow:auto;overscroll-behavior:contain;min-height:0">' + rightPane + '</div>' +
     '</div>';
 
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Close</button>';
