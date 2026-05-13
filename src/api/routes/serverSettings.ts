@@ -1365,4 +1365,54 @@ router.get("/api-call-history", (_req, res) => {
   res.json(getTrackerData());
 });
 
+// ─── Polaris Agent build routes ──────────────────────────────────────
+//
+// Drives the "Build agent binaries" card on the Maintenance tab. Phase B
+// ships the minimum useful surface: inventory + start-build + poll-status.
+// Phase D extends with queueing, Phase E with cancellation, Phase F with
+// the prune button.
+
+router.get("/agents/inventory", async (_req, res, next) => {
+  try {
+    const { getInventory } = await import("../../services/agentBuildService.js");
+    res.json(await getInventory());
+  } catch (err) { next(err); }
+});
+
+router.post("/agents/build", async (req, res, next) => {
+  try {
+    const { startBuild, BuildInFlightError, GoUnavailableError } =
+      await import("../../services/agentBuildService.js");
+    const actor = req.session?.username || "unknown";
+    try {
+      const result = await startBuild({ actor });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof BuildInFlightError) {
+        return res.status(409).json({ error: "A build is already in flight. Wait for it to complete and try again." });
+      }
+      if (err instanceof GoUnavailableError) {
+        return res.status(400).json({ error: `Go is not available on this Polaris server: ${err.message}. Install Go 1.22+ and reload.` });
+      }
+      throw err;
+    }
+  } catch (err) { next(err); }
+});
+
+router.get("/agents/build/current", async (_req, res, next) => {
+  try {
+    const { getCurrentBuild } = await import("../../services/agentBuildService.js");
+    res.json({ current: getCurrentBuild() });
+  } catch (err) { next(err); }
+});
+
+router.get("/agents/build/:buildId", async (req, res, next) => {
+  try {
+    const { getBuild } = await import("../../services/agentBuildService.js");
+    const state = getBuild(req.params.buildId as string);
+    if (!state) return res.status(404).json({ error: "Build not found" });
+    res.json(state);
+  } catch (err) { next(err); }
+});
+
 export default router;

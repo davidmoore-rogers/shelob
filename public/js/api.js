@@ -404,6 +404,11 @@ const api = {
     updateAssetDecommissionSettings: (body) => request("PUT", "/events/asset-decommission-settings", body),
   },
   serverSettings: {
+    // Polaris Agent — Build button + inventory on Maintenance tab.
+    agentInventory:    ()        => request("GET",  "/server-settings/agents/inventory"),
+    agentBuildStart:   ()        => request("POST", "/server-settings/agents/build"),
+    agentBuildCurrent: ()        => request("GET",  "/server-settings/agents/build/current"),
+    agentBuildStatus:  (id)      => request("GET",  `/server-settings/agents/build/${id}`),
     getNtp:      ()       => request("GET", "/server-settings/ntp"),
     updateNtp:   (body)   => request("PUT", "/server-settings/ntp", body),
     testNtp:     (body)   => trackedRequest("Testing NTP sync", "POST", "/server-settings/ntp/test", body),

@@ -1528,6 +1528,22 @@ async function loadDatabaseInfo() {
           '<div id="update-history-body" style="margin-top:0.6rem;font-size:0.82rem;color:var(--color-text-tertiary)">Loading...</div>' +
         '</details>' +
       '</div>' +
+      // ── Polaris Agent card ──
+      // Builds the agent binaries operators install on remote hosts via
+      // the Install Agent button. Visible to admins regardless of whether
+      // the operator is using the feature; the card surfaces install-state
+      // (no manifest yet) clearly so it self-documents.
+      '<div class="settings-card" id="agent-build-card">' +
+        '<h4>Polaris Agent</h4>' +
+        '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+          'Build the agent binaries that operators install on remote hosts via Install Agent on the asset details modal. ' +
+          'Binaries are stamped with the version from <code>agent/VERSION</code> and served at ' +
+          '<code>/api/v1/agents/binary/&lt;filename&gt;</code> to the install scripts.' +
+        '</p>' +
+        '<div id="agent-build-body">' +
+          '<p class="empty-state" style="padding:1rem 0">Loading...</p>' +
+        '</div>' +
+      '</div>' +
       // ── Backup / Restore / History — three columns ──
       '<div class="settings-cards-row-3">' +
 
@@ -1615,6 +1631,7 @@ async function loadDatabaseInfo() {
     initCapacityActions();
     initCapacityAdvisorActions();
     initApiCallChart();
+    initAgentBuildCard();
   } catch (err) {
     container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
   }
@@ -2166,6 +2183,218 @@ function dbInfoRow(label, value) {
 function formatNumber(n) {
   if (n === undefined || n === null) return "-";
   return Number(n).toLocaleString();
+}
+
+// ─── Polaris Agent build card ──────────────────────────────────────────────
+//
+// Three states for the card body:
+//   1. No manifest on disk           → "No binaries built yet" + Build button.
+//   2. Manifest present, build idle  → inventory grid + Build button + version
+//                                      drift hint when agent/VERSION moved.
+//   3. Build in flight               → progress strip (poll every 2 s).
+//
+// On tab mount, we fetch /inventory AND /build/current in parallel. If a
+// build is currently running, we immediately render the progress strip
+// and start polling — this rehydrates an operator's view when they
+// switched away mid-build.
+
+var _agentBuildPollTimer = null;
+
+function initAgentBuildCard() {
+  Promise.all([
+    api.serverSettings.agentInventory().catch(function () { return null; }),
+    api.serverSettings.agentBuildCurrent().catch(function () { return { current: null }; }),
+  ]).then(function (results) {
+    var inv     = results[0];
+    var current = results[1] && results[1].current;
+    if (current && current.phase !== "complete" && current.phase !== "failed") {
+      renderAgentBuildProgress(current);
+      startAgentBuildPoll(current.buildId);
+    } else {
+      renderAgentBuildInventory(inv);
+    }
+  });
+}
+
+function renderAgentBuildInventory(inv) {
+  var body = document.getElementById("agent-build-body");
+  if (!body) return;
+  if (!inv) {
+    body.innerHTML = '<p class="empty-state" style="padding:1rem 0">Failed to load agent build inventory.</p>';
+    return;
+  }
+
+  // Go-detection: when Go isn't installed, gate the whole Build pathway
+  // with a yellow notice. Inventory grid still renders (operators may
+  // have staged binaries from a separate build host).
+  var goNotice = "";
+  if (!inv.goAvailable) {
+    goNotice =
+      '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(255,160,40,0.08);' +
+        'border-left:3px solid var(--color-warning);border-radius:4px;font-size:0.82rem;color:var(--color-warning)">' +
+        '⚠ Go is not installed on this Polaris server. Install Go 1.22+ on the host (see ' +
+        '<code>docs/INSTALL.md</code> → "Optional: Polaris Agent") and reload to enable the Build button.' +
+      '</div>';
+  }
+
+  // Version-drift hint: manifest's currentVersion lags getAgentVersion().
+  var drift = "";
+  if (inv.manifest && inv.manifest.currentVersion !== inv.agentSourceVersion) {
+    drift =
+      '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(80,150,255,0.08);' +
+        'border-left:3px solid var(--color-accent);border-radius:4px;font-size:0.82rem">' +
+        'Agent source has moved to <strong>v' + escapeHtml(inv.agentSourceVersion) + '</strong>; built binaries are still ' +
+        '<strong>v' + escapeHtml(inv.manifest.currentVersion) + '</strong>. Click Build to refresh.' +
+      '</div>';
+  } else if (!inv.manifest) {
+    drift =
+      '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(80,150,255,0.08);' +
+        'border-left:3px solid var(--color-accent);border-radius:4px;font-size:0.82rem">' +
+        'No agent binaries built yet. Click Build to produce <strong>v' + escapeHtml(inv.agentSourceVersion) + '</strong>.' +
+      '</div>';
+  }
+
+  var rows = inv.files.map(function (f) {
+    var key  = f.platform + "-" + f.arch;
+    var size = f.present && f.sizeBytes != null ? humanBytes(f.sizeBytes) : "—";
+    var when = f.present && f.mtime ? formatLocalTime(f.mtime) : "—";
+    var mark = f.present
+      ? '<span style="color:var(--color-success)">✓</span>'
+      : '<span style="color:var(--color-text-tertiary)">—</span>';
+    return '<tr>' +
+      '<td style="padding:4px 8px"><code>' + escapeHtml(key) + '</code></td>' +
+      '<td style="padding:4px 8px;text-align:right">' + escapeHtml(size) + '</td>' +
+      '<td style="padding:4px 8px;font-size:0.78rem;color:var(--color-text-tertiary)">' + escapeHtml(when) + '</td>' +
+      '<td style="padding:4px 8px;text-align:center">' + mark + '</td>' +
+      '</tr>';
+  }).join("");
+
+  var buildBtn = inv.goAvailable
+    ? '<button class="btn btn-primary" id="btn-agent-build">Build agent binaries (v' + escapeHtml(inv.agentSourceVersion) + ')</button>'
+    : '<button class="btn btn-primary" disabled title="Install Go 1.22+ on the server to enable">Build agent binaries</button>';
+
+  var goVerLine = inv.goAvailable && inv.goVersion
+    ? '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.5rem 0 0">Toolchain: ' + escapeHtml(inv.goVersion) + '</p>'
+    : '';
+
+  body.innerHTML =
+    goNotice +
+    drift +
+    '<table style="width:100%;border-collapse:collapse;margin-bottom:0.75rem;font-size:0.85rem">' +
+      '<thead><tr style="border-bottom:1px solid var(--color-border)">' +
+        '<th style="padding:4px 8px;text-align:left;font-weight:600;color:var(--color-text-secondary)">Platform</th>' +
+        '<th style="padding:4px 8px;text-align:right;font-weight:600;color:var(--color-text-secondary)">Size</th>' +
+        '<th style="padding:4px 8px;text-align:left;font-weight:600;color:var(--color-text-secondary)">Built</th>' +
+        '<th style="padding:4px 8px;text-align:center;font-weight:600;color:var(--color-text-secondary)">Present</th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+    '</table>' +
+    '<div>' + buildBtn + '</div>' +
+    goVerLine;
+
+  var btn = document.getElementById("btn-agent-build");
+  if (btn) btn.addEventListener("click", onAgentBuildClick);
+}
+
+function onAgentBuildClick() {
+  api.serverSettings.agentBuildStart().then(function (r) {
+    // Optimistic: render an empty in-flight strip until the first poll
+    // returns full state. Drives operator feedback within ~100 ms.
+    renderAgentBuildProgress({
+      buildId:   r.buildId,
+      version:   r.version,
+      phase:     "preparing",
+      steps:     [], // populated by the first poll
+      startedAt: new Date().toISOString(),
+    });
+    startAgentBuildPoll(r.buildId);
+  }).catch(function (err) {
+    showToast("Build failed to start: " + err.message, "error");
+  });
+}
+
+function startAgentBuildPoll(buildId) {
+  if (_agentBuildPollTimer) clearTimeout(_agentBuildPollTimer);
+  var tick = function () {
+    api.serverSettings.agentBuildStatus(buildId).then(function (state) {
+      renderAgentBuildProgress(state);
+      if (state.phase === "complete" || state.phase === "failed") {
+        _agentBuildPollTimer = null;
+        // Re-fetch inventory + swap back into inventory view, with a
+        // toast naming the outcome.
+        api.serverSettings.agentInventory().then(function (inv) {
+          renderAgentBuildInventory(inv);
+          if (state.phase === "complete") {
+            showToast("Built agent binaries v" + state.version, "success");
+          } else {
+            showToast("Build failed: " + (state.error || "unknown error"), "error");
+          }
+        });
+        return;
+      }
+      _agentBuildPollTimer = setTimeout(tick, 2000);
+    }).catch(function () {
+      // Network blip / route still settling — try again after a longer pause.
+      _agentBuildPollTimer = setTimeout(tick, 5000);
+    });
+  };
+  _agentBuildPollTimer = setTimeout(tick, 200);
+}
+
+function renderAgentBuildProgress(state) {
+  var body = document.getElementById("agent-build-body");
+  if (!body) return;
+
+  var elapsedMs = Date.now() - new Date(state.startedAt).getTime();
+  var elapsedTxt = formatElapsed(elapsedMs);
+  var stepsHtml = (state.steps || []).map(function (s) {
+    var icon, color;
+    if (s.status === "success")      { icon = "✓"; color = "var(--color-success)"; }
+    else if (s.status === "failed")  { icon = "✗"; color = "var(--color-danger)"; }
+    else if (s.status === "running") { icon = "▸"; color = "var(--color-accent)"; }
+    else                              { icon = "○"; color = "var(--color-text-tertiary)"; }
+    var dur = s.elapsedMs != null ? formatElapsed(s.elapsedMs) : (s.status === "running" ? "running" : "pending");
+    return '<tr>' +
+      '<td style="padding:3px 8px;color:' + color + '">' + icon + '</td>' +
+      '<td style="padding:3px 8px"><code>' + escapeHtml(s.platform) + '-' + escapeHtml(s.arch) + '</code></td>' +
+      '<td style="padding:3px 8px;text-align:right;font-size:0.78rem;color:var(--color-text-tertiary)">' + escapeHtml(dur) + '</td>' +
+      (s.error
+        ? '<td style="padding:3px 8px;font-family:monospace;font-size:0.75rem;color:var(--color-danger)">' + escapeHtml(s.error) + '</td>'
+        : '<td></td>') +
+      '</tr>';
+  }).join("");
+
+  var label = state.phase === "complete"
+    ? '<strong style="color:var(--color-success)">Built v' + escapeHtml(state.version) + '</strong>'
+    : state.phase === "failed"
+    ? '<strong style="color:var(--color-danger)">Build failed</strong>'
+    : '<strong>Building agent binaries v' + escapeHtml(state.version) + '</strong> · ' + escapeHtml(elapsedTxt) + ' elapsed';
+
+  body.innerHTML =
+    '<div style="margin-bottom:0.5rem">' + label + '</div>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:0.85rem">' +
+      '<tbody>' + stepsHtml + '</tbody>' +
+    '</table>' +
+    (state.error
+      ? '<div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:rgba(255,80,80,0.08);' +
+          'border-left:3px solid var(--color-danger);border-radius:4px;font-family:monospace;font-size:0.78rem;' +
+          'color:var(--color-danger);white-space:pre-wrap;word-break:break-word">' + escapeHtml(state.error) + '</div>'
+      : "");
+}
+
+function humanBytes(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KiB";
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MiB";
+  return (n / (1024 * 1024 * 1024)).toFixed(2) + " GiB";
+}
+
+function formatElapsed(ms) {
+  if (ms < 1000) return ms + " ms";
+  var s = Math.floor(ms / 1000);
+  if (s < 60) return s + "." + Math.floor((ms % 1000) / 100) + " s";
+  var m = Math.floor(s / 60);
+  return m + "m " + (s % 60) + "s";
 }
 
 // ─── Application Updates ───────────────────────────────────────────────────
