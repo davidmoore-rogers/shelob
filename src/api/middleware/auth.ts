@@ -15,6 +15,7 @@
 import { Request, Response, NextFunction } from "express";
 import { AppError } from "../../utils/errors.js";
 import { verifyToken } from "../../services/apiTokenService.js";
+import { verifyBearer as verifyAgentBearer } from "../../services/agentTokenService.js";
 
 export function requireAuth(req: Request, _res: Response, next: NextFunction) {
   if (req.session?.userId || req.apiToken) {
@@ -105,6 +106,29 @@ export async function attachApiToken(req: Request, _res: Response, next: NextFun
     // Swallow — invalid token is the same as no token. The downstream
     // guard returns 401/403 with a uniform message.
     next();
+  }
+}
+
+/**
+ * Polaris Agent bearer guard. Verifies the presented bearer against the
+ * `ManagedAgent` token store (separate from `ApiToken`; see
+ * `agentTokenService.ts` for the rationale). On success attaches
+ * `{managedAgentId, assetId}` to `req.managedAgent`. 401 on missing/invalid.
+ *
+ * Used by every /api/v1/agents/* route EXCEPT /enroll (which uses the
+ * one-shot enrollment token in the body, not a bearer header).
+ */
+export async function requireAgentBearer(req: Request, _res: Response, next: NextFunction) {
+  try {
+    const raw = extractBearerToken(req);
+    if (!raw) return next(new AppError(401, "Unauthorized — agent bearer required"));
+    const callerIp = (req.ip || req.socket.remoteAddress || null) ?? null;
+    const verified = await verifyAgentBearer(raw, callerIp);
+    if (!verified) return next(new AppError(401, "Unauthorized — agent bearer invalid or revoked"));
+    req.managedAgent = verified;
+    next();
+  } catch (err) {
+    next(err);
   }
 }
 

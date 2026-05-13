@@ -7,7 +7,7 @@
  */
 
 import https from "node:https";
-import { constants as tlsConstants } from "node:crypto";
+import { constants as tlsConstants, createHash, X509Certificate } from "node:crypto";
 import type { Express, Request, Response, NextFunction } from "express";
 import { getHttpsSettings, resolveHttpsCertificates } from "./services/serverSettingsService.js";
 import { logger } from "./utils/logger.js";
@@ -16,6 +16,10 @@ let httpsServer: https.Server | null = null;
 let expressApp: Express | null = null;
 let redirectEnabled = false;
 let httpsPort = 3443;
+// Cached leaf cert from the currently-active TLS context, kept in sync via
+// applyHttps(). Powers `getServerCertFingerprint()` for Polaris Agent
+// install-time cert pinning. Cleared whenever HTTPS stops.
+let currentCertPem: string | Buffer | null = null;
 
 export function initHttps(app: Express): void {
   expressApp = app;
@@ -43,15 +47,20 @@ export async function applyHttps(): Promise<{ ok: boolean; message: string }> {
 
   if (!settings.enabled) {
     redirectEnabled = false;
+    currentCertPem = null;
     await stopHttps();
     return { ok: true, message: "HTTPS disabled" };
   }
 
   const tlsData = await resolveHttpsCertificates();
   if (!tlsData) {
+    currentCertPem = null;
     await stopHttps();
     return { ok: false, message: "HTTPS enabled but certificate or key is missing" };
   }
+  // Cache the leaf cert so getServerCertFingerprint() can hash it without
+  // reaching into the Node TLS internals.
+  currentCertPem = tlsData.cert;
 
   const opts: https.ServerOptions = {
     cert: tlsData.cert,
@@ -139,6 +148,7 @@ function startHttps(
 
 async function stopHttps(): Promise<void> {
   if (!httpsServer) return;
+  currentCertPem = null;
   return new Promise((resolve) => {
     httpsServer!.close(() => {
       logger.info("HTTPS server stopped");
@@ -156,4 +166,30 @@ async function stopHttps(): Promise<void> {
 
 export function isHttpsRunning(): boolean {
   return httpsServer !== null && httpsServer.listening;
+}
+
+/**
+ * SHA-256 fingerprint of the running Polaris HTTPS leaf cert, as
+ * `sha256:<lowercase-hex>`. Baked into each agent's `agent.conf` at
+ * install time so the agent can pin Polaris's cert directly and skip
+ * the system CA trust chain entirely (defends against CA-compromise /
+ * MITM scenarios). The agent's Go TLS client uses this as a custom
+ * VerifyPeerCertificate; `/api/v1/agents/enroll` cross-checks the
+ * fingerprint the agent reports it observed against this value.
+ *
+ * Returns null when HTTPS is not running (e.g. dev installs serving over
+ * plain HTTP); the install flow rejects agent installs in that mode
+ * because there's no cert to pin and no encrypted transport.
+ */
+export function getServerCertFingerprint(): string | null {
+  if (!httpsServer || !httpsServer.listening) return null;
+  if (!currentCertPem) return null;
+  try {
+    const x509 = new X509Certificate(currentCertPem);
+    const hex = createHash("sha256").update(x509.raw).digest("hex");
+    return `sha256:${hex}`;
+  } catch (err) {
+    logger.warn({ err }, "Failed to compute server cert fingerprint");
+    return null;
+  }
 }

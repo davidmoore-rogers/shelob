@@ -25,6 +25,7 @@ import manufacturerAliasesRouter from "./routes/manufacturerAliases.js";
 import monitorSettingsRouter from "./routes/monitorSettings.js";
 import apiTokensRouter from "./routes/apiTokens.js";
 import dashboardRouter from "./routes/dashboard.js";
+import { agentsEnrollRouter, agentsRouter } from "./routes/agents.js";
 import { requireAuth, requireAdmin, requireNetworkAdmin, attachApiToken } from "./middleware/auth.js";
 
 export const router = Router();
@@ -43,6 +44,14 @@ router.get("/server-settings/branding", async (_req, res, next) => {
     res.json(await getBranding());
   } catch (err) { next(err); }
 });
+
+// Polaris Agent — /enroll is public (no bearer yet; the body carries a
+// one-shot enrollment token). The rest of /agents/* is gated by the
+// requireAgentBearer middleware mounted inside agentsRouter itself.
+// Mounted here BEFORE the blanket requireAuth so /enroll is reachable
+// without a session.
+router.use("/agents/enroll", agentsEnrollRouter);
+router.use("/agents", agentsRouter);
 
 // Everything below requires an active session OR a valid bearer token.
 // Token callers reach further role gates only when a route opts in via

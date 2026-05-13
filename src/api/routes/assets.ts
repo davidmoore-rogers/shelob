@@ -2670,4 +2670,182 @@ router.post("/bulk-quarantine/release", requireSessionOrTokenScope(["admin", "as
   }
 });
 
+// ─── Polaris Agent — operator-facing routes ──────────────────────────────────
+//
+// Phase 2 surface: stubs the actual remote install (which lives in
+// agentInstallService — Phase 4) by just creating the ManagedAgent row
+// and minting a one-shot enrollment token. End-to-end testable with curl:
+// hit POST /install to get a managedAgentId + check the row, then have
+// the agent (or curl-as-agent) POST /api/v1/agents/enroll with the
+// enrollment token to swap it for a bearer. Phase 4 wires the SSH/WinRM
+// file upload + remote service start that automates the agent-side work.
+
+const AgentInstallSchema = z.object({
+  credentialId: z.string().uuid("credentialId must be a UUID"),
+  osPlatform:   z.enum(["linux", "darwin", "windows"]),
+  arch:         z.enum(["amd64", "arm64"]),
+});
+
+router.get("/:id/agent", async (req, res, next) => {
+  try {
+    const assetId = req.params.id as string;
+    const row = await prisma.managedAgent.findUnique({ where: { assetId } });
+    if (!row) return res.status(404).json({ error: "No agent installed for this asset" });
+    // Strip secret-bearing fields before serializing.
+    const {
+      enrollmentTokenHash: _eh, enrollmentTokenPrefix: _ep,
+      bearerHash: _bh,
+      ...safe
+    } = row;
+    res.json(safe);
+  } catch (err) { next(err); }
+});
+
+router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => {
+  try {
+    const assetId = req.params.id as string;
+    const body = AgentInstallSchema.parse(req.body);
+    const actor = req.session?.username || "unknown";
+
+    const asset = await prisma.asset.findUnique({
+      where: { id: assetId },
+      include: { discoveredByIntegration: true },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    // Compatibility check: agent is incompatible with Fortinet appliance
+    // sources. The Zod validator + the resolver would reject the polling
+    // method itself, but install kickoff has its own check because the
+    // operator might click Install before flipping any stream to "agent".
+    const sourceKind = assetSourceKindFromIntegrationType(asset.discoveredByIntegration?.type ?? null);
+    if (!isPollingMethodCompatible(sourceKind, "agent")) {
+      throw new AppError(400,
+        `Polaris Agent is not compatible with ${sourceKind} sources. Compatible: manual, activedirectory, entraid, windowsserver.`);
+    }
+
+    // Cred must be ssh (linux/darwin) or winrm (windows). The /install
+    // body specifies osPlatform explicitly so we can validate up-front
+    // even though the actual remote upload doesn't happen until Phase 4.
+    const cred = await getCredential(body.credentialId).catch(() => null);
+    if (!cred) throw new AppError(400, `Credential ${body.credentialId} not found`);
+    const wantType = body.osPlatform === "windows" ? "winrm" : "ssh";
+    if (cred.type !== wantType) {
+      throw new AppError(400,
+        `Credential type "${cred.type}" doesn't match osPlatform "${body.osPlatform}" — need "${wantType}"`);
+    }
+
+    // 409 if a row already exists. Operator uses /reinstall to wipe + retry.
+    const existing = await prisma.managedAgent.findUnique({ where: { assetId } });
+    if (existing) {
+      throw new AppError(409,
+        `Agent already installed (status=${existing.installStatus}). Use reinstall to start over.`);
+    }
+
+    // Cert pin: we capture the SHA-256 of the running Polaris leaf cert
+    // at this moment and bake it into the agent's config at install. If
+    // HTTPS isn't running, there's no cert to pin and no encrypted
+    // transport — refuse the install with a clear error rather than
+    // silently issuing a bearer that the agent won't be able to use.
+    const { getServerCertFingerprint } = await import("../../httpsManager.js");
+    const fingerprint = getServerCertFingerprint();
+    if (!fingerprint) {
+      throw new AppError(400,
+        "HTTPS is not running on this Polaris server — agent install requires TLS for the cert pin. " +
+        "Enable HTTPS in Server Settings → HTTPS first.");
+    }
+
+    const row = await prisma.managedAgent.create({
+      data: {
+        assetId,
+        osPlatform:            body.osPlatform,
+        arch:                  body.arch,
+        installedBy:           actor,
+        installStatus:         "pending",
+        serverCertFingerprint: fingerprint,
+      },
+    });
+
+    // Mint the one-shot enrollment token. Phase 4 will SSH/WinRM into
+    // the host with the stored credential and run the installer script,
+    // which carries this token in its argv. For Phase 2 the operator
+    // (or a curl smoke test) takes the token off the response below
+    // and stands the agent up by hand.
+    const { mintEnrollmentToken } = await import("../../services/agentTokenService.js");
+    const enrollmentToken = await mintEnrollmentToken(row.id);
+
+    await logEvent({
+      action:       "agent.install_kickoff",
+      resourceType: "asset",
+      resourceId:   assetId,
+      actor,
+      level:        "info",
+      message:      `Polaris Agent install kicked off (${body.osPlatform}/${body.arch})`,
+      details:      { managedAgentId: row.id, credentialId: body.credentialId },
+    });
+
+    res.json({
+      managedAgentId:  row.id,
+      installStatus:   row.installStatus,
+      // Returned ONCE so the operator (Phase 2) can configure the agent's
+      // agent.conf manually. Phase 4 stops returning this and instead pipes
+      // it directly into the install script.
+      enrollmentToken,
+      serverCertFingerprint: fingerprint,
+    });
+  } catch (err) { next(err); }
+});
+
+router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
+  try {
+    const assetId = req.params.id as string;
+    const actor = req.session?.username || "unknown";
+    const force = String(req.query.force ?? "").toLowerCase() === "true";
+
+    const row = await prisma.managedAgent.findUnique({ where: { assetId } });
+    if (!row) throw new AppError(404, "No agent installed for this asset");
+
+    // Phase 1 of the two-phase DELETE: synchronous revoke. The bearer
+    // stops working immediately regardless of whether the host can be
+    // reached. Phase 4 will add the async remote-uninstall pass.
+    const { revokeBearer } = await import("../../services/agentTokenService.js");
+    await revokeBearer(row.id);
+
+    if (force) {
+      // Hard-delete the local row. Orphan binary remains on the host
+      // (operator's choice when ?force=true); the bearer is dead so it
+      // can't talk to Polaris.
+      await prisma.managedAgent.delete({ where: { id: row.id } });
+      await logEvent({
+        action:       "agent.force_removed",
+        resourceType: "asset",
+        resourceId:   assetId,
+        actor,
+        level:        "warning",
+        message:      `Polaris Agent force-removed; bearer revoked, remote uninstall skipped`,
+        details:      { managedAgentId: row.id },
+      });
+      res.json({ ok: true, forced: true });
+      return;
+    }
+
+    // Phase 2: just mark revoked + leave the row in place. Phase 4 wires
+    // the async remote-uninstall path that, on success, hard-deletes
+    // this row and emits agent.uninstalled.
+    await prisma.managedAgent.update({
+      where: { id: row.id },
+      data: { installStatus: "revoked" },
+    });
+    await logEvent({
+      action:       "agent.revoked",
+      resourceType: "asset",
+      resourceId:   assetId,
+      actor,
+      level:        "warning",
+      message:      "Polaris Agent bearer revoked",
+      details:      { managedAgentId: row.id },
+    });
+    res.json({ ok: true, forced: false, installStatus: "revoked" });
+  } catch (err) { next(err); }
+});
+
 export default router;

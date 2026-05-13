@@ -22,6 +22,13 @@ declare global {
       // bearer token. Mutually exclusive with req.session.userId in
       // practice — token callers don't get a session.
       apiToken?: { id: string; name: string; scopes: string[]; integrationIds: string[] };
+
+      // Set by `requireAgentBearer` when the request presented a valid
+      // Polaris Agent bearer (issued at /api/v1/agents/enroll). Mutually
+      // exclusive with both session auth and apiToken — agent callers
+      // hit a dedicated /api/v1/agents/* surface and never have either.
+      // assetId is the asset the bearer was bound to at issuance.
+      managedAgent?: { managedAgentId: string; assetId: string };
     }
   }
 }

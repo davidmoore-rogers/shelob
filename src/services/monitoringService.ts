@@ -4340,6 +4340,13 @@ export async function recordProbeResult(
    *  loaded the asset inside probeAsset; passing it here skips a second
    *  findUnique per probe, cutting steady-state pool acquisitions at peak. */
   preloadedAsset?: AssetMonitorSnapshot | null,
+  /** Set by the Polaris Agent /samples handler when the result came from
+   *  the agent on the host (a real RTT, not the synthetic periodic-tick).
+   *  Bypasses the agent-polling guard below so the agent's real samples
+   *  drive the five-state machine. The default (periodic-loop callers
+   *  leaving this false/undefined) keeps the guard active so the
+   *  synthetic no-op probeAsset doesn't churn state. */
+  opts?: { fromAgent?: boolean },
 ): Promise<void> {
   const asset = preloadedAsset ?? await prisma.asset.findUnique({
     where: { id: assetId },
@@ -4371,9 +4378,9 @@ export async function recordProbeResult(
   // Periodic-tick probeAsset for these assets returns a synthetic success;
   // we MUST NOT let that synthetic result run the state machine or write
   // an AssetMonitorSample row — it would clobber the agent's real signal.
-  // The /samples inbound route will call this function with the real
-  // sample data from the agent in Phase 2; for Phase 1b it just skips.
-  if (effective.responseTimePolling === "agent") return;
+  // The /samples inbound handler calls this function with opts.fromAgent
+  // so the agent's real samples DO drive the state machine.
+  if (effective.responseTimePolling === "agent" && !opts?.fromAgent) return;
 
   const now = new Date();
   const previousStatus = asset.monitorStatus ?? "unknown";

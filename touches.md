@@ -149,6 +149,39 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ---
 
+## cross-cutting/polaris-agent
+
+**What it is:** Polaris-managed agent installed on remote hosts that pushes monitoring samples back to Polaris over HTTPS and holds a long-lived outbound WebSocket for on-demand probes. New `"agent"` polling-method value (7th) compatible only with AD / Entra / Windows Server / Manual sources. One `ManagedAgent` row per asset, FK cascade. See CLAUDE.md "Polaris Agent polling-method" / "Polaris Agent API surface" and the plan at `~/.claude/plans/the-app-needs-a-glowing-knuth.md`.
+
+**Writers** (state that mutates ManagedAgent / agent.* events):
+- `src/api/routes/assets.ts:POST /:id/agent/install` — create row in `pending`; mint enrollment token; capture cert pin; emit `agent.install_kickoff`.
+- `src/api/routes/assets.ts:DELETE /:id/agent` — synchronous revokeBearer + (force) hard-delete or (default) flip installStatus → "revoked"; emits `agent.revoked` or `agent.force_removed`.
+- `src/api/routes/agents.ts:POST /enroll` — consumes the enrollment token, mints a long-lived bearer, transitions installStatus → "active"; emits `agent.enrolled`. Cert-pin mismatch sets installStatus="failed" and emits `agent.install_failed`.
+- `src/api/routes/agents.ts:POST /samples` — bumps lastSeenAt (via verifyBearer) + lastTelemetryAt / lastSystemInfoAt per stream; calls recordProbeResult({fromAgent:true}) for the responseTime stream so the five-state machine runs on agent-pushed RTTs.
+- `src/api/routes/agents.ts:POST /heartbeat` — refresh agentVersion + bump lastSeenAt.
+- `src/services/agentTokenService.ts` — `mintEnrollmentToken` (10-min TTL), `consumeEnrollmentToken` (atomic swap → bearer), `revokeBearer` (sets bearerRevokedAt).
+
+**Readers** (consume state):
+- `src/api/middleware/auth.ts:requireAgentBearer` — verifies the bearer against the ManagedAgent token store and attaches `{managedAgentId, assetId}` to `req.managedAgent`. Used by every `/api/v1/agents/*` route except `/enroll`.
+- `src/api/routes/agents.ts:GET /config` — resolves the asset's monitor settings via `resolveMonitorSettings` and returns the per-stream `enabled` (true when that stream is `polling==="agent"`), cadences, and timeouts; carries an ETag so the agent can short-circuit unchanged polls.
+- `src/services/monitoringService.ts:probeAsset / collectTelemetry / collectSystemInfo / collectFastFiltered` — early-return on agent-mode so the periodic puller doesn't touch hosts that the agent owns.
+- `src/services/monitoringService.ts:recordProbeResult` — agent-mode guard skipped only when `opts.fromAgent === true`.
+
+**Invariants:**
+- ManagedAgent.assetId is `@unique` — one agent install per asset. Reinstall is "delete row + new install."
+- Bearer is bound to the assetId at issuance; the /samples handler stamps `req.managedAgent.assetId` server-side and ignores any client-supplied assetId on the wire.
+- Cert pin is captured from the live HTTPS server at install kickoff via `httpsManager.getServerCertFingerprint()`. Install REFUSES when HTTPS isn't running (no cert to pin, no encrypted transport).
+- Enrollment token is one-shot (consumed atomically) and TTL'd to 10 minutes. After consumption it's NULLed on the row; the install state moves to `active` and stays there until DELETE.
+- `recordProbeResult` and `record*Result` early-return on agent-mode UNLESS `opts.fromAgent === true` — defends against the synthetic periodic-tick clobbering the agent's real signal.
+
+**When changing this:**
+- New sample stream: add Zod variant to `SamplesBodySchema`, map to enqueue helper, mirror in the Go agent collector (Phase 3+).
+- New ManagedAgent column: update Prisma model + the route GET /:id/agent response shape (which strips hash fields explicitly).
+- Cert-pin algorithm change: update `httpsManager.getServerCertFingerprint()` AND the Go agent's TLS verifier in lockstep — server pin AND agent pin both compute fingerprint the same way (sha256 of leaf DER).
+- New /agents/* route: decide whether it's public (mount under `agentsEnrollRouter`) or bearer-gated (mount under `agentsRouter`). Both are wired in `src/api/router.ts` BEFORE the blanket `requireAuth` gate.
+
+---
+
 ## cross-cutting/fmg-fortigate-parity-surfaces
 
 **What it is:** FMG and standalone FortiGate integrations share feature surfaces that must move together: integration modal tabs (General / Filters / Monitoring / DHCP Push / Quarantine Push), transport dispatch via buildTransportForIntegration(), and filter helpers.
