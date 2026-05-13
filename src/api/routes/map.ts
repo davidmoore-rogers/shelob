@@ -683,31 +683,52 @@ router.get("/sites/:id/topology", async (req, res, next) => {
     for (const s of switches) idxSibling(s.hostname, s.id);
     for (const a of aps) idxSibling(a.hostname, a.id);
 
-    // Backfill the source-side port on controller-data edges that LLDP can
-    // now tell us about. managed-switch/status reports the switch's view of
-    // its uplink (fgt_peer_intf_name) but not the FortiGate's view of its
-    // downlink, so the FG→switch edges were stuck with "unknown" on the FG
-    // side. LLDP from the FortiGate (newly populated by the SNMP path)
-    // reports its local port — match it against the matched-sibling target
-    // and replace the source half of the edge label.
-    const siblingLldpPort = new Map<string, string>(); // `${source}|${matchedSibling}` → local port
+    // Backfill both halves of controller-data edges using LLDP. A single LLDP
+    // row from either side gives BOTH endpoints — the source's authoritative
+    // localIfName plus the target's port name as the source observed it in
+    // the neighbor's LLDP advertisement (portId field). managed-switch/status
+    // reports only the switch's view of its uplink (fgt_peer_intf_name), so
+    // without LLDP the FG-side was stuck on "unknown"; without LLDP from the
+    // switch side, the switch-side stayed "unknown" too. The cross-side
+    // (`portId` on the FG's row tells us the switch's port = "port47") makes
+    // a single LLDP source enough to fill in the whole edge.
+    //
+    // `portId` is only useful as a label when its subtype is a port-name
+    // form (interfaceName / interfaceAlias / agentCircuitId / local). MAC
+    // and networkAddress port-id subtypes carry hardware identifiers, not
+    // operator-readable port labels — skipped so they don't pollute the edge.
+    const PORT_ID_NAME_SUBTYPES = new Set(["interfaceName", "interfaceAlias", "agentCircuitId", "local"]);
+    const siblingLldpPort = new Map<string, string>(); // `${source}|${matchedSibling}` → port name
     for (const n of lldpRows) {
       if (!n.matchedAsset || !n.matchedAsset.id) continue;
       if (!siblingIds.has(n.matchedAsset.id)) continue;
-      if (!n.localIfName) continue;
-      const k = `${n.assetId}|${n.matchedAsset.id}`;
-      if (!siblingLldpPort.has(k)) siblingLldpPort.set(k, n.localIfName);
+      // Authoritative: source asset's own port name from its local-port table.
+      // localIfName from `assetId` toward `matchedAssetId` always wins.
+      if (n.localIfName) {
+        const k = `${n.assetId}|${n.matchedAsset.id}`;
+        siblingLldpPort.set(k, n.localIfName);
+      }
+      // Cross-advertised: target asset's port name as the source observed it.
+      // Only used when the source-authoritative entry hasn't been written —
+      // a `localIfName` from the target's own LLDP row, if it lands later, is
+      // more trustworthy than the source's portId view.
+      if (n.portId && n.portIdSubtype && PORT_ID_NAME_SUBTYPES.has(n.portIdSubtype)) {
+        const k = `${n.matchedAsset.id}|${n.assetId}`;
+        if (!siblingLldpPort.has(k)) siblingLldpPort.set(k, n.portId);
+      }
     }
     for (const e of edges) {
-      const localPort = siblingLldpPort.get(`${e.source}|${e.target}`);
-      if (!localPort) continue;
+      const fwdPort = siblingLldpPort.get(`${e.source}|${e.target}`); // source's view → fills source half
+      const revPort = siblingLldpPort.get(`${e.target}|${e.source}`); // target's view → fills target half
+      if (!fwdPort && !revPort) continue;
       const parts = String(e.label || "").split(" ↔ ");
-      const sourceHalf = parts[0] ?? "unknown";
-      // Only overwrite when the source half was previously "unknown" —
-      // controller-data set a real value (rare) wins over an LLDP guess.
-      if (sourceHalf !== "unknown") continue;
-      const targetHalf = parts[1] ?? "unknown";
-      e.label = portLabel(localPort, targetHalf);
+      let sourceHalf = parts[0] ?? "unknown";
+      let targetHalf = parts[1] ?? "unknown";
+      // Only overwrite halves that were previously "unknown" — controller-
+      // data set a real value (rare) wins over an LLDP cross-reference.
+      if (fwdPort && sourceHalf === "unknown") sourceHalf = fwdPort;
+      if (revPort && targetHalf === "unknown") targetHalf = revPort;
+      e.label = portLabel(sourceHalf, targetHalf);
     }
 
     // Demote FG→switch controller edges when a more-specific signal puts
