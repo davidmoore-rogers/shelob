@@ -46,9 +46,13 @@ func NewClient(baseURL, certFingerprint, bearer string) *Client {
 		IdleConnTimeout:       90 * time.Second,
 	}
 	return &Client{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		bearer:       bearer,
-		AgentVersion: "0.1.0",
+		baseURL: strings.TrimRight(baseURL, "/"),
+		bearer:  bearer,
+		// AgentVersion is filled in by main.go from the ldflag-stamped
+		// `version` constant before any call that emits it (/enroll,
+		// /heartbeat). The fallback string here is what shows up if
+		// main.go forgets to set it — defensive only.
+		AgentVersion: "0.0.0-unstamped",
 		httpc:        &http.Client{Transport: tr, Timeout: 30 * time.Second},
 	}
 }

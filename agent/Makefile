@@ -12,7 +12,13 @@
 # lives in agent.conf, written server-side at install time. The same
 # polaris-agent-linux-amd64 binary works against any Polaris server.
 
-VERSION ?= 0.1.0
+# Single source of truth for the agent's version: the agent/VERSION text
+# file in this directory. The server-side in-app build path
+# (agentBuildService.ts) reads the same file, so a `make all` from a shell
+# and a click on the Build button in the UI produce binaries stamped with
+# the same -ldflags='-X main.version=...' value. Anyone editing agent code
+# must bump VERSION in the same commit per the touches.md rebuild contract.
+VERSION := $(shell cat $(dir $(lastword $(MAKEFILE_LIST)))VERSION | tr -d '[:space:]')
 PKG     := github.com/polaris/agent/cmd/polaris-agent
 OUTDIR  := dist/$(VERSION)
 

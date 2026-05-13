@@ -33,6 +33,14 @@ import (
 	"github.com/polaris/agent/internal/transport"
 )
 
+// version is stamped at build time via -ldflags='-X main.version=<x>'.
+// Default value is the literal contents of agent/VERSION at the moment
+// of code-edit. Both `make all` (which reads VERSION via $(shell cat …))
+// and the in-app build path (which reads it via Node's fs.readFile)
+// stamp the same value here. `polaris-agent --version` reports it; the
+// agent /heartbeat surfaces it server-side as ManagedAgent.agentVersion.
+var version = "0.0.0-unstamped"
+
 const (
 	defaultResponseTimeIntervalSec = 60
 	defaultHeartbeatIntervalSec    = 300
@@ -51,6 +59,9 @@ func main() {
 	}
 
 	client := transport.NewClient(cfg.ServerURL, cfg.CertFingerprint, cfg.BearerToken)
+	// Stamp the ldflag-set version into the client so /enroll and
+	// /heartbeat report the version this binary was built at.
+	client.AgentVersion = version
 
 	// Step 1: enroll if we don't have a bearer yet.
 	if cfg.BearerToken == "" {

@@ -18,7 +18,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -54,4 +54,83 @@ const APP_VERSION = (() => {
 
 export function getAppVersion(): string {
   return APP_VERSION;
+}
+
+// ─── Polaris Agent version (decoupled from Polaris version) ──────────────
+//
+// The Polaris Agent is version-tracked independently from Polaris itself.
+// `agent/VERSION` is a one-line text file at the root of the agent module
+// that ANY edit to agent code MUST also bump (per the touches.md rebuild
+// contract). Decoupling means:
+//
+//   - Polaris releases that don't touch agent/ produce zero auto-build
+//     noise and no operator-visible Upgrade prompts.
+//   - The agent binary's `--version` reports `agent/VERSION`, not Polaris's.
+//   - `manifest.json` in data/agents/ tracks the agent's version, not
+//     Polaris's, so directory names + the auto-build comparison key are
+//     stable across Polaris patch releases.
+//
+// Caching: small mtime check (5 s) so a release tarball drop is picked up
+// without a server restart. The file is tiny (one line); the stat + read
+// cost on cache miss is negligible.
+
+const AGENT_VERSION_FORMAT = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
+const AGENT_VERSION_TTL_MS = 5_000;
+const AGENT_VERSION_FALLBACK = "0.0.0-no-version-file";
+
+let agentVersionCache: { value: string; checkedAt: number; mtimeMs: number } | null = null;
+
+function locateAgentVersionFile(): string | null {
+  // Mirrors `readPackageMajorMinor`'s walk; the agent/ directory sits
+  // alongside package.json at the project root.
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    for (const rel of ["../../agent/VERSION", "../../../agent/VERSION"]) {
+      const p = join(here, rel);
+      if (existsSync(p)) return p;
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+export function getAgentVersion(): string {
+  const path = locateAgentVersionFile();
+  if (!path) return AGENT_VERSION_FALLBACK;
+
+  // Fast path: cache hit, mtime unchanged, within TTL.
+  const now = Date.now();
+  if (agentVersionCache && now - agentVersionCache.checkedAt < AGENT_VERSION_TTL_MS) {
+    return agentVersionCache.value;
+  }
+
+  // Slow path: stat the file. If mtime matches the cached entry, just
+  // bump checkedAt; otherwise re-read.
+  try {
+    const st = statSync(path);
+    if (agentVersionCache && agentVersionCache.mtimeMs === st.mtimeMs) {
+      agentVersionCache.checkedAt = now;
+      return agentVersionCache.value;
+    }
+    const raw = readFileSync(path, "utf-8").trim();
+    if (!AGENT_VERSION_FORMAT.test(raw)) {
+      // Malformed file (e.g. operator pasted multiple lines or whitespace
+      // that survived our trim). Don't crash; report the fallback so
+      // operators see the symptom in Events / logs.
+      return AGENT_VERSION_FALLBACK;
+    }
+    agentVersionCache = { value: raw, checkedAt: now, mtimeMs: st.mtimeMs };
+    return raw;
+  } catch {
+    return AGENT_VERSION_FALLBACK;
+  }
+}
+
+// Path to the agent/ directory itself — useful for the build service which
+// needs to `cd` into it before invoking `go build`. Returns null when the
+// directory can't be located (defensive — should never happen in a release
+// tarball).
+export function getAgentSourceDir(): string | null {
+  const versionFile = locateAgentVersionFile();
+  if (!versionFile) return null;
+  return dirname(versionFile);
 }
