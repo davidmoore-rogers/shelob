@@ -2386,27 +2386,38 @@ function renderAgentBuildProgress(state, queue) {
       '</tr>';
   }).join("");
 
+  var isFinished  = state.phase === "complete" || state.phase === "failed" || state.phase === "cancelled";
+  var cancelBtn   = isFinished
+    ? ""
+    : ' <button class="btn-icon agent-build-cancel" data-build-id="' + escapeHtml(state.buildId) +
+        '" title="Cancel" style="margin-left:0.5rem;padding:1px 8px;font-size:0.75rem">×</button>';
+
   var label;
   if (state.phase === "complete") {
     label = '<strong style="color:var(--color-success)">Built v' + escapeHtml(state.version) + '</strong>';
   } else if (state.phase === "failed") {
     label = '<strong style="color:var(--color-danger)">Build failed</strong>';
+  } else if (state.phase === "cancelled") {
+    label = '<strong style="color:var(--color-warning)">Build cancelled</strong>';
   } else if (state.phase === "queued") {
-    label = '<strong>Queued: v' + escapeHtml(state.version) + '</strong> · waiting · ' + escapeHtml(elapsedTxt);
+    label = '<strong>Queued: v' + escapeHtml(state.version) + '</strong> · waiting · ' + escapeHtml(elapsedTxt) + cancelBtn;
   } else {
-    label = '<strong>Building agent binaries v' + escapeHtml(state.version) + '</strong> · ' + escapeHtml(elapsedTxt) + ' elapsed';
+    label = '<strong>Building agent binaries v' + escapeHtml(state.version) + '</strong> · ' + escapeHtml(elapsedTxt) + ' elapsed' + cancelBtn;
   }
 
-  // Queue display: tiny rows per queued build with actor + queued-at.
+  // Queue display: tiny rows per queued build with actor + queued-at + × cancel.
   var queueHtml = "";
   if (queue && queue.length > 0) {
     queueHtml =
       '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border)">' +
         '<div style="font-size:0.78rem;color:var(--color-text-secondary);margin-bottom:0.3rem">Queued (' + queue.length + ')</div>' +
         queue.map(function (q) {
-          return '<div style="font-size:0.78rem;color:var(--color-text-tertiary);padding:2px 0">' +
-            '• v' + escapeHtml(q.version) + ' — queued by ' + escapeHtml(q.actor) +
-            (q.queuedAt ? ' (' + escapeHtml(timeAgoLocal(q.queuedAt)) + ')' : '') +
+          return '<div style="font-size:0.78rem;color:var(--color-text-tertiary);padding:2px 0;display:flex;align-items:center;gap:6px">' +
+            '<span style="flex:1">• v' + escapeHtml(q.version) + ' — queued by ' + escapeHtml(q.actor) +
+              (q.queuedAt ? ' (' + escapeHtml(timeAgoLocal(q.queuedAt)) + ')' : '') +
+            '</span>' +
+            '<button class="btn-icon agent-build-cancel" data-build-id="' + escapeHtml(q.buildId) +
+              '" title="Cancel" style="padding:1px 8px;font-size:0.75rem">×</button>' +
           '</div>';
         }).join("") +
       '</div>';
@@ -2423,6 +2434,34 @@ function renderAgentBuildProgress(state, queue) {
           'color:var(--color-danger);white-space:pre-wrap;word-break:break-word">' + escapeHtml(state.error) + '</div>'
       : "") +
     queueHtml;
+
+  // Wire every × button in this re-render. Re-querying after innerHTML
+  // swap is safer than persisting handlers across renders.
+  body.querySelectorAll(".agent-build-cancel").forEach(function (btn) {
+    btn.addEventListener("click", function (e) {
+      e.preventDefault();
+      var id = btn.getAttribute("data-build-id");
+      if (!id) return;
+      showConfirm("Cancel this build? Any partial binaries will remain on disk but unused.").then(function (ok) {
+        if (!ok) return;
+        api.serverSettings.agentBuildCancel(id).then(function () {
+          showToast("Build cancelled", "info");
+          // Forced refresh of the card — the operator's mental model is
+          // "× → instantly gone from the list".
+          api.serverSettings.agentBuildCurrent().then(function (snap) {
+            var cur = snap && snap.current;
+            if (cur && cur.phase !== "complete" && cur.phase !== "failed" && cur.phase !== "cancelled") {
+              renderAgentBuildProgress(cur, (snap.queue || []).filter(function (q) { return q.buildId !== cur.buildId; }));
+            } else {
+              api.serverSettings.agentInventory().then(renderAgentBuildInventory);
+            }
+          });
+        }).catch(function (err) {
+          showToast("Cancel failed: " + err.message, "error");
+        });
+      });
+    });
+  });
 }
 
 // Lightweight relative-time formatter for the queue rows. The main

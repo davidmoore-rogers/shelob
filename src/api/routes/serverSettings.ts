@@ -1415,4 +1415,24 @@ router.get("/agents/build/:buildId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.delete("/agents/build/:buildId", async (req, res, next) => {
+  try {
+    const { cancelBuild, BuildAlreadyFinishedError, BuildNotFoundError } =
+      await import("../../services/agentBuildService.js");
+    const actor = req.session?.username || "unknown";
+    try {
+      await cancelBuild(req.params.buildId as string, actor);
+      res.json({ ok: true });
+    } catch (err) {
+      if (err instanceof BuildNotFoundError) {
+        return res.status(404).json({ error: "Build not found" });
+      }
+      if (err instanceof BuildAlreadyFinishedError) {
+        return res.status(409).json({ error: "Build already finished" });
+      }
+      throw err;
+    }
+  } catch (err) { next(err); }
+});
+
 export default router;

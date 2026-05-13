@@ -23,7 +23,7 @@
  * `getAgentVersion()` (reads `agent/VERSION`), NOT `getAppVersion()`.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, rename, writeFile, stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
@@ -57,7 +57,8 @@ export type BuildPhase =
   | "building:windows-arm64"
   | "writing-manifest"
   | "complete"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export interface BuildStep {
   platform: string;
@@ -80,6 +81,14 @@ export interface BuildState {
   error?:      string;
   /** Username of the operator who triggered, or "system:..." for automated. */
   actor:       string;
+  /** Set by cancelBuild(); runBuild() checks between platforms + abandons. */
+  cancelled?:  boolean;
+  /**
+   * Active `go build` child process while one is running. Set on each
+   * step, cleared on exit. DELETE route uses this to SIGTERM/SIGKILL.
+   * Not serialized on the API (route layer drops it before sending).
+   */
+  activeChild?: import("node:child_process").ChildProcess;
 }
 
 // ─── Module-local state ───────────────────────────────────────────────
@@ -239,22 +248,161 @@ async function runBuild(buildId: string): Promise<void> {
   try {
     await doRun(state);
   } catch (err: any) {
-    state.phase    = "failed";
-    state.error    = err?.message ?? String(err);
-    state.finishedAt = new Date();
-    await logEvent({
-      action:       "agent.build.failed",
-      level:        "warning",
-      actor:        state.actor,
-      resourceType: "polaris-agent",
-      resourceName: state.version,
-      message:      `Agent build v${state.version} failed: ${state.error}`,
-      details:      { buildId, error: state.error },
-    });
+    if (err instanceof CancelledError) {
+      state.phase = "cancelled";
+      state.error = state.error ?? "Build cancelled by operator";
+      state.finishedAt = new Date();
+      // cancelBuild() emitted agent.build.cancelled; don't double-log.
+    } else {
+      state.phase = "failed";
+      state.error = err?.message ?? String(err);
+      state.finishedAt = new Date();
+      await logEvent({
+        action:       "agent.build.failed",
+        level:        "warning",
+        actor:        state.actor,
+        resourceType: "polaris-agent",
+        resourceName: state.version,
+        message:      `Agent build v${state.version} failed: ${state.error}`,
+        details:      { buildId, error: state.error },
+      });
+    }
   } finally {
+    state.activeChild = undefined;
     currentBuildId = null;
     advanceQueue();
     gcFinishedStates();
+  }
+}
+
+class CancelledError extends Error {
+  constructor() { super("Build cancelled"); this.name = "CancelledError"; }
+}
+
+/**
+ * Run one `go build` for one platform/arch. Wraps execFile so we can
+ * stash the ChildProcess on `state.activeChild` — cancelBuild() reaches
+ * through that handle to SIGTERM / SIGKILL the running compiler.
+ *
+ * Rejects with CancelledError when the child was killed by us (we
+ * detect this via state.cancelled being set), and a generic Error
+ * with stderr captured otherwise.
+ */
+function runGoBuild(
+  state: BuildState,
+  opts: { cwd: string; outPath: string; os: string; arch: string; version: string },
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = execFile(
+      "go",
+      [
+        "build",
+        "-trimpath",
+        `-ldflags=-s -w -X main.version=${opts.version}`,
+        "-o", opts.outPath,
+        "./cmd/polaris-agent",
+      ],
+      {
+        cwd:     opts.cwd,
+        timeout: 5 * 60_000,
+        env: {
+          ...process.env,
+          CGO_ENABLED: "0",
+          GOOS:        opts.os,
+          GOARCH:      opts.arch,
+          HOME:        STATE_DIR,
+          GOCACHE:     resolvePath(STATE_DIR, ".cache", "go-build"),
+          GOTOOLCHAIN: process.env.GOTOOLCHAIN ?? "local",
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      },
+      (err, _stdout, stderr) => {
+        state.activeChild = undefined;
+        if (err) {
+          if (state.cancelled) {
+            return reject(new CancelledError());
+          }
+          // Surface stderr on the rejection so the caller's catch block
+          // can preserve it on the BuildStep for the UI.
+          (err as any).stderr = stderr;
+          return reject(err);
+        }
+        resolve();
+      },
+    );
+    state.activeChild = child;
+  });
+}
+
+/**
+ * Cancel a build by id. Three cases:
+ *
+ *   1. Queued — pluck from buildQueue, transition state to "cancelled",
+ *      emit agent.build.cancelled. No process to kill.
+ *   2. Running — set state.cancelled, send SIGTERM to the active child,
+ *      schedule SIGKILL after 5 s grace. runBuild's catch sees
+ *      CancelledError and lands in "cancelled" phase. The runBuild's
+ *      finally still clears currentBuildId + advances the queue.
+ *   3. Already finished (complete / failed / cancelled) — throws so the
+ *      route can 409.
+ */
+export class BuildAlreadyFinishedError extends Error {
+  constructor() { super("Build already finished"); this.name = "BuildAlreadyFinishedError"; }
+}
+
+export class BuildNotFoundError extends Error {
+  constructor() { super("Build not found"); this.name = "BuildNotFoundError"; }
+}
+
+export async function cancelBuild(buildId: string, actor: string): Promise<void> {
+  const state = buildStates.get(buildId);
+  if (!state) throw new BuildNotFoundError();
+  if (state.phase === "complete" || state.phase === "failed" || state.phase === "cancelled") {
+    throw new BuildAlreadyFinishedError();
+  }
+
+  if (state.phase === "queued") {
+    const idx = buildQueue.indexOf(buildId);
+    if (idx >= 0) buildQueue.splice(idx, 1);
+    state.phase      = "cancelled";
+    state.error      = "Cancelled while queued";
+    state.finishedAt = new Date();
+    await logEvent({
+      action:       "agent.build.cancelled",
+      level:        "info",
+      actor,
+      resourceType: "polaris-agent",
+      resourceName: state.version,
+      message:      `Agent build v${state.version} cancelled (was queued)`,
+      details:      { buildId, wasQueued: true },
+    });
+    return;
+  }
+
+  // In-flight: set the flag, kill the child. runBuild's catch handles
+  // the state transition + emits the cancelled event after the catch
+  // unwinds — but we emit our own log event here for the audit trail
+  // since the operator wants to see it immediately. The catch block
+  // doesn't re-emit (we set state.error so it knows).
+  state.cancelled = true;
+  await logEvent({
+    action:       "agent.build.cancelled",
+    level:        "info",
+    actor,
+    resourceType: "polaris-agent",
+    resourceName: state.version,
+    message:      `Agent build v${state.version} cancelled (in-flight)`,
+    details:      { buildId, wasQueued: false, phase: state.phase },
+  });
+
+  const child = state.activeChild;
+  if (child && !child.killed) {
+    try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    setTimeout(() => {
+      if (child && !child.killed) {
+        try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      }
+    }, 5_000);
   }
 }
 
@@ -310,6 +458,11 @@ async function doRun(state: BuildState): Promise<void> {
   // shared GOCACHE; serial keeps cache contention down + total time
   // around 60 s on a 2-vCPU host with a warm cache.
   for (let i = 0; i < PLATFORMS.length; i++) {
+    // Bailout check between platforms: if the operator clicked Cancel
+    // (which set state.cancelled), don't start the next go build.
+    if (state.cancelled) {
+      throw new CancelledError();
+    }
     const { os, arch } = PLATFORMS[i];
     const step = state.steps[i];
 
@@ -322,36 +475,22 @@ async function doRun(state: BuildState): Promise<void> {
     const outPath   = resolvePath(versionDir, outName);
 
     try {
-      await execFileAsync(
-        "go",
-        [
-          "build",
-          "-trimpath",
-          `-ldflags=-s -w -X main.version=${state.version}`,
-          "-o", outPath,
-          "./cmd/polaris-agent",
-        ],
-        {
-          cwd:     agentSourceDir,
-          timeout: 5 * 60_000, // 5 min per platform — extremely generous; warm-cache builds finish in <10 s
-          env: {
-            ...process.env,
-            CGO_ENABLED: "0",
-            GOOS:        os,
-            GOARCH:      arch,
-            HOME:        STATE_DIR,
-            GOCACHE:     resolvePath(STATE_DIR, ".cache", "go-build"),
-            GOTOOLCHAIN: process.env.GOTOOLCHAIN ?? "local",
-          },
-          maxBuffer: 8 * 1024 * 1024,
-        },
-      );
+      await runGoBuild(state, {
+        cwd:     agentSourceDir,
+        outPath,
+        os, arch,
+        version: state.version,
+      });
       step.status    = "success";
       step.elapsedMs = Date.now() - stepStart;
     } catch (err: any) {
       step.status    = "failed";
       step.elapsedMs = Date.now() - stepStart;
       step.error     = truncate(err?.stderr ?? err?.message ?? String(err), 800);
+      // Cancellation propagates as CancelledError so the outer catch can
+      // distinguish it from a real failure (state.phase → cancelled vs
+      // failed, different event severity).
+      if (err instanceof CancelledError) throw err;
       throw new Error(`go build failed for ${os}/${arch}: ${step.error}`);
     }
   }
@@ -397,13 +536,20 @@ async function doRun(state: BuildState): Promise<void> {
 
 // ─── Read helpers (route layer + UI) ──────────────────────────────────
 
+/** Strip non-serializable fields (activeChild) before sending to API consumers. */
+function publicView(state: BuildState | null): BuildState | null {
+  if (!state) return null;
+  const { activeChild: _drop, ...rest } = state;
+  return rest as BuildState;
+}
+
 export function getBuild(buildId: string): BuildState | null {
-  return buildStates.get(buildId) ?? null;
+  return publicView(buildStates.get(buildId) ?? null);
 }
 
 export function getCurrentBuild(): BuildState | null {
   if (currentBuildId === null) return null;
-  return buildStates.get(currentBuildId) ?? null;
+  return publicView(buildStates.get(currentBuildId) ?? null);
 }
 
 /**
@@ -412,7 +558,9 @@ export function getCurrentBuild(): BuildState | null {
  */
 export function getCurrentBuildAndQueue(): { current: BuildState | null; queue: BuildState[] } {
   const current = getCurrentBuild();
-  const queue   = buildQueue.map((id) => buildStates.get(id)).filter((s): s is BuildState => !!s);
+  const queue   = buildQueue
+    .map((id) => publicView(buildStates.get(id) ?? null))
+    .filter((s): s is BuildState => !!s);
   return { current, queue };
 }
 
