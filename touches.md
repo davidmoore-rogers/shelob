@@ -37,8 +37,9 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **What it is:** Asset.monitorStatus ∈ {up, warning, recovering, down, unknown} driven by consecutiveFailures/consecutiveSuccesses counters (see "Five-state monitor machine" in CLAUDE.md).
 
 **Writers** (files that mutate or emit this state):
-- `src/services/monitoringService.ts` — runProbeFor() updates Asset.monitorStatus/consecutiveFailures/consecutiveSuccesses after each probe result, emits monitor.status_changed Event on up↔down transitions, fires propagateAfterStatusChange() to push the edge into descendant dependencySuppressed state
+- `src/services/monitoringService.ts` — runProbeFor() updates Asset.monitorStatus/consecutiveFailures/consecutiveSuccesses after each probe result, stamps Asset.monitorStatusChangedAt whenever monitorStatus changes value (any-to-any, not just up↔down), emits monitor.status_changed Event on up↔down transitions, fires propagateAfterStatusChange() to push the edge into descendant dependencySuppressed state
 - `src/jobs/monitorAssets.ts` — Light/heavy ticking loops invoke runMonitorPass() which dispatches probe collection
+- `src/jobs/backfillMonitorStatusChangedAt.ts` — One-shot startup (60s after boot): seeds Asset.monitorStatusChangedAt for pre-existing warning/down/recovering assets from the latest monitor.status_changed Event when one is still within the 7-day retention window
 - `src/api/routes/assets.ts:651` — recordProbeResult() on manual /probe-now endpoint
 - `src/api/routes/assets.ts` — PUT /assets/:id validateMonitorConfig handler resets consecutiveFailures on manual disable
 - `src/db.ts:212-222` — Prisma extension clampMonitoredForStatus() forces monitored=false and resets consecutiveFailures when status flips to decommissioned/disabled
@@ -50,6 +51,8 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - `src/services/dependencyTreeService.ts` — reconcileDependencySuppression() reads monitorStatus to evaluate "all-down" suppression — only the confirmed-down edge propagates (warning/recovering do NOT)
 - `src/api/routes/map.ts` — Device Map topology endpoint reads monitorStatus for FortiGate/switch/AP health coloring via monitorStatusToHealth()
 - `src/jobs/monitorAssets.ts:110` — Queue eligibility check consults monitorStatus + dependencySuppressed
+- `src/api/routes/dashboard.ts` — `/dashboard/summary` reads `monitored=true AND monitorStatus in (warning, down)` for the Monitor Alerts card and orders by `monitorStatusChangedAt asc nulls last` so the oldest outages surface first
+- `public/js/dashboard.js` — Monitor Alerts card renders the duration since monitorStatusChangedAt; re-ticks the label every 30s without re-fetching
 
 **Invariants:**
 - State machine accepts only {up, warning, recovering, down, unknown}; no other string values permitted.
@@ -57,6 +60,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - "recovering" is the transient mid-recovery state (was-down, now succeeding). Exits to "up" once the success threshold is crossed.
 - "warning" is mid-degradation (was-up, now accumulating failures but below threshold). Exits to "down" when threshold crossed, back to "up" on success.
 - monitor.status_changed Event fires ONLY on up↔down transitions, not on warning/recovering churn. propagateAfterStatusChange() fires from the same edge so dependency suppression follows the confirmed-down edge — never the flap.
+- monitorStatusChangedAt is stamped on EVERY transition (any-to-any), independent of the Event audit trail. The Event log is the up/down-only audit record; the column is the source for the Dashboard's "how long has this been warning/down" duration. Backfill from the Event log is best-effort because events prune at 7 days; older outages render "—".
 - Heavy cadences (telemetry/systemInfo/fastFiltered) are suppressed when monitorStatus ≠ "up" OR dependencySuppressed. The probe runs at 2× cadence when dependencySuppressed AND responseTimePolling !== "disabled".
 - Response-time probe runs in every state; it's the cheap path that detects recovery.
 
