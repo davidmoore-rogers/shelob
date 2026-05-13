@@ -53,7 +53,7 @@ function _restoreSubnetsPrefs() {
   } catch (_) {}
 }
 
-document.addEventListener("DOMContentLoaded", async function () {
+async function _initSubnetsPage() {
   _subnetsSF = new TableSF("subnets-tbody", function () { _subnetsPage = 1; renderSubnetsPage(); _saveSubnetsPrefs(); });
   var subnetsTable = document.querySelector("#subnets-tbody").closest("table");
   _subnetsLayout = setupColumnLayout(subnetsTable, {
@@ -65,6 +65,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   await userReady;
   _restoreSubnetsPrefs();
   await loadBlockOptions();
+  _applySubnetsHashFilters();
   loadSubnets();
 
   var addBtn = document.getElementById("btn-add-subnet");
@@ -109,7 +110,60 @@ document.addEventListener("DOMContentLoaded", async function () {
     renderSubnetsPage();
     _saveSubnetsPrefs();
   });
-});
+}
+
+// Reads dashboard / search deep-link hash params and seeds the filter
+// dropdowns / opens the IP panel BEFORE the initial load so the user lands
+// on the right view without a flicker.
+//
+// Supported hash forms:
+//   #tab=networks&block=<blockId>
+//   #tab=networks&subnet=<subnetId>[&focusReservation=<resvId>]
+//   #ip=<subnetId>@<ip>                  (legacy — handled by app.js)
+//   #view=subnet:<id>                     (legacy — handled by app.js)
+function _applySubnetsHashFilters() {
+  var hash = (window.location.hash || "").replace(/^#/, "");
+  if (!hash) return;
+  var params = {};
+  hash.split("&").forEach(function (kv) {
+    var p = kv.split("=");
+    if (p.length === 2) params[decodeURIComponent(p[0])] = decodeURIComponent(p[1]);
+  });
+  if (params.block) {
+    var sel = document.getElementById("filter-block");
+    if (sel) {
+      // Block options have loaded already (we await loadBlockOptions before
+      // applying); set the value so the upcoming loadSubnets picks it up.
+      sel.value = params.block;
+    }
+  }
+  if (params.subnet) {
+    // Defer until subnet list has rendered so we can open the panel from a
+    // freshly-loaded subnet record. ip-panel.js handles focusReservation.
+    var subnetId = params.subnet;
+    var focusReservationId = params.focusReservation || null;
+    setTimeout(function () {
+      if (typeof openIpPanel !== "function") return;
+      var opts = focusReservationId ? { focusReservationId: focusReservationId } : undefined;
+      if (api && api.subnets && typeof api.subnets.get === "function") {
+        api.subnets.get(subnetId).then(function (s) {
+          var merged = Object.assign({ subnetCidr: s && s.cidr }, opts || {});
+          openIpPanel(subnetId, merged);
+        }, function () { openIpPanel(subnetId, opts); });
+      } else {
+        openIpPanel(subnetId, opts);
+      }
+    }, 200);
+  }
+}
+
+window.PolarisSubnets = { init: _initSubnetsPage, applyHashFilters: _applySubnetsHashFilters };
+
+// Legacy /subnets.html auto-run. IPAM sets __polarisIpamTabs=true before
+// loading this script so it can drive init itself.
+if (!window.__polarisIpamTabs) {
+  document.addEventListener("DOMContentLoaded", _initSubnetsPage);
+}
 
 async function loadBlockOptions() {
   try {

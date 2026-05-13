@@ -75,6 +75,7 @@ function openIpPanel(subnetId, opts) {
   // CIDRs.
   var focusIp = opts && opts.focusIp ? String(opts.focusIp) : null;
   var subnetCidr = opts && opts.subnetCidr ? String(opts.subnetCidr) : null;
+  var focusReservationId = opts && opts.focusReservationId ? String(opts.focusReservationId) : null;
   _ipPanelFocusIp = focusIp;
   _ipPanelPage = focusIp && subnetCidr
     ? _ipv4PageForIp(subnetCidr, focusIp, _ipPanelPageSize)
@@ -86,6 +87,22 @@ function openIpPanel(subnetId, opts) {
   requestAnimationFrame(function () {
     document.getElementById("ip-panel-overlay").classList.add("open");
   });
+  // focusReservationId path (dashboard / global-search deep links): fetch the
+  // reservation to resolve its IP + parent subnet CIDR, then re-enter
+  // openIpPanel with the resolved focusIp. Falls back to a plain panel open
+  // if the lookup fails. Skipped when focusIp is already known.
+  if (focusReservationId && !focusIp) {
+    if (api && api.reservations && typeof api.reservations.get === "function") {
+      api.reservations.get(focusReservationId).then(function (r) {
+        if (!r || !r.ipAddress) { _fetchIpPage(); return; }
+        var cidr = subnetCidr || (r.subnet && r.subnet.cidr) || null;
+        _ipPanelFocusIp = r.ipAddress;
+        _ipPanelPage = cidr ? _ipv4PageForIp(cidr, r.ipAddress, _ipPanelPageSize) : 1;
+        _fetchIpPage();
+      }, function () { _fetchIpPage(); });
+      return;
+    }
+  }
   _fetchIpPage();
 }
 

@@ -50,7 +50,11 @@ function _restoreBlocksPrefs() {
   } catch (_) {}
 }
 
-document.addEventListener("DOMContentLoaded", async function () {
+// Init is callable both by the legacy /blocks.html auto-run AND by the
+// IPAM tabbed page (public/js/ipam.js) which mounts this tab's markup on
+// demand. Re-callable: each call rebuilds the TableSF / column layout
+// against whatever DOM is currently in the document.
+async function _initBlocksPage() {
   _blocksSF = new TableSF("blocks-tbody", function () { _blocksPage = 1; renderBlocksPage(); _saveBlocksPrefs(); });
   var blocksTable = document.querySelector("#blocks-tbody").closest("table");
   _blocksLayout = setupColumnLayout(blocksTable, {
@@ -83,7 +87,16 @@ document.addEventListener("DOMContentLoaded", async function () {
     renderBlocksPage();
     _saveBlocksPrefs();
   });
-});
+}
+
+window.PolarisBlocks = { init: _initBlocksPage };
+
+// The legacy /blocks.html bootstrap still auto-runs on its own page. The
+// IPAM page sets window.__polarisIpamTabs=true BEFORE this script loads so
+// the auto-run is suppressed there and ipam.js calls init() on demand.
+if (!window.__polarisIpamTabs) {
+  document.addEventListener("DOMContentLoaded", _initBlocksPage);
+}
 
 async function loadBlocks() {
   var tbody = document.getElementById("blocks-tbody");

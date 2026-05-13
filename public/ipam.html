@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polaris — IPAM</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main">
+      <div class="page-header">
+        <h2>IPAM</h2>
+      </div>
+
+      <div class="page-tabs" id="ipam-tabs">
+        <button class="page-tab" data-tab="blocks">IP Blocks</button>
+        <button class="page-tab active" data-tab="networks">Networks</button>
+      </div>
+
+      <!--
+        IPAM mount: the orchestrator (ipam.js) clones one of the two templates
+        below into this <div> when the user activates a tab, and replaces it
+        when switching tabs. The IDs inside each template (filter-pagesize,
+        pagination, *-tbody, etc.) collide between Blocks and Networks, so
+        only ONE tab's markup is in the DOM at a time.
+      -->
+      <div id="ipam-mount"></div>
+
+      <template id="ipam-tpl-blocks">
+        <div class="page-header" style="margin-top:0">
+          <div></div>
+          <div class="page-header-actions">
+            <button class="btn btn-secondary" id="btn-blocks-columns" title="Show or hide columns">Columns &#9662;</button>
+            <button class="btn btn-primary" id="btn-add-block" data-manage-networks>+ Add Block</button>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <label>Version</label>
+          <select id="filter-version" style="width:auto">
+            <option value="">All</option>
+            <option value="v4">IPv4</option>
+            <option value="v6">IPv6</option>
+          </select>
+          <label>Tag</label>
+          <input type="text" id="filter-tag" placeholder="e.g. prod" style="width:140px">
+          <label style="margin-left:auto">Show</label>
+          <select id="filter-pagesize" style="width:auto">
+            <option value="15" selected>15</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+
+        <div id="pagination-top" style="display:flex;align-items:center;gap:12px;justify-content:center;padding:0.5rem 0 1rem"></div>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th class="fav-col" title="Favorites pin to the top"></th>
+                <th data-sf-key="name" data-sf-type="string">Name</th>
+                <th data-sf-key="cidr" data-sf-type="ip">CIDR</th>
+                <th data-sf-key="ipVersion" data-sf-type="string">Version</th>
+                <th data-sf-key="description" data-sf-type="string">Description</th>
+                <th data-sf-key="tags" data-sf-type="array">Tags</th>
+                <th data-sf-key="_count.subnets" data-sf-type="number">Networks</th>
+                <th data-sf-key="createdAt" data-sf-type="date">Created</th>
+                <th style="width:90px" data-col-id="actions" data-col-required="true">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="blocks-tbody">
+              <tr><td colspan="9" class="empty-state">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="pagination" style="display:flex;align-items:center;gap:12px;justify-content:center;padding:1rem 0"></div>
+      </template>
+
+      <template id="ipam-tpl-networks">
+        <div class="page-header" style="margin-top:0">
+          <div></div>
+          <div class="page-header-actions">
+            <div class="btn-dropdown-wrap">
+              <button class="btn btn-secondary" id="btn-export">Export &#9662;</button>
+              <div class="btn-dropdown-menu" id="export-menu">
+                <div class="dropdown-heading">PDF</div>
+                <button data-export="page" data-fmt="pdf">Current page</button>
+                <button data-export="filtered" data-fmt="pdf">All filtered results</button>
+                <button data-export="all" data-fmt="pdf">Entire network list</button>
+                <div class="dropdown-divider"></div>
+                <div class="dropdown-heading">CSV</div>
+                <button data-export="page" data-fmt="csv">Current page</button>
+                <button data-export="filtered" data-fmt="csv">All filtered results</button>
+                <button data-export="all" data-fmt="csv">Entire network list</button>
+              </div>
+            </div>
+            <button class="btn btn-secondary" id="btn-auto-alloc" data-create-networks>Auto-Allocate Next</button>
+            <button class="btn btn-secondary" id="btn-subnets-columns" title="Show or hide columns">Columns &#9662;</button>
+            <button class="btn btn-primary" id="btn-add-subnet" data-create-networks>+ Add Network</button>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <label>Block</label>
+          <select id="filter-block" style="width:auto"><option value="">All blocks</option></select>
+          <label>Creator</label>
+          <select id="filter-creator" style="width:auto">
+            <option value="">All</option>
+            <option value="me">Mine</option>
+          </select>
+          <label style="margin-left:auto">Show</label>
+          <select id="filter-pagesize" style="width:auto">
+            <option value="15" selected>15</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+        </div>
+
+        <div id="subnets-bulk-bar" class="bulk-bar" style="display:none">
+          <span class="bulk-bar-count">0 selected</span>
+          <button class="btn btn-sm btn-secondary" id="subnets-bulk-edit-btn">Edit Selected</button>
+          <button class="btn btn-sm btn-danger" id="subnets-bulk-delete-btn">Delete Selected</button>
+        </div>
+
+        <div id="pagination-top" style="display:flex;align-items:center;gap:12px;justify-content:center;padding:0.5rem 0 1rem"></div>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th class="cb-col"><input type="checkbox" id="subnets-select-all" title="Select all on this page"></th>
+                <th class="fav-col" title="Favorites pin to the top"></th>
+                <th data-sf-key="name" data-sf-type="string">Name</th>
+                <th data-sf-key="cidr" data-sf-type="ip">Network</th>
+                <th data-sf-key="block.name" data-sf-type="string">Block</th>
+                <th data-sf-key="purpose" data-sf-type="string">Purpose</th>
+                <th data-sf-key="vlan" data-sf-type="number">VLAN</th>
+                <th data-sf-key="status" data-sf-type="string" data-sf-options="available|reserved|deprecated">Status</th>
+                <th data-sf-key="tags" data-sf-type="array">Tags</th>
+                <th data-sf-key="fortigateDevice" data-sf-type="string">Server</th>
+                <th data-sf-key="_integration" data-sf-type="string" data-sf-options="">Integration</th>
+                <th data-sf-key="_count.reservations" data-sf-type="number">Reservations</th>
+                <th style="width:90px" data-col-id="actions" data-col-required="true">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="subnets-tbody">
+              <tr><td colspan="13" class="empty-state">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="pagination" style="display:flex;align-items:center;gap:12px;justify-content:center;padding:1rem 0"></div>
+      </template>
+    </main>
+  </div>
+
+  <!-- IPAM tab orchestrator: must run before the tab modules so they don't
+       auto-init on DOMContentLoaded (they each check window.__polarisIpamTabs). -->
+  <script>window.__polarisIpamTabs = true;</script>
+
+  <script src="/js/vendor/jspdf.umd.min.js"></script>
+  <script src="/js/vendor/jspdf.plugin.autotable.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/table-sf.js"></script>
+  <script src="/js/favorites.js"></script>
+  <script src="/js/block-panel.js"></script>
+  <script src="/js/ip-panel.js"></script>
+  <script src="/js/blocks.js"></script>
+  <script src="/js/subnets.js"></script>
+  <script src="/js/ipam.js"></script>
+</body>
+</html>

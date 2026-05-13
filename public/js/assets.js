@@ -146,6 +146,13 @@ function _renderChartStats(container, count, parts) {
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
+  // Guard: this file is also loaded on map.html so the Device Map can reuse
+  // the canonical asset details slide-in. The page-init below assumes the
+  // Assets-page DOM (assets-tbody, btn-add-asset, etc.); skip it elsewhere.
+  // openViewModal() + _ensureAssetPanelDOM() and friends are page-agnostic
+  // (they append to document.body) so the panel still works without this
+  // init having run.
+  if (!document.getElementById("assets-tbody")) return;
   _assetsSF = new TableSF("assets-tbody", function () { _assetsPage = 1; renderAssetsPage(); _saveAssetsPrefs(); });
   var assetsTable = document.querySelector("#assets-tbody").closest("table");
   _assetsLayout = setupColumnLayout(assetsTable, {
@@ -175,6 +182,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   if (monsetBtn) monsetBtn.addEventListener("click", openMonitoringSettingsModal);
   await userReady;
   _restoreAssetsPrefs();
+  _applyAssetsHashFilters();
   loadAssets();
   document.getElementById("assets-select-all").addEventListener("change", function () {
     var cbs = document.querySelectorAll("#assets-tbody input.row-cb");
@@ -263,6 +271,38 @@ var ASSET_STATUS_LABELS = {
   disabled: "Disabled",
   decommissioned: "Decommissioned",
 };
+
+// Reads dashboard / global-search deep-link hash params and seeds the
+// TableSF filters BEFORE the first loadAssets call so the initial render is
+// already narrowed.
+//
+// Supported hash forms (extends the legacy #view=asset:<id> handled by
+// app.js processSearchHash):
+//   #type=<assetType>         — pre-filters the Type column to a single value
+//   #search=<hostname>        — pre-filters the Hostname column substring
+//
+// Both forms can co-occur. The values land in TableSF._filters so the smart
+// filter UI shows them as if the operator had typed them in.
+function _applyAssetsHashFilters() {
+  if (!_assetsSF) return;
+  var hash = (window.location.hash || "").replace(/^#/, "");
+  if (!hash) return;
+  var params = {};
+  hash.split("&").forEach(function (kv) {
+    var p = kv.split("=");
+    if (p.length === 2) params[decodeURIComponent(p[0])] = decodeURIComponent(p[1]);
+  });
+  if (params.type && ASSET_TYPE_LABELS.hasOwnProperty(params.type)) {
+    _assetsSF._filters.assetType = [params.type];
+  }
+  if (params.search) {
+    _assetsSF._filters.hostname = params.search;
+  }
+  if (_assetsSF._filters.assetType || _assetsSF._filters.hostname) {
+    if (typeof _assetsSF.restoreFilterUI === "function") _assetsSF.restoreFilterUI();
+    if (typeof _assetsSF._updateIcons === "function") _assetsSF._updateIcons();
+  }
+}
 
 async function loadAssets() {
   _assetsSelected.clear();

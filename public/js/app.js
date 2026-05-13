@@ -78,8 +78,7 @@ function canEditReservation(reservation) {
 const NAV_ITEMS = [
   { href: "/",                label: "Dashboard",    icon: "grid" },
   { href: "/map.html",        label: "Device Map",   icon: "mapPin" },
-  { href: "/blocks.html",     label: "IP Blocks",    icon: "box" },
-  { href: "/subnets.html",    label: "Networks",     icon: "layers" },
+  { href: "/ipam.html",       label: "IPAM",         icon: "layers" },
   { href: "/assets.html",         label: "Assets",       icon: "monitor" },
   { href: "/events.html",         label: "Events",       icon: "activity" },
   { href: "/integrations.html",  label: "Integrations", icon: "plug", networkAdmin: true },
@@ -119,15 +118,23 @@ function renderNav() {
     </div>
     <ul class="sidebar-nav">
       ${visibleItems.map(item => {
-        const isActive = current === item.href || (item.href === "/" && (current === "/index.html" || current === "/"));
+        let isActive = current === item.href || (item.href === "/" && (current === "/index.html" || current === "/"));
+        // IPAM absorbs the legacy /blocks.html and /subnets.html surfaces;
+        // mark the IPAM entry active when the user is on those URLs (they
+        // get redirected by the express layer but the active class needs
+        // to match either form pre-redirect on hard reloads).
+        if (item.href === "/ipam.html" && (current === "/blocks.html" || current === "/subnets.html")) {
+          isActive = true;
+        }
         let dot = "";
         if (item.href === "/events.html") {
           dot = '<span class="nav-conflict-dot" id="nav-conflict-dot" style="display:none"></span>';
-        } else if (item.href === "/subnets.html") {
+        } else if (item.href === "/ipam.html") {
           // Stale-reservation alert indicator — sourced from
           // /api/v1/reservations/alerts/count. Polled in lockstep with the
           // conflict dot below; refreshed after operator actions on the
-          // Alerts panel via window.refreshAlertsDot().
+          // Alerts panel via window.refreshAlertsDot(). Moved from the
+          // standalone Networks entry when IPAM consolidation landed.
           dot = '<span class="nav-alerts-dot" id="nav-alerts-dot" style="display:none"></span>';
         }
         return `<li><a href="${item.href}" class="${isActive ? "active" : ""}">${ICONS[item.icon]}<span>${item.label}</span>${dot}</a></li>`;
@@ -524,39 +531,51 @@ function _searchTargetFor(hit) {
   }
   if (hit.type === "block") {
     return {
-      page: "/blocks.html",
-      hash: "#view=block:" + encodeURIComponent(hit.id),
+      page: "/ipam.html",
+      hash: "#tab=blocks&view=block:" + encodeURIComponent(hit.id),
       handler: function () { if (typeof openEditModal === "function") openEditModal(hit.id); },
     };
   }
   if (hit.type === "subnet") {
     return {
-      page: "/subnets.html",
-      hash: "#view=subnet:" + encodeURIComponent(hit.id),
-      handler: function () { if (typeof openEditModal === "function") openEditModal(hit.id); },
+      page: "/ipam.html",
+      hash: "#tab=networks&subnet=" + encodeURIComponent(hit.id),
+      handler: function () { if (typeof openIpPanel === "function") openIpPanel(hit.id); },
     };
   }
   if (hit.type === "reservation") {
+    // Route to the network slide-over so the operator sees the reservation
+    // in its containing subnet context (IP-panel auto-scrolls + highlights
+    // the row); supplies focusReservation= so ip-panel resolves the IP from
+    // the reservation id even on hard reload.
+    var resvSubnetId = hit.subnetId || (hit.context && hit.context.subnetId);
+    if (resvSubnetId) {
+      return {
+        page: "/ipam.html",
+        hash: "#tab=networks&subnet=" + encodeURIComponent(resvSubnetId) + "&focusReservation=" + encodeURIComponent(hit.id),
+        handler: function () {
+          if (typeof openIpPanel === "function") openIpPanel(resvSubnetId, { focusReservationId: hit.id });
+        },
+      };
+    }
+    // Fallback when the search hit didn't carry a subnetId — open the
+    // reservation modal directly.
     return {
-      page: "/subnets.html",
-      hash: "#view=reservation:" + encodeURIComponent(hit.id),
+      page: "/ipam.html",
+      hash: "#tab=networks&view=reservation:" + encodeURIComponent(hit.id),
       handler: function () { if (typeof openReservationModal === "function") openReservationModal(hit.id); },
     };
   }
   if (hit.type === "ip") {
     var ctx = hit.context || {};
-    if (ctx.reservationId) {
-      return {
-        page: "/subnets.html",
-        hash: "#view=reservation:" + encodeURIComponent(ctx.reservationId),
-        handler: function () { if (typeof openReservationModal === "function") openReservationModal(ctx.reservationId); },
-      };
-    }
     if (ctx.subnetId) {
+      var hash = "#tab=networks&ip=" + encodeURIComponent(ctx.subnetId) + "@" + encodeURIComponent(ctx.ipAddress || "");
       return {
-        page: "/subnets.html",
-        hash: "#ip=" + encodeURIComponent(ctx.subnetId) + "@" + encodeURIComponent(ctx.ipAddress || ""),
-        handler: function () { if (typeof openIpPanel === "function") openIpPanel(ctx.subnetId); },
+        page: "/ipam.html",
+        hash: hash,
+        handler: function () {
+          if (typeof openIpPanel === "function") openIpPanel(ctx.subnetId, { focusIp: ctx.ipAddress });
+        },
       };
     }
   }
@@ -569,24 +588,66 @@ function _searchTargetFor(hit) {
 function processSearchHash() {
   var hash = window.location.hash || "";
   var path = window.location.pathname;
-  var m = /^#view=(\w+):(.+)$/.exec(hash);
+  var onIpamPage = path.indexOf("/ipam.html") !== -1;
+
+  // #view=<type>:<id> — legacy single-param form (still emitted by Blocks/
+  // Networks legacy redirects). Match on either the legacy page paths or
+  // the new IPAM consolidated page.
+  var m = /#view=(\w+):([^&]+)/.exec(hash);
   if (m) {
     var type = m[1], id = decodeURIComponent(m[2]);
     setTimeout(function () {
       if (type === "asset" && path.indexOf("/assets.html") !== -1 && typeof openViewModal === "function") {
         openViewModal(id);
-      } else if (type === "block" && path.indexOf("/blocks.html") !== -1 && typeof openEditModal === "function") {
+      } else if (type === "block" && (onIpamPage || path.indexOf("/blocks.html") !== -1) && typeof openEditModal === "function") {
         openEditModal(id);
-      } else if (type === "subnet" && path.indexOf("/subnets.html") !== -1 && typeof openEditModal === "function") {
+      } else if (type === "subnet" && (onIpamPage || path.indexOf("/subnets.html") !== -1) && typeof openEditModal === "function") {
         openEditModal(id);
-      } else if (type === "reservation" && path.indexOf("/subnets.html") !== -1 && typeof openReservationModal === "function") {
+      } else if (type === "reservation" && (onIpamPage || path.indexOf("/subnets.html") !== -1) && typeof openReservationModal === "function") {
         openReservationModal(id);
       }
     }, 150);
     return;
   }
+
+  // IPAM-style hash params: #tab=networks&subnet=<id>&focusReservation=<id>
+  // and the legacy plain #ip=<sid>@<ip> form (still emitted by the redirect
+  // from /subnets.html#ip=... ). Both surfaces converge on openIpPanel here.
+  if (onIpamPage) {
+    var params = {};
+    hash.replace(/^#/, "").split("&").forEach(function (kv) {
+      var p = kv.split("=");
+      if (p.length === 2) params[decodeURIComponent(p[0])] = decodeURIComponent(p[1]);
+    });
+    // The ipam orchestrator + subnets.js applyHashFilters already handle the
+    // tab=networks + subnet=/focusReservation= path (they fire before this).
+    // This branch covers #tab=networks&ip=<subnetId>@<ip> only.
+    if (params.tab === "networks" && params.ip) {
+      var ipParts = params.ip.split("@");
+      if (ipParts.length === 2) {
+        var subnetIdNew = ipParts[0];
+        var focusIpNew = ipParts[1];
+        setTimeout(function () {
+          if (typeof openIpPanel !== "function") return;
+          if (focusIpNew && api && api.subnets && typeof api.subnets.get === "function") {
+            api.subnets.get(subnetIdNew).then(function (s) {
+              openIpPanel(subnetIdNew, { focusIp: focusIpNew, subnetCidr: s && s.cidr });
+            }, function () {
+              openIpPanel(subnetIdNew, { focusIp: focusIpNew });
+            });
+          } else {
+            openIpPanel(subnetIdNew);
+          }
+        }, 200);
+      }
+      return;
+    }
+  }
+
+  // Legacy #ip=<sid>@<ip> on /subnets.html (also reachable via redirect from
+  // /subnets.html → /ipam.html).
   var ipM = /^#ip=([^@]+)@(.+)$/.exec(hash);
-  if (ipM && path.indexOf("/subnets.html") !== -1) {
+  if (ipM && (onIpamPage || path.indexOf("/subnets.html") !== -1)) {
     var subnetId = decodeURIComponent(ipM[1]);
     var focusIp = decodeURIComponent(ipM[2]);
     setTimeout(function () {
