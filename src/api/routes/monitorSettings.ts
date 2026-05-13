@@ -57,6 +57,11 @@ const TierSettingsSchema = z.object({
   intervalSeconds:           z.number().int().min(1).max(86400),
   failureThreshold:          z.number().int().min(1).max(100),
   probeTimeoutMs:            z.number().int().min(100).max(60000),
+  // Telemetry + system-info collectors. Range deliberately wider than the
+  // response-time probe (1s..120s) — these endpoints can be slow on busy
+  // gateways, and a too-tight value here false-fails an entire scrape.
+  telemetryTimeoutMs:        z.number().int().min(1000).max(120000).nullable().optional(),
+  systemInfoTimeoutMs:       z.number().int().min(1000).max(120000).nullable().optional(),
   telemetryIntervalSeconds:  z.number().int().min(15).max(86400),
   systemInfoIntervalSeconds: z.number().int().min(60).max(86400),
   sampleRetentionDays:       z.number().int().min(0).max(3650),
@@ -79,6 +84,8 @@ const OverrideSettingsSchema = z.object({
   intervalSeconds:           z.number().int().min(1).max(86400).nullable().optional(),
   failureThreshold:          z.number().int().min(1).max(100).nullable().optional(),
   probeTimeoutMs:            z.number().int().min(100).max(60000).nullable().optional(),
+  telemetryTimeoutMs:        z.number().int().min(1000).max(120000).nullable().optional(),
+  systemInfoTimeoutMs:       z.number().int().min(1000).max(120000).nullable().optional(),
   telemetryIntervalSeconds:  z.number().int().min(15).max(86400).nullable().optional(),
   systemInfoIntervalSeconds: z.number().int().min(60).max(86400).nullable().optional(),
   sampleRetentionDays:       z.number().int().min(0).max(3650).nullable().optional(),
@@ -379,6 +386,8 @@ router.get("/asset-overrides", async (req, res, next) => {
         { telemetryIntervalSec:  { not: null } },
         { systemInfoIntervalSec: { not: null } },
         { probeTimeoutMs:        { not: null } },
+        { telemetryTimeoutMs:    { not: null } },
+        { systemInfoTimeoutMs:   { not: null } },
         { responseTimePolling:   { not: null } },
         { telemetryPolling:      { not: null } },
         { interfacesPolling:     { not: null } },
@@ -400,6 +409,8 @@ router.get("/asset-overrides", async (req, res, next) => {
         telemetryIntervalSec:    true,
         systemInfoIntervalSec:   true,
         probeTimeoutMs:          true,
+        telemetryTimeoutMs:      true,
+        systemInfoTimeoutMs:     true,
         responseTimePolling:     true,
         telemetryPolling:        true,
         interfacesPolling:       true,

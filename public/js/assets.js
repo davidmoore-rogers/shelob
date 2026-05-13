@@ -1669,6 +1669,16 @@ function getAssetFormData() {
       var ptRaw = ptEl.value === "" ? null : parseInt(ptEl.value, 10);
       data.probeTimeoutMs = (Number.isFinite(ptRaw) && ptRaw >= 100 && ptRaw <= 60000) ? ptRaw : null;
     }
+    var telTimeoutEl = document.getElementById("f-telemetryTimeoutMs");
+    if (telTimeoutEl) {
+      var telRaw = telTimeoutEl.value === "" ? null : parseInt(telTimeoutEl.value, 10);
+      data.telemetryTimeoutMs = (Number.isFinite(telRaw) && telRaw >= 1000 && telRaw <= 120000) ? telRaw : null;
+    }
+    var sysTimeoutEl = document.getElementById("f-systemInfoTimeoutMs");
+    if (sysTimeoutEl) {
+      var sysRaw = sysTimeoutEl.value === "" ? null : parseInt(sysTimeoutEl.value, 10);
+      data.systemInfoTimeoutMs = (Number.isFinite(sysRaw) && sysRaw >= 1000 && sysRaw <= 120000) ? sysRaw : null;
+    }
     // Per-stream polling-method overrides. Each select returns null
     // (= inherit) or one of "rest_api"/"snmp"/"winrm"/"ssh"/"icmp".
     var polling = _polarisReadPollingFourStream("f-");
@@ -1705,6 +1715,8 @@ function getAssetFormData() {
 function assetMonitoringFormHTML(asset) {
   var interval = asset && asset.monitorIntervalSec != null ? asset.monitorIntervalSec : "";
   var probeTimeout = asset && asset.probeTimeoutMs != null ? asset.probeTimeoutMs : "";
+  var telemetryTimeout  = asset && asset.telemetryTimeoutMs  != null ? asset.telemetryTimeoutMs  : "";
+  var systemInfoTimeout = asset && asset.systemInfoTimeoutMs != null ? asset.systemInfoTimeoutMs : "";
   var monitored = asset && asset.monitored ? " checked" : "";
   // Asset id is needed to fetch effective settings + populate the Asset
   // Overrides button — empty on the create flow.
@@ -1804,6 +1816,16 @@ function assetMonitoringFormHTML(asset) {
       '<input type="number" id="f-probeTimeoutMs" min="100" max="60000" value="' + escapeHtml(String(probeTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
       '<p class="hint" id="f-probeTimeoutMs-warn" style="display:none;color:var(--color-warning)">⚠ Below 500 ms — probes will likely false-fail under healthy network conditions.</p>' +
       '<p class="hint">Range 100..60000 ms; default is 5000 ms. Inherits from the resolved tier when blank.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Telemetry Timeout Override (ms) <span class="tier-badge" id="f-telemetryTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
+      '<input type="number" id="f-telemetryTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(telemetryTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
+      '<p class="hint">Per-request timeout for the telemetry collector (FortiOS REST + SNMP, CPU + memory + temperature). Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>System Info Timeout Override (ms) <span class="tier-badge" id="f-systemInfoTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
+      '<input type="number" id="f-systemInfoTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(systemInfoTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
+      '<p class="hint">Per-request timeout for the interface / storage / LLDP collector. Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
     '</div>' +
     transportBlockHtml +
     '<div class="form-group" id="f-asset-overrides-wrap"' + assetIdAttr + ' style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--color-border);display:none">' +
@@ -1959,8 +1981,10 @@ async function _populateAssetMonitorTierBadges(asset) {
     }
     span.textContent = "(" + label + ": " + eff.resolved[fieldKey] + (suffix || "") + ")";
   }
-  setBadge("f-monitorInterval-tier", "intervalSeconds", " s");
-  setBadge("f-probeTimeoutMs-tier",  "probeTimeoutMs",  " ms");
+  setBadge("f-monitorInterval-tier",      "intervalSeconds",     " s");
+  setBadge("f-probeTimeoutMs-tier",       "probeTimeoutMs",      " ms");
+  setBadge("f-telemetryTimeoutMs-tier",   "telemetryTimeoutMs",  " ms");
+  setBadge("f-systemInfoTimeoutMs-tier",  "systemInfoTimeoutMs", " ms");
 
   // Update each polling dropdown's "Inherit" option to show the actual resolved
   // method and which tier it comes from, instead of the hardcoded source default.
@@ -2058,7 +2082,9 @@ async function _openAssetOverridesSlideover(scope) {
         if (a.monitorIntervalSec    != null) bits.push("interval=" + a.monitorIntervalSec + "s");
         if (a.telemetryIntervalSec  != null) bits.push("telemetry=" + a.telemetryIntervalSec + "s");
         if (a.systemInfoIntervalSec != null) bits.push("sysinfo=" + a.systemInfoIntervalSec + "s");
-        if (a.probeTimeoutMs        != null) bits.push("timeout=" + a.probeTimeoutMs + "ms");
+        if (a.probeTimeoutMs        != null) bits.push("probe-timeout=" + a.probeTimeoutMs + "ms");
+        if (a.telemetryTimeoutMs    != null) bits.push("tel-timeout=" + a.telemetryTimeoutMs + "ms");
+        if (a.systemInfoTimeoutMs   != null) bits.push("sysinfo-timeout=" + a.systemInfoTimeoutMs + "ms");
         return '<tr style="cursor:pointer" data-asset-link="' + escapeHtml(a.id) + '">' +
           '<td style="padding:6px 8px"><a href="#" onclick="return false">' + escapeHtml(a.hostname || "(no hostname)") + '</a></td>' +
           '<td style="padding:6px 8px;font-family:var(--font-mono)">' + escapeHtml(a.ipAddress || "-") + '</td>' +
@@ -7972,6 +7998,7 @@ var _snmpWalkLastCredId = null;
 var _snmpWalkLastMibId = "";        // "" = no MIB, "std:..." = standard, UUID = uploaded
 var _snmpWalkLastObjectName = "";   // persists object name across tab open/close
 var _snmpMibCache = null;           // null = not yet loaded; [] = loaded (may be empty)
+var _snmpMibStructureCache = {};    // keyed by mibId; structure payload from GET /mibs/:id/structure
 
 var _SNMP_STANDARD_MIBS = [
   { id: "std:system",         label: "System (RFC 1213)",              oid: "1.3.6.1.2.1.1"          },
@@ -8846,6 +8873,8 @@ var MON_TIER_DEFAULTS = {
   intervalSeconds:           60,
   failureThreshold:          3,
   probeTimeoutMs:            5000,
+  telemetryTimeoutMs:        10000,
+  systemInfoTimeoutMs:       10000,
   telemetryIntervalSeconds:  60,
   systemInfoIntervalSeconds: 600,
   sampleRetentionDays:       30,
@@ -8945,14 +8974,16 @@ function _monsetManualSectionHTML(v) {
     '<h3 style="margin-bottom:0.25rem">Manual Monitoring</h3>' +
     '<p class="hint" style="margin:0 0 1rem 0;color:var(--color-text-tertiary)">Settings applied to assets without an integration source — manually-created assets, or assets whose origin integration was deleted.</p>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem 1rem">' +
-      _monsetField("monset-manual-intervalSeconds",           "Probe interval",         "seconds",                       values.intervalSeconds,           1,   86400, false) +
-      _monsetField("monset-manual-failureThreshold",          "Failure threshold",      "consecutive failures",          values.failureThreshold,          1,   100,   false) +
-      _monsetField("monset-manual-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",        values.probeTimeoutMs,            100, 60000, true)  +
-      _monsetField("monset-manual-telemetryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)", values.telemetryIntervalSeconds,  15,  86400, false) +
-      _monsetField("monset-manual-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)",values.systemInfoIntervalSeconds, 60,  86400, false) +
-      _monsetField("monset-manual-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",            values.sampleRetentionDays,       0,   3650,  false) +
-      _monsetField("monset-manual-telemetryRetentionDays",    "Telemetry retention",    "days (0 = forever)",            values.telemetryRetentionDays,    0,   3650,  false) +
-      _monsetField("monset-manual-systemInfoRetentionDays",   "System info retention",  "days (0 = forever)",            values.systemInfoRetentionDays,   0,   3650,  false) +
+      _monsetField("monset-manual-intervalSeconds",           "Probe interval",         "seconds",                        values.intervalSeconds,           1,    86400,  false) +
+      _monsetField("monset-manual-failureThreshold",          "Failure threshold",      "consecutive failures",           values.failureThreshold,          1,    100,    false) +
+      _monsetField("monset-manual-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",         values.probeTimeoutMs,            100,  60000,  true)  +
+      _monsetField("monset-manual-telemetryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  values.telemetryIntervalSeconds,  15,   86400,  false) +
+      _monsetField("monset-manual-telemetryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       values.telemetryTimeoutMs,        1000, 120000, false) +
+      _monsetField("monset-manual-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)", values.systemInfoIntervalSeconds, 60,   86400,  false) +
+      _monsetField("monset-manual-systemInfoTimeoutMs",       "System info timeout",    "ms (interface/storage/LLDP)",    values.systemInfoTimeoutMs,       1000, 120000, false) +
+      _monsetField("monset-manual-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",             values.sampleRetentionDays,       0,    3650,   false) +
+      _monsetField("monset-manual-telemetryRetentionDays",    "Telemetry retention",    "days (0 = forever)",             values.telemetryRetentionDays,    0,    3650,   false) +
+      _monsetField("monset-manual-systemInfoRetentionDays",   "System info retention",  "days (0 = forever)",             values.systemInfoRetentionDays,   0,    3650,   false) +
     '</div>' +
     '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
     _polarisPollingFourStreamHTML("monset-manual-", "manual", values) +
@@ -8993,6 +9024,8 @@ async function _monsetSaveManual() {
     intervalSeconds:           _monsetReadField("monset-manual-intervalSeconds",           MON_TIER_DEFAULTS.intervalSeconds),
     failureThreshold:          _monsetReadField("monset-manual-failureThreshold",          MON_TIER_DEFAULTS.failureThreshold),
     probeTimeoutMs:            _monsetReadField("monset-manual-probeTimeoutMs",            MON_TIER_DEFAULTS.probeTimeoutMs),
+    telemetryTimeoutMs:        _monsetReadField("monset-manual-telemetryTimeoutMs",        MON_TIER_DEFAULTS.telemetryTimeoutMs),
+    systemInfoTimeoutMs:       _monsetReadField("monset-manual-systemInfoTimeoutMs",       MON_TIER_DEFAULTS.systemInfoTimeoutMs),
     telemetryIntervalSeconds:  _monsetReadField("monset-manual-telemetryIntervalSeconds",  MON_TIER_DEFAULTS.telemetryIntervalSeconds),
     systemInfoIntervalSeconds: _monsetReadField("monset-manual-systemInfoIntervalSeconds", MON_TIER_DEFAULTS.systemInfoIntervalSeconds),
     sampleRetentionDays:       _monsetReadField("monset-manual-sampleRetentionDays",       MON_TIER_DEFAULTS.sampleRetentionDays),
@@ -9051,7 +9084,9 @@ function _monsetOverrideSummary(o) {
   var labels = {
     intervalSeconds:           "probe",
     failureThreshold:          "threshold",
-    probeTimeoutMs:            "timeout",
+    probeTimeoutMs:            "probe-timeout",
+    telemetryTimeoutMs:        "tel-timeout",
+    systemInfoTimeoutMs:       "sysinfo-timeout",
     telemetryIntervalSeconds:  "telemetry",
     systemInfoIntervalSeconds: "sysinfo",
     sampleRetentionDays:       "probe-retain",
@@ -9099,14 +9134,16 @@ function _monsetOpenOverrideEditor(existing) {
     (isEdit ? '<p class="hint" style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.25rem 0 0.75rem 0">Class and source are fixed for an existing override; delete and re-create to change them.</p>' : '') +
     '<p class="hint" style="margin:0.5rem 0 0.75rem 0;color:var(--color-text-tertiary)">Leave a field blank to inherit from the source\'s tier.</p>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem 1rem">' +
-      _monsetField("monset-ov-intervalSeconds",           "Probe interval",         "seconds",                       v.intervalSeconds,           1,   86400, false) +
-      _monsetField("monset-ov-failureThreshold",          "Failure threshold",      "consecutive failures",          v.failureThreshold,          1,   100,   false) +
-      _monsetField("monset-ov-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",        v.probeTimeoutMs,            100, 60000, true)  +
-      _monsetField("monset-ov-telemetryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)", v.telemetryIntervalSeconds,  15,  86400, false) +
-      _monsetField("monset-ov-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)",v.systemInfoIntervalSeconds, 60,  86400, false) +
-      _monsetField("monset-ov-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",            v.sampleRetentionDays,       0,   3650,  false) +
-      _monsetField("monset-ov-telemetryRetentionDays",    "Telemetry retention",    "days (0 = forever)",            v.telemetryRetentionDays,    0,   3650,  false) +
-      _monsetField("monset-ov-systemInfoRetentionDays",   "System info retention",  "days (0 = forever)",            v.systemInfoRetentionDays,   0,   3650,  false) +
+      _monsetField("monset-ov-intervalSeconds",           "Probe interval",         "seconds",                        v.intervalSeconds,           1,    86400,  false) +
+      _monsetField("monset-ov-failureThreshold",          "Failure threshold",      "consecutive failures",           v.failureThreshold,          1,    100,    false) +
+      _monsetField("monset-ov-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",         v.probeTimeoutMs,            100,  60000,  true)  +
+      _monsetField("monset-ov-telemetryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  v.telemetryIntervalSeconds,  15,   86400,  false) +
+      _monsetField("monset-ov-telemetryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       v.telemetryTimeoutMs,        1000, 120000, false) +
+      _monsetField("monset-ov-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)", v.systemInfoIntervalSeconds, 60,   86400,  false) +
+      _monsetField("monset-ov-systemInfoTimeoutMs",       "System info timeout",    "ms (interface/storage/LLDP)",    v.systemInfoTimeoutMs,       1000, 120000, false) +
+      _monsetField("monset-ov-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",             v.sampleRetentionDays,       0,    3650,   false) +
+      _monsetField("monset-ov-telemetryRetentionDays",    "Telemetry retention",    "days (0 = forever)",             v.telemetryRetentionDays,    0,    3650,   false) +
+      _monsetField("monset-ov-systemInfoRetentionDays",   "System info retention",  "days (0 = forever)",             v.systemInfoRetentionDays,   0,    3650,   false) +
     '</div>' +
     '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
     '<div id="monset-ov-polling-block">' + _polarisPollingFourStreamHTML("monset-ov-", initialSourceKind, v, {
@@ -9204,6 +9241,8 @@ async function _monsetSaveOverride(existing) {
     intervalSeconds:           readOptional("monset-ov-intervalSeconds"),
     failureThreshold:          readOptional("monset-ov-failureThreshold"),
     probeTimeoutMs:            readOptional("monset-ov-probeTimeoutMs"),
+    telemetryTimeoutMs:        readOptional("monset-ov-telemetryTimeoutMs"),
+    systemInfoTimeoutMs:       readOptional("monset-ov-systemInfoTimeoutMs"),
     telemetryIntervalSeconds:  readOptional("monset-ov-telemetryIntervalSeconds"),
     systemInfoIntervalSeconds: readOptional("monset-ov-systemInfoIntervalSeconds"),
     sampleRetentionDays:       readOptional("monset-ov-sampleRetentionDays"),

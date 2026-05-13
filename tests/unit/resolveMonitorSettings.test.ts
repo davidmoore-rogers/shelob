@@ -49,6 +49,8 @@ const FLOOR = {
   intervalSeconds:           60,
   failureThreshold:          3,
   probeTimeoutMs:            5000,
+  telemetryTimeoutMs:        10000,
+  systemInfoTimeoutMs:       10000,
   telemetryIntervalSeconds:  60,
   systemInfoIntervalSeconds: 600,
   sampleRetentionDays:       30,
@@ -64,6 +66,10 @@ const TUNED_TIER = {
   intervalSeconds:           120,
   failureThreshold:          5,
   probeTimeoutMs:            7500,
+  // Tuned tier doesn't set the new timeout fields — they fall through to the
+  // hardcoded floor (10000 ms each) per the resolver's tierFromJson default.
+  telemetryTimeoutMs:        10000,
+  systemInfoTimeoutMs:       10000,
   telemetryIntervalSeconds:  90,
   systemInfoIntervalSeconds: 1200,
   sampleRetentionDays:       60,

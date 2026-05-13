@@ -270,6 +270,14 @@ model MonitorClassOverride {
   intervalSeconds           Int?
   failureThreshold          Int?
   probeTimeoutMs            Int?
+  // Per-request timeout (ms) for the telemetry collector (CPU + memory +
+  // temperature). 1000..120000; null = inherit from the tier below. Applied
+  // to FortiOS REST + SNMP session timeouts in collectTelemetry.
+  telemetryTimeoutMs        Int?
+  // Per-request timeout (ms) for the interface / storage / LLDP collector.
+  // 1000..120000; null = inherit. Applied to FortiOS REST + SNMP sessions in
+  // collectSystemInfo + collectFastFiltered.
+  systemInfoTimeoutMs       Int?
   telemetryIntervalSeconds  Int?
   systemInfoIntervalSeconds Int?
   sampleRetentionDays       Int?
@@ -425,6 +433,14 @@ model Asset {
   // Below 500ms the UI shows a warning icon — at that range probes start to
   // false-fail on healthy networks under transient latency.
   probeTimeoutMs           Int?
+  // Per-asset override for the telemetry collector request timeout (ms).
+  // Range 1000..120000; null = inherit. Applied to FortiOS REST + SNMP sessions
+  // inside collectTelemetry (CPU + memory + temperature).
+  telemetryTimeoutMs       Int?
+  // Per-asset override for the interface / storage / LLDP collector request
+  // timeout (ms). Range 1000..120000; null = inherit. Applied to FortiOS REST +
+  // SNMP sessions inside collectSystemInfo + collectFastFiltered.
+  systemInfoTimeoutMs      Int?
   monitorStatus            String? // "up" | "warning" | "recovering" | "down" | "unknown"
   // Bumped whenever monitorStatus changes value (any transition, not just
   // up<->down). Drives the "how long has this been warning/down" duration on

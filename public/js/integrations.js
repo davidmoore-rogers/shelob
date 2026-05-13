@@ -725,12 +725,14 @@ function _integrationCadenceSectionHTML(s, integrationType) {
     '<p class="hint" style="margin:0 0 0.75rem 0">Per-stream polling method. "Inherit" falls through to the source default. When SNMP is selected, optionally pin a specific MIB (default: Automatic).</p>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Telemetry (CPU + memory + temperature)</p>' +
-    num("telemetryIntervalSeconds", "Telemetry interval (seconds)", s.telemetryIntervalSeconds, 60,  15,  86400, "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
-    num("telemetryRetentionDays",   "Telemetry retention (days)",   s.telemetryRetentionDays,   30,  0,   3650,  "How long telemetry samples are kept. 0 = forever.", false) +
+    num("telemetryIntervalSeconds", "Telemetry interval (seconds)", s.telemetryIntervalSeconds, 60,    15,   86400,  "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
+    num("telemetryTimeoutMs",       "Telemetry timeout (ms)",       s.telemetryTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the telemetry collector (FortiOS REST + SNMP). Default 10000 ms.", false) +
+    num("telemetryRetentionDays",   "Telemetry retention (days)",   s.telemetryRetentionDays,   30,    0,    3650,   "How long telemetry samples are kept. 0 = forever.", false) +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface, storage &amp; LLDP discovery</p>' +
-    num("systemInfoIntervalSeconds","Discovery interval (seconds)", s.systemInfoIntervalSeconds, 600, 60,  86400, "How often interfaces, storage, IPsec and LLDP neighbors are scraped. Default 600 s (10 min).", false) +
-    num("systemInfoRetentionDays",  "Sample retention (days)",      s.systemInfoRetentionDays,   30,  0,   3650,  "How long interface and storage samples are kept. 0 = forever.", false) +
+    num("systemInfoIntervalSeconds","Discovery interval (seconds)", s.systemInfoIntervalSeconds, 600,   60,   86400,  "How often interfaces, storage, IPsec and LLDP neighbors are scraped. Default 600 s (10 min).", false) +
+    num("systemInfoTimeoutMs",      "Discovery timeout (ms)",       s.systemInfoTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the interface / storage / LLDP collector. Default 10000 ms.", false) +
+    num("systemInfoRetentionDays",  "Sample retention (days)",      s.systemInfoRetentionDays,   30,    0,    3650,   "How long interface and storage samples are kept. 0 = forever.", false) +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Response-time sample retention</p>' +
     num("sampleRetentionDays",      "Sample retention (days)",      s.sampleRetentionDays,       30,  0,   3650,  "How long response-time probe samples are kept. 0 = forever.", false);
@@ -1235,6 +1237,8 @@ function _readIntegrationCadenceForm() {
     intervalSeconds:           n("intervalSeconds"),
     failureThreshold:          n("failureThreshold"),
     probeTimeoutMs:            n("probeTimeoutMs"),
+    telemetryTimeoutMs:        n("telemetryTimeoutMs"),
+    systemInfoTimeoutMs:       n("systemInfoTimeoutMs"),
     telemetryIntervalSeconds:  n("telemetryIntervalSeconds"),
     systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
     sampleRetentionDays:       n("sampleRetentionDays"),

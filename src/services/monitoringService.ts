@@ -103,6 +103,8 @@ export interface AssetMonitorSnapshot {
   telemetryIntervalSec: number | null;
   systemInfoIntervalSec: number | null;
   probeTimeoutMs: number | null;
+  telemetryTimeoutMs?: number | null;
+  systemInfoTimeoutMs?: number | null;
 }
 
 // ─── Monitor settings hierarchy ─────────────────────────────────────────────
@@ -137,6 +139,18 @@ export interface MonitorTierSettings {
   failureThreshold:          number;
   /** Probe TCP/UDP/HTTP timeout in milliseconds. Default 5000. Range 100..60000. */
   probeTimeoutMs:            number;
+  /**
+   * Per-request timeout (ms) for the telemetry collector (CPU + memory +
+   * temperature). Applied to FortiOS REST + SNMP sessions inside
+   * collectTelemetry. Default 10000. Range 1000..120000.
+   */
+  telemetryTimeoutMs:        number;
+  /**
+   * Per-request timeout (ms) for the interface / storage / LLDP collector.
+   * Applied to FortiOS REST + SNMP sessions inside collectSystemInfo +
+   * collectFastFiltered. Default 10000. Range 1000..120000.
+   */
+  systemInfoTimeoutMs:       number;
   telemetryIntervalSeconds:  number;
   systemInfoIntervalSeconds: number;
   sampleRetentionDays:       number;
@@ -170,6 +184,8 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
   intervalSeconds:           60,
   failureThreshold:          3,
   probeTimeoutMs:            5000,
+  telemetryTimeoutMs:        10_000,
+  systemInfoTimeoutMs:       10_000,
   telemetryIntervalSeconds:  60,
   systemInfoIntervalSeconds: 600,
   sampleRetentionDays:       30,
@@ -414,6 +430,8 @@ function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTie
     intervalSeconds:           toPositiveInt(o.intervalSeconds,           HARDCODED_FLOOR.intervalSeconds),
     failureThreshold:          toPositiveInt(o.failureThreshold,          HARDCODED_FLOOR.failureThreshold),
     probeTimeoutMs:            toPositiveInt(o.probeTimeoutMs,            HARDCODED_FLOOR.probeTimeoutMs),
+    telemetryTimeoutMs:        toPositiveInt(o.telemetryTimeoutMs,        HARDCODED_FLOOR.telemetryTimeoutMs),
+    systemInfoTimeoutMs:       toPositiveInt(o.systemInfoTimeoutMs,       HARDCODED_FLOOR.systemInfoTimeoutMs),
     telemetryIntervalSeconds:  toPositiveInt(o.telemetryIntervalSeconds,  HARDCODED_FLOOR.telemetryIntervalSeconds),
     systemInfoIntervalSeconds: toPositiveInt(o.systemInfoIntervalSeconds, HARDCODED_FLOOR.systemInfoIntervalSeconds),
     sampleRetentionDays:       toPositiveInt(o.sampleRetentionDays,       HARDCODED_FLOOR.sampleRetentionDays),
@@ -511,6 +529,8 @@ async function loadClassOverride(
       intervalSeconds:           true,
       failureThreshold:          true,
       probeTimeoutMs:            true,
+      telemetryTimeoutMs:        true,
+      systemInfoTimeoutMs:       true,
       telemetryIntervalSeconds:  true,
       systemInfoIntervalSeconds: true,
       sampleRetentionDays:       true,
@@ -528,6 +548,8 @@ async function loadClassOverride(
     if (row.intervalSeconds           != null) result.intervalSeconds           = row.intervalSeconds;
     if (row.failureThreshold          != null) result.failureThreshold          = row.failureThreshold;
     if (row.probeTimeoutMs            != null) result.probeTimeoutMs            = row.probeTimeoutMs;
+    if (row.telemetryTimeoutMs        != null) result.telemetryTimeoutMs        = row.telemetryTimeoutMs;
+    if (row.systemInfoTimeoutMs       != null) result.systemInfoTimeoutMs       = row.systemInfoTimeoutMs;
     if (row.telemetryIntervalSeconds  != null) result.telemetryIntervalSeconds  = row.telemetryIntervalSeconds;
     if (row.systemInfoIntervalSeconds != null) result.systemInfoIntervalSeconds = row.systemInfoIntervalSeconds;
     if (row.sampleRetentionDays       != null) result.sampleRetentionDays       = row.sampleRetentionDays;
@@ -561,6 +583,10 @@ export interface AssetMonitorContext {
   telemetryIntervalSec:      number | null;
   systemInfoIntervalSec:     number | null;
   probeTimeoutMs:            number | null;
+  /** Per-asset telemetry collector timeout override (ms). null = inherit. */
+  telemetryTimeoutMs?:       number | null;
+  /** Per-asset interface/storage/LLDP collector timeout override (ms). null = inherit. */
+  systemInfoTimeoutMs?:      number | null;
   // Per-stream polling overrides on the asset itself. null = inherit.
   // String? on disk so legacy values can sit alongside; resolver adopts
   // them only when they pass isPollingMethod().
@@ -610,6 +636,8 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
     if (classOverride.intervalSeconds           != null) merged.intervalSeconds           = classOverride.intervalSeconds;
     if (classOverride.failureThreshold          != null) merged.failureThreshold          = classOverride.failureThreshold;
     if (classOverride.probeTimeoutMs            != null) merged.probeTimeoutMs            = classOverride.probeTimeoutMs;
+    if (classOverride.telemetryTimeoutMs        != null) merged.telemetryTimeoutMs        = classOverride.telemetryTimeoutMs;
+    if (classOverride.systemInfoTimeoutMs       != null) merged.systemInfoTimeoutMs       = classOverride.systemInfoTimeoutMs;
     if (classOverride.telemetryIntervalSeconds  != null) merged.telemetryIntervalSeconds  = classOverride.telemetryIntervalSeconds;
     if (classOverride.systemInfoIntervalSeconds != null) merged.systemInfoIntervalSeconds = classOverride.systemInfoIntervalSeconds;
     if (classOverride.sampleRetentionDays       != null) merged.sampleRetentionDays       = classOverride.sampleRetentionDays;
@@ -622,6 +650,8 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
   if (asset.telemetryIntervalSec  != null) merged.telemetryIntervalSeconds  = asset.telemetryIntervalSec;
   if (asset.systemInfoIntervalSec != null) merged.systemInfoIntervalSeconds = asset.systemInfoIntervalSec;
   if (asset.probeTimeoutMs        != null) merged.probeTimeoutMs            = asset.probeTimeoutMs;
+  if (asset.telemetryTimeoutMs    != null) merged.telemetryTimeoutMs        = asset.telemetryTimeoutMs;
+  if (asset.systemInfoTimeoutMs   != null) merged.systemInfoTimeoutMs       = asset.systemInfoTimeoutMs;
 
   // Per-stream polling resolution — see header comment above for rules.
   function resolveStream(
@@ -718,6 +748,8 @@ export async function resolveMonitorSettingsWithProvenance(
     intervalSeconds:           tier3Source,
     failureThreshold:          tier3Source,
     probeTimeoutMs:            tier3Source,
+    telemetryTimeoutMs:        tier3Source,
+    systemInfoTimeoutMs:       tier3Source,
     telemetryIntervalSeconds:  tier3Source,
     systemInfoIntervalSeconds: tier3Source,
     sampleRetentionDays:       tier3Source,
@@ -737,6 +769,8 @@ export async function resolveMonitorSettingsWithProvenance(
     if (classOverride.intervalSeconds           != null) { resolved.intervalSeconds           = classOverride.intervalSeconds;           provenance.intervalSeconds           = "class"; }
     if (classOverride.failureThreshold          != null) { resolved.failureThreshold          = classOverride.failureThreshold;          provenance.failureThreshold          = "class"; }
     if (classOverride.probeTimeoutMs            != null) { resolved.probeTimeoutMs            = classOverride.probeTimeoutMs;            provenance.probeTimeoutMs            = "class"; }
+    if (classOverride.telemetryTimeoutMs        != null) { resolved.telemetryTimeoutMs        = classOverride.telemetryTimeoutMs;        provenance.telemetryTimeoutMs        = "class"; }
+    if (classOverride.systemInfoTimeoutMs       != null) { resolved.systemInfoTimeoutMs       = classOverride.systemInfoTimeoutMs;       provenance.systemInfoTimeoutMs       = "class"; }
     if (classOverride.telemetryIntervalSeconds  != null) { resolved.telemetryIntervalSeconds  = classOverride.telemetryIntervalSeconds;  provenance.telemetryIntervalSeconds  = "class"; }
     if (classOverride.systemInfoIntervalSeconds != null) { resolved.systemInfoIntervalSeconds = classOverride.systemInfoIntervalSeconds; provenance.systemInfoIntervalSeconds = "class"; }
     if (classOverride.sampleRetentionDays       != null) { resolved.sampleRetentionDays       = classOverride.sampleRetentionDays;       provenance.sampleRetentionDays       = "class"; }
@@ -764,6 +798,14 @@ export async function resolveMonitorSettingsWithProvenance(
   if (asset.probeTimeoutMs != null) {
     resolved.probeTimeoutMs = asset.probeTimeoutMs;
     provenance.probeTimeoutMs = "asset";
+  }
+  if (asset.telemetryTimeoutMs != null) {
+    resolved.telemetryTimeoutMs = asset.telemetryTimeoutMs;
+    provenance.telemetryTimeoutMs = "asset";
+  }
+  if (asset.systemInfoTimeoutMs != null) {
+    resolved.systemInfoTimeoutMs = asset.systemInfoTimeoutMs;
+    provenance.systemInfoTimeoutMs = "asset";
   }
   // Per-asset polling overrides — only adopted when they're a real
   // PollingMethod string. Compatibility check happens here too: a stale
@@ -819,11 +861,12 @@ async function loadSnmpCredentialConfigForFortinetAsset(
 async function collectIpsecOnlyFortinetSafe(
   host: string,
   integration: { type: string; config: Record<string, unknown> },
+  timeoutMs?: number,
 ): Promise<IpsecTunnelSample[] | undefined> {
   try {
     const fg = buildFortinetConfig(host, integration);
     if ("error" in fg) return undefined;
-    return await collectIpsecTunnelsFortinet(fg);
+    return await collectIpsecTunnelsFortinet(fg, timeoutMs);
   } catch {
     return undefined;
   }
@@ -1774,6 +1817,7 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
   });
   const polling = effective.telemetryPolling;
   if (!polling) return { supported: false };
+  const telemetryTimeout = effective.telemetryTimeoutMs;
 
   // FQDN fallback for credentialed methods that resolve hostnames natively.
   const targetIp =
@@ -1801,7 +1845,7 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
       // FortiSwitches / FortiAPs subtab; that switches the resolved
       // telemetryPolling to "snmp" and dispatches below.
       if (isManagedSwitchOrAp) return { supported: false };
-      const data = await collectTelemetryFortinet(targetIp, integration as any);
+      const data = await collectTelemetryFortinet(targetIp, integration as any, telemetryTimeout);
       return { supported: true, data };
     }
     if (polling === "snmp") {
@@ -1815,7 +1859,7 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
       } else {
         return { supported: true, error: "No SNMP credential selected" };
       }
-      const data = await collectTelemetrySnmp(targetIp, snmpCfg, asset.manufacturer, asset.model, asset.os);
+      const data = await collectTelemetrySnmp(targetIp, snmpCfg, asset.manufacturer, asset.model, asset.os, telemetryTimeout);
       return { supported: true, data };
     }
     // winrm / ssh / icmp don't yet deliver telemetry. WinRM via WMI
@@ -1856,6 +1900,7 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
   });
   const polling = effective.interfacesPolling;
   if (!polling) return { supported: false };
+  const sysInfoTimeout = effective.systemInfoTimeoutMs;
 
   const targetIp =
     asset.ipAddress ||
@@ -1884,6 +1929,7 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
       full = await collectSystemInfoFortinet(targetIp, integration as any, {
         includeIpsec: wantedTunnels.length > 0,
         includeLldp:  false,
+        timeoutMs:    sysInfoTimeout,
       });
     } else if (polling === "snmp") {
       const effectiveIfacesCred = asset.interfacesCredential ?? asset.monitorCredential;
@@ -1895,14 +1941,14 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
       } else {
         return { supported: true, error: "No SNMP credential selected" };
       }
-      full = await collectSystemInfoSnmp(targetIp, snmpCfg, { includeLldp: false });
+      full = await collectSystemInfoSnmp(targetIp, snmpCfg, { includeLldp: false, timeoutMs: sysInfoTimeout });
       // Fortinet-discovered firewalls running SNMP still benefit from the
       // integration's interface filter (CMDB blocklist) and from the FortiOS
       // IPsec overlay — the two endpoints are independent of the SNMP path.
       if (isFortinetSrc && integration) {
         applyFortiInterfaceFilter(full.interfaces, integration as any);
         if (wantedTunnels.length > 0) {
-          const ipsec = await collectIpsecOnlyFortinetSafe(targetIp, integration as any);
+          const ipsec = await collectIpsecOnlyFortinetSafe(targetIp, integration as any, sysInfoTimeout);
           if (ipsec !== undefined) full.ipsecTunnels = ipsec;
         }
       }
@@ -2004,6 +2050,7 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
   // interfaces context isn't meaningful (we'd have nothing to attach the
   // neighbors to in the System tab table).
   if (!interfacesPolling) return { supported: false };
+  const sysInfoTimeout = effective.systemInfoTimeoutMs;
 
   const targetIp =
     asset.ipAddress ||
@@ -2063,11 +2110,11 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
       if (interfacesPolling === "snmp") {
         // SNMP-path interfaces+storage. Fetch LLDP via the same session iff
         // the LLDP polling agrees; otherwise leave it out and overlay below.
-        data = await collectSystemInfoSnmp(targetIp, snmpCfg!, { includeLldp: lldpPolling === "snmp" });
+        data = await collectSystemInfoSnmp(targetIp, snmpCfg!, { includeLldp: lldpPolling === "snmp", timeoutMs: sysInfoTimeout });
         if (isFortinetSrc && integration) {
           applyFortiInterfaceFilter(data.interfaces, integration as any);
           // IPsec always via REST when the source is Fortinet — SNMP has no equivalent.
-          const ipsec = await collectIpsecOnlyFortinetSafe(targetIp, integration as any);
+          const ipsec = await collectIpsecOnlyFortinetSafe(targetIp, integration as any, sysInfoTimeout);
           if (ipsec !== undefined) data.ipsecTunnels = ipsec;
         }
       } else {
@@ -2075,18 +2122,19 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
         data = await collectSystemInfoFortinet(targetIp, integration as any, {
           includeIpsec: true,
           includeLldp:  lldpPolling === "rest_api",
+          timeoutMs:    sysInfoTimeout,
         });
       }
       // Cross-transport LLDP overlay: when the chosen LLDP source differs
       // from the interfaces source we already used above.
       if (lldpPolling === "snmp" && interfacesPolling === "rest_api" && lldpSnmpCfg) {
-        const neighbors = await collectLldpOnlySnmp(targetIp, lldpSnmpCfg).catch(() => undefined);
+        const neighbors = await collectLldpOnlySnmp(targetIp, lldpSnmpCfg, sysInfoTimeout).catch(() => undefined);
         if (neighbors !== undefined) {
           data.lldpNeighbors = neighbors;
           data.lldpSource    = "snmp";
         }
       } else if (lldpPolling === "rest_api" && interfacesPolling === "snmp" && isFortinetSrc && integration && !isManagedSwitchOrAp) {
-        const neighbors = await collectLldpOnlyFortinet(targetIp, integration as any).catch(() => undefined);
+        const neighbors = await collectLldpOnlyFortinet(targetIp, integration as any, sysInfoTimeout).catch(() => undefined);
         if (neighbors !== undefined) {
           data.lldpNeighbors = neighbors;
           data.lldpSource    = "fortios";
@@ -2129,7 +2177,7 @@ function buildFortinetConfig(host: string, integration: { type: string; config: 
   };
 }
 
-async function collectTelemetryFortinet(host: string, integration: { type: string; config: Record<string, unknown> }): Promise<TelemetrySample> {
+async function collectTelemetryFortinet(host: string, integration: { type: string; config: Record<string, unknown> }, timeoutMs?: number): Promise<TelemetrySample> {
   const fg = buildFortinetConfig(host, integration);
   if ("error" in fg) throw new Error(fg.error);
 
@@ -2137,10 +2185,10 @@ async function collectTelemetryFortinet(host: string, integration: { type: strin
   // resource name (cpu, mem, disk, session, ...). Each entry can be either an
   // array of {interval, current, historical} samples or a single object,
   // depending on FortiOS version. Pull whatever's freshest.
-  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/resource/usage", { query: { scope: "global" } });
+  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/resource/usage", { query: { scope: "global" }, timeoutMs });
   const cpuPct = pickFortinetUsage(res?.cpu);
   const memPct = pickFortinetUsage(res?.mem ?? res?.memory);
-  const temperatures = await collectTemperaturesFortinet(fg).catch((err: unknown) => {
+  const temperatures = await collectTemperaturesFortinet(fg, timeoutMs).catch((err: unknown) => {
     logger.debug({ err, host }, "Temperature collection failed (sensor-info unavailable or timed out)");
     return [] as TemperatureSample[];
   });
@@ -2150,8 +2198,8 @@ async function collectTelemetryFortinet(host: string, integration: { type: strin
 // FortiOS exposes temperature, fan, and power sensors at one endpoint. We
 // filter to type === "temperature" and keep only readable sensors. Older
 // FortiOS firmwares 404 this endpoint — caller swallows the failure.
-async function collectTemperaturesFortinet(fg: FortiGateConfig): Promise<TemperatureSample[]> {
-  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/sensor-info", {});
+async function collectTemperaturesFortinet(fg: FortiGateConfig, timeoutMs?: number): Promise<TemperatureSample[]> {
+  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/sensor-info", { timeoutMs });
   const list: TemperatureSample[] = [];
   const arr = Array.isArray(res) ? res : (Array.isArray(res?.results) ? res.results : []);
   for (const s of arr) {
@@ -2221,10 +2269,11 @@ function clampPct(n: number): number {
 async function collectSystemInfoFortinet(
   host: string,
   integration: { type: string; config: Record<string, unknown> },
-  opts: { includeIpsec?: boolean; includeLldp?: boolean } = {},
+  opts: { includeIpsec?: boolean; includeLldp?: boolean; timeoutMs?: number } = {},
 ): Promise<SystemInfoSample> {
   const fg = buildFortinetConfig(host, integration);
   if ("error" in fg) throw new Error(fg.error);
+  const timeoutMs = opts.timeoutMs;
 
   // Fan out every independent FortiOS REST call in parallel. The merge logic
   // (cmdb + monitor → interfaces[]) only depends on both responses being
@@ -2239,18 +2288,19 @@ async function collectSystemInfoFortinet(
   // is captured and only re-thrown if it would have ended up with an empty
   // interfaces[] (matching the prior behavior where monitor failure with
   // no interfaces threw, but partial success returned).
-  const cmdbInterfacePromise = fgRequest<any>(fg, "GET", "/api/v2/cmdb/system/interface", { query: { vdom: "root" } })
+  const cmdbInterfacePromise = fgRequest<any>(fg, "GET", "/api/v2/cmdb/system/interface", { query: { vdom: "root" }, timeoutMs })
     .catch(() => null as any);
   const monitorInterfacePromise = fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface", {
     query: { scope: "vdom", include_vlan: "true", include_aggregate: "true" },
+    timeoutMs,
   })
     .then((res) => ({ ok: true as const, res }))
     .catch((err) => ({ ok: false as const, err }));
   const ipsecPromise = opts.includeIpsec
-    ? collectIpsecTunnelsFortinet(fg).catch(() => [] as IpsecTunnelSample[])
+    ? collectIpsecTunnelsFortinet(fg, timeoutMs).catch(() => [] as IpsecTunnelSample[])
     : Promise.resolve<IpsecTunnelSample[] | undefined>(undefined);
   const lldpPromise = opts.includeLldp !== false
-    ? collectLldpNeighborsFortinet(fg).catch(() => undefined)
+    ? collectLldpNeighborsFortinet(fg, timeoutMs).catch(() => undefined)
     : Promise.resolve<LldpNeighborSample[] | undefined>(undefined);
 
   const [cmdbRes, monitorOutcome, ipsecTunnels, lldpNeighbors] = await Promise.all([
@@ -2419,10 +2469,11 @@ async function collectSystemInfoFortinet(
 export async function collectLldpOnlyFortinet(
   host: string,
   integration: { type: string; config: Record<string, unknown> },
+  timeoutMs?: number,
 ): Promise<LldpNeighborSample[] | undefined> {
   const fg = buildFortinetConfig(host, integration);
   if ("error" in fg) throw new Error(fg.error);
-  return await collectLldpNeighborsFortinet(fg).catch(() => undefined);
+  return await collectLldpNeighborsFortinet(fg, timeoutMs).catch(() => undefined);
 }
 
 /**
@@ -2432,8 +2483,8 @@ export async function collectLldpOnlyFortinet(
  * / `interface`; some use `port_desc` / `port_description`; capabilities show up
  * either as a CSV string or an array). Be defensive about every field.
  */
-async function collectLldpNeighborsFortinet(fg: FortiGateConfig): Promise<LldpNeighborSample[]> {
-  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface/lldp-neighbors", { query: { vdom: "root" } });
+async function collectLldpNeighborsFortinet(fg: FortiGateConfig, timeoutMs?: number): Promise<LldpNeighborSample[]> {
+  const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface/lldp-neighbors", { query: { vdom: "root" }, timeoutMs });
   const arr = Array.isArray(res?.results) ? res.results : (Array.isArray(res) ? res : []);
   const out: LldpNeighborSample[] = [];
   for (const n of arr) {
@@ -2504,7 +2555,7 @@ function pickFortiCapabilities(raw: unknown): string[] {
  * them with a non-empty `parent` field pointing back at the configured
  * template tunnel; the template itself has no `parent`.
  */
-async function collectIpsecTunnelsFortinet(fg: FortiGateConfig): Promise<IpsecTunnelSample[]> {
+async function collectIpsecTunnelsFortinet(fg: FortiGateConfig, timeoutMs?: number): Promise<IpsecTunnelSample[]> {
   // Build a tunnel→{interface,type} map up front from the CMDB so each sample
   // can carry the parent interface (the FortiOS CLI `set interface` value
   // under `config vpn ipsec phase1-interface`) and the phase-1 type. The
@@ -2518,9 +2569,9 @@ async function collectIpsecTunnelsFortinet(fg: FortiGateConfig): Promise<IpsecTu
   // non-fatal and just leaves phase1Map empty so parentInterface / type are
   // null on every row, matching the prior behavior.
   const [cmdbResult, res] = await Promise.all([
-    fgRequest<any>(fg, "GET", "/api/v2/cmdb/vpn.ipsec/phase1-interface", { query: { vdom: "root" } })
+    fgRequest<any>(fg, "GET", "/api/v2/cmdb/vpn.ipsec/phase1-interface", { query: { vdom: "root" }, timeoutMs })
       .catch(() => null as any),
-    fgRequest<any>(fg, "GET", "/api/v2/monitor/vpn/ipsec", { query: { scope: "vdom" } }),
+    fgRequest<any>(fg, "GET", "/api/v2/monitor/vpn/ipsec", { query: { scope: "vdom" }, timeoutMs }),
   ]);
 
   const phase1Map = new Map<string, { iface: string | null; type: string | null }>();
@@ -2726,14 +2777,21 @@ const OID = {
   lldpRemManAddr:          "1.0.8802.1.1.2.1.4.2.1",
 };
 
-function buildSnmpSession(host: string, config: Record<string, unknown>): any {
+function buildSnmpSession(host: string, config: Record<string, unknown>, timeoutMs?: number): any {
   const port = toPositiveInt(config.port, 161);
   const version = config.version === "v3" ? "v3" : "v2c";
+  // Caller-supplied timeout (resolved from the per-stream tier hierarchy)
+  // overrides the legacy floor — but only when positive. A 0 or negative
+  // value would silently disable timeouts in net-snmp, so we treat anything
+  // unreasonable as "use the floor".
+  const effectiveTimeout = (typeof timeoutMs === "number" && timeoutMs > 0)
+    ? timeoutMs
+    : COLLECTOR_REQUEST_TIMEOUT_MS;
   if (version === "v2c") {
     return snmp.createSession(host, String(config.community || ""), {
       port,
       version: snmp.Version2c,
-      timeout: COLLECTOR_REQUEST_TIMEOUT_MS,
+      timeout: effectiveTimeout,
       retries: 0,
     });
   }
@@ -2754,7 +2812,7 @@ function buildSnmpSession(host: string, config: Record<string, unknown>): any {
   return snmp.createV3Session(host, user, {
     port,
     version: snmp.Version3,
-    timeout: COLLECTOR_REQUEST_TIMEOUT_MS,
+    timeout: effectiveTimeout,
     retries: 0,
   });
 }
@@ -2818,8 +2876,8 @@ function snmpMacFromBuffer(v: unknown): string | null {
   return Array.from(v).map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
 }
 
-async function withSnmpSession<T>(host: string, config: Record<string, unknown>, fn: (s: any) => Promise<T>): Promise<T> {
-  const session = buildSnmpSession(host, config);
+async function withSnmpSession<T>(host: string, config: Record<string, unknown>, fn: (s: any) => Promise<T>, timeoutMs?: number): Promise<T> {
+  const session = buildSnmpSession(host, config, timeoutMs);
   // net-snmp emits 'error' rather than throwing for socket/listener errors;
   // attach a no-op listener so a stray error doesn't kill the process. The
   // walk itself will still propagate the error through its callback.
@@ -2930,6 +2988,7 @@ async function collectTelemetrySnmp(
   manufacturer?: string | null,
   model?: string | null,
   os?: string | null,
+  timeoutMs?: number,
 ): Promise<TelemetrySample> {
   // Make sure the symbol table is populated before we try to resolve any
   // vendor symbols. ensureRegistryLoaded short-circuits after the first call.
@@ -2982,7 +3041,7 @@ async function collectTelemetrySnmp(
     const temperatures = await collectTemperaturesSnmp(session, manufacturer).catch(() => [] as TemperatureSample[]);
 
     return { cpuPct, memPct, memUsedBytes, memTotalBytes, temperatures };
-  });
+  }, timeoutMs);
 }
 
 // ─── Vendor + HOST-RESOURCES-MIB helpers ──────────────────────────────────
@@ -3206,7 +3265,7 @@ function scaleEntitySensor(raw: number, scale: number | null, precision: number 
 async function collectSystemInfoSnmp(
   host: string,
   config: Record<string, unknown>,
-  opts: { includeLldp?: boolean } = {},
+  opts: { includeLldp?: boolean; timeoutMs?: number } = {},
 ): Promise<SystemInfoSample> {
   return await withSnmpSession(host, config, async (session) => {
     // Storage: walk hrStorage and pick rows tagged as fixed/removable disk.
@@ -3322,7 +3381,7 @@ async function collectSystemInfoSnmp(
       lldpNeighbors,
       lldpSource: opts.includeLldp !== false ? "snmp" : undefined,
     };
-  });
+  }, opts.timeoutMs);
 }
 
 /**
@@ -3334,10 +3393,11 @@ async function collectSystemInfoSnmp(
 export async function collectLldpOnlySnmp(
   host: string,
   config: Record<string, unknown>,
+  timeoutMs?: number,
 ): Promise<LldpNeighborSample[] | undefined> {
   return await withSnmpSession(host, config, async (session) => {
     return await collectLldpNeighborsSnmp(session);
-  });
+  }, timeoutMs);
 }
 
 /**

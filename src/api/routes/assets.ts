@@ -146,6 +146,11 @@ const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   // Per-asset probe timeout override. 100..60000 ms; null inherits from the
   // resolved tier-3 setting. The frontend renders a soft warning at <500 ms.
   probeTimeoutMs:        z.number().int().min(100).max(60000).nullable().optional(),
+  // Per-asset overrides for the heavy collectors. 1000..120000 ms; null = inherit.
+  // Wider range than probeTimeoutMs — these scrapes pull dozens of OIDs or
+  // multi-MB FortiOS payloads, and a too-tight ceiling false-fails the run.
+  telemetryTimeoutMs:    z.number().int().min(1000).max(120000).nullable().optional(),
+  systemInfoTimeoutMs:   z.number().int().min(1000).max(120000).nullable().optional(),
   // Per-stream polling-method overrides — top-tier override, falls through
   // to the class override / integration tier / source default. Compatibility
   // with the asset's source kind is enforced at PUT time below.
@@ -517,6 +522,8 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
         telemetryIntervalSec:      true,
         systemInfoIntervalSec:     true,
         probeTimeoutMs:            true,
+        telemetryTimeoutMs:        true,
+        systemInfoTimeoutMs:       true,
         responseTimePolling:       true,
         telemetryPolling:          true,
         interfacesPolling:         true,
