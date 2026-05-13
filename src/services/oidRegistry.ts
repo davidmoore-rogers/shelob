@@ -59,14 +59,31 @@ const BUILT_IN_OIDS: Record<string, string> = {
   // Cisco
   cisco: "1.3.6.1.4.1.9",
   ciscoMgmt: "1.3.6.1.4.1.9.9",
+  // CISCO-PROCESS-MIB::cpmCPUTotal5secRev — column OID of the cpmCPUTotal
+  // table; walked + averaged at probe time. Seeded so the vendor telemetry
+  // profile resolves CPU without requiring CISCO-PROCESS-MIB to be uploaded.
+  cpmCPUTotal5secRev: "1.3.6.1.4.1.9.9.109.1.1.1.1.6",
+  // CISCO-MEMORY-POOL-MIB::ciscoMemoryPool{Used,Free} — column OIDs of the
+  // pool table; walked + summed at probe time. Seeded so the vendor profile
+  // resolves memory without requiring CISCO-MEMORY-POOL-MIB to be uploaded.
+  ciscoMemoryPoolUsed: "1.3.6.1.4.1.9.9.48.1.1.1.5",
+  ciscoMemoryPoolFree: "1.3.6.1.4.1.9.9.48.1.1.1.6",
   // Juniper
   juniperMIB: "1.3.6.1.4.1.2636",
+  // JUNIPER-MIB::jnxOperatingCPU / jnxOperatingBuffer — column OIDs of the
+  // jnxOperatingTable; walked + averaged at probe time. Seeded so the vendor
+  // profile resolves CPU/memory without requiring JUNIPER-MIB to be uploaded.
+  jnxOperatingCPU: "1.3.6.1.4.1.2636.3.1.13.1.8",
+  jnxOperatingBuffer: "1.3.6.1.4.1.2636.3.1.13.1.11",
   // Mikrotik
   mikrotik: "1.3.6.1.4.1.14988",
   mtxrSystem: "1.3.6.1.4.1.14988.1.1.3",
   // Aruba / HP / HPE
   hp: "1.3.6.1.4.1.11",
   hpSwitch: "1.3.6.1.4.1.11.2.14.11.5.1.9",
+  // STATISTICS-MIB::hpSwitchCpuStat — scalar percent. Seeded so the vendor
+  // profile resolves CPU without requiring STATISTICS-MIB to be uploaded.
+  hpSwitchCpuStat: "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1",
   // Fortinet
   fortinet: "1.3.6.1.4.1.12356",
   fnFortiGateMib: "1.3.6.1.4.1.12356.101",
@@ -83,6 +100,11 @@ const BUILT_IN_OIDS: Record<string, string> = {
   fsSysMemUsage: "1.3.6.1.4.1.12356.106.4.1.4",
   // Dell
   dell: "1.3.6.1.4.1.674",
+  // Dell PowerConnect / Force10 platforms are RADLAN-derived and expose CPU
+  // under the RADLAN enterprise (89), not Dell's own (674). Seeded so the
+  // vendor profile resolves CPU without requiring the RADLAN MIB upload.
+  radlan: "1.3.6.1.4.1.89",
+  rlCpuUtilDuringLastMinute: "1.3.6.1.4.1.89.1.7",
 };
 
 // ─── Parser ────────────────────────────────────────────────────────────────

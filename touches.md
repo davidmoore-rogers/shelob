@@ -1581,7 +1581,7 @@ Listed alphabetically.
 **Invariants:**
 - `match` regex is tested against `"${manufacturer ?? ''} ${os ?? ''} ${model ?? ''}".trim()` (all three fields optional).
 - Entries ordered in priority; first match wins (no fallback after). FortiSwitch must precede the generic Fortinet entry because both match `manufacturer="Fortinet"`.
-- CPU/memory symbols must exist in uploaded MIBs for the profile to resolve; probes fall back to HOST-RESOURCES-MIB if missing.
+- CPU/memory symbols resolve from one of three layers (in priority order): an uploaded MIB at the asset's scope, an entry in `oidRegistry`'s `BUILT_IN_OIDS` seed (currently covers Cisco / Juniper / HP-Aruba / Dell-RADLAN / Fortinet FortiGate + FortiSwitch — these vendors show "READY" out of the box), or — when neither resolves — the HOST-RESOURCES-MIB fallback inside the probe.
 - Profile selection is read-only; no runtime mutations.
 
 **When changing this:**

@@ -56,9 +56,12 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
     // CISCO-PROCESS-MIB::cpmCPUTotal5secRev — table walk; one row per CPU,
     // averaged at probe time. The `Rev` variant is on every IOS/IOS-XE since
     // 12.x; older boxes that only expose the non-Rev form will fall back.
+    // Seeded into oidRegistry so the probe works without uploading
+    // CISCO-PROCESS-MIB.
     cpu: { symbol: "cpmCPUTotal5secRev", mode: "walk-avg" },
     // CISCO-MEMORY-POOL-MIB::ciscoMemoryPoolUsed / Free — multiple pools
-    // (processor, I/O, fast, …); summed at probe time.
+    // (processor, I/O, fast, …); summed at probe time. Seeded into
+    // oidRegistry so the probe works without uploading CISCO-MEMORY-POOL-MIB.
     memory: {
       usedBytesSymbol: "ciscoMemoryPoolUsed",
       freeBytesSymbol: "ciscoMemoryPoolFree",
@@ -70,9 +73,10 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
     match: /juniper|junos/i,
     // JUNIPER-MIB::jnxOperatingCPU — table indexed by physical entity; we
     // average the CPU rows (REs + linecards). Could refine to RE-only later.
+    // Seeded into oidRegistry so the probe works without uploading JUNIPER-MIB.
     cpu: { symbol: "jnxOperatingCPU", mode: "walk-avg" },
     // JUNIPER-MIB::jnxOperatingBuffer — 1-100 percent, no byte equivalent
-    // exposed via SNMP.
+    // exposed via SNMP. Same seed as the CPU symbol.
     memory: { pctSymbol: "jnxOperatingBuffer", walkSubtree: true },
   },
   {
@@ -110,13 +114,17 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
   {
     vendor: "HP / Aruba ProCurve",
     match: /aruba|hpe|hewlett|procurve|^hp\b/i,
-    // STATISTICS-MIB::hpSwitchCpuStat — scalar percent
+    // STATISTICS-MIB::hpSwitchCpuStat — scalar percent. Seeded into
+    // oidRegistry so the probe works without uploading STATISTICS-MIB.
     cpu: { symbol: "hpSwitchCpuStat", mode: "scalar" },
   },
   {
     vendor: "Dell PowerConnect / Networking",
     match: /\bdell\b|powerconnect|force10/i,
-    // RADLAN / Dell-Vendor-MIB::rlCpuUtilDuringLastMinute — scalar percent
+    // RADLAN-rndMng::rlCpuUtilDuringLastMinute — scalar percent. The RADLAN
+    // platform underlies Dell PowerConnect / Force10 switches and lives under
+    // enterprise 89, not Dell's own (674). Seeded into oidRegistry so the
+    // probe works without uploading the RADLAN MIB.
     cpu: { symbol: "rlCpuUtilDuringLastMinute", mode: "scalar" },
   },
 ];
