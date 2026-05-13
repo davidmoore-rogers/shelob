@@ -1545,6 +1545,10 @@ async function probeSnmp(host: string, config: Record<string, unknown>, start: n
   const port = toPositiveInt(config.port, 161);
   const version = config.version === "v3" ? "v3" : "v2c";
   return withSnmpGate(host, port, () => new Promise<ProbeResult>((resolve) => {
+    // Reset start INSIDE the gate so reported responseTimeMs reflects only
+    // the device round-trip, not the FIFO wait behind a concurrent heavy
+    // walk on the same (host, port). The caller's `start` is discarded.
+    start = performance.now();
     let resolved = false;
     const finishOnce = (r: ProbeResult) => {
       if (resolved) return;
