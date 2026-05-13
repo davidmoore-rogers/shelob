@@ -86,11 +86,11 @@
   // Real spec lives in /js/mobile/subnet-detail.js.
   var Subnet = (window.PolarisSubnetDetail && window.PolarisSubnetDetail.spec) || {
     parentTab: null,
-    renderTopbar: function () { return backTopbar("Subnet"); },
+    renderTopbar: function () { return backTopbar("Network"); },
     render: function (body, ctx) {
       var id = ctx.route.parts[0] || "";
       body.innerHTML = placeholderBody(
-        "Subnet detail not loaded",
+        "Network detail not loaded",
         "PolarisSubnetDetail module is missing — check script order. Subnet id: " + id,
         "/subnets.html"
       );

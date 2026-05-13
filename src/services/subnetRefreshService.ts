@@ -305,11 +305,17 @@ export async function refreshSubnet(
   return { lastDiscoveredAt, created, updated, released, skipped };
 }
 
-// Reverse of buildDescription() in reservationPushService: the FortiOS
-// description follows "Polaris/<user>: <hostname>" or "Polaris: <hostname>",
-// so a hostname can be teased back out. Falls through to null for
-// non-Polaris-formatted descriptions.
+// Reverse of buildDescription() in reservationPushService. Two formats:
+//   notes present:  "Polaris/<user>: <notes> [<hostname>]"
+//   notes empty:    "Polaris/<user>: <hostname>"
+// Try the bracketed form first so a hostname embedded after operator notes
+// is recovered cleanly; fall through to the colon-only form for the legacy
+// shape and for entries pushed before the notes field carried into the
+// description. Returns null for non-Polaris descriptions.
 function extractHostnameFromDescription(desc: string): string | null {
-  const m = /^Polaris(?:\/[^:]+)?:\s*(.+)$/.exec(desc.trim());
-  return m ? m[1].trim() : null;
+  const trimmed = desc.trim();
+  const bracketed = /^Polaris(?:\/[^:]+)?:\s*.*\[(.+)\]\s*$/.exec(trimmed);
+  if (bracketed) return bracketed[1].trim();
+  const legacy = /^Polaris(?:\/[^:]+)?:\s*(.+)$/.exec(trimmed);
+  return legacy ? legacy[1].trim() : null;
 }

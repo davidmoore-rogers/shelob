@@ -96,7 +96,7 @@
         + '<div class="m3-searchbar" style="margin:8px 16px 0;">'
         + '  <button class="icon-btn" id="search-clear-btn" aria-label="Clear" type="button" style="display:none;"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>'
         + '  <button class="icon-btn" id="search-icon-btn" aria-label="Search" type="button"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></button>'
-        + '  <input class="input" type="search" id="search-input" placeholder="Search IPs, assets, subnets…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">'
+        + '  <input class="input" type="search" id="search-input" placeholder="Search IPs, assets, networks…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">'
         + '  <div class="avatar">' + escapeHtml(initials) + '</div>'
         + '</div>';
     },
@@ -121,7 +121,7 @@
           + '<div class="empty-state" style="padding-top:48px;">'
           + '  <div class="icon"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></div>'
           + '  <div class="ttl">Search Polaris</div>'
-          + '  <div class="desc">Find IPs, assets, subnets, FortiGate sites and reservations. Try typing an IP, hostname, MAC, or partial name.</div>'
+          + '  <div class="desc">Find IPs, assets, networks, FortiGate sites and reservations. Try typing an IP, hostname, MAC, or partial name.</div>'
           + '</div>';
       }
 

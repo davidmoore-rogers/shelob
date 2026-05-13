@@ -459,8 +459,8 @@
     sheet.id = "map-sheet";
 
     var subnetLine = site.subnetCount
-      ? site.subnetCount + " subnet" + (site.subnetCount === 1 ? "" : "s")
-      : "no subnets discovered yet";
+      ? site.subnetCount + " network" + (site.subnetCount === 1 ? "" : "s")
+      : "no networks discovered yet";
     var monitorPill = renderMonitorPill(site);
     var siteParts = [];
     if (site.model) siteParts.push(escapeHtml(site.model));

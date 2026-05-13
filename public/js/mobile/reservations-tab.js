@@ -86,7 +86,7 @@
         row.addEventListener("click", function () {
           var subnet = row.dataset.subnet;
           if (subnet) PolarisRouter.go("subnet/" + subnet);
-          else PolarisTabs.showSnackbar("This reservation isn’t tied to a subnet.");
+          else PolarisTabs.showSnackbar("This reservation isn’t tied to a network.");
         });
       });
     }).catch(function (err) {

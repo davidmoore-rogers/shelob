@@ -5,9 +5,11 @@
 //      reservation status. Tapping a reserved row navigates to the linked
 //      asset; tapping a free row opens the Reserve sheet pre-filled with
 //      that IP.
-//   2. Reserve sheet (modal): IP / hostname / owner / MAC (required when
-//      `pushEligible`) + collapsible "more fields" for notes / projectRef /
-//      expiresAt. POST /reservations on submit.
+//   2. Reserve sheet (modal): IP / hostname / MAC (required when
+//      `pushEligible`) / notes + collapsible "more fields" for projectRef /
+//      expiresAt. POST /reservations on submit. Notes flow into the FortiOS
+//      reserved-address description on push-eligible subnets — operator typing
+//      here shows up on the FortiGate's reservation comment field.
 //
 // Role gates: readonly users see the list but no Reserve FAB and tapping
 // a free IP shows a snackbar instead of the sheet. user / assetsadmin /
@@ -40,7 +42,7 @@
       + '  <div class="leading">'
       + '    <button class="icon-btn" id="subnet-back-btn" aria-label="Back"><svg viewBox="0 0 24 24"><use href="#i-back"/></svg></button>'
       + '  </div>'
-      + '  <div class="title" id="subnet-topbar-title">Subnet</div>'
+      + '  <div class="title" id="subnet-topbar-title">Network</div>'
       + '  <div class="trailing"></div>'
       + '</div>';
   }
@@ -48,7 +50,7 @@
   function render(body, ctx) {
     var id = (ctx.route && ctx.route.parts && ctx.route.parts[0]) || "";
     if (!id) {
-      body.innerHTML = '<div class="empty-state" style="padding-top:64px;"><div class="ttl">Subnet id missing</div></div>';
+      body.innerHTML = '<div class="empty-state" style="padding-top:64px;"><div class="ttl">Network id missing</div></div>';
       return;
     }
     var st = mountState(id);
@@ -75,9 +77,10 @@
       st.totalIps = resp.totalIps || st.ips.length;
       st.ipv6 = !!resp.ipv6;
       var topbar = document.getElementById("subnet-topbar-title");
-      if (topbar) topbar.textContent = st.subnet.name || st.subnet.cidr || "Subnet";
+      if (topbar) topbar.textContent = st.subnet.name || st.subnet.cidr || "Network";
 
       renderShell(st, user);
+      mountRefreshButton(id, st, user);
 
       var fab = document.getElementById("subnet-fab");
       if (fab) {
@@ -86,7 +89,58 @@
       }
     }).catch(function (err) {
       var host = document.getElementById("subnet-host");
-      if (host) host.innerHTML = errorState(err && err.message ? err.message : "Failed to load subnet");
+      if (host) host.innerHTML = errorState(err && err.message ? err.message : "Failed to load network");
+    });
+  }
+
+
+  // The refresh button lives in the topbar trailing slot. Only shown for
+  // FortiGate-discovered subnets (`fortigateDevice` non-empty) AND callers
+  // who can write — matches the backend's `requireUserOrAbove` guard on
+  // POST /subnets/:id/refresh. Tap reconciles that single scope's CMDB
+  // reservations + live leases against Polaris, then re-fetches the IP list
+  // so the operator sees the result without leaving the page.
+  function mountRefreshButton(id, st, user) {
+    var topbar = document.querySelector("#subnet-topbar-title");
+    if (!topbar) return;
+    var trailing = topbar.parentElement && topbar.parentElement.querySelector(".trailing");
+    if (!trailing) return;
+    trailing.innerHTML = "";
+    if (!st.subnet || !st.subnet.fortigateDevice || !canWrite(user)) return;
+
+    var btn = document.createElement("button");
+    btn.className = "icon-btn";
+    btn.id = "subnet-refresh-btn";
+    btn.setAttribute("aria-label", "Refresh from " + (st.subnet.fortigateDevice || "FortiGate"));
+    btn.title = "Refresh from " + (st.subnet.fortigateDevice || "FortiGate");
+    btn.innerHTML = '<svg viewBox="0 0 24 24"><use href="#i-refresh"/></svg>';
+    trailing.appendChild(btn);
+
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.classList.add("spinning");
+      api.subnets.refresh(id).then(function (r) {
+        var parts = [];
+        if (r.created)  parts.push(r.created + " created");
+        if (r.updated)  parts.push(r.updated + " updated");
+        if (r.released) parts.push(r.released + " released");
+        if (r.skipped)  parts.push(r.skipped + " skipped");
+        var summary = parts.length ? parts.join(", ") : "no changes";
+        PolarisTabs.showSnackbar("Refreshed " + (st.subnet.fortigateDevice || "FortiGate") + " — " + summary);
+        return api.subnets.ips(id, { page: 1, pageSize: IP_PAGE_SIZE }).then(function (resp) {
+          st.subnet = resp.subnet;
+          st.ips = resp.ips || [];
+          st.totalIps = resp.totalIps || st.ips.length;
+          renderShell(st, user);
+          mountRefreshButton(id, st, user);
+        });
+      }).catch(function (err) {
+        PolarisTabs.showSnackbar(err && err.message ? err.message : "Refresh failed", { error: true });
+      }).finally(function () {
+        btn.disabled = false;
+        btn.classList.remove("spinning");
+      });
     });
   }
 
@@ -94,7 +148,7 @@
     return ''
       + '<div class="empty-state" style="padding-top:48px;">'
       + '  <div class="icon" style="background:var(--md-error-container);color:var(--md-on-error-container);"><svg viewBox="0 0 24 24"><use href="#i-warn"/></svg></div>'
-      + '  <div class="ttl">Couldn’t load subnet</div>'
+      + '  <div class="ttl">Couldn’t load network</div>'
       + '  <div class="desc">' + escapeHtml(msg) + '</div>'
       + '</div>';
   }
@@ -110,7 +164,7 @@
     if (s.fortigateDevice) heroBits.push(escapeHtml(s.fortigateDevice));
 
     var pushBadge = s.pushEligible
-      ? '<span class="status-pill warn" style="margin-top:8px;display:inline-flex;"><svg viewBox="0 0 24 24" width="14" height="14" style="fill:currentColor;"><use href="#i-info"/></svg>DHCP-push subnet — MAC required</span>'
+      ? '<span class="status-pill warn" style="margin-top:8px;display:inline-flex;"><svg viewBox="0 0 24 24" width="14" height="14" style="fill:currentColor;"><use href="#i-info"/></svg>DHCP-push network — MAC required</span>'
       : '';
 
     var reservedCount = st.ips.filter(function (i) { return i.reservation; }).length;
@@ -124,7 +178,7 @@
       + '</div>'
       + '<div class="section-head">IPs<span class="count">' + reservedCount + ' reserved · ' + (st.totalIps + (paged ? "+" : "")) + ' total</span></div>'
       + '<div id="subnet-ip-list"></div>'
-      + (paged ? '<div style="text-align:center;padding:12px 0 24px;color:var(--md-on-surface-variant);font-size:12px;">Showing first ' + st.ips.length + ' addresses — open subnet on desktop for full pagination.</div>' : '');
+      + (paged ? '<div style="text-align:center;padding:12px 0 24px;color:var(--md-on-surface-variant);font-size:12px;">Showing first ' + st.ips.length + ' addresses — open network on desktop for full pagination.</div>' : '');
 
     renderIpList(st, user);
   }
@@ -220,24 +274,28 @@
       + '  <div class="tf-outlined"><span class="lbl">Hostname</span>'
       + '    <input class="field" id="r-hostname" maxlength="100">'
       + '  </div>'
-      + '  <div class="tf-outlined"><span class="lbl">Owner</span>'
-      + '    <input class="field" id="r-owner" value="' + escapeHtml((user && user.username) || "") + '" maxlength="100">'
-      + '  </div>'
       + (pushEligible
         ? '  <div class="tf-outlined"><span class="lbl">MAC address *</span>'
           + '    <input class="field mono" id="r-mac" placeholder="aa:bb:cc:dd:ee:ff" required>'
-          + '    <div class="support">Will be pushed to ' + escapeHtml(s.fortigateDevice || "FortiGate") + ' as a DHCP reservation.</div>'
+          + '    <div class="support" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
+          + '      <span>Will be pushed to ' + escapeHtml(s.fortigateDevice || "FortiGate") + ' as a DHCP reservation.</span>'
+          + '      <button type="button" class="btn btn-text" id="r-mac-gen" title="Generate a locally-administered MAC (02:xx:xx:xx:xx:xx) — placeholder when the device’s real MAC isn’t known yet" style="font-size:13px;padding:4px 10px;flex-shrink:0;">Generate</button>'
+          + '    </div>'
           + '  </div>'
         : '  <div class="tf-outlined"><span class="lbl">MAC address</span>'
           + '    <input class="field mono" id="r-mac" placeholder="optional">'
+          + '    <div class="support" style="display:flex;justify-content:flex-end;">'
+          + '      <button type="button" class="btn btn-text" id="r-mac-gen" title="Generate a locally-administered MAC (02:xx:xx:xx:xx:xx) — placeholder when the device’s real MAC isn’t known yet" style="font-size:13px;padding:4px 10px;">Generate</button>'
+          + '    </div>'
           + '  </div>')
+      + '  <div class="tf-outlined"><span class="lbl">Notes</span>'
+      + '    <input class="field" id="r-notes" maxlength="500" placeholder="' + (pushEligible ? "Saved to the FortiGate reservation comment" : "") + '">'
+      + (pushEligible ? '    <div class="support">Saved to the FortiGate reservation comment.</div>' : '')
+      + '  </div>'
       + '  <details style="margin-bottom:16px;">'
       + '    <summary style="color:var(--md-primary);font-size:14px;font-weight:500;letter-spacing:.1px;cursor:pointer;padding:8px 0;">More fields</summary>'
       + '    <div class="tf-outlined" style="margin-top:12px;"><span class="lbl">Project / ticket</span>'
       + '      <input class="field" id="r-project" maxlength="120">'
-      + '    </div>'
-      + '    <div class="tf-outlined"><span class="lbl">Notes</span>'
-      + '      <input class="field" id="r-notes" maxlength="500">'
       + '    </div>'
       + '    <div class="tf-outlined"><span class="lbl">Expires (YYYY-MM-DD)</span>'
       + '      <input class="field mono" id="r-expires" placeholder="">'
@@ -259,6 +317,29 @@
       e.preventDefault();
       onSubmit(subnetId, st, user);
     });
+    var genBtn = document.getElementById("r-mac-gen");
+    var macInput = document.getElementById("r-mac");
+    if (genBtn && macInput) {
+      genBtn.addEventListener("click", function () {
+        macInput.value = generateLocalMac();
+        macInput.focus();
+        try { macInput.select(); } catch (_) {}
+      });
+    }
+  }
+
+  // Generate a locally-administered unicast MAC for placeholder use when the
+  // real client MAC isn't known yet (e.g. reserving an IP before the device
+  // is racked). First octet fixed at 02 so the locally-administered bit is
+  // set and the multicast bit is clear — same convention as desktop's
+  // _generateLocalMac() in public/js/ip-panel.js.
+  function generateLocalMac() {
+    var bytes = ["02"];
+    for (var i = 0; i < 5; i++) {
+      var b = Math.floor(Math.random() * 256);
+      bytes.push((b < 16 ? "0" : "") + b.toString(16));
+    }
+    return bytes.join(":").toUpperCase();
   }
 
   function closeReserveSheet() {
@@ -291,19 +372,17 @@
     clearReserveError();
     var ip       = (document.getElementById("r-ip").value || "").trim();
     var hostname = (document.getElementById("r-hostname").value || "").trim();
-    var owner    = (document.getElementById("r-owner").value || "").trim();
     var mac      = (document.getElementById("r-mac") ? document.getElementById("r-mac").value || "" : "").trim();
-    var project  = (document.getElementById("r-project") ? document.getElementById("r-project").value || "" : "").trim();
     var notes    = (document.getElementById("r-notes") ? document.getElementById("r-notes").value || "" : "").trim();
+    var project  = (document.getElementById("r-project") ? document.getElementById("r-project").value || "" : "").trim();
     var expires  = (document.getElementById("r-expires") ? document.getElementById("r-expires").value || "" : "").trim();
 
     if (!ip) { showReserveError("IP address is required"); return; }
     var body = { subnetId: subnetId, ipAddress: ip };
     if (hostname) body.hostname = hostname;
-    if (owner) body.owner = owner;
     if (mac) body.macAddress = mac;
-    if (project) body.projectRef = project;
     if (notes) body.notes = notes;
+    if (project) body.projectRef = project;
     if (expires) body.expiresAt = expires;
 
     var btn = document.getElementById("reserve-submit");

@@ -94,14 +94,14 @@
 
   // ─── Subnets sub-page ──────────────────────────────────────────────────
   registerSub("subnets", {
-    renderTopbar: function () { return backTopbar("Subnets"); },
+    renderTopbar: function () { return backTopbar("Networks"); },
     render: function (body) {
       body.innerHTML = loadingHtml();
       api.subnets.list({ limit: 200 }).then(function (resp) {
         // listSubnets returns { subnets, total, limit, offset }
         var subnets = (resp && resp.subnets) || [];
         if (subnets.length === 0) {
-          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-subnet"/></svg></div><div class="ttl">No subnets</div><div class="desc">No subnets have been created yet.</div></div>';
+          body.innerHTML = '<div class="empty-state" style="padding-top:48px;"><div class="icon"><svg viewBox="0 0 24 24"><use href="#i-subnet"/></svg></div><div class="ttl">No networks</div><div class="desc">No networks have been created yet.</div></div>';
           return;
         }
         var html = "";
@@ -192,7 +192,7 @@
       + '<div class="section-head">Network</div>'
       + menuRow("blocks", "i-block",   "Blocks",       "")
       + '<div class="list-divider"></div>'
-      + menuRow("subnets", "i-subnet", "Subnets",      "")
+      + menuRow("subnets", "i-subnet", "Networks",     "")
 
       + '<div class="section-head">Operations</div>'
       + menuRow("events", "i-event", "Events", "Audit log · last 7 days")

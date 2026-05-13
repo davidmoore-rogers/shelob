@@ -162,16 +162,31 @@ function buildDescription(
   hostname: string | null | undefined,
   createdBy: string | null | undefined,
   fallback: string,
+  notes?: string | null,
 ): string {
-  // Format: "Polaris/<user>: <hostname>" — origin first so a FortiGate admin
-  // looking at the device immediately sees this entry was written by Polaris,
-  // followed by who pushed it and what it's for. Falls back to "Polaris: …"
-  // when no authenticated user is available.
-  const name = (hostname && hostname.trim()) || fallback || "(unnamed)";
+  // Format:
+  //   notes present:  "Polaris/<user>: <notes> [<hostname>]"
+  //   notes empty:    "Polaris/<user>: <hostname>"
+  //
+  // Origin first so a FortiGate admin looking at the device immediately sees
+  // this entry was written by Polaris and who pushed it. Notes-first when set
+  // because the operator typed them as the FortiGate-side reservation comment;
+  // hostname is appended in brackets so the discovery side (subnetRefreshService
+  // .extractHostnameFromDescription) can still recover it after Polaris-loss
+  // recoveries. Falls back to "Polaris: …" when no authenticated user is in
+  // scope.
+  const trimmedNotes = (notes ?? "").trim();
+  const trimmedHost = (hostname ?? "").trim();
+  const fallbackBody = trimmedHost || fallback || "(unnamed)";
+  const body = trimmedNotes
+    ? trimmedHost
+      ? `${trimmedNotes} [${trimmedHost}]`
+      : trimmedNotes
+    : fallbackBody;
   const prefix = createdBy && createdBy.trim()
     ? `Polaris/${createdBy.trim()}: `
     : `Polaris: `;
-  const candidate = prefix + name;
+  const candidate = prefix + body;
   // FortiOS 7.x accepts up to ~255 chars for reserved-address description,
   // but 6.2 and older capped at 35. Cap at 64 to keep the field readable
   // across versions while still fitting prefix + a typical hostname.
@@ -249,6 +264,10 @@ export interface PushReservationParams {
   ip: string;
   mac: string;
   hostname?: string | null;
+  // Operator-typed notes. When non-empty these become the body of the
+  // FortiGate-side description (still wrapped in the "Polaris/<user>: " prefix);
+  // when empty the description falls back to hostname.
+  notes?: string | null;
   // Username of the operator who created the reservation. Stamped into the
   // FortiGate description so the device-side row identifies who pushed it.
   createdBy?: string | null;
@@ -298,6 +317,7 @@ export async function pushReservation(
     params.hostname,
     params.createdBy,
     params.ip,
+    params.notes,
   );
 
   // Pre-check for collision so we can fail with a clearer message than the
@@ -383,10 +403,12 @@ export interface UpdatePushedReservationParams {
   ip: string;
   // The new MAC the operator wants on the device-side entry.
   newMac: string;
-  // Hostname + createdBy go into the FortiOS `description` field. When the
-  // hostname is being updated alongside the MAC, callers pass the NEW value
-  // so the device description tracks Polaris.
+  // Hostname + notes + createdBy go into the FortiOS `description` field.
+  // When hostname or notes are being updated alongside the MAC, callers pass
+  // the NEW value so the device description tracks Polaris. Notes-wins-over-
+  // hostname semantics match the create path.
   hostname?: string | null;
+  notes?: string | null;
   createdBy?: string | null;
   // Pinned device-side identity for Polaris-pushed reservations. When either
   // is null the helper resolves the scope via subnetCidr and looks up the
@@ -483,7 +505,7 @@ export async function updatePushedReservation(
     }
   }
 
-  const description = buildDescription(params.hostname, params.createdBy, params.ip);
+  const description = buildDescription(params.hostname, params.createdBy, params.ip, params.notes);
 
   // FortiOS accepts partial CMDB updates. We send MAC + refreshed description
   // (and re-assert type="mac" so an entry that drifted to option82 mode comes
