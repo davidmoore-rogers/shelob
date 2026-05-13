@@ -199,3 +199,66 @@ export function getServerCertFingerprint(): string | null {
     return null;
   }
 }
+
+/**
+ * Current HTTPS listen port — what URL operators tell their reverse proxy
+ * to forward to, AND the natural port to embed in `agent.conf`'s
+ * server_url when the operator hasn't set POLARIS_PUBLIC_URL. Returns
+ * null when HTTPS isn't running (in which case agent install is refused
+ * upstream anyway — no cert pin available).
+ */
+export function getHttpsPort(): number | null {
+  if (!httpsServer || !httpsServer.listening) return null;
+  return httpsPort;
+}
+
+/**
+ * Hostnames the running leaf cert is valid for: the cert's Common Name
+ * plus every DNS-type Subject Alternative Name plus IP-type SANs as
+ * literal addresses. The agent's TLS verifier ignores hostname matching
+ * entirely (it only checks the fingerprint pin), so we're free to pick
+ * any name here — but picking one the cert actually claims keeps the
+ * agent.conf legible and makes it possible for the operator to verify
+ * the URL by inspecting the cert.
+ *
+ * Returns null when HTTPS isn't running OR the cert is malformed.
+ * Returns an empty object when the cert has neither CN nor SANs (which
+ * shouldn't happen for any sane operator-generated cert).
+ *
+ * Used by agentInstallService.inferOwnServerUrl() to derive a default
+ * server URL from the live cert when neither POLARIS_PUBLIC_URL nor
+ * POLARIS_PUBLIC_HOST is set.
+ */
+export function getServerCertHostnames(): { cn: string | null; dnsSans: string[]; ipSans: string[] } | null {
+  if (!httpsServer || !httpsServer.listening) return null;
+  if (!currentCertPem) return null;
+  try {
+    const x509 = new X509Certificate(currentCertPem);
+    // Subject is a multi-line "CN=foo\nO=bar\n…" string in Node 22. The
+    // CN line is the conventional first DN component for TLS but not
+    // strictly required to be — we scan all lines for safety.
+    let cn: string | null = null;
+    for (const line of (x509.subject ?? "").split(/[\r\n]+/)) {
+      const m = line.match(/^CN=(.+)$/);
+      if (m) { cn = m[1].trim(); break; }
+    }
+    // subjectAltName is a comma-separated string like
+    //   "DNS:polaris.example.com, DNS:polaris-internal.local, IP Address:192.168.1.50"
+    // Older Node versions emit "IP Address" with the space; newer emit
+    // "IP" without. We handle both.
+    const dnsSans: string[] = [];
+    const ipSans: string[] = [];
+    for (const raw of (x509.subjectAltName ?? "").split(",")) {
+      const piece = raw.trim();
+      if (!piece) continue;
+      const dnsMatch = piece.match(/^DNS:(.+)$/);
+      if (dnsMatch) { dnsSans.push(dnsMatch[1].trim()); continue; }
+      const ipMatch = piece.match(/^IP(?:\s+Address)?:(.+)$/);
+      if (ipMatch) { ipSans.push(ipMatch[1].trim()); continue; }
+    }
+    return { cn, dnsSans, ipSans };
+  } catch (err) {
+    logger.warn({ err }, "Failed to extract cert hostnames");
+    return null;
+  }
+}

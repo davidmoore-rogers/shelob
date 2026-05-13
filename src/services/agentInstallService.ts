@@ -42,6 +42,7 @@ import { getCredential } from "./credentialService.js";
 import { mintEnrollmentToken } from "./agentTokenService.js";
 import { logEvent } from "../api/routes/events.js";
 import { winrmRunOne, type WinRmConnection } from "../utils/winrm.js";
+import { getHttpsPort, getServerCertHostnames } from "../httpsManager.js";
 
 // ─── Public entry points ──────────────────────────────────────────────
 
@@ -859,25 +860,47 @@ function renderAgentConf(input: RenderAgentConfInput): string {
 // ─── Server-URL inference + binary manifest ───────────────────────────
 
 /**
- * Best-effort own-server URL the installed agent should call back to.
- * Reads POLARIS_PUBLIC_URL if set (the operator pin; covers reverse-
- * proxy / split-DNS scenarios). Falls back to `https://<hostname>:<port>`
- * which is fine for single-box installs where the agent host can resolve
- * Polaris's hostname.
+ * Own-server URL the installed agent should call back to. Stamped into
+ * `agent.conf`'s server_url at install time. Resolution order:
  *
- * If you're shipping Polaris behind a reverse proxy with TLS termination
- * upstream, SET POLARIS_PUBLIC_URL — otherwise the agent will try to
- * dial the upstream server's internal address (no good) and fail TLS
- * with an unhelpful error.
+ *   1. `POLARIS_PUBLIC_URL` env var (the operator pin; covers reverse-
+ *      proxy / split-DNS scenarios where neither the cert nor PORT can
+ *      know the public-facing URL).
+ *   2. The first DNS SAN on the running HTTPS leaf cert, plus the live
+ *      HTTPS port. The cert is the natural source of truth — operators
+ *      generate it with the hostname they expect Polaris to be reached
+ *      at, and the agent's pin is verifying that exact cert anyway.
+ *   3. The cert's Common Name + live HTTPS port (cn-only certs without
+ *      SANs are uncommon on modern installs but possible on legacy
+ *      operator-generated certs).
+ *   4. First IP SAN + live HTTPS port (covers IP-only certs used in
+ *      isolated networks where there's no DNS).
+ *   5. `POLARIS_PUBLIC_HOST` env var + PORT (legacy escape hatch — kept
+ *      so operators on the previous fallback don't get broken).
+ *   6. `localhost` + PORT (same-box installs only — the install kickoff
+ *      route guards this and refuses when the target host isn't loopback).
+ *
+ * The HTTPS port comes from httpsManager.getHttpsPort() — the actual
+ * port Polaris is listening on, NOT process.env.PORT (which is the HTTP
+ * port and may differ).
  */
 function inferOwnServerUrl(): string {
   const fromEnv = process.env.POLARIS_PUBLIC_URL;
   if (fromEnv) return fromEnv.replace(/\/$/, "");
+
+  // Cert-driven derivation.
+  const httpsPort = getHttpsPort();
+  const hostnames = getServerCertHostnames();
+  if (httpsPort != null && hostnames) {
+    const preferred = hostnames.dnsSans[0] || hostnames.cn || hostnames.ipSans[0] || null;
+    if (preferred) return `https://${preferred}:${httpsPort}`;
+  }
+
+  // Legacy fallbacks. The install kickoff route enforces that we never
+  // produce a "https://localhost:<port>" URL for a non-loopback target,
+  // so these branches are safe to leave as a last-resort default.
   const port = process.env.PORT ?? "3000";
   const host = process.env.POLARIS_PUBLIC_HOST ?? "localhost";
-  // We can't easily tell from here whether HTTPS is enabled. Bias toward
-  // https since the cert-pin handshake requires it; the install kickoff
-  // route already refused when HTTPS isn't running.
   return `https://${host}:${port}`;
 }
 
