@@ -4131,34 +4131,35 @@ var _deviceIconAssetTypes = [
 ];
 
 function deviceIconsCardHTML() {
-  var byScope = { type: [], model: [] };
+  var byScope = { type: [], model: [], manufacturer: [] };
   _deviceIcons.forEach(function (i) {
-    if (i.scope === "type" || i.scope === "model") byScope[i.scope].push(i);
+    if (byScope[i.scope]) byScope[i.scope].push(i);
   });
   var html = '<div class="settings-card">' +
     '<h4>Device Icons</h4>' +
     '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-      'Upload PNG / JPEG / WebP images (max 256 KB) to render specific hardware models or asset types on the Device Map\'s topology graph. ' +
-      'Resolution priority: <strong>manufacturer/model</strong> exact match → <strong>model</strong> alone → <strong>assetType</strong> fallback. ' +
+      'Upload PNG / JPEG / WebP images (max 256 KB) or SVG (max 32 KB, strict validation — no scripts, no external refs) to render specific hardware models, asset types, or vendors on the Device Map\'s topology graph. ' +
+      'Resolution priority: <strong>manufacturer/model</strong> exact match → <strong>model</strong> alone → <strong>assetType</strong> → <strong>manufacturer</strong> fallback. ' +
       'Re-uploading replaces the existing image for that scope+key.' +
     '</p>';
 
   // Upload form
-  html += '<div class="form-row" style="display:grid;grid-template-columns:140px 1fr 1fr auto;gap:8px;align-items:flex-end;margin-bottom:1rem">' +
+  html += '<div class="form-row" style="display:grid;grid-template-columns:160px 1fr 1fr auto;gap:8px;align-items:flex-end;margin-bottom:1rem">' +
     '<div class="form-group" style="margin:0">' +
       '<label style="font-size:0.78rem">Scope</label>' +
       '<select id="f-icon-scope">' +
         '<option value="type">Asset type</option>' +
         '<option value="model">Model</option>' +
+        '<option value="manufacturer">Manufacturer</option>' +
       '</select>' +
     '</div>' +
     '<div class="form-group" style="margin:0">' +
       '<label style="font-size:0.78rem">Key</label>' +
-      '<input type="text" id="f-icon-key" placeholder="firewall  OR  Fortinet/FortiGate-91G">' +
+      '<input type="text" id="f-icon-key" placeholder="firewall">' +
     '</div>' +
     '<div class="form-group" style="margin:0">' +
       '<label style="font-size:0.78rem">Image file</label>' +
-      '<input type="file" id="f-icon-file" accept="image/png,image/jpeg,image/webp">' +
+      '<input type="file" id="f-icon-file" accept="image/png,image/jpeg,image/webp,image/svg+xml">' +
     '</div>' +
     '<button class="btn btn-primary" id="btn-icon-upload" style="height:34px">Upload</button>' +
   '</div>' +
@@ -4190,6 +4191,7 @@ function deviceIconsCardHTML() {
   }
   html += renderScopeList("type", "By asset type");
   html += renderScopeList("model", "By model");
+  html += renderScopeList("manufacturer", "By manufacturer");
 
   html += '</div>';
   return html;
@@ -4215,9 +4217,13 @@ function wireDeviceIconHandlers() {
   var keyInput = document.getElementById("f-icon-key");
   if (scopeSel && keyInput) {
     var refreshHint = function () {
-      keyInput.placeholder = scopeSel.value === "type"
-        ? "firewall | switch | access_point | server | workstation | printer | router | other"
-        : "Fortinet/FortiGate-91G  (or just FortiGate-91G to match any vendor)";
+      if (scopeSel.value === "type") {
+        keyInput.placeholder = "firewall | switch | access_point | server | workstation | printer | router | other";
+      } else if (scopeSel.value === "manufacturer") {
+        keyInput.placeholder = "Fortinet  (matches every device from this vendor; aliased to canonical form)";
+      } else {
+        keyInput.placeholder = "Fortinet/FortiGate-91G  (or just FortiGate-91G to match any vendor)";
+      }
     };
     scopeSel.addEventListener("change", refreshHint);
     refreshHint();

@@ -801,28 +801,30 @@ Listed alphabetically.
 
 ## services/deviceIconService.ts
 
-**What it owns:** Operator-uploaded device icons (PNG/JPEG/WebP only, 256KB cap, magic-byte check); bytes-in-DB storage; resolution by manufacturer/model/type priority.
+**What it owns:** Operator-uploaded device icons (PNG/JPEG/WebP/SVG; 256KB cap raster, 32KB cap SVG; magic-byte check for raster, pattern-reject validation for SVG); bytes-in-DB storage; resolution by manufacturer/model/type/manufacturer priority. Manufacturer keys canonicalized through `manufacturerAlias` map.
 
 **Public API:** `uploadIcon(), listIcons(), getIconImage(), deleteIcon(), resolveIconForAsset(), loadIconResolutionCache(), resolveIconUrl(), validateUpload()`
 
-**Cross-service deps:** None.
+**Cross-service deps:** `utils/manufacturerNormalize.normalizeManufacturer()` for alias-canonicalization of manufacturer values (both the standalone manufacturer scope and the manufacturer half of model:<mfr>/<model> keys).
 
 **Used by:** `src/api/routes/deviceIcons.ts:32,56,83,105 — upload/list/delete CRUD + image serve`, `src/api/routes/map.ts:210,267,369,588,710,787 — icon resolution for topology switches/APs/firewalls (icon cache preloaded once per request)`
 
 **Invariants:**
-- Scope: "type" (asset type key, enum: server/switch/router/firewall/workstation/printer/access_point/other) or "model" (manufacturer/model or model-only form).
-- Type keys normalized to lowercase; model keys trim each side of `/` separator (e.g., "  Fortinet  /  FortiGate-91G  " → "Fortinet/FortiGate-91G").
-- Upload validation: mimeType must be PNG/JPEG/WebP (SVG rejected); size ≤256KB; magic-byte prefix must match declared mimeType.
-- Resolution is most-specific-wins: manufacturer/model → model → type → null (frontend uses default circle).
-- `resolveIconUrl()` is synchronous (used in hot topology path); operates against pre-loaded cache from `loadIconResolutionCache()`.
-- Bytes stored as Uint8Array in DeviceIcon.data column; `/api/v1/device-icons/:id/image` serves raw bytes with Content-Type + Cache-Control.
+- Scope: "type" (asset type key, enum: server/switch/router/firewall/workstation/printer/access_point/other), "model" (manufacturer/model or model-only form), or "manufacturer" (vendor-wide).
+- Type keys normalized to lowercase; model keys trim each side of `/` separator and run the manufacturer half through normalizeManufacturer (e.g., "Fortinet, Inc./FortiGate-91G" → "Fortinet/FortiGate-91G"); manufacturer-scope keys run through normalizeManufacturer.
+- Upload validation: mimeType must be PNG/JPEG/WebP/SVG; raster size ≤256KB, SVG size ≤32KB; raster requires magic-byte prefix matching declared mimeType; SVG is reject-on-pattern (refused if it contains <script>, <foreignObject>, <iframe>, <object>, <embed>, <!DOCTYPE>, <!ENTITY>, <?xml-stylesheet>, on*= event handlers, javascript: URLs, any non-#fragment href/xlink:href/src, @import, or external url()).
+- Resolution is most-specific-wins: manufacturer/model → model → type → manufacturer → null (frontend uses default circle). Manufacturer is intentionally the last fallback so a specific type override beats a vendor-wide one.
+- `resolveIconUrl()` is synchronous (used in hot topology path); operates against pre-loaded cache from `loadIconResolutionCache()`. Both call sites share `buildResolutionCandidates()` so the priority order can't drift between sync and async paths.
+- Bytes stored as Uint8Array in DeviceIcon.data column; `/api/v1/device-icons/:id/image` serves raw bytes with Content-Type + Cache-Control. SVG responses additionally carry X-Content-Type-Options: nosniff and a strict CSP (`default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox`) as defense-in-depth against validator bypass.
 
 **When changing this:**
-- Check magic-byte prefixes (PNG/JPEG/WebP) if adding new formats; ensure length matches actual file signatures.
+- Check magic-byte prefixes (PNG/JPEG/WebP) if adding new raster formats; ensure length matches actual file signatures.
+- SVG_REJECT_PATTERNS is the security boundary — adding a new tag/attribute reject pattern is fine, but loosening one needs careful review (every entry maps to a known XSS / XXE / SSRF vector).
 - Sync VALID_TYPE_KEYS set against Asset.assetType enum if new types added.
-- Verify Prisma DeviceIcon schema: unique constraint on (scope, key), Bytes column type for data.
-- Review map.ts topology rendering (resolveIconUrl call sites) if icon resolution priority changes.
-- Ensure upload route multer fileSize limit (256KB) matches service MAX_ICON_BYTES constant.
+- Verify Prisma DeviceIcon schema: unique constraint on (scope, key), Bytes column type for data. Scope is a String column — no DB migration needed when adding new scope values.
+- Review map.ts topology rendering (resolveIconUrl call sites) if icon resolution priority changes — but priority is built once in `buildResolutionCandidates()`, so updates land in both sync and async paths together.
+- Ensure upload route multer fileSize limit (256KB) stays at or above the raster MAX_ICON_BYTES constant. SVG's tighter MAX_SVG_BYTES is enforced inside validateUpload after multer accepts.
+- Image-serve route: any new mimeType added to ALLOWED_MIME_TYPES that could execute (script-bearing text formats) needs the same CSP/nosniff treatment as SVG.
 
 ---
 

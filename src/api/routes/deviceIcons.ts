@@ -20,9 +20,10 @@ import { AppError } from "../../utils/errors.js";
 
 const router = Router();
 
-// Hard cap matches deviceIconService's MAX_ICON_BYTES so multer's
-// per-request limit and the service-level validation agree on the
-// rejection point.
+// Hard cap matches deviceIconService's MAX_ICON_BYTES (raster cap is
+// the larger of the two; the service enforces the lower SVG cap after
+// inspecting mimeType). Multer rejects oversized uploads before the
+// handler ever sees the buffer.
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 256 * 1024 } });
 
 // GET /device-icons — list. Hashes are not returned (they don't exist),
@@ -54,7 +55,7 @@ router.post("/", requireAdmin, upload.single("file"), async (req, res, next) => 
     const key = String(req.body?.key || "");
     if (!scope || !key) throw new AppError(400, "scope and key are required");
     const summary = await uploadIcon({
-      scope: scope as "type" | "model",
+      scope: scope as "type" | "model" | "manufacturer",
       key,
       filename: req.file.originalname,
       mimeType: req.file.mimetype,
@@ -107,6 +108,19 @@ router.get("/:id/image", requireAuth, async (req, res, next) => {
     res.setHeader("Content-Type", img.mimeType);
     res.setHeader("Cache-Control", "private, max-age=3600");
     res.setHeader("Content-Length", String(img.data.length));
+    // Defense-in-depth for SVG: the upload-time validator already rejects
+    // <script>, event handlers, external refs, etc. — but the same bytes
+    // are reachable via a direct GET on this URL, so we layer browser-side
+    // mitigations too. nosniff stops MIME confusion; the strict CSP blocks
+    // any residual script / fetch / image / font / connect from executing
+    // even if a bypass slipped past the validator.
+    if (img.mimeType === "image/svg+xml") {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
+      );
+    }
     res.send(img.data);
   } catch (err) {
     next(err);
