@@ -35,11 +35,34 @@ export interface MemoryQuery {
   walkSubtree?: boolean;                // walk + sum (Cisco memory pools have multiple rows)
 }
 
+/**
+ * Vendor disk shape. Used when a device exposes disk used/total as proprietary
+ * scalars rather than the standard HOST-RESOURCES-MIB hrStorageTable that
+ * `collectSystemInfoSnmp` walks first. The collector falls back to the
+ * profile's `disk` query when the HRM walk returns zero disk rows. Single
+ * mountpoint per profile — vendors that expose multiple disks via a vendor
+ * subtree (Cisco's `ciscoFlashTable`, Juniper's `jnxFilePartitionTable`, etc.)
+ * need a different shape and aren't covered here yet.
+ */
+export interface DiskQuery {
+  usedBytesSymbol:  string;
+  totalBytesSymbol: string;
+  /** Display label for the synthesized StorageSample row. Defaults to "system" when omitted. */
+  mountPath?: string;
+}
+
 export interface VendorTelemetryProfile {
   vendor: string;                       // human-readable label, used in logs
   match: RegExp;                        // case-insensitive regex tested against `${manufacturer} ${os}`
   cpu?: CpuQuery;
   memory?: MemoryQuery;
+  /**
+   * Vendor disk scalars. Consumed by `collectSystemInfoSnmp` as a fallback
+   * when HOST-RESOURCES-MIB `hrStorageTable` returns no disk rows — typical
+   * on devices whose SNMP agents don't implement HRM's storage view
+   * (FortiSwitches, some Cisco access points, etc.).
+   */
+  disk?: DiskQuery;
 }
 
 /**
@@ -111,6 +134,18 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
     memory: {
       usedBytesSymbol:  "fsSysMemUsage",
       totalBytesSymbol: "fsSysMemCapacity",
+    },
+    // FORTINET-FORTISWITCH-MIB exposes flash storage as scalars under the
+    // same fsSystem subtree. FortiSwitches don't implement HRM's
+    // hrStorageTable, so the standard HRM path in collectSystemInfoSnmp
+    // returns nothing — the disk-fallback kicks in and emits one
+    // StorageSample row for the system flash.
+    //   fsSysDiskUsage    @ 12356.106.4.1.5 → bytes USED
+    //   fsSysDiskCapacity @ 12356.106.4.1.6 → bytes TOTAL
+    disk: {
+      usedBytesSymbol:  "fsSysDiskUsage",
+      totalBytesSymbol: "fsSysDiskCapacity",
+      mountPath:        "flash",
     },
   },
   {

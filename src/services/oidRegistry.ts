@@ -97,9 +97,15 @@ const BUILT_IN_OIDS: Record<string, string> = {
   // the vendor profile resolves memory without requiring the MIB upload.
   // CPU OID for FortiSwitches isn't seeded yet — when identified, add it
   // here and reference the symbol from VENDOR_TELEMETRY_PROFILES.
-  fnFortiSwitchMib: "1.3.6.1.4.1.12356.106",
-  fsSysMemUsage:    "1.3.6.1.4.1.12356.106.4.1.3",
-  fsSysMemCapacity: "1.3.6.1.4.1.12356.106.4.1.4",
+  fnFortiSwitchMib:  "1.3.6.1.4.1.12356.106",
+  fsSysMemUsage:     "1.3.6.1.4.1.12356.106.4.1.3",
+  fsSysMemCapacity:  "1.3.6.1.4.1.12356.106.4.1.4",
+  // Disk used/total bytes. FortiSwitches don't implement HOST-RESOURCES-MIB
+  // hrStorageTable, so collectSystemInfoSnmp's standard storage walk yields
+  // nothing — the vendor disk-fallback in the same function reads these
+  // scalars instead and synthesizes one StorageSample row.
+  fsSysDiskUsage:    "1.3.6.1.4.1.12356.106.4.1.5",
+  fsSysDiskCapacity: "1.3.6.1.4.1.12356.106.4.1.6",
   // Dell
   dell: "1.3.6.1.4.1.674",
   // Dell PowerConnect / Force10 platforms are RADLAN-derived and expose CPU

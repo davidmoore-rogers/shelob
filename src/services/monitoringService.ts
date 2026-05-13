@@ -2031,7 +2031,13 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
       } else {
         return { supported: true, error: "No SNMP credential selected" };
       }
-      full = await collectSystemInfoSnmp(targetIp, snmpCfg, { includeLldp: false, timeoutMs: sysInfoTimeout });
+      full = await collectSystemInfoSnmp(targetIp, snmpCfg, {
+        includeLldp:  false,
+        timeoutMs:    sysInfoTimeout,
+        manufacturer: asset.manufacturer,
+        model:        asset.model,
+        os:           asset.os,
+      });
       // Fortinet-discovered firewalls running SNMP still benefit from the
       // integration's interface filter (CMDB blocklist) and from the FortiOS
       // IPsec overlay — the two endpoints are independent of the SNMP path.
@@ -2200,7 +2206,13 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
       if (interfacesPolling === "snmp") {
         // SNMP-path interfaces+storage. Fetch LLDP via the same session iff
         // the LLDP polling agrees; otherwise leave it out and overlay below.
-        data = await collectSystemInfoSnmp(targetIp, snmpCfg!, { includeLldp: lldpPolling === "snmp", timeoutMs: sysInfoTimeout });
+        data = await collectSystemInfoSnmp(targetIp, snmpCfg!, {
+          includeLldp:  lldpPolling === "snmp",
+          timeoutMs:    sysInfoTimeout,
+          manufacturer: asset.manufacturer,
+          model:        asset.model,
+          os:           asset.os,
+        });
         if (isFortinetSrc && integration) {
           applyFortiInterfaceFilter(data.interfaces, integration as any);
           // IPsec always via REST when the source is Fortinet — SNMP has no equivalent.
@@ -3384,8 +3396,23 @@ function scaleEntitySensor(raw: number, scale: number | null, precision: number 
 async function collectSystemInfoSnmp(
   host: string,
   config: Record<string, unknown>,
-  opts: { includeLldp?: boolean; timeoutMs?: number } = {},
+  opts: {
+    includeLldp?:  boolean;
+    timeoutMs?:    number;
+    /** Asset manufacturer — used to pick the vendor disk fallback when HRM returns no disks. */
+    manufacturer?: string | null;
+    /** Asset model — same fallback path. */
+    model?:        string | null;
+    /** Asset OS — same fallback path. */
+    os?:           string | null;
+  } = {},
 ): Promise<SystemInfoSample> {
+  // Vendor profile is read once up-front so the disk fallback (below) can
+  // consult it without re-deriving. Cheap — VENDOR_TELEMETRY_PROFILES is in
+  // memory; ensureRegistryLoaded is called by the disk fallback when it runs.
+  const vendorProfile = pickVendorProfile(opts.manufacturer, opts.os, opts.model);
+  const vendorScope   = { manufacturer: opts.manufacturer, model: opts.model };
+
   return await withSnmpSession(host, config, async (session) => {
     // Storage: walk hrStorage and pick rows tagged as fixed/removable disk.
     const storage: StorageSample[] = [];
@@ -3414,6 +3441,34 @@ async function collectSystemInfoSnmp(
         }
       }
     } catch { /* fall through; storage stays empty */ }
+
+    // Vendor disk fallback: when HRM returned no disk rows (typical on
+    // devices whose SNMP agents don't implement hrStorageTable — FortiSwitches,
+    // some access points, etc.), consult the matched vendor profile for
+    // proprietary used/total byte scalars and synthesize one StorageSample.
+    if (storage.length === 0 && vendorProfile?.disk) {
+      try {
+        await ensureRegistryLoaded();
+        const disk    = vendorProfile.disk;
+        const usedOid = resolveOidSync(disk.usedBytesSymbol,  vendorScope);
+        const totOid  = resolveOidSync(disk.totalBytesSymbol, vendorScope);
+        if (usedOid && totOid) {
+          const [usedVb, totVb] = await Promise.all([
+            snmpGetScalar(session, usedOid).catch(() => null),
+            snmpGetScalar(session, totOid).catch(() => null),
+          ]);
+          const usedBytes  = snmpVbToNumber(usedVb);
+          const totalBytes = snmpVbToNumber(totVb);
+          if (usedBytes != null || totalBytes != null) {
+            storage.push({
+              mountPath:  disk.mountPath || "system",
+              usedBytes:  usedBytes  ?? null,
+              totalBytes: totalBytes ?? null,
+            });
+          }
+        }
+      } catch { /* leave storage empty; HRM-empty is the same outcome as before */ }
+    }
 
     // Interfaces: build a map keyed by ifIndex from IF-MIB columns. Prefer
     // ifName / ifHC*Octets / ifHighSpeed when present; otherwise fall back
