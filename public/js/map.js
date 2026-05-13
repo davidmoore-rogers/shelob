@@ -406,7 +406,7 @@
         var id = _assetIdFromTopoHref(link.getAttribute("href"));
         if (!id) return;
         e.preventDefault();
-        openMapAssetPanel(id);
+        openViewModal(id);
       });
     }
     overlay.addEventListener("click", function (e) {
@@ -933,7 +933,7 @@
     // have a navigation target so we skip.
     cyInstance.on("tap", 'node[role="remote-asset"]', function (evt) {
       var assetId = evt.target.data("assetId");
-      if (assetId) openMapAssetPanel(assetId);
+      if (assetId) openViewModal(assetId);
     });
 
     // Auto-clear the connection-path dim if the operator taps any node
@@ -1018,15 +1018,16 @@
       parts.push('<h4>' + fgLabel + '</h4>');
     }
 
-    parts.push('<div class="detail-row"><span class="label">Serial</span><span class="value">' + escapeHtml(fg.serial || "—") + '</span></div>');
+    parts.push('<div class="detail-row"><span class="label">Serial</span>' + copyableValue(fg.serial) + '</div>');
     parts.push('<div class="detail-row"><span class="label">Model</span><span class="value">' + escapeHtml(fg.model || "—") + '</span></div>');
-    parts.push('<div class="detail-row"><span class="label">Mgmt IP</span><span class="value">' + escapeHtml(fg.ip || "—") + '</span></div>');
+    parts.push('<div class="detail-row"><span class="label">Mgmt IP</span>' + copyableValue(fg.ip) + '</div>');
     parts.push('<div class="detail-row"><span class="label">Status</span><span class="value">' + escapeHtml(fg.status || "—") + '</span></div>');
     if (fg.lastSeen) {
       parts.push('<div class="detail-row"><span class="label">Last seen</span><span class="value">' + escapeHtml(new Date(fg.lastSeen).toLocaleString()) + '</span></div>');
     }
     if (fg.latitude != null && fg.longitude != null) {
-      parts.push('<div class="detail-row"><span class="label">Coords</span><span class="value">' + fg.latitude.toFixed(4) + ', ' + fg.longitude.toFixed(4) + '</span></div>');
+      var coordsText = fg.latitude.toFixed(4) + ', ' + fg.longitude.toFixed(4);
+      parts.push('<div class="detail-row"><span class="label">Coords</span>' + copyableValue(coordsText) + '</div>');
     }
 
     if ((data.switches || []).length > 0) {
@@ -1131,120 +1132,77 @@
       parts.push('</ul></div>');
     }
 
-    document.getElementById("topology-info").innerHTML = parts.join("");
+    var infoEl = document.getElementById("topology-info");
+    infoEl.innerHTML = parts.join("");
+    _wireCopyableValues(infoEl);
   }
 
-  // ─── Map asset panel ─────────────────────────────────────────────────────
-  // Slide-over that shows an asset's key details without navigating away from
-  // the Device Map. Opened by clicking any asset link in the topology
-  // right-bar, a topology search result, or a cross-site graph node.
+  // Renders a value cell with a click-to-copy affordance. Falls back to a
+  // plain (non-copyable) cell for empty values so we never copy a literal
+  // em-dash.
+  function copyableValue(raw) {
+    if (raw == null || raw === "") return '<span class="value">—</span>';
+    var s = String(raw);
+    return '<span class="value copyable" data-copy="' + escapeHtml(s) +
+      '" role="button" tabindex="0" title="Click to copy">' + escapeHtml(s) + '</span>';
+  }
 
-  function _ensureMapAssetPanelDOM() {
-    if (document.getElementById("map-asset-panel-overlay")) return;
-    var overlay = document.createElement("div");
-    overlay.id = "map-asset-panel-overlay";
-    overlay.className = "slideover-overlay";
-    overlay.innerHTML =
-      '<div class="slideover" id="map-asset-panel">' +
-        '<div class="slideover-resize-handle"></div>' +
-        '<div class="slideover-header">' +
-          '<div class="slideover-header-top">' +
-            '<h3 id="map-asset-panel-title">Asset Details</h3>' +
-            '<button class="btn-icon" id="map-asset-panel-close" title="Close">&times;</button>' +
-          '</div>' +
-          '<div class="slideover-meta" id="map-asset-panel-meta"></div>' +
-        '</div>' +
-        '<div class="slideover-body" id="map-asset-panel-body"><p class="empty-state">Loading…</p></div>' +
-        '<div class="slideover-footer" id="map-asset-panel-footer"></div>' +
-      '</div>';
-    document.body.appendChild(overlay);
-    overlay.addEventListener("click", function (e) {
-      if (e.target === overlay) closeMapAssetPanel();
+  function _wireCopyableValues(root) {
+    if (!root || root.__copyableWired) return;
+    root.__copyableWired = true;
+    root.addEventListener("click", function (ev) {
+      var el = ev.target && ev.target.closest && ev.target.closest(".copyable");
+      if (!el || !root.contains(el)) return;
+      ev.preventDefault();
+      _copyToClipboard(el.getAttribute("data-copy") || el.textContent, el);
     });
-    document.getElementById("map-asset-panel-close").addEventListener("click", closeMapAssetPanel);
-    if (typeof initSlideoverResize === "function") {
-      initSlideoverResize(document.getElementById("map-asset-panel"), "polaris.panel.width.asset");
-    }
-  }
-
-  function closeMapAssetPanel() {
-    var overlay = document.getElementById("map-asset-panel-overlay");
-    if (overlay) overlay.classList.remove("open");
-  }
-
-  async function openMapAssetPanel(id) {
-    _ensureMapAssetPanelDOM();
-    var titleEl  = document.getElementById("map-asset-panel-title");
-    var metaEl   = document.getElementById("map-asset-panel-meta");
-    var bodyEl   = document.getElementById("map-asset-panel-body");
-    var footerEl = document.getElementById("map-asset-panel-footer");
-    titleEl.textContent = "Asset Details";
-    metaEl.innerHTML = "";
-    bodyEl.innerHTML = '<p class="empty-state" style="padding:1rem 1.25rem">Loading…</p>';
-    footerEl.innerHTML = "";
-    requestAnimationFrame(function () {
-      document.getElementById("map-asset-panel-overlay").classList.add("open");
+    root.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      var el = ev.target && ev.target.closest && ev.target.closest(".copyable");
+      if (!el || !root.contains(el)) return;
+      ev.preventDefault();
+      _copyToClipboard(el.getAttribute("data-copy") || el.textContent, el);
     });
+  }
 
+  function _copyToClipboard(text, sourceEl) {
+    var done = function (ok) { _flashCopied(sourceEl, ok); };
     try {
-      var a = await api.assets.get(id);
-
-      var TYPE_LABELS = {
-        server: "Server", switch: "Switch", router: "Router", firewall: "Firewall",
-        workstation: "Workstation", printer: "Printer", access_point: "Access Point", other: "Other",
-      };
-
-      function _row(label, value) {
-        if (value == null || value === "") return "";
-        return "<div class=\"detail-row\"><span class=\"detail-label\">" + escapeHtml(label) + "</span>" +
-               "<span class=\"detail-value\">" + escapeHtml(String(value)) + "</span></div>";
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(_legacyCopy(text)); });
+        return;
       }
-      function _monoRow(label, value) {
-        if (value == null || value === "") return "";
-        return "<div class=\"detail-row\"><span class=\"detail-label\">" + escapeHtml(label) + "</span>" +
-               "<span class=\"detail-value\"><code>" + escapeHtml(String(value)) + "</code></span></div>";
-      }
-
-      var parts = ["<div class=\"asset-view-grid\">"];
-      parts.push(_row("Hostname", a.hostname));
-      parts.push(_row("DNS Name", a.dnsName));
-      parts.push(_monoRow("IP Address", a.ipAddress));
-      parts.push(_monoRow("MAC Address", a.macAddress));
-      parts.push(_monoRow("Serial Number", a.serialNumber));
-      parts.push(_row("Manufacturer", a.manufacturer));
-      parts.push(_row("Model", a.model));
-      parts.push(_row("Type", TYPE_LABELS[a.assetType] || a.assetType));
-      parts.push(_row("Status", a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : null));
-      parts.push(_row("OS / Firmware", a.osVersion || a.os));
-      parts.push(_row("Location", a.location));
-      parts.push(_row("Learned Location", a.learnedLocation));
-      parts.push(_row("Department", a.department));
-      parts.push(_row("Assigned To", a.assignedTo));
-      if (a.lastSeen) parts.push(_row("Last Seen", new Date(a.lastSeen).toLocaleString()));
-      if (a.acquiredAt || a.createdAt) parts.push(_row("Acquired", new Date(a.acquiredAt || a.createdAt).toLocaleString()));
-      if (a.warrantyExpiry) parts.push(_row("Warranty Expires", new Date(a.warrantyExpiry).toLocaleString()));
-      parts.push(_row("Purchase Order", a.purchaseOrder));
-      if (a.tags && a.tags.length) parts.push(_row("Tags", a.tags.join(", ")));
-      parts.push(_row("Notes", a.notes));
-      parts.push("</div>");
-
-      titleEl.innerHTML = "Asset Details" + (a.hostname
-        ? " <span style=\"color:var(--color-text-secondary);font-weight:400;margin-left:6px\">— " + escapeHtml(a.hostname) + "</span>"
-        : "");
-      metaEl.innerHTML = "<span class=\"badge\">" + escapeHtml(TYPE_LABELS[a.assetType] || a.assetType || "other") + "</span>";
-
-      bodyEl.innerHTML = parts.join("");
-      footerEl.innerHTML =
-        "<a class=\"btn btn-sm btn-secondary\" href=\"/assets.html#view=asset:" + encodeURIComponent(id) +
-        "\" target=\"_blank\" rel=\"noopener\">Full details</a>" +
-        "<span style=\"flex:1\"></span>" +
-        "<button class=\"btn btn-sm btn-secondary\" id=\"map-asset-panel-close-btn\">Close</button>";
-      document.getElementById("map-asset-panel-close-btn").addEventListener("click", closeMapAssetPanel);
-    } catch (err) {
-      bodyEl.innerHTML = "<p class=\"empty-state\" style=\"padding:1rem 1.25rem\">Failed to load asset: " +
-        escapeHtml(err && err.message ? err.message : String(err)) + "</p>";
-    }
+    } catch (_) { /* fall through to legacy path */ }
+    done(_legacyCopy(text));
   }
+
+  function _legacyCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) { return false; }
+  }
+
+  function _flashCopied(el, ok) {
+    if (!el) return;
+    el.classList.remove("copy-flash-ok", "copy-flash-err");
+    void el.offsetWidth; // restart animation
+    el.classList.add(ok ? "copy-flash-ok" : "copy-flash-err");
+    setTimeout(function () { el.classList.remove("copy-flash-ok", "copy-flash-err"); }, 800);
+  }
+
+  // Cross-site asset clicks + topology right-bar links pivot to the canonical
+  // asset details slide-over (openViewModal in assets.js, the primaries.md
+  // canonical Slide-over implementation). assets.js + its UI deps are loaded
+  // on map.html for this; each file's DOMContentLoaded handler self-guards
+  // so the Assets-page UI doesn't try to bootstrap here.
 
   function _assetIdFromTopoHref(href) {
     if (!href) return null;

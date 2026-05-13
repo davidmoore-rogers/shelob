@@ -179,6 +179,25 @@
   text-align: right;
   word-break: break-all;
 }
+.topology-info .detail-row .value.copyable {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 4px;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.topology-info .detail-row .value.copyable:hover,
+.topology-info .detail-row .value.copyable:focus {
+  background-color: var(--color-surface-elevated, rgba(255, 255, 255, 0.08));
+  outline: none;
+}
+.topology-info .detail-row .value.copy-flash-ok {
+  background-color: rgba(46, 160, 67, 0.28);
+  color: #7ee787;
+}
+.topology-info .detail-row .value.copy-flash-err {
+  background-color: rgba(248, 81, 73, 0.28);
+  color: #ff7b72;
+}
 .topology-info .topology-section {
   margin-top: 1.25rem;
 }
