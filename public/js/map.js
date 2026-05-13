@@ -877,6 +877,10 @@
     // nodes to their stored positions in a layoutstop hook below.
     var savedPositions = topoState.siteId ? loadNodePositions(topoState.siteId) : null;
 
+    // Construct cytoscape with the default no-op `preset` layout so we can
+    // register the layoutstop listener BEFORE running dagre — otherwise the
+    // layout can finish (and emit layoutstop) before `.one()` registers,
+    // silently dropping the saved-position restore on reopen.
     cyInstance = cytoscape({
       container: document.getElementById("topology-graph"),
       elements: elements,
@@ -889,14 +893,6 @@
       // Halve scroll-wheel zoom sensitivity — the default felt jumpy on
       // typical mouse wheels (one notch was 25–30% zoom step).
       wheelSensitivity: 0.5,
-      layout: {
-        name: "dagre",
-        rankDir: "LR",
-        nodeSep: 30,
-        rankSep: 160,
-        fit: true,
-        padding: 30,
-      },
       style: window.PolarisTopologyRender.topologyStylesheet(theme, { includeEndpointOverlay: true }),
     });
 
@@ -915,6 +911,15 @@
       });
       try { cyInstance.fit(undefined, 30); } catch (e) {}
     });
+
+    cyInstance.layout({
+      name: "dagre",
+      rankDir: "LR",
+      nodeSep: 30,
+      rankSep: 160,
+      fit: true,
+      padding: 30,
+    }).run();
 
     // Persist node position on every drag-stop so a refresh / reopen
     // restores the operator's manual layout. Debounced via the timer
