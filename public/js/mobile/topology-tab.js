@@ -243,7 +243,13 @@
         fit: false, // we'll center on the focus node ourselves
         padding: 30,
       },
-      style: window.PolarisTopologyRender.topologyStylesheet(theme, { includeEndpointOverlay: false }),
+      // includeEndpointOverlay registers the .dimmed (display:none) and
+      // synthetic-endpoint round-rectangle styles used by the connection-path
+      // overlay when the operator deep-links here via global search on a
+      // workstation. Without it, dimming has no visual effect on mobile and
+      // the synthetic endpoint node renders with the default fortinetNode
+      // styling (wrong shape + color).
+      style: window.PolarisTopologyRender.topologyStylesheet(theme, { includeEndpointOverlay: true }),
     });
 
     // Initial focus: zoom to the FortiGate (or the searched node) instead
@@ -288,20 +294,125 @@
     // Deep-link case: when ?q= came in via URL, also fire the authoritative
     // topology search so endpoints (which aren't graph nodes — they nest
     // under switches) resolve to their parent switch via the backend's
-    // `switchId` field.
+    // `switchId` field, and then overlay the asset's connection path so
+    // the operator sees endpoint→switch→firewall instead of the whole
+    // site graph. Mirrors the desktop search → handleTopologySearchPick
+    // flow.
     if (_focusTerm) {
       api.map.topologySearch(_siteId, _focusTerm).then(function (resp) {
         var hits = (resp && resp.results) || [];
         if (hits.length === 0) return;
         var first = hits[0];
-        if (!first.switchId) return;
-        var switchNode = _cy.getElementById(first.switchId);
-        if (switchNode && switchNode.length > 0) {
-          try { _cy.animate({ center: { eles: switchNode }, zoom: 1.3, duration: 350 }); } catch (e) {}
-          switchNode.addClass("topology-pulse");
-          setTimeout(function () { try { switchNode.removeClass("topology-pulse"); } catch (e) {} }, 1500);
+        if (first.switchId) {
+          var switchNode = _cy.getElementById(first.switchId);
+          if (switchNode && switchNode.length > 0) {
+            try { _cy.animate({ center: { eles: switchNode }, zoom: 1.3, duration: 350 }); } catch (e) {}
+            switchNode.addClass("topology-pulse");
+            setTimeout(function () { try { switchNode.removeClass("topology-pulse"); } catch (e) {} }, 1500);
+          }
+        }
+        if (first.id) {
+          api.assets.connectionPath(first.id).then(function (path) {
+            if (path) applyConnectionPathOverlay(path);
+          }).catch(function () { /* best-effort */ });
         }
       }).catch(function () { /* best-effort — silent on failure */ });
+    }
+  }
+
+  // Overlay a focused endpoint→firewall connection path on top of the live
+  // Cytoscape graph: dim everything off-path, add the endpoint as a synthetic
+  // node when it's not already in the graph (endpoints don't ride along in
+  // the standard topology response), and collapse the path into a tight
+  // vertical chain so it reads at a glance on a phone viewport. Mobile
+  // doesn't persist node positions (autoungrabify + no localStorage save),
+  // so there's no "restore" path needed — closing the topology tears down
+  // the cyInstance, and the operator re-opens fresh.
+  function applyConnectionPathOverlay(path) {
+    if (!_cy || !path || !path.asset || !Array.isArray(path.hops) || path.hops.length === 0) return;
+    var ep = path.asset;
+    var leaf = path.hops[0];
+    var nextHop = path.hops[1];
+    var syntheticEdgeId = null;
+
+    var alreadyOnGraph = _cy.getElementById(ep.id).length > 0;
+    if (!alreadyOnGraph && leaf.kind === "endpoint") {
+      _cy.add({
+        group: "nodes",
+        data: {
+          id: ep.id,
+          label: ep.hostname || ep.ipAddress || "endpoint",
+          role: "endpoint",
+          nodeColor: endpointNodeColor(leaf),
+          synthetic: 1,
+        },
+      });
+      if (nextHop && _cy.getElementById(nextHop.id).length > 0) {
+        syntheticEdgeId = "ep-edge-" + ep.id;
+        _cy.add({
+          group: "edges",
+          data: {
+            id: syntheticEdgeId,
+            source: ep.id,
+            target: nextHop.id,
+            label: nextHop.endpointPort ? "port " + nextHop.endpointPort : "",
+            synthetic: 1,
+          },
+        });
+      }
+    }
+
+    var pathNodeIds = path.hops.map(function (h) { return h.id; });
+    var pathElements = _cy.collection();
+    pathNodeIds.forEach(function (id) {
+      var n = _cy.getElementById(id);
+      if (n.length > 0) pathElements = pathElements.union(n);
+    });
+    if (syntheticEdgeId) {
+      var syn = _cy.getElementById(syntheticEdgeId);
+      if (syn.length > 0) pathElements = pathElements.union(syn);
+    }
+    _cy.edges().forEach(function (e) {
+      var s = e.data("source");
+      var t = e.data("target");
+      if (pathNodeIds.indexOf(s) !== -1 && pathNodeIds.indexOf(t) !== -1) {
+        pathElements = pathElements.union(e);
+      }
+    });
+
+    _cy.elements().not(pathElements).addClass("dimmed");
+
+    // Pack the path into a tight vertical chain — firewall on top, endpoint
+    // on bottom — anchored at the firewall's existing X so the column stays
+    // roughly where dagre put it. Spacing tuned for phone viewport.
+    var orderedTopDown = pathNodeIds.slice().reverse();
+    var anchorX = 0;
+    if (orderedTopDown.length > 0) {
+      var topNode = _cy.getElementById(orderedTopDown[0]);
+      if (topNode.length > 0) anchorX = topNode.position().x;
+    }
+    var chainSpacing = 140;
+    orderedTopDown.forEach(function (id, idx) {
+      var n = _cy.getElementById(id);
+      if (n.length > 0) n.position({ x: anchorX, y: idx * chainSpacing });
+    });
+
+    try {
+      _cy.animate({ fit: { eles: pathElements, padding: 40 }, duration: 350 });
+    } catch (e) { /* fit may fail on single-node paths */ }
+  }
+
+  // Color the synthetic endpoint node by its monitor state — same five-state
+  // palette the firewall / switch / AP nodes use so the path reads as a
+  // single visual scheme. Mirrors desktop's endpointNodeColor.
+  function endpointNodeColor(hop) {
+    if (!hop || !hop.monitored) return "#757575";
+    switch (hop.monitorStatus) {
+      case "up":         return "#2e7d32";
+      case "warning":    return "#f9a825";
+      case "down":       return "#c62828";
+      case "recovering": return "#0288d1";
+      default:           return "#9e9e9e";
     }
   }
 
