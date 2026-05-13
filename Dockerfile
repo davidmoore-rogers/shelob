@@ -59,7 +59,13 @@ COPY public ./public
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
- && mkdir -p /app/state/data/backups /app/state/public/uploads
+ && mkdir -p /app/state/data/backups /app/state/public/uploads /app/state/data/agents
+# /app/state/data/agents is where Polaris Agent binaries live (per-version
+# subdir + manifest.json). Operators who want to use the Polaris Agent
+# feature drop the platform binaries here via volume mount or `docker cp`
+# after running `make -C agent all` on a host with Go installed. Empty
+# directory is fine — the agent-install path surfaces a clear "no binaries
+# available" error to the operator until binaries are present.
 
 EXPOSE 3000
 

@@ -567,6 +567,95 @@ For headless installs (no UI access) the same env vars can be set by hand. The d
 
 ---
 
+## Optional: Polaris Agent
+
+The Polaris Agent is a small Go binary you can install on Linux / macOS / Windows hosts that pushes monitoring samples back to Polaris over HTTPS. Useful for hosts behind NAT, hosts without a working SNMP/WinRM probe surface, and Windows / Linux endpoints generally. The feature is **optional** — Polaris monitors plenty of devices without it via the existing REST API / SNMP / WinRM / SSH / ICMP transports.
+
+### Build the binaries
+
+The repo ships agent source under `agent/`. The release tarball does NOT pre-build the binaries (operators on hardened build hosts often can't add Go to their toolchain). Build them once and drop the output into Polaris's state directory.
+
+On any host with Go 1.22+ installed:
+
+```sh
+cd /opt/polaris/agent           # or wherever the release tarball lives
+go mod tidy                     # one-time: fetch dependency checksums
+make all                        # produces dist/<VERSION>/polaris-agent-*
+```
+
+Output lands under `agent/dist/<version>/` as six platform binaries:
+
+```
+polaris-agent-linux-amd64
+polaris-agent-linux-arm64
+polaris-agent-darwin-amd64
+polaris-agent-darwin-arm64
+polaris-agent-windows-amd64.exe
+polaris-agent-windows-arm64.exe
+```
+
+### Stage the binaries for Polaris to use
+
+Move the entire `dist/<version>/` directory under Polaris's state path, plus a `manifest.json` that names the current version + the per-platform filenames:
+
+```sh
+# RHEL / Debian / Ubuntu (POLARIS_STATE_DIR unset → state lives under the project root)
+sudo mkdir -p /opt/polaris/data/agents/0.1.0
+sudo cp agent/dist/0.1.0/* /opt/polaris/data/agents/0.1.0/
+sudo tee /opt/polaris/data/agents/manifest.json <<'EOF'
+{
+  "currentVersion": "0.1.0",
+  "minimumCompatible": "0.1.0",
+  "binaries": {
+    "linux-amd64":   "polaris-agent-linux-amd64",
+    "linux-arm64":   "polaris-agent-linux-arm64",
+    "darwin-amd64":  "polaris-agent-darwin-amd64",
+    "darwin-arm64":  "polaris-agent-darwin-arm64",
+    "windows-amd64": "polaris-agent-windows-amd64.exe",
+    "windows-arm64": "polaris-agent-windows-arm64.exe"
+  }
+}
+EOF
+sudo chown -R polaris:polaris /opt/polaris/data/agents
+```
+
+Docker / Unraid users: the container's state directory is `/app/state`. Bind-mount or `docker cp` the same layout into `/app/state/data/agents/`.
+
+When `manifest.json` is missing, the install flow surfaces a clear error: *"No agent binaries available — drop a manifest.json + binaries under `<state>/data/agents/<version>/` and retry"*. So you can deploy Polaris first and add the binaries later when you actually want to use the feature.
+
+### Set POLARIS_PUBLIC_URL
+
+The agent.conf file written to each installed agent embeds the URL the agent will call back to. For any single-box install where Polaris is reachable from the agent host at its public DNS name, set this in `.env`:
+
+```ini
+POLARIS_PUBLIC_URL=https://polaris.example.com:3000
+```
+
+Without it the agent receives `https://localhost:<PORT>` which only works for testing on the same host.
+
+For reverse-proxy / TLS-termination-upstream topologies (nginx, Caddy, ALB), `POLARIS_PUBLIC_URL` must be the **proxy's** public URL — the agent's pinned cert is the proxy's cert, not the upstream's.
+
+### Install on a remote host
+
+From the Polaris UI:
+
+1. Open the asset's details modal → **Monitoring** tab
+2. Flip any stream to **Polaris Agent**
+3. Save
+4. Reopen the asset details modal → **System** tab → **Install Agent…**
+5. Pick a stored SSH (Linux/macOS) or WinRM (Windows) credential
+6. Confirm the OS + arch picker (defaults from `Asset.os`)
+7. Click **Install**
+
+The install status pill flips `pending → uploading → enrolling → active` over ~30 seconds. The host's systemd / launchd / Windows Service is registered as `polaris-agent`. Uninstall + Force Remove buttons appear once the agent is active.
+
+### Required on the target host
+
+- **Linux / macOS:** SSH reachable from Polaris on port 22 (or whatever the credential's port field specifies); the credential's user must be able to `sudo -n` (passwordless sudo) — the installer creates a systemd unit / launchd plist.
+- **Windows:** WinRM enabled on port 5986 (HTTPS) or 5985 (HTTP). Run `Enable-PSRemoting -Force` on a fresh host. The credential must have local admin rights — the installer creates a Windows Service under `%ProgramFiles%\Polaris\Agent\`.
+
+---
+
 ## Optional: PgBouncer in front of PostgreSQL
 
 When Polaris's `DATABASE_POOL_SIZE + POLARIS_PGBOSS_POOL_SIZE` keeps climbing past what's comfortable to provision on PostgreSQL directly (each backend connection costs ~10 MB of RSS plus a process slot), put **PgBouncer** in front of PostgreSQL. PgBouncer holds a small pool of real Postgres backends and multiplexes Polaris's many connection slots onto them. The Maintenance tab's "Peak observed" can grow well past PG's `max_connections` without any of those connections actually reaching PostgreSQL.

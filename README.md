@@ -24,13 +24,15 @@ A network management tool built with automation in mind. Auto-discovery from For
 ### Monitoring
 Asset monitoring runs on three independent cadences, each with its own retention setting:
 
-- **Response-time probe** (default 60 s) — FortiOS REST, SNMP `sysUpTime`, WinRM SOAP, SSH connect+auth, or ICMP. Records round-trip time on success and `null` on failure ("packet loss"). Down/up transitions emit audit events and drive the sidebar status pill.
+- **Response-time probe** (default 60 s) — FortiOS REST, SNMP `sysUpTime`, WinRM SOAP, SSH connect+auth, ICMP, or **Polaris Agent**. Records round-trip time on success and `null` on failure ("packet loss"). Down/up transitions emit audit events and drive the sidebar status pill.
 - **Telemetry** (default 60 s) — CPU, memory, and per-sensor temperatures. Vendor-specific SNMP profiles ship for Cisco, Juniper, Mikrotik, Fortinet, HP/Aruba, and Dell, falling back to HOST-RESOURCES-MIB and ENTITY-SENSOR-MIB.
 - **System info** (default 600 s) — interfaces (with `ifAlias` / FortiOS CMDB description, error counters, IP/MAC), storage mountpoints, IPsec phase-1 tunnels (with phase-2 rollup and parent-interface nesting), and LLDP neighbors. LLDP rows are matched back to Polaris assets by management IP, chassis MAC, or system name, so the topology graph can show a clickable cross-link.
 
 Operators can pin specific interfaces, mountpoints, or IPsec tunnels for **sub-minute polling** without re-walking the full table. Each FMG/FortiGate integration carries per-stream **REST ↔ SNMP toggles** (response time, telemetry, interfaces, LLDP) so branch-class FortiGates whose REST sensor endpoints 404 on FortiOS 7.4.x can be moved to SNMP one stream at a time. Per-asset overrides take precedence when set.
 
 The asset details panel renders charts for response time, CPU/memory, temperature per sensor, per-interface throughput + errors, mountpoint usage, and IPsec status timeline + bytes. Admin operators also get an **SNMP Walk** tab for ad-hoc OID exploration on any reachable host.
+
+**Polaris Agent (optional)** — a small Go binary you can install on Linux / macOS / Windows hosts (amd64 + arm64) via stored SSH or WinRM credentials. The agent pushes monitoring samples back to Polaris over HTTPS with a pinned-leaf TLS handshake; an outbound WebSocket also stays open for on-demand probe-now. Useful for hosts behind NAT, hosts without a working SNMP/WinRM probe surface, and generic Windows/Linux endpoints. Install + uninstall + force-remove are all driven from the asset details modal. See `docs/INSTALL.md` → "Optional: Polaris Agent."
 
 ### Device Map
 A Leaflet basemap pinned with every FortiGate that has geo coordinates configured on the device. Pin color reflects monitor health (green / amber / red / gray). Clicking a pin opens a Cytoscape topology modal showing the FortiGate, its managed FortiSwitches and FortiAPs, its discovered subnets, and any LLDP-observed neighbors that aren't part of the managed fleet. Header search autocompletes hostnames and serials; site-scoped search inside the modal pulses the matched switch and pivots to endpoint asset details on click.
