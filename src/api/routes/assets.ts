@@ -128,7 +128,13 @@ const CreateAssetSchema = z.object({
   tags:          z.array(z.string()).optional(),
 });
 
-const PollingMethodEnum = z.enum(["rest_api", "snmp", "winrm", "ssh", "icmp"]);
+// Mirrors PollingMethod in src/utils/pollingCompatibility.ts. Source-kind
+// compatibility is enforced at resolution time, not here — the resolver
+// silently falls through to the next tier when a per-asset override doesn't
+// apply to the asset's source. Includes "disabled" (universally allowed
+// opt-out) and "agent" (Polaris Agent; allowed on AD/Entra/WinServer/Manual
+// sources, ignored on fortimanager/fortigate).
+const PollingMethodEnum = z.enum(["rest_api", "snmp", "winrm", "ssh", "icmp", "disabled", "agent"]);
 
 const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   monitored:             z.boolean().optional(),
