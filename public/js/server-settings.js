@@ -2203,12 +2203,13 @@ var _agentBuildPollTimer = null;
 function initAgentBuildCard() {
   Promise.all([
     api.serverSettings.agentInventory().catch(function () { return null; }),
-    api.serverSettings.agentBuildCurrent().catch(function () { return { current: null }; }),
+    api.serverSettings.agentBuildCurrent().catch(function () { return { current: null, queue: [] }; }),
   ]).then(function (results) {
     var inv     = results[0];
     var current = results[1] && results[1].current;
+    var queue   = (results[1] && results[1].queue) || [];
     if (current && current.phase !== "complete" && current.phase !== "failed") {
-      renderAgentBuildProgress(current);
+      renderAgentBuildProgress(current, queue);
       startAgentBuildPoll(current.buildId);
     } else {
       renderAgentBuildInventory(inv);
@@ -2298,15 +2299,21 @@ function renderAgentBuildInventory(inv) {
 
 function onAgentBuildClick() {
   api.serverSettings.agentBuildStart().then(function (r) {
-    // Optimistic: render an empty in-flight strip until the first poll
-    // returns full state. Drives operator feedback within ~100 ms.
+    // Optimistic: switch to progress mode immediately. The first poll
+    // tick populates real per-platform steps. queuePosition === 0 means
+    // we got the active slot; >0 means we landed in the queue.
+    var phase = r.queuePosition === 0 ? "preparing" : "queued";
     renderAgentBuildProgress({
       buildId:   r.buildId,
       version:   r.version,
-      phase:     "preparing",
-      steps:     [], // populated by the first poll
-      startedAt: new Date().toISOString(),
-    });
+      phase:     phase,
+      steps:     [],
+      queuedAt:  new Date().toISOString(),
+      startedAt: r.queuePosition === 0 ? new Date().toISOString() : null,
+    }, []);
+    if (r.queuePosition > 0) {
+      showToast("Build queued (position " + r.queuePosition + ")", "info");
+    }
     startAgentBuildPoll(r.buildId);
   }).catch(function (err) {
     showToast("Build failed to start: " + err.message, "error");
@@ -2316,12 +2323,24 @@ function onAgentBuildClick() {
 function startAgentBuildPoll(buildId) {
   if (_agentBuildPollTimer) clearTimeout(_agentBuildPollTimer);
   var tick = function () {
-    api.serverSettings.agentBuildStatus(buildId).then(function (state) {
-      renderAgentBuildProgress(state);
+    // Pull both the focused build + the current/queue snapshot in one
+    // tick so the queue display stays accurate as other operators fire
+    // builds while ours is running.
+    Promise.all([
+      api.serverSettings.agentBuildStatus(buildId),
+      api.serverSettings.agentBuildCurrent().catch(function () { return { current: null, queue: [] }; }),
+    ]).then(function (results) {
+      var state   = results[0];
+      var current = results[1] && results[1].current;
+      var queue   = (results[1] && results[1].queue) || [];
+      // While our build is queued we render the FOCUS build itself in
+      // the queued section + show the currently-running one above it
+      // so the operator sees what they're waiting behind.
+      var primary = (state.phase === "queued" && current) ? current : state;
+      var queueWithoutPrimary = queue.filter(function (q) { return q.buildId !== primary.buildId; });
+      renderAgentBuildProgress(primary, queueWithoutPrimary);
       if (state.phase === "complete" || state.phase === "failed") {
         _agentBuildPollTimer = null;
-        // Re-fetch inventory + swap back into inventory view, with a
-        // toast naming the outcome.
         api.serverSettings.agentInventory().then(function (inv) {
           renderAgentBuildInventory(inv);
           if (state.phase === "complete") {
@@ -2341,12 +2360,15 @@ function startAgentBuildPoll(buildId) {
   _agentBuildPollTimer = setTimeout(tick, 200);
 }
 
-function renderAgentBuildProgress(state) {
+function renderAgentBuildProgress(state, queue) {
   var body = document.getElementById("agent-build-body");
   if (!body) return;
 
-  var elapsedMs = Date.now() - new Date(state.startedAt).getTime();
+  // Elapsed: from queuedAt when queued, from startedAt once running.
+  var elapsedAnchor = state.startedAt || state.queuedAt;
+  var elapsedMs = elapsedAnchor ? Date.now() - new Date(elapsedAnchor).getTime() : 0;
   var elapsedTxt = formatElapsed(elapsedMs);
+
   var stepsHtml = (state.steps || []).map(function (s) {
     var icon, color;
     if (s.status === "success")      { icon = "✓"; color = "var(--color-success)"; }
@@ -2364,22 +2386,54 @@ function renderAgentBuildProgress(state) {
       '</tr>';
   }).join("");
 
-  var label = state.phase === "complete"
-    ? '<strong style="color:var(--color-success)">Built v' + escapeHtml(state.version) + '</strong>'
-    : state.phase === "failed"
-    ? '<strong style="color:var(--color-danger)">Build failed</strong>'
-    : '<strong>Building agent binaries v' + escapeHtml(state.version) + '</strong> · ' + escapeHtml(elapsedTxt) + ' elapsed';
+  var label;
+  if (state.phase === "complete") {
+    label = '<strong style="color:var(--color-success)">Built v' + escapeHtml(state.version) + '</strong>';
+  } else if (state.phase === "failed") {
+    label = '<strong style="color:var(--color-danger)">Build failed</strong>';
+  } else if (state.phase === "queued") {
+    label = '<strong>Queued: v' + escapeHtml(state.version) + '</strong> · waiting · ' + escapeHtml(elapsedTxt);
+  } else {
+    label = '<strong>Building agent binaries v' + escapeHtml(state.version) + '</strong> · ' + escapeHtml(elapsedTxt) + ' elapsed';
+  }
+
+  // Queue display: tiny rows per queued build with actor + queued-at.
+  var queueHtml = "";
+  if (queue && queue.length > 0) {
+    queueHtml =
+      '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border)">' +
+        '<div style="font-size:0.78rem;color:var(--color-text-secondary);margin-bottom:0.3rem">Queued (' + queue.length + ')</div>' +
+        queue.map(function (q) {
+          return '<div style="font-size:0.78rem;color:var(--color-text-tertiary);padding:2px 0">' +
+            '• v' + escapeHtml(q.version) + ' — queued by ' + escapeHtml(q.actor) +
+            (q.queuedAt ? ' (' + escapeHtml(timeAgoLocal(q.queuedAt)) + ')' : '') +
+          '</div>';
+        }).join("") +
+      '</div>';
+  }
 
   body.innerHTML =
     '<div style="margin-bottom:0.5rem">' + label + '</div>' +
-    '<table style="width:100%;border-collapse:collapse;font-size:0.85rem">' +
-      '<tbody>' + stepsHtml + '</tbody>' +
-    '</table>' +
+    (stepsHtml
+      ? '<table style="width:100%;border-collapse:collapse;font-size:0.85rem"><tbody>' + stepsHtml + '</tbody></table>'
+      : "") +
     (state.error
       ? '<div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:rgba(255,80,80,0.08);' +
           'border-left:3px solid var(--color-danger);border-radius:4px;font-family:monospace;font-size:0.78rem;' +
           'color:var(--color-danger);white-space:pre-wrap;word-break:break-word">' + escapeHtml(state.error) + '</div>'
-      : "");
+      : "") +
+    queueHtml;
+}
+
+// Lightweight relative-time formatter for the queue rows. The main
+// timeAgo helper isn't a global on every page; this keeps the agent
+// card self-contained.
+function timeAgoLocal(iso) {
+  var ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) ms = 0;
+  if (ms < 60_000) return Math.floor(ms / 1000) + "s ago";
+  if (ms < 3_600_000) return Math.floor(ms / 60_000) + "m ago";
+  return Math.floor(ms / 3_600_000) + "h ago";
 }
 
 function humanBytes(n) {

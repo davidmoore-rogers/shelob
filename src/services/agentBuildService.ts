@@ -47,6 +47,7 @@ export const PLATFORMS = [
 ] as const;
 
 export type BuildPhase =
+  | "queued"
   | "preparing"
   | "building:linux-amd64"
   | "building:linux-arm64"
@@ -71,7 +72,9 @@ export interface BuildState {
   version:     string;
   phase:       BuildPhase;
   steps:       BuildStep[];
-  startedAt:   Date;
+  /** When the build was enqueued (different from startedAt for queued builds). */
+  queuedAt:    Date;
+  startedAt?:  Date;
   finishedAt?: Date;
   goVersion?:  string;
   error?:      string;
@@ -80,9 +83,27 @@ export interface BuildState {
 }
 
 // ─── Module-local state ───────────────────────────────────────────────
+//
+// Single-slot active + FIFO queue (depth cap 3). Two simultaneous POSTs
+// land in a stable order thanks to Node's single-threadedness: neither
+// can interleave between the queue-length check and the enqueue.
+
+/** Max depth of waiting builds. Beyond this the route 409s. */
+const QUEUE_DEPTH_LIMIT = 3;
+
+/** Drop completed/failed/cancelled entries older than this from `buildStates`. */
+const FINISHED_STATE_TTL_MS = 60 * 60 * 1000;
 
 const buildStates: Map<string, BuildState> = new Map();
 let currentBuildId: string | null = null;
+const buildQueue: string[] = [];
+
+export class BuildQueueFullError extends Error {
+  constructor() {
+    super(`Build queue is full (${QUEUE_DEPTH_LIMIT} already queued). Wait for one to finish.`);
+    this.name = "BuildQueueFullError";
+  }
+}
 
 // ─── Go-detection ─────────────────────────────────────────────────────
 
@@ -116,12 +137,10 @@ export interface StartBuildInput {
 }
 
 export interface StartBuildResult {
-  buildId: string;
-  version: string;
-}
-
-export class BuildInFlightError extends Error {
-  constructor() { super("A build is already in flight"); this.name = "BuildInFlightError"; }
+  buildId:       string;
+  version:       string;
+  /** 0 = running immediately; 1..N = queued at that position (1-indexed). */
+  queuePosition: number;
 }
 
 export class GoUnavailableError extends Error {
@@ -129,49 +148,80 @@ export class GoUnavailableError extends Error {
 }
 
 export async function startBuild(input: StartBuildInput): Promise<StartBuildResult> {
-  // The single-mutex + immediate-409 behaviour is intentional for this
-  // phase — Phase D extends it into a real FIFO queue with QUEUE_DEPTH=3.
-  if (currentBuildId !== null) {
-    throw new BuildInFlightError();
-  }
   const go = await goAvailable();
   if (!go.ok) {
     throw new GoUnavailableError(go.error ?? "Go is not available on this Polaris server");
   }
+  if (buildQueue.length >= QUEUE_DEPTH_LIMIT) {
+    throw new BuildQueueFullError();
+  }
 
   const buildId = randomUUID();
+  // Read version at enqueue time. If a build sits in the queue while
+  // agent/VERSION is bumped, the actual build's runBuild() re-reads the
+  // version at start-of-run so the binaries always match the source they
+  // were built from. We stamp the at-enqueue version here just so the
+  // queued-build's UI row has a stable label.
   const version = getAgentVersion();
   const state: BuildState = {
     buildId,
     version,
-    phase:     "preparing",
+    phase:     "queued",
     steps:     PLATFORMS.map((p) => ({ platform: p.os, arch: p.arch, status: "pending" })),
-    startedAt: new Date(),
+    queuedAt:  new Date(),
     goVersion: go.version,
     actor:     input.actor,
   };
   buildStates.set(buildId, state);
-  currentBuildId = buildId;
 
+  // Either kick off immediately (no active build, nothing queued) or
+  // append to the queue. Both branches are sync between the check and
+  // the mutation, so two concurrent POSTs can't race into "both run
+  // immediately" — Node's single thread guarantees ordering.
+  if (currentBuildId === null && buildQueue.length === 0) {
+    activateBuild(buildId);
+    await logEvent({
+      action:       "agent.build.started",
+      level:        "info",
+      actor:        input.actor,
+      resourceType: "polaris-agent",
+      resourceName: version,
+      message:      `Agent build v${version} started`,
+      details:      { buildId, goVersion: go.version },
+    });
+    return { buildId, version, queuePosition: 0 };
+  }
+
+  buildQueue.push(buildId);
+  const queuePosition = buildQueue.length;
   await logEvent({
-    action:       "agent.build.started",
+    action:       "agent.build.queued",
     level:        "info",
     actor:        input.actor,
     resourceType: "polaris-agent",
     resourceName: version,
-    message:      `Agent build v${version} started`,
-    details:      { buildId, goVersion: go.version },
+    message:      `Agent build v${version} queued (position ${queuePosition})`,
+    details:      { buildId, queuePosition, goVersion: go.version },
   });
+  return { buildId, version, queuePosition };
+}
 
-  // Fire async; never await. The route handler returns immediately so
-  // the UI sees the in-flight state on its next poll.
+function activateBuild(buildId: string): void {
+  const state = buildStates.get(buildId);
+  if (!state) return;
+  // Recompute version at start-of-build. agent/VERSION may have moved
+  // between enqueue and now (operator pushed a Polaris update during the
+  // wait window); the binaries should match the source they're built
+  // from RIGHT NOW.
+  state.version   = getAgentVersion();
+  state.phase     = "preparing";
+  state.startedAt = new Date();
+  currentBuildId  = buildId;
   setImmediate(() => {
     runBuild(buildId).catch((err) => {
       logger.error({ err, buildId }, "Agent build crashed unexpectedly");
     });
   });
-
-  return { buildId, version };
 }
 
 // ─── Build runner ─────────────────────────────────────────────────────
@@ -182,6 +232,7 @@ async function runBuild(buildId: string): Promise<void> {
     // Defensive — should never happen since startBuild populates the map
     // before scheduling runBuild.
     currentBuildId = null;
+    advanceQueue();
     return;
   }
 
@@ -202,6 +253,45 @@ async function runBuild(buildId: string): Promise<void> {
     });
   } finally {
     currentBuildId = null;
+    advanceQueue();
+    gcFinishedStates();
+  }
+}
+
+/** Pop the next queued buildId and activate it. No-op if the queue is empty. */
+function advanceQueue(): void {
+  const nextId = buildQueue.shift();
+  if (!nextId) return;
+  const state = buildStates.get(nextId);
+  if (!state) {
+    // Build was cancelled / GC'd between enqueue + advance; try again.
+    advanceQueue();
+    return;
+  }
+  // Re-emit started event for the queued build (parity with the
+  // first-build immediate-start path) so the audit trail captures
+  // every build's start, not just the not-queued ones.
+  void logEvent({
+    action:       "agent.build.started",
+    level:        "info",
+    actor:        state.actor,
+    resourceType: "polaris-agent",
+    resourceName: state.version,
+    message:      `Agent build (was queued) starting`,
+    details:      { buildId: nextId, goVersion: state.goVersion ?? null },
+  });
+  activateBuild(nextId);
+}
+
+/** Drop completed/failed/cancelled entries older than FINISHED_STATE_TTL_MS. */
+function gcFinishedStates(): void {
+  const cutoff = Date.now() - FINISHED_STATE_TTL_MS;
+  for (const [id, state] of buildStates) {
+    if (id === currentBuildId) continue;
+    if (buildQueue.includes(id)) continue;
+    if (state.finishedAt && state.finishedAt.getTime() < cutoff) {
+      buildStates.delete(id);
+    }
   }
 }
 
@@ -295,9 +385,12 @@ async function doRun(state: BuildState): Promise<void> {
     resourceName: state.version,
     message:      `Agent build v${state.version} completed`,
     details: {
-      buildId:       state.buildId,
-      totalElapsedMs: state.finishedAt.getTime() - state.startedAt.getTime(),
-      platforms:     state.steps.map((s) => ({ platform: s.platform, arch: s.arch, elapsedMs: s.elapsedMs })),
+      buildId:        state.buildId,
+      // startedAt is set when the build leaves the queue (activateBuild);
+      // by the time this Event is emitted we're after writing-manifest so
+      // it's always populated. Fallback to queuedAt for defensive math.
+      totalElapsedMs: state.finishedAt.getTime() - (state.startedAt ?? state.queuedAt).getTime(),
+      platforms:      state.steps.map((s) => ({ platform: s.platform, arch: s.arch, elapsedMs: s.elapsedMs })),
     },
   });
 }
@@ -312,6 +405,19 @@ export function getCurrentBuild(): BuildState | null {
   if (currentBuildId === null) return null;
   return buildStates.get(currentBuildId) ?? null;
 }
+
+/**
+ * Snapshot the active build + the FIFO queue in one go. UI polls this
+ * to rehydrate state when the operator switches tabs back to Maintenance.
+ */
+export function getCurrentBuildAndQueue(): { current: BuildState | null; queue: BuildState[] } {
+  const current = getCurrentBuild();
+  const queue   = buildQueue.map((id) => buildStates.get(id)).filter((s): s is BuildState => !!s);
+  return { current, queue };
+}
+
+/** Queue depth limit, exported for the UI / docs. */
+export const QUEUE_DEPTH = QUEUE_DEPTH_LIMIT;
 
 // ─── Inventory ────────────────────────────────────────────────────────
 

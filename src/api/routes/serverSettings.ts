@@ -1381,15 +1381,15 @@ router.get("/agents/inventory", async (_req, res, next) => {
 
 router.post("/agents/build", async (req, res, next) => {
   try {
-    const { startBuild, BuildInFlightError, GoUnavailableError } =
+    const { startBuild, BuildQueueFullError, GoUnavailableError } =
       await import("../../services/agentBuildService.js");
     const actor = req.session?.username || "unknown";
     try {
       const result = await startBuild({ actor });
       res.json(result);
     } catch (err) {
-      if (err instanceof BuildInFlightError) {
-        return res.status(409).json({ error: "A build is already in flight. Wait for it to complete and try again." });
+      if (err instanceof BuildQueueFullError) {
+        return res.status(409).json({ error: err.message });
       }
       if (err instanceof GoUnavailableError) {
         return res.status(400).json({ error: `Go is not available on this Polaris server: ${err.message}. Install Go 1.22+ and reload.` });
@@ -1401,8 +1401,8 @@ router.post("/agents/build", async (req, res, next) => {
 
 router.get("/agents/build/current", async (_req, res, next) => {
   try {
-    const { getCurrentBuild } = await import("../../services/agentBuildService.js");
-    res.json({ current: getCurrentBuild() });
+    const { getCurrentBuildAndQueue } = await import("../../services/agentBuildService.js");
+    res.json(getCurrentBuildAndQueue());
   } catch (err) { next(err); }
 });
 
