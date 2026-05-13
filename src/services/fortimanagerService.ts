@@ -566,6 +566,21 @@ export interface DiscoveredDevice {
   mgmtIp: string;        // management IP from device list
   latitude?: number;     // decimal degrees, from config system global (Device Map)
   longitude?: number;    // decimal degrees
+  // HA cluster awareness. `haMembers` lists every physical unit in the cluster
+  // (including the current primary), each keyed on its own stable serial. The
+  // top-level fields (`serial`, `hostname`, `mgmtIp`) reflect whichever member
+  // is currently active — FortiOS REST against the cluster IP always reaches
+  // that one, and FMG's device record flips on failover. The standby member's
+  // identity lives only in `haMembers`, so the sync pipeline keys per-member
+  // Asset writes off this array to stay stable across failover. Omitted or
+  // empty `haMembers` means standalone.
+  haMode?: "standalone" | "a-p" | "a-a";
+  haMembers?: Array<{
+    serial: string;
+    name?: string;       // member hostname (FortiOS sys_name / FMG ha_slave[].name)
+    priority?: number;
+    isPrimary: boolean;
+  }>;
 }
 
 export interface DiscoveredInterfaceIp {
@@ -751,6 +766,70 @@ export type DiscoveryProgressCallback = (
   message: string,
   device?: string,
 ) => void;
+
+/**
+ * Extract HA cluster info from a raw FMG `/dvmdb/adom/<adom>/device` record.
+ * FMG exposes `ha_mode` + `ha_slave[]` directly on the device record — no
+ * extra calls needed. The "current primary" is the ha_slave entry whose `sn`
+ * matches the top-level `sn`; FMG keeps these in sync across failover. When
+ * the device is standalone (ha_mode missing/zero or ha_slave empty), returns
+ * `{ haMode: "standalone" }` so downstream code has a single branch.
+ *
+ * FMG encodes `ha_mode` as either a string ("standalone"|"a-p"|"a-a") or an
+ * integer (0=standalone, 1=a-p, 2=a-a). Both are normalized here.
+ */
+export function extractHaFromFmgDevice(
+  raw: any,
+): { haMode: "standalone" | "a-p" | "a-a"; haMembers: NonNullable<DiscoveredDevice["haMembers"]> } {
+  const slaves: any[] = Array.isArray(raw?.ha_slave) ? raw.ha_slave : [];
+  const rawMode = raw?.ha_mode;
+  let mode: "standalone" | "a-p" | "a-a" = "standalone";
+  if (typeof rawMode === "string") {
+    const norm = rawMode.toLowerCase();
+    if (norm === "a-p" || norm === "ap" || norm === "active-passive") mode = "a-p";
+    else if (norm === "a-a" || norm === "aa" || norm === "active-active") mode = "a-a";
+    else mode = "standalone";
+  } else if (typeof rawMode === "number") {
+    if (rawMode === 1) mode = "a-p";
+    else if (rawMode === 2) mode = "a-a";
+    else mode = "standalone";
+  }
+  // Standalone OR empty roster — nothing useful to project.
+  if (mode === "standalone" || slaves.length === 0) {
+    return { haMode: "standalone", haMembers: [] };
+  }
+  const primarySerial: string = String(raw?.sn || "");
+  // First pass: map each ha_slave row to a member with isPrimary determined
+  // ONLY by the sn match. We never let idx===0 win when primarySerial is
+  // known — otherwise post-failover, where device.sn now points at the
+  // formerly-secondary, the idx=0 entry (still the original primary)
+  // would falsely claim primary alongside the real one.
+  const members: NonNullable<DiscoveredDevice["haMembers"]> = slaves
+    .map((s) => {
+      const sn = String(s?.sn || "");
+      if (!sn) return null;
+      const isPrimary = primarySerial.length > 0 && sn === primarySerial;
+      const name = typeof s?.name === "string" && s.name.length > 0 ? s.name : undefined;
+      const prio = Number.isFinite(s?.prio) ? Number(s.prio) : undefined;
+      return { serial: sn, name, priority: prio, isPrimary };
+    })
+    .filter((m): m is NonNullable<typeof m> => m !== null);
+  // Second pass: when no member matched device.sn (primarySerial empty or
+  // FMG roster out of sync), fall back to FMG's `idx === 0` convention OR
+  // first member by array position. This is the only path where idx wins.
+  if (members.length > 0 && !members.some((m) => m.isPrimary)) {
+    const idxZero = slaves.findIndex((s) => Number.isFinite(s?.idx) && Number(s.idx) === 0 && String(s?.sn || ""));
+    if (idxZero >= 0) {
+      const idxZeroSerial = String(slaves[idxZero]?.sn || "");
+      const target = members.find((m) => m.serial === idxZeroSerial);
+      if (target) target.isPrimary = true;
+      else members[0].isPrimary = true;
+    } else {
+      members[0].isPrimary = true;
+    }
+  }
+  return { haMode: mode, haMembers: members };
+}
 
 /**
  * Query FortiManager for DHCP servers across all managed FortiGate devices.
@@ -992,6 +1071,13 @@ export async function discoverDhcpSubnets(
           const fmgLat = parseFloat(String(rawDevice.latitude ?? ""));
           const fmgLng = parseFloat(String(rawDevice.longitude ?? ""));
           const fmgCoordsOk = Number.isFinite(fmgLat) && Number.isFinite(fmgLng) && !(fmgLat === 0 && fmgLng === 0);
+          // HA roster comes from FMG (authoritative across failover — FMG's
+          // ha_slave[] is stable while fortigateService's ha-peer query
+          // reflects whichever physical box is currently active). Prefer FMG's
+          // view; fall back to fortigateService's ha-peer-derived view only
+          // when FMG didn't surface one (older FMG releases, missing perms).
+          const fmgHa = extractHaFromFmgDevice(rawDevice);
+          const haFromFmg = fmgHa.haMembers.length > 0;
           const localDev: DiscoveredDevice = {
             name: deviceName,
             hostname: rawDevice.hostname || deviceName,
@@ -1000,7 +1086,15 @@ export async function discoverDhcpSubnets(
             mgmtIp:   directHost,
             latitude:  fmgCoordsOk ? fmgLat : fgResult.devices[0]?.latitude,
             longitude: fmgCoordsOk ? fmgLng : fgResult.devices[0]?.longitude,
+            ...(haFromFmg
+              ? { haMode: fmgHa.haMode, haMembers: fmgHa.haMembers }
+              : (fgResult.devices[0]?.haMembers && fgResult.devices[0].haMembers.length > 0
+                  ? { haMode: fgResult.devices[0].haMode, haMembers: fgResult.devices[0].haMembers }
+                  : { haMode: "standalone" as const })),
           };
+          if (haFromFmg) {
+            log("discover.ha", "info", `${deviceName}: HA cluster from FMG — mode=${fmgHa.haMode}, ${fmgHa.haMembers.length} member(s)`, deviceName);
+          }
           if (fmgCoordsOk) {
             log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
           }
@@ -1067,6 +1161,10 @@ export async function discoverDhcpSubnets(
     const fmgLat = parseFloat(String(rawDevice.latitude ?? ""));
     const fmgLng = parseFloat(String(rawDevice.longitude ?? ""));
     const fmgCoordsOk = Number.isFinite(fmgLat) && Number.isFinite(fmgLng) && !(fmgLat === 0 && fmgLng === 0);
+    // HA roster from FMG's device record (ha_mode + ha_slave[]). Proxy mode
+    // has no per-device fortigateService call to fall back on, so this is
+    // the only source. Standalone or missing → haMode: "standalone".
+    const fmgHa = extractHaFromFmgDevice(rawDevice);
     const localDevice: DiscoveredDevice = {
       name: deviceName,
       hostname: rawDevice.hostname || deviceName,
@@ -1074,7 +1172,13 @@ export async function discoverDhcpSubnets(
       model: rawDevice.platform_str || "",
       mgmtIp: rawDevice.ip || "",
       ...(fmgCoordsOk ? { latitude: fmgLat, longitude: fmgLng } : {}),
+      ...(fmgHa.haMembers.length > 0
+        ? { haMode: fmgHa.haMode, haMembers: fmgHa.haMembers }
+        : { haMode: "standalone" as const }),
     };
+    if (fmgHa.haMembers.length > 0) {
+      log("discover.ha", "info", `${deviceName}: HA cluster from FMG — mode=${fmgHa.haMode}, ${fmgHa.haMembers.length} member(s)`, deviceName);
+    }
     if (fmgCoordsOk) {
       log("discover.geo", "info", `${deviceName}: Using FMG-configured coordinates ${fmgLat.toFixed(4)}, ${fmgLng.toFixed(4)}`, deviceName);
     }

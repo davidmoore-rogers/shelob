@@ -101,6 +101,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Priority rules in projectAssetFromSources() are immutable for production stability; tuned from shadow-drift logs and locked with operators.
 - Fortinet infrastructure (firewall/switch/AP) sources are derived from serial + manufacturer + assetType during backfill; discovery writes explicit "fortigate-firewall" / "fortiswitch" / "fortiap" source rows.
 - fortigate-endpoint source is stamped on endpoint-type assets discovered via DHCP; marked as infra if assetType is "firewall"/"switch"/"access_point".
+- HA-cluster firewalls (a-p / a-a) get one `fortigate-firewall` source row PER physical member, keyed on each member's own stable serial. The observed blob carries member-specific `serial` / `hostname` / `mgmtIp` plus cluster-wide `haMode` / `haRole` / `haPeerSerial`. The standby member's `mgmtIp` is null (cluster IP only reaches the active member). Phase 3 fan-out keys each member's Asset lookup on its OWN serial — never on `device.sn` which flips on failover.
 
 **When changing this:**
 - Modify priority rules only if tuned against real drift logs and agreed with operators (don't guess).
@@ -955,6 +956,8 @@ Listed alphabetically.
 - FortiAP LLDP/mesh extraction reuses extractApLldpAndMesh (same logic as FMG).
 - Standalone FortiGate has no proxy/direct toggle (useProxy doesn't apply); all queries go directly to the device's management IP.
 - proxyQuery is a read-only REST pass-through for manual API testing; does not modify CMDB.
+- Per-FortiGate query fan-out is seven parallel chains (A-G); Chain G calls `/api/v2/monitor/system/ha-peer` to populate `DiscoveredDevice.haMode` + `haMembers`. 404 / empty = standalone.
+- Chain G failures are isolated — a hung HA query never tanks the whole device's discovery (same try/catch pattern as Chains A-F).
 
 **When changing this:**
 - Verify DiscoveryResult shape matches fortimanagerService exactly—sync pipeline expects field parity.
@@ -962,6 +965,7 @@ Listed alphabetically.
 - Confirm proxyQuery handles GET/POST/PUT/DELETE correctly for manual testing route.
 - Test discovery parallelism (no clamping unlike FMG proxy mode) with high per-device concurrency.
 - Ensure VDOM parameter threading is correct (default "root"; custom vdoms from config).
+- Adding another per-FortiGate REST endpoint: add an 8th chain inside the Promise.all rather than appending after — keeps wall-clock at max(chain) instead of sum(chains).
 
 ---
 
@@ -1006,6 +1010,8 @@ Listed alphabetically.
 - Parity invariant: both FMG and standalone FortiGate return identical DiscoveryResult shape for sync pipeline compatibility.
 - FortiAP LLDP/mesh fields extracted via extractApLldpAndMesh, skipping wireless-mesh peers (system_description != "FortiSwitch-*").
 - Cache-miss fallback in processDevice's direct-mode branch: if a warm-cache dispatch fails, re-resolve via FMG worker and retry once at the freshly-resolved IP. Cleared via `cachedNames.delete(deviceName)` so the loop never iterates more than twice.
+- HA detection is **zero extra calls**: `extractHaFromFmgDevice(raw)` reads `ha_mode` + `ha_slave[]` directly off each `/dvmdb/adom/<adom>/device` record FMG already returns. The "current primary" is identified by matching `ha_slave[].sn` against `device.sn`; `idx === 0` is the fallback. Standalone devices return `{ haMode: "standalone", haMembers: [] }` so downstream code branches uniformly.
+- Direct-mode HA precedence: when FMG's `ha_slave[]` is populated, it wins over fortigateService's `ha-peer`-derived view (FMG's view is stable across failover; ha-peer reflects whichever physical box is currently active and would flip on failover).
 
 **When changing this:**
 - Verify parity with fortigateService.discoverDhcpSubnets (DiscoveryResult shape + field semantics).

@@ -2351,6 +2351,26 @@ function closeAssetPanel() {
   _currentAssetForRefresh = null;
 }
 
+// Open the asset details modal by serial number — used by HA peer links on
+// the General tab to pivot between cluster members. Falls back to a no-op
+// (with a console hint) when no match is found so the link doesn't appear
+// broken if discovery hasn't recorded the standby yet.
+window.openAssetBySerial = async function (serial) {
+  if (!serial) return;
+  try {
+    var rows = await api.assets.list({ search: serial, limit: 25 });
+    var list = Array.isArray(rows) ? rows : (rows && rows.assets) || [];
+    var match = list.find(function (a) { return a.serialNumber === serial; });
+    if (match) {
+      await openViewModal(match.id);
+    } else {
+      console.warn("No asset with serial", serial);
+    }
+  } catch (err) {
+    console.warn("openAssetBySerial failed", err);
+  }
+};
+
 async function openViewModal(id) {
   _ensureAssetPanelDOM();
   var titleEl  = document.getElementById("asset-panel-title");
@@ -2410,6 +2430,7 @@ async function openViewModal(id) {
       viewRow("Department", a.department) +
       viewRow("Assigned To", a.assignedTo) +
       viewRow("OS / Firmware", a.osVersion || a.os) +
+      haTopologyHTML(a) +
       viewRow("Last Seen Switch", a.lastSeenSwitch) +
       viewRow("Last Seen AP", a.lastSeenAp) +
       associatedUsersViewHTML(a.associatedUsers) +
@@ -7210,6 +7231,41 @@ function viewRow(label, value, mono, alignRight, copy) {
   }
   return '<div class="detail-row"><span class="detail-label">' + escapeHtml(label) + '</span>' +
     '<span class="detail-value' + (mono ? ' mono' : '') + '"' + style + '>' + inner + '</span></div>';
+}
+
+// Render HA cluster topology on the asset details General tab. Three rows
+// (Mode / Role / Peer) appear only when the asset is a Fortinet firewall
+// whose `fortinetTopology` carries HA fields. Standalone gates render
+// nothing. The peer is shown as a clickable serial — clicking pivots the
+// asset details modal to the peer Asset (matched by serialNumber) via the
+// same window.openAssetById helper the topology graph and dependency tree
+// use.
+function haTopologyHTML(asset) {
+  var topo = asset && asset.fortinetTopology;
+  if (!topo || typeof topo !== "object") return "";
+  var mode = topo.haMode;
+  var role = topo.haRole;
+  var peerSerial = topo.haPeerSerial;
+  if (!mode || mode === "standalone" || !role) return "";
+  var modeLabel = mode === "a-p" ? "Active / Passive (a-p)"
+                : mode === "a-a" ? "Active / Active (a-a)"
+                : mode;
+  var roleLabel = role === "primary" ? "Primary (active)"
+                : role === "secondary" ? "Secondary (standby)"
+                : role;
+  var roleColor = role === "primary" ? "var(--color-success,#10b981)" : "var(--color-warning,#fbbf24)";
+  var roleBadge = '<span style="display:inline-block;padding:1px 8px;border-radius:4px;font-size:0.8rem;background:' +
+    roleColor + ';color:#000;font-weight:600">' + escapeHtml(roleLabel) + '</span>';
+  var peerHTML = '-';
+  if (peerSerial) {
+    var serialEsc = escapeHtml(peerSerial);
+    peerHTML = '<a href="#" onclick="event.preventDefault(); window.openAssetBySerial && window.openAssetBySerial(\'' +
+      serialEsc + '\'); return false" class="mono" title="Open peer asset">' + serialEsc + '</a>';
+  }
+  return '<div class="detail-row"><span class="detail-label">HA Mode</span><span class="detail-value">' +
+    escapeHtml(modeLabel) + '</span></div>' +
+    '<div class="detail-row"><span class="detail-label">HA Role</span><span class="detail-value">' + roleBadge + '</span></div>' +
+    '<div class="detail-row"><span class="detail-label">HA Peer</span><span class="detail-value mono">' + peerHTML + '</span></div>';
 }
 
 function disabledInHTML(tags) {

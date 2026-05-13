@@ -323,7 +323,7 @@ export async function discoverDhcpSubnets(
   const dhcpInterfaceNames: string[] = [];
   const configResStart = dhcpEntries.length;
 
-  // Fan out the six independent per-FortiGate query chains in parallel.
+  // Fan out the seven independent per-FortiGate query chains in parallel.
   // Inside each chain, steps stay sequential where they share state:
   //   Chain A:  Step 3 (DHCP CMDB) → Promise.all(Step 3a + Step 3b)
   //   Chain B:  Step 3c    (device inventory)
@@ -331,8 +331,9 @@ export async function discoverDhcpSubnets(
   //   Chain D:  Step 3e.55 (ARP table)
   //   Chain E:  Step 3e.6  (geo coordinates)
   //   Chain F:  Step 3f    (firewall VIPs)
+  //   Chain G:  Step 3g    (HA peer roster)
   // Per-FortiGate wall-clock drops from sum-of-all to max(any chain). Peak
-  // intra-device REST concurrency is ~6 simultaneous calls; small-branch
+  // intra-device REST concurrency is ~7 simultaneous calls; small-branch
   // FortiGates (60F/61F class) handle this in practice, and the existing
   // per-step try/catch isolates a slow individual query from tanking the
   // whole device's discovery.
@@ -808,7 +809,57 @@ export async function discoverDhcpSubnets(
     log("discover.vips", "error", `${deviceHostname}: Failed to query firewall VIPs — ${err.message || "Unknown error"}`, deviceHostname);
   }
     })(), // end Chain F
-  ]); // end Promise.all of 6 per-FortiGate query chains
+    // ─── Chain G: HA peer info ──────────────────────────────────────────
+    // GET /api/v2/monitor/system/ha-peer returns the calling unit's serial
+    // plus each peer member. Standalone (non-HA) gates return 404 or empty
+    // results — both are normalized to `haMode: "standalone"` so downstream
+    // code has a single branch. The "current primary" member's serial is the
+    // calling unit (we only reach this REST endpoint via the cluster IP,
+    // which always routes to whichever member is currently active).
+    (async () => {
+      try {
+        const haPeer = await fgRequest<any>(config, "GET", "/api/v2/monitor/system/ha-peer", { query: queryBase, signal });
+        // Response envelope varies across FortiOS versions: sometimes
+        // { serial_no, results: [...] }, sometimes a bare array. Normalize.
+        const callerSerial: string = String(haPeer?.serial_no || haPeer?.serial || deviceSerial || "");
+        const rawPeers: any[] = Array.isArray(haPeer?.results)
+          ? haPeer.results
+          : Array.isArray(haPeer)
+            ? haPeer
+            : [];
+        const peerMembers = rawPeers
+          .map((p) => ({
+            serial: String(p.serial_no || p.serial || ""),
+            name: typeof p.hostname === "string" && p.hostname.length > 0 ? p.hostname : undefined,
+            priority: Number.isFinite(p.priority) ? Number(p.priority) : undefined,
+            isPrimary: false as const,
+          }))
+          .filter((p) => p.serial && p.serial !== callerSerial);
+        if (callerSerial && peerMembers.length > 0 && devices[0]) {
+          devices[0].haMode = "a-p";
+          devices[0].haMembers = [
+            { serial: callerSerial, name: deviceHostname || undefined, isPrimary: true },
+            ...peerMembers,
+          ];
+          log("discover.ha", "info", `${deviceHostname}: HA cluster — ${devices[0].haMembers.length} member(s), primary=${callerSerial}`, deviceHostname);
+        } else if (devices[0]) {
+          devices[0].haMode = "standalone";
+          log("discover.ha", "info", `${deviceHostname}: not in HA cluster`, deviceHostname);
+        }
+      } catch (err: any) {
+        // 404 = HA endpoint not available on this FortiOS build, OR the device
+        // is genuinely standalone (some builds 404 instead of returning empty).
+        // Both treated as standalone so the downstream sync doesn't fork.
+        const isNotFound = err instanceof AppError && err.httpStatus === 404;
+        if (isNotFound && devices[0]) {
+          devices[0].haMode = "standalone";
+          log("discover.ha", "info", `${deviceHostname}: not in HA cluster (ha-peer endpoint unavailable)`, deviceHostname);
+        } else {
+          log("discover.ha", "info", `${deviceHostname}: HA query skipped — ${err.message || "Unknown error"}`, deviceHostname);
+        }
+      }
+    })(), // end Chain G
+  ]); // end Promise.all of 7 per-FortiGate query chains
 
   // Filter
   const filteredSubnets = filterDhcpResults(discovered, config.dhcpInclude, config.dhcpExclude);

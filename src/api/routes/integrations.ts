@@ -1907,6 +1907,17 @@ function buildFortigateFirewallObservedBlob(
   device: { name?: string; hostname?: string; serial?: string; model?: string; mgmtIp?: string; osVersion?: string; latitude?: number; longitude?: number },
   integrationType: "fortimanager" | "fortigate",
   syncedAt: Date,
+  // HA member context. Omitted on standalone firewalls. When the discovered
+  // device is an HA cluster, every member gets its own AssetSource row with
+  // a per-member observed blob — the `serial`, `hostname`, `haRole`, and
+  // `haPeerSerial` fields here are member-specific (the standby member's
+  // blob has its own serial / its own hostname / haRole "secondary" /
+  // haPeerSerial pointing at the current primary).
+  ha?: {
+    haMode: "a-p" | "a-a";
+    haRole: "primary" | "secondary";
+    haPeerSerial: string;
+  },
 ): Record<string, unknown> {
   return {
     kind: "fortigate-firewall",
@@ -1919,6 +1930,13 @@ function buildFortigateFirewallObservedBlob(
     latitude: Number.isFinite(device.latitude) ? device.latitude : null,
     longitude: Number.isFinite(device.longitude) ? device.longitude : null,
     managedBy: integrationType,
+    ...(ha
+      ? {
+          haMode: ha.haMode,
+          haRole: ha.haRole,
+          haPeerSerial: ha.haPeerSerial,
+        }
+      : {}),
   };
 }
 
@@ -2361,6 +2379,23 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   // this set — meaning the device was deleted from the upstream. Offline
   // devices remain in the roster, so their subnets are left alone.
   const knownDeviceNames = new Set(result.knownDeviceNames);
+  // HA-aware: every member of every HA cluster is a "still-known" identity,
+  // not just whichever member is currently primary. Without this, the
+  // Phase 2a decommission sweep would flip the standby member's Asset to
+  // decommissioned every cycle (its hostname never appears at the top-level
+  // device.name — only inside ha_slave[]). On failover, the previous
+  // primary would suffer the same fate. Both member hostnames AND member
+  // serials are tracked so the sweep can match either.
+  const knownFirewallSerials = new Set<string>();
+  for (const dev of result.devices) {
+    if (dev.serial) knownFirewallSerials.add(dev.serial);
+    if (Array.isArray(dev.haMembers)) {
+      for (const m of dev.haMembers) {
+        if (m.serial) knownFirewallSerials.add(m.serial);
+        if (m.name) knownDeviceNames.add(m.name);
+      }
+    }
+  }
 
   if (mode === "full" || mode === "skip-deprecation") {
   // ══════════════════════════════════════════════════════════════════════════════
@@ -2517,6 +2552,15 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     for (const a of candidateFws) {
       if (!a.hostname) continue;
       if (knownDeviceNames.has(a.hostname)) continue;
+      // HA-aware guard: a member's serial in the cluster's ha_slave[] is
+      // proof the unit is still configured even if its hostname is missing
+      // from the top-level roster. Covers two cases that would otherwise
+      // generate spurious decommission events:
+      //   1. Standby member whose hostname never appears at top-level.
+      //   2. Post-failover where the previous primary's hostname disappears
+      //      from the device record (top-level flips to new primary's
+      //      hostname) but its serial is still listed in ha_slave[].
+      if (a.serialNumber && knownFirewallSerials.has(a.serialNumber)) continue;
       staleFwIds.push(a.id);
       staleFwHostnames.push(a.hostname);
       logEvent({
@@ -2659,26 +2703,102 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   for (const device of result.devices) {
     try {
       const fgHostname = device.hostname || device.name;
-      const topology = { role: "fortigate" as const };
+      // HA fan-out: when the cluster reports multiple members, write one
+      // Asset row per physical member keyed on its own stable serial. Each
+      // member's identity (serial + hostname) survives failover because we
+      // never look up by `device.sn` (which flips on failover); we look up
+      // by `member.serial`. The "current primary" is the member flagged
+      // isPrimary=true — it holds the cluster IP and inherits the cluster's
+      // top-level model/osVersion. Standby members get the same model/
+      // osVersion (cluster members run identical builds) but ipAddress=null
+      // since the cluster IP routes only to the active member.
+      const haMembers = Array.isArray(device.haMembers) && device.haMembers.length > 0
+        ? device.haMembers
+        : null;
+      const clusterMode: "standalone" | "a-p" | "a-a" = haMembers
+        ? (device.haMode === "a-a" ? "a-a" : "a-p")
+        : "standalone";
+      // Build the per-iteration member list. For standalone, synthesize a
+      // single primary-only entry so the loop body stays uniform.
+      type MemberCtx = {
+        serial: string;
+        memberHostname: string;
+        isPrimary: boolean;
+        peerSerial: string | null;
+      };
+      const members: MemberCtx[] = haMembers
+        ? haMembers.map((m) => {
+            const others = haMembers.filter((x) => x.serial !== m.serial);
+            return {
+              serial: m.serial,
+              memberHostname: m.name || (m.isPrimary ? fgHostname : ""),
+              isPrimary: m.isPrimary,
+              peerSerial: others[0]?.serial || null,
+            };
+          })
+        : [{
+            serial: device.serial || "",
+            memberHostname: fgHostname,
+            isPrimary: true,
+            peerSerial: null,
+          }];
+
+      for (const member of members) {
+        // Topology JSON is per-member. HA members carry haMode/haRole/
+        // haPeerSerial so the asset edit modal + topology graph can show
+        // the cluster relationship without re-querying FMG.
+        const memberTopology: Record<string, unknown> = haMembers
+          ? {
+              role: "fortigate" as const,
+              haMode: clusterMode,
+              haRole: member.isPrimary ? "primary" : "secondary",
+              ...(member.peerSerial ? { haPeerSerial: member.peerSerial } : {}),
+            }
+          : { role: "fortigate" as const };
+        const memberHaCtx = haMembers && member.peerSerial
+          ? {
+              haMode: clusterMode as "a-p" | "a-a",
+              haRole: (member.isPrimary ? "primary" : "secondary") as "primary" | "secondary",
+              haPeerSerial: member.peerSerial,
+            }
+          : undefined;
+        // Asset write payload's device-shape view — per-member fields. The
+        // standby member gets ipAddress=null (cluster IP routes only to the
+        // active member) but inherits the cluster's model/osVersion/geo
+        // (members in an HA pair run identical hardware/firmware at the
+        // same site).
+        const memberDevice = {
+          name: device.name,
+          hostname: member.memberHostname || fgHostname,
+          serial: member.serial,
+          model: device.model,
+          osVersion: (device as any).osVersion,
+          mgmtIp: member.isPrimary ? device.mgmtIp : "",
+          latitude: device.latitude,
+          longitude: device.longitude,
+        };
       // Match by serial first; fall back to hostname/IP for assets that
       // pre-date a serial (e.g. the placeholder created by registerFortinetHost
       // on integration create, which has no serialNumber). Mirrors how the
       // FortiSwitch and FortiAP discovery paths dedupe.
-      let existingAsset: any = device.serial ? assetIdx.findBySerial(device.serial) : null;
-      if (!existingAsset) {
+      // Fallback only fires for the primary member: standby members must
+      // be keyed by serial (no legacy hostname/IP path could have created
+      // a separate Asset for them).
+      let existingAsset: any = member.serial ? assetIdx.findBySerial(member.serial) : null;
+      if (!existingAsset && member.isPrimary) {
         existingAsset = assetIdx.findByEntry(undefined, fgHostname, device.mgmtIp || undefined);
       }
       if (existingAsset) {
         // Phase 3b.1 cutover: discovery-owned fields come from projection.
         // Same shape as AD/Entra cutovers — upsert source first, fetch all
         // sources, project, single Asset.update.
-        if (device.serial) {
+        if (member.serial) {
           try {
             const syncedAt = new Date(now);
-            const observed = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", syncedAt);
-            await upsertFortigateFirewallAssetSource(existingAsset.id, integrationId, device.serial, observed, syncedAt, syncedAt);
+            const observed = buildFortigateFirewallObservedBlob(memberDevice, integrationType as "fortimanager" | "fortigate", syncedAt, memberHaCtx);
+            await upsertFortigateFirewallAssetSource(existingAsset.id, integrationId, member.serial, observed, syncedAt, syncedAt);
           } catch (err: any) {
-            syncLog("error", `Failed to upsert fortigate-firewall AssetSource for ${device.name}: ${err?.message || "Unknown error"}`);
+            syncLog("error", `Failed to upsert fortigate-firewall AssetSource for ${memberDevice.hostname || device.name}: ${err?.message || "Unknown error"}`);
           }
         }
         const fwSourceRows = await prisma.assetSource.findMany({
@@ -2698,9 +2818,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           // (operator-readable site label). Projection deliberately leaves
           // this null for firewall sources (the hostname's already on
           // Asset.hostname). Keep the legacy "set when null" rule.
-          learnedLocation: existingAsset.learnedLocation || fgHostname,
+          learnedLocation: existingAsset.learnedLocation || (memberDevice.hostname || fgHostname),
           lastSeen: new Date(now),
-          fortinetTopology: topology,
+          fortinetTopology: memberTopology,
           discoveredByIntegrationId: integrationId,
           ...(existingAsset.status === "decommissioned" ? { status: "active", statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
         };
@@ -2710,9 +2830,18 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         if (fwProjected.osVersion !== null) updateData.osVersion = fwProjected.osVersion;
         if (fwProjected.manufacturer !== null) updateData.manufacturer = fwProjected.manufacturer;
         if (fwProjected.serialNumber !== null) updateData.serialNumber = fwProjected.serialNumber;
-        if (fwProjected.ipAddress !== null) {
+        // Failover-resilient IP handling: only the current primary holds the
+        // cluster IP. For the standby, explicitly null the IP — this is
+        // a normal role swap on failover, not a conflict, so we bypass the
+        // standard ip-source path. The standby's `monitored` flag stays
+        // whatever the operator chose; an operator monitoring the cluster
+        // IP via the primary asset doesn't get cross-bled to the standby.
+        if (haMembers && !member.isPrimary) {
+          updateData.ipAddress = null;
+          updateData.ipSource = null;
+        } else if (fwProjected.ipAddress !== null) {
           updateData.ipAddress = fwProjected.ipAddress;
-          updateData.ipSource = fgHostname || integrationType;
+          updateData.ipSource = memberDevice.hostname || fgHostname || integrationType;
         }
         if (fwProjected.latitude !== null) updateData.latitude = fwProjected.latitude;
         if (fwProjected.longitude !== null) updateData.longitude = fwProjected.longitude;
@@ -2722,56 +2851,64 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         // recomputes membership.
         const previousHostname: string | null = existingAsset.hostname || null;
         await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
-        // Rename rotation: when projection wrote a different hostname, swap
-        // `firewall:<old>` → `firewall:<new>` on every asset that carried
-        // the old tag and rotate the registry row. Best-effort; the Phase
-        // 13.5 reconciler will catch any miss on the next cycle.
-        const projectedHostnameRaw = updateData.hostname as string | null | undefined;
-        if (projectedHostnameRaw && previousHostname && projectedHostnameRaw !== previousHostname) {
-          try {
-            await applyFirewallRename(previousHostname, projectedHostnameRaw);
-          } catch (err: any) {
-            syncLog(
-              "error",
-              `Firewall tag rename failed (${previousHostname} → ${projectedHostnameRaw}): ${err?.message || "Unknown error"}`,
-            );
+        // Rename rotation + tag registry seeding — only meaningful for the
+        // PRIMARY member. Endpoint sightings tag with the FMG device name
+        // (cluster identity, stable), and the standby never has endpoints
+        // sighted through it, so the standby's hostname doesn't need a
+        // registry row. Skipping for the standby also keeps the registry
+        // from churning across failovers (where each member alternates
+        // being primary). Best-effort; Phase 13.5 reconciler catches misses.
+        if (member.isPrimary) {
+          const projectedHostnameRaw = updateData.hostname as string | null | undefined;
+          if (projectedHostnameRaw && previousHostname && projectedHostnameRaw !== previousHostname) {
+            try {
+              await applyFirewallRename(previousHostname, projectedHostnameRaw);
+            } catch (err: any) {
+              syncLog(
+                "error",
+                `Firewall tag rename failed (${previousHostname} → ${projectedHostnameRaw}): ${err?.message || "Unknown error"}`,
+              );
+            }
           }
+          try {
+            await seedFirewallTagRegistry(projectedHostnameRaw || previousHostname || fgHostname);
+          } catch { /* best-effort */ }
         }
-        // Idempotent registry seed for the current hostname so the picker
-        // carries the entry even on the very first reconcile of a fresh
-        // install (covers the case where this asset was created by
-        // registerFortinetHost before discovery first ran).
-        try {
-          await seedFirewallTagRegistry(projectedHostnameRaw || previousHostname || fgHostname);
-        } catch { /* best-effort */ }
-        // Update in-memory
-        if (device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
-        if (device.hostname) existingAsset.hostname = device.hostname;
+        // Update in-memory index. For the primary, mirror the cluster IP +
+        // active hostname back; for the standby, clear IP and use member
+        // hostname so future lookups find each Asset by its stable identity.
+        if (member.isPrimary && device.mgmtIp) existingAsset.ipAddress = device.mgmtIp;
+        else if (haMembers && !member.isPrimary) existingAsset.ipAddress = null;
+        if (memberDevice.hostname) existingAsset.hostname = memberDevice.hostname;
         if (device.model) existingAsset.model = device.model;
-        if (!existingAsset.learnedLocation) existingAsset.learnedLocation = fgHostname;
+        if (!existingAsset.learnedLocation) existingAsset.learnedLocation = memberDevice.hostname || fgHostname;
         if (existingAsset.status === "decommissioned") existingAsset.status = "active";
         assetIdx.reindex(existingAsset);
-        assetNames.push(`${device.name} (updated)`);
+        assetNames.push(`${memberDevice.hostname || device.name}${haMembers ? ` (HA ${member.isPrimary ? "primary" : "secondary"})` : ""} (updated)`);
         continue;
       }
 
       // New FortiGate — set the Device Map tag (fgt:<serial>) so the map endpoint
       // can find this device by a stable key even if hostname/model changes later.
-      const fgTag = device.serial ? `fgt:${device.serial}` : null;
+      const fgTag = member.serial ? `fgt:${member.serial}` : null;
       // Phase 3b.1 cutover: project from a synthetic single-source array
       // built directly from this just-discovered firewall's observed blob.
       // Pure projection, no DB roundtrip — new asset has no other sources.
       const fwSyncedAt = new Date(now);
-      const fwObserved = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", fwSyncedAt);
+      const fwObserved = buildFortigateFirewallObservedBlob(memberDevice, integrationType as "fortimanager" | "fortigate", fwSyncedAt, memberHaCtx);
       const { projected: fwCreateProjected } = projectAssetFromSources([
         { sourceKind: "fortigate-firewall", inferred: false, observed: fwObserved },
       ]);
+      const isStandbyCreate = haMembers != null && !member.isPrimary;
       const newAsset = await prisma.asset.create({
         data: {
-          ipAddress: fwCreateProjected.ipAddress,
-          ...(fwCreateProjected.ipAddress ? { ipSource: fgHostname || integrationType } : {}),
-          hostname: fwCreateProjected.hostname || fgHostname,
-          serialNumber: fwCreateProjected.serialNumber,
+          // Standby member: explicit null (cluster IP only routes to active).
+          ipAddress: isStandbyCreate ? null : fwCreateProjected.ipAddress,
+          ...(isStandbyCreate
+            ? {}
+            : (fwCreateProjected.ipAddress ? { ipSource: memberDevice.hostname || fgHostname || integrationType } : {})),
+          hostname: fwCreateProjected.hostname || memberDevice.hostname || fgHostname,
+          serialNumber: fwCreateProjected.serialNumber || member.serial || null,
           // Phase 4d: legacy `assetTag = fgt:<serial>` write retired —
           // AssetSource (sourceKind="fortigate-firewall", externalId=serial)
           // upserted just below is the canonical identity link.
@@ -2785,7 +2922,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           // learnedLocation for firewalls = the firewall's own hostname
           // (site label). Projection leaves this null for firewall
           // sources by design — set explicitly here.
-          learnedLocation: fgHostname,
+          learnedLocation: memberDevice.hostname || fgHostname,
           osVersion: fwCreateProjected.osVersion,
           lastSeen: new Date(now),
           // Stamp the discovering integration. The polling-method resolver
@@ -2793,38 +2930,46 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           // unless an operator overrides per-asset on the Monitoring tab.
           discoveredByIntegrationId: integrationId,
           // Auto-Monitored is opt-in via the integration's "Add Discovered
-          // FortiGates as Monitored" checkbox. Existing FortiGates are not
-          // touched — only fresh creates get the flag flipped.
-          ...(fortigateAddAsMonitored ? { monitored: true } : {}),
+          // FortiGates as Monitored" checkbox. Standby HA members default
+          // to monitored=false regardless — they aren't directly REST-
+          // reachable through the cluster IP, so monitoring would just be
+          // failed probes until failover. Operators can opt in per-asset.
+          ...(fortigateAddAsMonitored && !isStandbyCreate ? { monitored: true } : {}),
           ...(fwCreateProjected.latitude !== null ? { latitude: fwCreateProjected.latitude } : {}),
           ...(fwCreateProjected.longitude !== null ? { longitude: fwCreateProjected.longitude } : {}),
-          fortinetTopology: topology,
-          notes: `Auto-discovered from ${integrationLabel} integration`,
-          tags: ["fortigate", "auto-discovered"],
+          fortinetTopology: memberTopology as any,
+          notes: isStandbyCreate
+            ? `Auto-discovered from ${integrationLabel} integration (HA standby member)`
+            : `Auto-discovered from ${integrationLabel} integration`,
+          tags: isStandbyCreate
+            ? ["fortigate", "auto-discovered", "ha-standby"]
+            : ["fortigate", "auto-discovered"],
         },
       });
       // Explicit fortigate-firewall AssetSource upsert with rich observed
       // blob. The Asset.create already triggered the shadow-write extension
       // which laid down a skeleton row from the assetTag — this overwrites
       // it with truth.
-      if (device.serial) {
+      if (member.serial) {
         try {
           const syncedAt = new Date(now);
-          const observed = buildFortigateFirewallObservedBlob(device, integrationType as "fortimanager" | "fortigate", syncedAt);
-          await upsertFortigateFirewallAssetSource(newAsset.id, integrationId, device.serial, observed, syncedAt, syncedAt);
+          const observed = buildFortigateFirewallObservedBlob(memberDevice, integrationType as "fortimanager" | "fortigate", syncedAt, memberHaCtx);
+          await upsertFortigateFirewallAssetSource(newAsset.id, integrationId, member.serial, observed, syncedAt, syncedAt);
         } catch (err: any) {
-          syncLog("error", `Created FortiGate asset ${device.name} but failed to upsert AssetSource row: ${err?.message || "Unknown error"}`);
+          syncLog("error", `Created FortiGate asset ${memberDevice.hostname || device.name} but failed to upsert AssetSource row: ${err?.message || "Unknown error"}`);
         }
       }
       // Seed the `firewall:<hostname>` Tag registry row so the asset-edit
-      // tag picker carries the entry from day one — Phase 13.5's reconciler
-      // would seed it eventually anyway, but doing it here makes the new
-      // FortiGate filterable the moment it appears.
-      try {
-        await seedFirewallTagRegistry(fgHostname);
-      } catch { /* best-effort */ }
+      // tag picker carries the entry from day one — only meaningful for
+      // the primary (endpoints are sighted through the active member).
+      if (member.isPrimary) {
+        try {
+          await seedFirewallTagRegistry(memberDevice.hostname || fgHostname);
+        } catch { /* best-effort */ }
+      }
       assetIdx.add(newAsset);
-      assetNames.push(device.name);
+      assetNames.push(`${memberDevice.hostname || device.name}${haMembers ? ` (HA ${member.isPrimary ? "primary" : "secondary"})` : ""}`);
+      } // end inner for-member loop
     } catch (err: any) {
       syncLog("error", `Failed to create/update asset for device ${device.name}: ${err.message || "Unknown error"}`);
     }
