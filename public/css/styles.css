@@ -1066,12 +1066,15 @@ tr.row-panel-active:hover { background: rgba(79,195,247,0.08) !important; box-sh
 td.mono { font-family: var(--font-mono); font-size: 0.82rem; }
 td.actions {
   vertical-align: middle;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
+  white-space: normal;
   padding-top: 0.3rem;
   padding-bottom: 0.3rem;
+}
+td.actions > * {
+  margin: 2px 4px 2px 0;
+}
+td.actions > *:last-child {
+  margin-right: 0;
 }
 .empty-state {
   text-align: center;
