@@ -205,6 +205,7 @@ All endpoints live under `/api/v1/`.
 | Users | `/users` |
 | Auth / SSO / TOTP | `/auth` |
 | Utilization | `/utilization` |
+| Dashboard | `/dashboard/summary` |
 | Server Settings | `/server-settings` (incl. MIBs, capacity, backups) |
 
 Authentication is session-based for the UI; long-lived bearer tokens (`polaris_<32-char-base64url>`) are accepted on a small allow-listed surface for external callers. See `CLAUDE.md` for the full endpoint catalog and domain model.
