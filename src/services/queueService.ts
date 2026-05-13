@@ -483,15 +483,31 @@ export async function startPgbossWorkers(): Promise<void> {
   //     then drop. The real audit trail lives in AssetMonitorSample / Events.
   //   - retentionSeconds 1h: bounds queued/retry backlog so a stuck queue
   //     can't bloat unbounded.
-  //   - expireInSeconds 60: jobs that didn't get picked up in 60s die so
-  //     they don't pile up across worker restarts.
-  for (const name of Object.values(QUEUE_NAMES)) {
-    await boss.createQueue(name, {
+  //   - expireInSeconds: handler-runtime cap per queue. pg-boss kills a
+  //     handler that exceeds this with `handler execution exceeded Ns` and
+  //     marks the job failed. Sized per cadence to bound the worst-case
+  //     real work: probe is a single network round trip; fastFiltered is
+  //     one collector round-trip; telemetry walks a few SNMP tables;
+  //     systemInfo walks every interface + storage + IPsec phase-1/2 +
+  //     LLDP. A uniform 60s was killing telemetry/systemInfo jobs mid-walk
+  //     on slow SNMP devices, leaving them in `failed` state with empty
+  //     error messages (the wrapper never got to stamp one) and forcing
+  //     re-publish on the next tick — visible as queue backlog that
+  //     workers couldn't drain. Per-queue caps let the heavy cadences
+  //     finish naturally without raising worker counts.
+  const EXPIRE_BY_QUEUE: Record<MonitorCadence, number> = {
+    probe:        30,   // single round trip; probeTimeoutMs ≤ 60s with margin
+    fastFiltered: 60,   // one collector round-trip + buffered writes
+    telemetry:    180,  // SNMP walks for CPU/mem/sensors
+    systemInfo:   300,  // full interface + storage + IPsec + LLDP walk
+  };
+  for (const cadence of Object.keys(QUEUE_NAMES) as MonitorCadence[]) {
+    await boss.createQueue(QUEUE_NAMES[cadence], {
       policy: "singleton",
       retryLimit: 0,
       deleteAfterSeconds: 86_400,
       retentionSeconds: 3_600,
-      expireInSeconds: 60,
+      expireInSeconds: EXPIRE_BY_QUEUE[cadence],
     });
   }
 
@@ -694,9 +710,9 @@ async function dispatchFloatingJob(
  * `retryLimit: 0` is deliberate: monitor cadences are stateless and the
  * next tick will re-evaluate due state anyway — better to drop a failed
  * job and pick the asset up fresh than retry against a probably-still-down
- * host with a stale snapshot. `expireInSeconds: 60` cleans up jobs that
- * never got picked up (e.g. workers were restarting) so the queue doesn't
- * accumulate dead weight.
+ * host with a stale snapshot. Per-queue `expireInSeconds` caps the handler
+ * runtime so a wedged scrape doesn't hold a worker slot forever; see
+ * EXPIRE_BY_QUEUE in startPgbossWorkers above for the per-cadence values.
  */
 export async function publishMonitorJob(
   cadence: MonitorCadence,
