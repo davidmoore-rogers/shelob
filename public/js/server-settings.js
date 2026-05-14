@@ -4634,15 +4634,24 @@ function deviceIconsCardHTML() {
     if (byScope[i.scope]) byScope[i.scope].push(i);
   });
 
-  // Manufacturer datalist — pulled from the operator-curated alias map
-  // so the picker offers canonical names (Fortinet, Cisco, Juniper, ...)
-  // without forcing exact spelling. Free text is still allowed; the
-  // service alias-normalizes the value at write time.
+  // Manufacturer datalist — merged from every source the operator already
+  // has on hand so the picker isn't empty on installs that haven't
+  // configured many aliases. Sources, in order: alias canonicals, MIB
+  // facets (which already includes the asset inventory), and the
+  // manufacturer half of every existing device-icon key. Free text is
+  // allowed for anything not in the list; the service alias-normalizes
+  // the value at write time.
   var manufacturerOptions = "";
   var seen = {};
-  (_manufacturerAliases || []).forEach(function (a) {
-    var c = (a.canonical || "").trim();
+  function addManufacturerOption(name) {
+    var c = (name || "").trim();
     if (c && !seen[c]) { seen[c] = 1; manufacturerOptions += '<option value="' + escapeHtml(c) + '">'; }
+  }
+  (_manufacturerAliases || []).forEach(function (a) { addManufacturerOption(a.canonical); });
+  ((_mibFacets && _mibFacets.manufacturers) || []).forEach(addManufacturerOption);
+  _deviceIcons.forEach(function (i) {
+    var slash = (i.key || "").indexOf("/");
+    if (slash > 0) addManufacturerOption(i.key.slice(0, slash));
   });
 
   var typeOptionsHtml = _deviceIconAssetTypes
@@ -4654,6 +4663,7 @@ function deviceIconsCardHTML() {
     '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
       'Upload PNG / JPEG / WebP images (max 256 KB) or SVG (max 32 KB, strict validation — no scripts, no external refs) to overlay vendor logos on the Device Map\'s topology graph. ' +
       'Every icon is keyed to a <strong>manufacturer</strong> plus either an asset <strong>type</strong> or a specific <strong>model</strong>. ' +
+      'The manufacturer field accepts any value — the dropdown only suggests names already on file. ' +
       'On render: <strong>manufacturer + model</strong> exact match wins over the <strong>manufacturer + type</strong> fallback. The asset\'s status (Up/Warning/Down/Recovering) keeps coloring the ring around the logo so both signals stay visible.' +
     '</p>';
 
