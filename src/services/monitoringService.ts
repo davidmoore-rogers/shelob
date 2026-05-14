@@ -5150,6 +5150,12 @@ export async function runTelemetryFor(assetId: string, labels: WorkItemLabels): 
   try {
     const tr = await collectTelemetry(assetId);
     await recordTelemetryResult(assetId, tr);
+    // Custom widgets ride the telemetry cadence (Slice 7b). Fire-and-forget
+    // so a slow walk on one widget can't drag the telemetry tick — failures
+    // log inside the helper without escalating to a cadence crash.
+    void collectAndRecordCustomWidgets(assetId).catch((err) => {
+      logger.debug({ err, assetId }, "Custom widget collection failed");
+    });
     if (tr.supported) {
       if (tr.data) {
         recordWorkOutcome("telemetry", "success", labels);
@@ -5166,6 +5172,150 @@ export async function runTelemetryFor(assetId: string, labels: WorkItemLabels): 
     return "crash";
   } finally {
     stopWork();
+  }
+}
+
+// ─── Custom widget collector (Slice 7b) ──────────────────────────────────
+// Walks each applicable ManufacturerCustomWidget against the asset via
+// SNMP, persists results into AssetCustomWidgetSample, and bumps the
+// asset's lastCustomWidgetAt timestamp. SNMP-only in v1 — operators who
+// need FortiOS REST custom queries should define them as SNMP symbols via
+// FORTINET-FORTIGATE-MIB equivalents (the editor's symbol picker doesn't
+// distinguish today, but only SNMP symbols actually walk here).
+//
+// The collector reuses the asset's already-resolved customWidgetPolling /
+// customWidgetCredential / customWidgetTimeoutMs settings; when polling
+// resolves to "disabled" the pass is silently skipped so the
+// Asset.lastCustomWidgetAt stays stale (the tab surfaces a banner).
+async function collectAndRecordCustomWidgets(assetId: string): Promise<void> {
+  const asset = await prisma.asset.findUnique({
+    where: { id: assetId },
+    include: {
+      monitorCredential:       true,
+      cpuMemoryCredential:     true,
+      customWidgetCredential:  true,
+      discoveredByIntegration: true,
+    },
+  });
+  if (!asset || !asset.monitored || !asset.manufacturer) return;
+
+  const { getProfileFor } = await import("./manufacturerProfileService.js");
+  const profile = getProfileFor(asset.manufacturer);
+  if (!profile || profile.widgets.length === 0) return;
+
+  // Per-model gating mirrors the read-endpoint filter.
+  const modelStr = asset.model ?? "";
+  const widgets = profile.widgets.filter((w) => {
+    if (!w.modelPattern) return true;
+    try { return new RegExp(w.modelPattern, "i").test(modelStr); }
+    catch { return false; }
+  });
+  if (widgets.length === 0) return;
+
+  const effective = await resolveMonitorSettings({
+    ...asset,
+    discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
+  });
+  // Custom-widget polling falls back to cpuMemoryPolling — same SNMP
+  // transport is the usual setup, and operators who flipped the asset to
+  // disabled telemetry probably don't want widget walks either. "disabled"
+  // explicit on customWidgetPolling skips the pass outright.
+  //
+  // customWidgetPolling/customWidgetTimeoutMs aren't surfaced by the
+  // resolver yet (they'd add columns to every tier); read the asset row's
+  // own override directly and fall back to cpuMemory for transport choice
+  // + timeout. The full per-tier hierarchy for these two fields can land
+  // alongside a UI for editing them.
+  const polling = (asset.customWidgetPolling ?? effective.cpuMemoryPolling) as string | null;
+  if (!polling || polling === "disabled" || polling !== "snmp") return;
+
+  const host = asset.ipAddress;
+  if (!host) return;
+
+  // Credential resolution mirrors the telemetry path: per-stream asset
+  // credential wins, then the asset's generic monitor credential, then
+  // FMG/FortiGate integration fallback. Custom widgets MUST have an SNMP
+  // credential — there's no FortiOS REST equivalent in v1.
+  let snmpCfg: Record<string, unknown> | null = null;
+  const direct = asset.customWidgetCredential ?? asset.cpuMemoryCredential ?? asset.monitorCredential;
+  if (direct?.type === "snmp") {
+    snmpCfg = direct.config as Record<string, unknown>;
+  } else if (asset.discoveredByIntegration?.type === "fortimanager" || asset.discoveredByIntegration?.type === "fortigate") {
+    try {
+      snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(direct, asset.discoveredByIntegration);
+    } catch { snmpCfg = null; }
+  }
+  if (!snmpCfg) return;
+
+  await ensureRegistryLoaded();
+  const scope = { manufacturer: asset.manufacturer, model: asset.model };
+  const timeoutMs = asset.customWidgetTimeoutMs ?? effective.cpuMemoryTimeoutMs;
+
+  const samples: Array<{ widgetId: string; kind: "scalar" | "table"; value: any }> = [];
+  try {
+    await withSnmpSession(host, snmpCfg, async (session) => {
+      for (const w of widgets) {
+        try {
+          const oid = resolveOidSync(w.symbol, scope);
+          if (!oid) continue;
+          if (w.type === "scalar") {
+            // Scalar: walk one OID, take first/only value as a number.
+            const rows = await snmpWalk(session, oid);
+            let val: number | null = null;
+            for (const v of rows.values()) {
+              const n = snmpVbToNumber(v);
+              if (n != null) { val = n; break; }
+            }
+            if (val == null) continue;
+            // Apply transform if one is configured on the widget.
+            const { applyTransform } = await import("../utils/symbolTransforms.js");
+            const transformed = applyTransform(val, w.transform);
+            samples.push({ widgetId: w.id, kind: "scalar", value: transformed });
+          } else {
+            // Table: walk the whole subtree and serialize as one row per
+            // OID-suffix with the raw value (operators decode further via
+            // the widget's displayOptions at render time).
+            const rows = await snmpWalk(session, oid);
+            const arr: any[] = [];
+            for (const [suffix, v] of rows.entries()) {
+              const numeric = snmpVbToNumber(v);
+              arr.push({
+                index: suffix || ".0",
+                value: numeric != null ? numeric : snmpVbToString(v),
+              });
+            }
+            if (arr.length === 0) continue;
+            samples.push({ widgetId: w.id, kind: "table", value: arr });
+          }
+        } catch (err) {
+          logger.debug({ err, assetId, widgetId: w.id, symbol: w.symbol }, "Custom widget walk failed");
+        }
+      }
+    }, timeoutMs);
+  } catch (err) {
+    // Session-level failure — log and move on; lastCustomWidgetAt stays stale.
+    logger.debug({ err, assetId }, "Custom widget SNMP session failed");
+    return;
+  }
+
+  if (samples.length === 0) return;
+  try {
+    await prisma.$transaction([
+      prisma.assetCustomWidgetSample.createMany({
+        data: samples.map((s) => ({
+          assetId,
+          widgetId: s.widgetId,
+          kind:     s.kind,
+          value:    s.value as any,
+        })),
+      }),
+      prisma.asset.update({
+        where: { id: assetId },
+        data:  { lastCustomWidgetAt: new Date() },
+      }),
+    ]);
+  } catch (err) {
+    logger.warn({ err, assetId }, "Custom widget sample persistence failed");
   }
 }
 
