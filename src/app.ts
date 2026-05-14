@@ -39,6 +39,7 @@ import "./jobs/clampAssetAcquiredAt.js";
 import "./jobs/decommissionStaleAssets.js";
 import "./jobs/monitorAssets.js";
 import "./jobs/normalizeManufacturers.js";
+import "./jobs/seedManufacturerProfiles.js";
 import "./jobs/migrateMonitorSettingsHierarchy.js";
 import "./jobs/migrateMonitorStatusRename.js";
 import "./jobs/backfillAssetSources.js";

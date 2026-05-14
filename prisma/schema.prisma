@@ -590,6 +590,7 @@ model Asset {
   // fapStationTable scrape.
   wirelessStations         AssetWirelessStation[] @relation("AssetWirelessStationsOnAp")
   wirelessStationMatches   AssetWirelessStation[] @relation("AssetWirelessStationMatch")
+  mibFiles                 MibFile[]              @relation("MibFilesOnAsset")
   sources             AssetSource[]
   associatedIpRows    AssetAssociatedIp[]
   macAddressRows      AssetMacAddress[]
@@ -1061,6 +1062,12 @@ model MibFile {
   moduleName   String // parsed from "<NAME> DEFINITIONS ::= BEGIN"
   manufacturer String? // null = generic/shared MIB
   model        String? // null = applies to all models from manufacturer
+  // assetId pins this MIB to ONE specific asset — the most-specific scope
+  // tier in the per-asset resolution priority (asset → model → manufacturer
+  // → generic → seed). Used when one device of a fleet runs a different
+  // firmware that exposes a vendor-specific symbol the rest doesn't.
+  assetId      String?
+  asset        Asset?   @relation("MibFilesOnAsset", fields: [assetId], references: [id], onDelete: SetNull)
   contents     String   @db.Text // raw MIB text
   imports      String[] @default([]) // module names referenced via IMPORTS ... FROM
   size         Int // byte length of contents
@@ -1068,10 +1075,120 @@ model MibFile {
   uploadedBy   String?
   uploadedAt   DateTime @default(now())
 
+  profileMetricDefaults   ManufacturerProfileMetric[]         @relation("ManufacturerProfileMetricDefaultMib")
+  profileMetricOverrides  ManufacturerProfileMetricOverride[] @relation("ManufacturerProfileMetricOverrideMib")
+  customWidgets           ManufacturerCustomWidget[]          @relation("ManufacturerCustomWidgetMib")
+
   @@unique([manufacturer, model, moduleName])
   @@index([manufacturer, model])
   @@index([moduleName])
+  @@index([assetId])
   @@map("mib_files")
+}
+
+// Operator-editable per-manufacturer telemetry profile. Replaces the
+// hardcoded VENDOR_TELEMETRY_PROFILES constant at runtime — discovery seeds
+// these rows from the constant on first boot (idempotent), and the
+// monitoring path resolves through the DB rows from then on. The constant
+// stays as a fresh-install fallback for hosts whose seeding hasn't run yet.
+//
+// Match key is the alias-canonicalized manufacturer string; only one row
+// per canonical manufacturer. Per-model exceptions (e.g. Fortinet's
+// FortiSwitch / FortiAP variants under the Fortinet profile) live as
+// `ManufacturerProfileMetricOverride` rows nested under each metric row.
+model ManufacturerProfile {
+  id           String   @id @default(uuid())
+  manufacturer String   @unique // canonical form via ManufacturerAlias map
+  createdBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  metrics ManufacturerProfileMetric[]
+  widgets ManufacturerCustomWidget[]
+
+  @@map("manufacturer_profiles")
+}
+
+// One row per System-tab metric the profile owns (cpu / memory / temperature
+// / interfaces / lldp / storage / wirelessStations). `defaultSymbol` +
+// `defaultMibId` describe the symbol Polaris walks for this metric on every
+// asset that resolves through this profile, unless a per-model override row
+// (`ManufacturerProfileMetricOverride`) matches `Asset.model` first.
+//
+// Null defaultSymbol = use the built-in seed for this metric (i.e. the
+// hardcoded VENDOR_TELEMETRY_PROFILES entry's value for this manufacturer);
+// null defaultMibId = built-in seed scope. `defaultType` is "scalar" or
+// "table" and is what `collectTelemetrySnmp` uses to decide between GET .0
+// and walk-the-subtree. `defaultTransform` is the optional value-transform
+// applied after the SNMP value lands (Celsius↔Fahrenheit, bytes→MB, etc.).
+model ManufacturerProfileMetric {
+  id               String   @id @default(uuid())
+  profileId        String
+  profile          ManufacturerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  metricKey        String   // "cpu" | "memory" | "temperature" | "interfaces" | "lldp" | "storage" | "wirelessStations"
+  defaultSymbol    String?
+  defaultMibId     String?
+  defaultMib       MibFile? @relation("ManufacturerProfileMetricDefaultMib", fields: [defaultMibId], references: [id], onDelete: SetNull)
+  defaultType      String   @default("scalar") // "scalar" | "table"
+  defaultTransform String?  // "celsius_to_fahrenheit" | "bytes_to_mb" | ... | null
+
+  overrides ManufacturerProfileMetricOverride[]
+
+  @@unique([profileId, metricKey])
+  @@index([defaultMibId])
+  @@map("manufacturer_profile_metrics")
+}
+
+// Per-model exception inside a manufacturer's metric row. Evaluated in
+// `order` (lower wins); first override whose `modelPattern` regex matches
+// `Asset.model` is the effective symbol/mib/type/transform for that asset's
+// SNMP walk. No matches = the parent metric row's default* is used.
+model ManufacturerProfileMetricOverride {
+  id           String   @id @default(uuid())
+  metricRowId  String
+  metricRow    ManufacturerProfileMetric @relation(fields: [metricRowId], references: [id], onDelete: Cascade)
+  modelPattern String   // regex tested against Asset.model
+  symbol       String
+  mibId        String?
+  mib          MibFile? @relation("ManufacturerProfileMetricOverrideMib", fields: [mibId], references: [id], onDelete: SetNull)
+  type         String   @default("scalar") // "scalar" | "table"
+  transform    String?
+  order        Int      @default(0)
+
+  @@index([metricRowId, order])
+  @@index([mibId])
+  @@map("manufacturer_profile_metric_overrides")
+}
+
+// Operator-defined custom widget that Slice 7's Custom MIB tab on the
+// asset details modal will render for every asset whose alias-normalized
+// manufacturer matches this profile (and whose model satisfies the
+// optional `modelPattern` gate). The widget walks `symbol` against `mibId`
+// at the cadence dispatcher's `customWidget` interval and renders the
+// result per `widgetType` (gauge / line / table). `displayOptions` is the
+// type-specific blob (gauge min/max + thresholds, line aggregate/unit,
+// table column list / decode rules).
+model ManufacturerCustomWidget {
+  id             String   @id @default(uuid())
+  profileId      String
+  profile        ManufacturerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  name           String   // operator-set label, e.g. "Connected Wireless Clients"
+  symbol         String
+  mibId          String
+  mib            MibFile  @relation("ManufacturerCustomWidgetMib", fields: [mibId], references: [id])
+  type           String   @default("scalar") // "scalar" | "table" (auto-detected; operator can override)
+  widgetType     String   // "gauge" | "line" | "table"
+  transform      String?
+  displayOptions Json     @default("{}")
+  order          Int      @default(0)
+  modelPattern   String?  // optional per-model gating
+  createdBy      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([profileId, order])
+  @@index([mibId])
+  @@map("manufacturer_custom_widgets")
 }
 
 model Conflict {
