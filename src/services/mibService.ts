@@ -678,7 +678,15 @@ export async function getMibFacets(): Promise<{
 // universal floor.
 
 export interface ProfileSymbolStatus {
-  metric: "cpu" | "memory.used" | "memory.free" | "memory.total" | "memory.pct";
+  metric:
+    | "cpu"
+    | "memory.used"
+    | "memory.free"
+    | "memory.total"
+    | "memory.pct"
+    | "disk.used"
+    | "disk.total"
+    | "temperature";
   symbol: string;
   resolved: boolean;
   fromModuleName: string | null;
@@ -761,6 +769,18 @@ export async function getProfileStatus(): Promise<ProfileStatus[]> {
     if (profile.memory?.pctSymbol) {
       const r = await resolveSymbolAtVendorScope(example, profile.memory.pctSymbol);
       symbols.push({ metric: "memory.pct", symbol: profile.memory.pctSymbol, resolved: r.resolved, fromModuleName: r.fromModuleName, fromScope: r.fromScope });
+    }
+    if (profile.disk?.usedBytesSymbol) {
+      const r = await resolveSymbolAtVendorScope(example, profile.disk.usedBytesSymbol);
+      symbols.push({ metric: "disk.used", symbol: profile.disk.usedBytesSymbol, resolved: r.resolved, fromModuleName: r.fromModuleName, fromScope: r.fromScope });
+    }
+    if (profile.disk?.totalBytesSymbol) {
+      const r = await resolveSymbolAtVendorScope(example, profile.disk.totalBytesSymbol);
+      symbols.push({ metric: "disk.total", symbol: profile.disk.totalBytesSymbol, resolved: r.resolved, fromModuleName: r.fromModuleName, fromScope: r.fromScope });
+    }
+    if (profile.temperature?.symbol) {
+      const r = await resolveSymbolAtVendorScope(example, profile.temperature.symbol);
+      symbols.push({ metric: "temperature", symbol: profile.temperature.symbol, resolved: r.resolved, fromModuleName: r.fromModuleName, fromScope: r.fromScope });
     }
 
     const resolvedCount = symbols.filter((s) => s.resolved).length;

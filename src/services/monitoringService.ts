@@ -3330,8 +3330,10 @@ async function collectTelemetrySnmp(
     // Temperatures: walk ENTITY-SENSOR-MIB and pick rows with type=8 (celsius)
     // and operStatus=1 (ok). entPhysicalDescr (ENTITY-MIB) keyed by the same
     // physical-entity index gives the friendly name. Devices that don't
-    // implement the MIB just return nothing.
-    const temperatures = await collectTemperaturesSnmp(session, manufacturer).catch(() => [] as TemperatureSample[]);
+    // implement the MIB fall through to the Fortinet sensor-name heuristic
+    // (fgHwSensorTable) and then to the profile's scalar temperature symbol
+    // (FortiAPs publish only `fapTemperature` and implement neither table).
+    const temperatures = await collectTemperaturesSnmp(session, manufacturer, profile, scope).catch(() => [] as TemperatureSample[]);
 
     return { cpuPct, memPct, memUsedBytes, memTotalBytes, temperatures };
   }, timeoutMs);
@@ -3483,7 +3485,12 @@ function snmpGetScalar(session: any, oid: string): Promise<unknown> {
   });
 }
 
-async function collectTemperaturesSnmp(session: any, manufacturer?: string | null): Promise<TemperatureSample[]> {
+async function collectTemperaturesSnmp(
+  session: any,
+  manufacturer?: string | null,
+  profile?: VendorTelemetryProfile | null,
+  scope?: { manufacturer?: string | null; model?: string | null },
+): Promise<TemperatureSample[]> {
   const [types, values, scales, precisions, opers, descrs] = await Promise.all([
     snmpWalk(session, OID.entPhySensorType).catch(() => new Map()),
     snmpWalk(session, OID.entPhySensorValue).catch(() => new Map()),
@@ -3510,7 +3517,30 @@ async function collectTemperaturesSnmp(session: any, manufacturer?: string | nul
     });
   }
   if (out.length === 0 && manufacturer && /fortinet/i.test(manufacturer)) {
-    return await collectTemperaturesFortinetSnmp(session);
+    const fgRows = await collectTemperaturesFortinetSnmp(session);
+    if (fgRows.length > 0) return fgRows;
+  }
+  // Third fallback: profile-driven scalar temperature symbol. Used by vendors
+  // whose hardware publishes a single Celsius scalar rather than the
+  // table-based ENTITY-SENSOR-MIB or fgHwSensorTable forms — currently the
+  // FortiAP (fapTemperature @ 12356.120.3.44).
+  if (out.length === 0 && profile?.temperature?.mode === "scalar") {
+    const tempOid = resolveOidSync(profile.temperature.symbol, scope ?? {});
+    if (tempOid) {
+      const v = await snmpGetScalar(session, tempOid).catch(() => null);
+      const n = snmpVbToNumber(v);
+      if (n != null && Number.isFinite(n)) {
+        out.push({
+          sensorName: profile.temperature.sensorName ?? "System",
+          celsius:    Math.round(n * 10) / 10,
+        });
+      }
+    } else {
+      logger.debug(
+        { vendor: profile.vendor, symbol: profile.temperature.symbol, scope },
+        "vendor temperature symbol unresolved — upload its MIB to enable",
+      );
+    }
   }
   return out;
 }

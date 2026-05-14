@@ -1362,6 +1362,7 @@ Listed alphabetically.
 - Resolution is scoped per (manufacturer, model) tuple; both cached and layer-resolved case-insensitively.
 - Cache rebuilt entirely on any `refreshRegistry()` call (no partial updates).
 - Built-in seed (BUILT_IN_OIDS) always acts as final fallback; vendor OIDs override generic MIBs.
+- Seed currently covers Cisco / Juniper / HP-Aruba / Dell-RADLAN / Fortinet FortiGate / FortiSwitch / FortiAP — each vendor seed includes the vendor-specific telemetry symbols (CPU / memory and, where applicable, disk / temperature) so probes work without uploading the proprietary MIB.
 - `resolveOidSync()` returns null until `ensureRegistryLoaded()` has completed and the scope has been accessed.
 
 **When changing this:**
@@ -1776,9 +1777,9 @@ Listed alphabetically.
 
 ## services/vendorTelemetryProfiles.ts
 
-**What it owns:** Built-in vendor telemetry profiles (Cisco, Juniper, Mikrotik, Fortinet FortiSwitch, Fortinet FortiGate, HP-Aruba, Dell) matching assets by manufacturer + OS + model regex and exposing symbolic OID queries for CPU/memory via oidRegistry resolution.
+**What it owns:** Built-in vendor telemetry profiles (Cisco, Juniper, Mikrotik, Fortinet FortiSwitch, Fortinet FortiAP, Fortinet FortiGate, HP-Aruba, Dell) matching assets by manufacturer + OS + model regex and exposing symbolic OID queries for CPU / memory / disk / temperature via oidRegistry resolution.
 
-**Public API:** `VENDOR_TELEMETRY_PROFILES`, `pickVendorProfile`, `VendorTelemetryProfile`, `CpuQuery`, `MemoryQuery`.
+**Public API:** `VENDOR_TELEMETRY_PROFILES`, `pickVendorProfile`, `VendorTelemetryProfile`, `CpuQuery`, `MemoryQuery`, `DiskQuery`, `TemperatureQuery`.
 
 **Cross-service deps:** None (vendorTelemetryProfiles is leaf; consumed by monitoringService + mibService).
 
@@ -1786,16 +1787,18 @@ Listed alphabetically.
 
 **Invariants:**
 - `match` regex is tested against `"${manufacturer ?? ''} ${os ?? ''} ${model ?? ''}".trim()` (all three fields optional).
-- Entries ordered in priority; first match wins (no fallback after). FortiSwitch must precede the generic Fortinet entry because both match `manufacturer="Fortinet"`.
-- CPU/memory symbols resolve from one of three layers (in priority order): an uploaded MIB at the asset's scope, an entry in `oidRegistry`'s `BUILT_IN_OIDS` seed (currently covers Cisco / Juniper / HP-Aruba / Dell-RADLAN / Fortinet FortiGate + FortiSwitch — these vendors show "READY" out of the box), or — when neither resolves — the HOST-RESOURCES-MIB fallback inside the probe.
+- Entries ordered in priority; first match wins (no fallback after). Both FortiSwitch and FortiAP must precede the generic Fortinet entry because all three match `manufacturer="Fortinet"`; the model-specific regexes (`/fortiswitch/i`, `/fortiap/i`) sit before the broad `/fortinet|fortigate|fortios/i` so FortiSwitches/FortiAPs don't fall into the FortiGate OID tree.
+- CPU/memory/temperature symbols resolve from one of three layers (in priority order): an uploaded MIB at the asset's scope, an entry in `oidRegistry`'s `BUILT_IN_OIDS` seed (currently covers Cisco / Juniper / HP-Aruba / Dell-RADLAN / Fortinet FortiGate + FortiSwitch + FortiAP — these vendors show "READY" out of the box), or — when neither resolves — the HOST-RESOURCES-MIB fallback inside the probe.
+- `TemperatureQuery` only supports `mode: "scalar"` — table-walk vendors hit ENTITY-SENSOR-MIB directly inside `collectTemperaturesSnmp`. Scalar temperature is a third fallback used after ENTITY-SENSOR + Fortinet sensor-name heuristic both return empty; consumed by FortiAP (`fapTemperature`).
 - Profile selection is read-only; no runtime mutations.
 
 **When changing this:**
 - Verify new `match` regex pattern against real asset manufacturer/OS values (case-insensitive).
-- Confirm CPU/memory symbol names match the MIB files referenced in CLAUDE.md SNMP stack section.
+- Confirm CPU/memory/temperature symbol names match the MIB files referenced in CLAUDE.md SNMP stack section.
 - Test `pickVendorProfile()` with mixed-case inputs and edge cases (null manufacturer with os set).
-- Add profile entry at the end of the array so higher-priority vendors (Cisco) match before fallbacks.
+- Add model-specific profile entries (e.g. FortiSwitch, FortiAP) BEFORE the generic vendor entry — order is the precedence mechanism.
 - Update CLAUDE.md narrative if renaming or reordering built-in profiles.
+- If adding a new temperature query, ensure the matching OID is seeded into `oidRegistry.BUILT_IN_OIDS` or upload coverage is required from the operator.
 
 ---
 

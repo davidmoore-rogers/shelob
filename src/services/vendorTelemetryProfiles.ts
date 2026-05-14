@@ -51,6 +51,22 @@ export interface DiskQuery {
   mountPath?: string;
 }
 
+/**
+ * Vendor temperature shape. Used when a device exposes a single scalar Celsius
+ * reading rather than the standard ENTITY-SENSOR-MIB (`entPhySensorType`=8)
+ * walk that `collectTemperaturesSnmp` performs first. The collector falls back
+ * to the profile's `temperature` query when both the ENTITY-SENSOR walk and
+ * the named-fallback heuristic (Fortinet `fgHwSensorTable`) return zero rows
+ * — typical on FortiAPs which publish only `fapTemperature` and don't
+ * implement either of the table-based paths.
+ */
+export interface TemperatureQuery {
+  symbol: string;                       // symbolic OID name resolved via oidRegistry
+  mode: "scalar";                       // only single-scalar form supported here; table-walk vendors hit ENTITY-SENSOR-MIB
+  /** Display label for the synthesized TemperatureSample row. Defaults to "System" when omitted. */
+  sensorName?: string;
+}
+
 export interface VendorTelemetryProfile {
   vendor: string;                       // human-readable label, used in logs
   match: RegExp;                        // case-insensitive regex tested against `${manufacturer} ${os}`
@@ -63,6 +79,12 @@ export interface VendorTelemetryProfile {
    * (FortiSwitches, some Cisco access points, etc.).
    */
   disk?: DiskQuery;
+  /**
+   * Vendor temperature scalar. Consumed by `collectTemperaturesSnmp` as a
+   * fallback when neither ENTITY-SENSOR-MIB nor the Fortinet sensor-name
+   * heuristic produced any rows — typical on FortiAPs.
+   */
+  temperature?: TemperatureQuery;
 }
 
 /**
@@ -143,6 +165,30 @@ export const VENDOR_TELEMETRY_PROFILES: VendorTelemetryProfile[] = [
       totalBytesSymbol: "fsSysDiskCapacity",
       mountPath:        "flash",
     },
+  },
+  {
+    // FortiAP sits BEFORE the generic Fortinet entry so FortiAPs (manufacturer
+    // "Fortinet", model "FortiAP-*") don't fall into the FortiGate profile —
+    // its OIDs live under the FortiGate root (12356.101) which FortiAPs don't
+    // expose. Matched on the model literal stamped by FMG/FortiGate discovery;
+    // haystack is `${manufacturer} ${os} ${model}`.
+    vendor: "Fortinet FortiAP (SNMP path)",
+    match: /fortiap/i,
+    // FORTINET-FORTIAP-MIB shape (single-scalar form throughout, like
+    // FortiGate but distinct OID root @ 12356.120):
+    //   fapCpuUsage    @ 12356.120.3.41 → scalar percent (0..100)
+    //   fapMemoryUsage @ 12356.120.3.42 → scalar percent (0..100, NOT bytes —
+    //                                                    unlike FortiSwitch's
+    //                                                    fsSysMemUsage which is bytes)
+    //   fapTemperature @ 12356.120.3.44 → scalar Celsius (single sensor)
+    // All three symbols are seeded into oidRegistry so the probe works without
+    // uploading FORTINET-FORTIAP-MIB. The temperature scalar is consumed by
+    // collectTemperaturesSnmp as a third fallback after ENTITY-SENSOR-MIB +
+    // the Fortinet sensor-name heuristic both return zero rows (FortiAPs
+    // implement neither).
+    cpu: { symbol: "fapCpuUsage", mode: "scalar" },
+    memory: { pctSymbol: "fapMemoryUsage" },
+    temperature: { symbol: "fapTemperature", mode: "scalar", sensorName: "System" },
   },
   {
     vendor: "Fortinet FortiOS (SNMP path)",

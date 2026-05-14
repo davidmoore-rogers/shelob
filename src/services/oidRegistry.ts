@@ -107,6 +107,18 @@ const BUILT_IN_OIDS: Record<string, string> = {
   // scalars instead and synthesizes one StorageSample row.
   fsSysDiskUsage:    "1.3.6.1.4.1.12356.106.4.1.5",
   fsSysDiskCapacity: "1.3.6.1.4.1.12356.106.4.1.6",
+  // FortiAP (FORTINET-FORTIAP-MIB). Distinct OID root @ 12356.120; the
+  // FortiAP doesn't expose anything under the FortiGate root (12356.101) or
+  // the FortiSwitch root (12356.106). The vendor telemetry profile resolves
+  // CPU/memory/temperature against these three seeds so the probe works
+  // without uploading FORTINET-FORTIAP-MIB. Single-scalar form throughout,
+  // matching FortiGate (NOT the bytes form FortiSwitch uses for memory).
+  fnFortiAPMib:    "1.3.6.1.4.1.12356.120",
+  fapCommon:       "1.3.6.1.4.1.12356.120.1",
+  fapWTPStatus:    "1.3.6.1.4.1.12356.120.3",
+  fapCpuUsage:     "1.3.6.1.4.1.12356.120.3.41",
+  fapMemoryUsage:  "1.3.6.1.4.1.12356.120.3.42",
+  fapTemperature:  "1.3.6.1.4.1.12356.120.3.44",
   // Dell
   dell: "1.3.6.1.4.1.674",
   // Dell PowerConnect / Force10 platforms are RADLAN-derived and expose CPU
