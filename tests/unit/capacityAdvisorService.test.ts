@@ -236,6 +236,55 @@ describe("percentile (histogram parser)", () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 
+describe("buildAdvisorState — tiny install (6 monitored, cursor) scales the floor down", () => {
+  const snap = baseSnapshot({
+    monitoredAssetCount: 6,
+    monitoredInterfaceCount: 2,
+    activeQueueMode: "cursor",
+    maxConnections: 100,
+  });
+  // Override defaults to lower-than-floor values so the test exercises the
+  // floor logic instead of falling back to the never-shrink rule.
+  const inputs = buildInputs(snap, {
+    POLARIS_MONITOR_PROBE_WORKERS: 1,
+    POLARIS_MONITOR_FAST_WORKERS: 1,
+    POLARIS_MONITOR_HEAVY_WORKERS: 1,
+    POLARIS_MONITOR_FLOATING_WORKERS: 1,
+    POLARIS_PROBE_CONCURRENCY: 1,
+    POLARIS_HEAVY_CONCURRENCY: 1,
+    DATABASE_POOL_SIZE: 1,
+  });
+  inputs.integrations.fortigate = 1;
+  const state = buildAdvisorState(inputs);
+
+  it("scales the per-cadence floor with monitoredAssetCount × 0.5 (clamped at PER_CADENCE_FLOOR_MIN=4)", () => {
+    // ceil(6 × 0.5) = 3, clamped to floor min of 4.
+    const probe = state.recommendations.find((r) => r.key === "POLARIS_MONITOR_PROBE_WORKERS")!;
+    expect(probe.recommended).toBe(4);
+    const heavy = state.recommendations.find((r) => r.key === "POLARIS_MONITOR_HEAVY_WORKERS")!;
+    expect(heavy.recommended).toBe(4);
+    const fast = state.recommendations.find((r) => r.key === "POLARIS_MONITOR_FAST_WORKERS")!;
+    expect(fast.recommended).toBe(4);
+  });
+  it("scales the floating floor proportionally (clamped at FLOATING_FLOOR_MIN=4)", () => {
+    const floating = state.recommendations.find((r) => r.key === "POLARIS_MONITOR_FLOATING_WORKERS")!;
+    expect(floating.recommended).toBe(4);
+  });
+  it("emits a sensible cursor PROBE_CONCURRENCY (sum of probe + fastFiltered floors)", () => {
+    const probeC = state.recommendations.find((r) => r.key === "POLARIS_PROBE_CONCURRENCY")!;
+    // 4 (probe floor) + 4 (fastFiltered floor) = 8
+    expect(probeC.recommended).toBe(8);
+  });
+  it("emits a sensible cursor HEAVY_CONCURRENCY (sum of telemetry + systemInfo floors)", () => {
+    const heavyC = state.recommendations.find((r) => r.key === "POLARIS_HEAVY_CONCURRENCY")!;
+    expect(heavyC.recommended).toBe(8);
+  });
+  it("keeps the Prisma pool tiny (workerCeiling = 4×4 + 4 = 20 → ~50 after rounding)", () => {
+    const prisma = state.recommendations.find((r) => r.key === "DATABASE_POOL_SIZE")!;
+    expect(prisma.recommended).toBeLessThanOrEqual(50);
+  });
+});
+
 describe("buildAdvisorState — small install (200 monitored, 1 fortigate, cursor)", () => {
   const snap = baseSnapshot({
     monitoredAssetCount: 200,

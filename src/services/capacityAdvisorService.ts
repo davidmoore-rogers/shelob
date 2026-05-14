@@ -200,13 +200,31 @@ export const COLD_START_P90_SEC: Record<CadenceKey, number> = {
   systemInfo:   1.0,
 };
 
-/** Floor every cadence at 24 workers so a fresh install with a tiny histogram
- *  doesn't end up with 1 worker per queue and immediately backlog under any
- *  modest burst (manual probe-now, multi-operator UI use). */
+/** Cap on the per-cadence floor. Large fleets land here regardless of fleet
+ *  size — the floor is a "modest burst absorber" idea, and at 48+ monitored
+ *  assets the modeled workersNeeded is what matters anyway. */
 const PER_CADENCE_FLOOR = 24;
 
-/** Floating worker pool baseline; absorbs cross-queue imbalance. */
+/** Minimum per-cadence floor. Tiny installs (single-digit asset counts) still
+ *  get a 4-worker headroom over the literal modeled need so probe-now bursts
+ *  don't queue, but don't carry the full 24-worker cold-start cushion that
+ *  was sized for production-shaped fleets. */
+const PER_CADENCE_FLOOR_MIN = 4;
+
+/** Cap on the floating worker pool baseline. Absorbs cross-queue imbalance
+ *  at scale; smaller fleets get a proportionally smaller floating pool via
+ *  FLEET_FLOOR_FACTOR. */
 const FLOATING_FLOOR = 32;
+
+/** Minimum floating worker pool size. Same rationale as PER_CADENCE_FLOOR_MIN
+ *  — keep tiny installs from advertising tens of unused workers. */
+const FLOATING_FLOOR_MIN = 4;
+
+/** Scaling factor applied to monitoredAssetCount when computing the per-cadence
+ *  and floating floors for small fleets. At 0.5, a fleet of N monitored assets
+ *  gets a floor of ceil(N × 0.5) clamped between the *_MIN and *_FLOOR caps —
+ *  so 6 assets → floor 4, 24 assets → floor 12, 48+ assets → cap. */
+const FLEET_FLOOR_FACTOR = 0.5;
 
 /** Multiplier applied to workersNeeded to absorb variance, retries, slow tail. */
 const SAFETY_FACTOR = 1.5;
@@ -358,6 +376,21 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
   const recommendations: AdvisorRecommendation[] = [];
 
   // 1. Per-cadence worker needs.
+  //
+  // The floor is the lower bound on each cadence's worker count, sized to
+  // absorb modest bursts (manual probe-now from the UI, multi-operator use)
+  // when the modeled need is tiny. It scales with monitoredAssetCount so a
+  // 6-asset install doesn't get the same 24-worker cushion as a 600-asset
+  // install — at the small end the cushion is bigger than the workload.
+  const monitoredCount = snapshot.workload.monitoredAssetCount;
+  const perCadenceFloor = Math.min(
+    PER_CADENCE_FLOOR,
+    Math.max(PER_CADENCE_FLOOR_MIN, Math.ceil(monitoredCount * FLEET_FLOOR_FACTOR)),
+  );
+  const floatingFloor = Math.min(
+    FLOATING_FLOOR,
+    Math.max(FLOATING_FLOOR_MIN, Math.ceil(monitoredCount * FLEET_FLOOR_FACTOR)),
+  );
   const cadenceKeys: CadenceKey[] = ["probe", "fastFiltered", "telemetry", "systemInfo"];
   const workersNeeded: Record<CadenceKey, number> = { probe: 0, fastFiltered: 0, telemetry: 0, systemInfo: 0 };
   const handlerTimeoutPressure: HandlerTimeoutPressure[] = [];
@@ -365,7 +398,7 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     const p90 = cadence[c].p90 ?? COLD_START_P90_SEC[c];
     const interval = Math.max(1, cadenceIntervals[c]);
     const need = Math.ceil((applicable[c] * p90 * SAFETY_FACTOR) / interval);
-    workersNeeded[c] = Math.max(need, PER_CADENCE_FLOOR);
+    workersNeeded[c] = Math.max(need, perCadenceFloor);
     // Timeout-pressure check: when observed p90 climbs toward the pg-boss
     // handler kill cap, fire a watch reason BEFORE jobs start getting killed
     // (which would corrupt the histogram the advisor reads).
@@ -375,7 +408,7 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     }
   }
   const sumWorkersNeeded = Object.values(workersNeeded).reduce((a, b) => a + b, 0);
-  const floatingWorkers = Math.max(FLOATING_FLOOR, Math.ceil(sumWorkersNeeded * 0.25));
+  const floatingWorkers = Math.max(floatingFloor, Math.ceil(sumWorkersNeeded * 0.25));
   const workerCeiling = sumWorkersNeeded + floatingWorkers;
 
   // 2. Discovery reserve.
@@ -425,7 +458,6 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
   );
 
   // 4. Queue mode.
-  const monitoredCount = snapshot.workload.monitoredAssetCount;
   const activeMode = snapshot.database.queue.active;
   const recommendedMode: "cursor" | "pgboss" =
     monitoredCount > PGBOSS_RECOMMEND_ASSETS && isPgbossInstalled() ? "pgboss" : activeMode;
@@ -458,8 +490,8 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
     let rationale: string;
     let breakdown: Record<string, number>;
     if (lever.cad === "floating") {
-      rationale = `Floating pool absorbs cross-queue backlog. Sized at max(${FLOATING_FLOOR}, 25% of dedicated workers).`;
-      breakdown = { sumWorkersNeeded, floor: FLOATING_FLOOR, quarterOfDedicated: Math.ceil(sumWorkersNeeded * 0.25) };
+      rationale = `Floating pool absorbs cross-queue backlog. Sized at max(${floatingFloor}, 25% of dedicated workers).`;
+      breakdown = { sumWorkersNeeded, floor: floatingFloor, quarterOfDedicated: Math.ceil(sumWorkersNeeded * 0.25) };
     } else {
       const cad = lever.cad as CadenceKey;
       const p90Sec = cadence[cad].p90 ?? COLD_START_P90_SEC[cad];
@@ -469,7 +501,7 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
       // each asset is polled), NOT the pg-boss handler timeout. Label it
       // explicitly so operators don't conflate the two — they were the same
       // 60s value before bcd8d5e split the per-queue handler caps out.
-      const base = `Workers needed = ceil(applicable=${applicable[cad]} × p90=${p90Sec.toFixed(2)}s × ${SAFETY_FACTOR} / cadence-interval=${cadenceIntervalSec}s). Floored at ${PER_CADENCE_FLOOR}.`;
+      const base = `Workers needed = ceil(applicable=${applicable[cad]} × p90=${p90Sec.toFixed(2)}s × ${SAFETY_FACTOR} / cadence-interval=${cadenceIntervalSec}s). Floored at ${perCadenceFloor}.`;
       const timeoutNote = timeoutSec
         ? ` Handler timeout cap: ${timeoutSec}s (p90 at ${((p90Sec / timeoutSec) * 100).toFixed(0)}%). p90 above this cap would cause jobs to be killed and re-queued.`
         : " Handler timeout cap unknown (queue not yet created — fires on first pgboss boot).";
@@ -480,7 +512,7 @@ export function buildAdvisorState(inputs: AdvisorInputs): AdvisorState {
         cadenceIntervalSec,
         safetyFactor: SAFETY_FACTOR,
         workersNeeded: lever.need,
-        floor: PER_CADENCE_FLOOR,
+        floor: perCadenceFloor,
         ...(timeoutSec ? { handlerTimeoutSec: timeoutSec, p90PctOfTimeout: Math.round((p90Sec / timeoutSec) * 100) } : {}),
       };
     }
