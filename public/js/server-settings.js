@@ -3319,6 +3319,16 @@ var _manufacturerAliases = [];
 var _deviceIcons = [];
 var _mibFilter = { manufacturer: "", model: "", scope: "all" };
 var _mibProfileStatus = [];
+// Slice 6b — editable Manufacturer Profile (DB-backed) state.
+// _mfgProfiles is the summary list shown in the card; _mfgProfileTransforms
+// is the static transform registry (shipped alongside the summary). Per-
+// profile detail (metrics + overrides + widgets) is loaded on-demand into
+// _mfgProfileDetail when the operator expands a row.
+var _mfgProfiles = [];
+var _mfgProfileTransforms = [];
+var _mfgProfileDetail = {};         // profileId → full profile (lazy)
+var _mfgProfileExpanded = {};       // profileId → bool
+var _mfgProfileMetricEdit = {};     // composite key "id:metricKey" → bool (edit-in-progress)
 
 async function loadIdentificationTab() {
   var container = document.getElementById("tab-identification");
@@ -3356,6 +3366,7 @@ async function loadIdentificationTab() {
       api.serverSettings.getMibProfileStatus().catch(function () { return []; }),
       api.serverSettings.listManufacturerAliases().catch(function () { return []; }),
       api.deviceIcons.list().catch(function () { return []; }),
+      api.serverSettings.listManufacturerProfiles().catch(function () { return { profiles: [], transforms: [] }; }),
     ]);
     _tagsData = results[0];
     _tagSettings = results[1] || { enforce: false };
@@ -3370,6 +3381,9 @@ async function loadIdentificationTab() {
     _mibProfileStatus = results[6] || [];
     _manufacturerAliases = results[7] || [];
     _deviceIcons = results[8] || [];
+    var profilePayload = results[9] || {};
+    _mfgProfiles = profilePayload.profiles || [];
+    _mfgProfileTransforms = profilePayload.transforms || [];
     _tagsLoaded = true;
     renderIdentificationTab();
   } catch (err) {
@@ -3535,6 +3549,11 @@ function renderIdentificationTab() {
   // ── 4. MIB Database ──
   html += mibCardHTML();
 
+  // ── 4a. Manufacturer Profiles (Slice 6b — editable surface).
+  //    Read-only Vendor Profile Status card stays inside mibCardHTML() until
+  //    the resolver swap lands; this card is the new editable mirror.
+  html += manufacturerProfilesCardHTML();
+
   // ── 4b. Device Icons ──
   html += deviceIconsCardHTML();
 
@@ -3614,6 +3633,7 @@ function renderIdentificationTab() {
   loadOuiStatus();
   wireMibControls();
   wireDeviceIconHandlers();
+  wireManufacturerProfileControls();
 
   // OUI override events
   document.getElementById("btn-add-oui-override").addEventListener("click", addOuiOverride);
@@ -5907,4 +5927,386 @@ async function deleteApiToken(id, name) {
   } catch (err) {
     showToast(err.message || "Delete failed", "error");
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Slice 6b — Editable Manufacturer Profile card.
+// Renders a per-profile expandable list under Identification. Click the
+// caret to load + show the full profile (metrics + per-model overrides);
+// inline-edit defaults + add/edit/delete overrides. Custom-widget editor
+// lives in Slice 7 (where the asset-details Custom MIB tab consumes it);
+// for now we just surface the widget count per profile.
+// ────────────────────────────────────────────────────────────────────────
+
+var METRIC_KEY_LABELS = {
+  cpu:               "CPU",
+  memory:            "Memory",
+  temperature:       "Temperature",
+  interfaces:        "Interfaces",
+  lldp:              "LLDP",
+  storage:           "Storage",
+  wirelessStations:  "Wireless stations",
+};
+
+function manufacturerProfilesCardHTML() {
+  var html = '<div class="settings-card">' +
+    '<h4 style="display:flex;align-items:center;gap:8px">Manufacturer Profiles' +
+      '<span style="font-size:0.7rem;font-weight:normal;background:rgba(34,197,94,0.15);color:#16a34a;padding:1px 6px;border-radius:3px">EDITABLE</span>' +
+    '</h4>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.75rem">' +
+      'Per-manufacturer SNMP telemetry profile — pick which MIB symbol Polaris walks ' +
+      'for each System-tab metric, with optional per-model exceptions. Seeded from the ' +
+      'built-in vendor profiles on first boot; edits here will take effect once the ' +
+      'monitoring resolver swap lands.' +
+    '</p>';
+
+  if (_mfgProfiles.length === 0) {
+    html += '<p class="empty-state" style="margin-bottom:0.75rem">No manufacturer profiles yet — the seeding job creates one per built-in vendor on first boot.</p>';
+  } else {
+    html += '<div id="mfg-profiles-list" style="margin-bottom:0.75rem">';
+    _mfgProfiles.forEach(function (p) {
+      html += renderProfileRow(p);
+    });
+    html += '</div>';
+  }
+
+  html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+    '<input type="text" id="f-mfg-profile-add-name" placeholder="Manufacturer (e.g. Aruba)" style="flex:1;max-width:280px">' +
+    '<button class="btn btn-primary" id="btn-add-mfg-profile">+ Add Manufacturer</button>' +
+  '</div>';
+
+  html += '</div>';
+  return html;
+}
+
+function renderProfileRow(p) {
+  var isOpen = !!_mfgProfileExpanded[p.id];
+  var caret = isOpen ? "▼" : "▶";
+  var html = '<div class="mfg-profile-row" data-profile-id="' + escapeHtml(p.id) + '" style="border:1px solid var(--color-border);border-radius:4px;margin-bottom:6px;background:var(--color-bg-secondary,rgba(0,0,0,0.04))">' +
+    '<div class="mfg-profile-header" style="display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer">' +
+      '<span class="mfg-profile-caret" style="font-family:var(--font-mono);font-size:0.75rem;width:14px">' + caret + '</span>' +
+      '<span style="font-weight:600;flex:1">' + escapeHtml(p.manufacturer) + '</span>' +
+      '<span style="font-size:0.74rem;color:var(--color-text-secondary)">' +
+        p.metricCount + ' metric' + (p.metricCount === 1 ? '' : 's') + ' · ' +
+        p.overrideCount + ' override' + (p.overrideCount === 1 ? '' : 's') + ' · ' +
+        p.widgetCount + ' widget' + (p.widgetCount === 1 ? '' : 's') + ' · ' +
+        p.scopedMibCount + ' MIB' + (p.scopedMibCount === 1 ? '' : 's') +
+      '</span>' +
+      '<button class="btn btn-sm btn-danger mfg-profile-del" data-id="' + escapeHtml(p.id) + '" title="Delete profile">Del</button>' +
+    '</div>' +
+    '<div class="mfg-profile-body" id="mfg-profile-body-' + escapeHtml(p.id) + '" style="' + (isOpen ? '' : 'display:none') + '">' +
+      (isOpen && _mfgProfileDetail[p.id] ? renderProfileDetail(_mfgProfileDetail[p.id]) : (isOpen ? '<p class="empty-state" style="padding:0.75rem">Loading…</p>' : '')) +
+    '</div>' +
+  '</div>';
+  return html;
+}
+
+function renderProfileDetail(detail) {
+  var html = '<div style="padding:8px 12px 12px;border-top:1px solid var(--color-border)">';
+  html += '<div style="font-size:0.78rem;color:var(--color-text-secondary);margin-bottom:6px">' +
+    'Each row is one System-tab metric. The <b>Default</b> column is what Polaris walks for ' +
+    'every asset under this profile; per-model exceptions fall under each row.' +
+  '</div>';
+  html += '<table class="ip-table" style="margin-bottom:8px"><thead><tr>' +
+    '<th style="width:14%">Metric</th>' +
+    '<th>Default symbol</th>' +
+    '<th style="width:10%">Type</th>' +
+    '<th>Transform</th>' +
+    '<th style="width:160px"></th>' +
+  '</tr></thead><tbody>';
+
+  detail.metrics.forEach(function (m) {
+    var editKey = detail.id + ":" + m.metricKey;
+    var editing = !!_mfgProfileMetricEdit[editKey];
+    html += '<tr data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '">' +
+      '<td><b>' + escapeHtml(METRIC_KEY_LABELS[m.metricKey] || m.metricKey) + '</b></td>';
+    if (editing) {
+      html += '<td><input type="text" class="mfg-edit-symbol" value="' + escapeHtml(m.defaultSymbol || "") + '" placeholder="MIB symbol (e.g. fgSysCpuUsage); blank = built-in seed" style="width:100%"></td>' +
+        '<td>' + renderTypeSelect(m.defaultType, "mfg-edit-type") + '</td>' +
+        '<td>' + renderTransformSelect(m.defaultTransform, "mfg-edit-transform") + '</td>' +
+        '<td><button class="btn btn-sm btn-primary mfg-metric-save">Save</button> ' +
+          '<button class="btn btn-sm mfg-metric-cancel">Cancel</button></td>';
+    } else {
+      var defaultDisplay = m.defaultSymbol
+        ? '<code style="font-size:0.85rem">' + escapeHtml(m.defaultSymbol) + '</code>'
+        : '<span style="color:var(--color-text-tertiary);font-style:italic">(built-in seed)</span>';
+      html += '<td>' + defaultDisplay + '</td>' +
+        '<td><span style="font-size:0.78rem">' + escapeHtml(m.defaultType) + '</span></td>' +
+        '<td><span style="font-size:0.78rem;color:var(--color-text-secondary)">' + (m.defaultTransform ? escapeHtml(transformLabel(m.defaultTransform)) : "—") + '</span></td>' +
+        '<td><button class="btn btn-sm mfg-metric-edit">Edit</button></td>';
+    }
+    html += '</tr>';
+
+    // Override rows hang under the metric row.
+    if (m.overrides && m.overrides.length > 0) {
+      m.overrides.forEach(function (o) {
+        html += renderOverrideRow(detail.id, m.metricKey, o);
+      });
+    }
+    // Add-override form (always present so it's one click away).
+    html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '">' +
+      '<td colspan="5" style="background:var(--color-bg-primary);padding:6px 12px">' +
+        '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:0.78rem">' +
+          '<span style="color:var(--color-text-tertiary)">↳ Add override:</span>' +
+          '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex (e.g. FortiSwitch)" style="flex:0 0 220px;font-size:0.78rem">' +
+          '<input type="text" class="mfg-new-override-symbol"  placeholder="Symbol"                          style="flex:1;min-width:140px;font-size:0.78rem">' +
+          renderTypeSelect("scalar", "mfg-new-override-type") +
+          renderTransformSelect(null, "mfg-new-override-transform") +
+          '<button class="btn btn-sm mfg-override-add">Add</button>' +
+        '</div>' +
+      '</td>' +
+    '</tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div style="font-size:0.74rem;color:var(--color-text-tertiary)">Widgets: ' + detail.widgets.length +
+    ' &middot; Widget editor lands in the Custom MIB tab (Slice 7).</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderOverrideRow(profileId, metricKey, o) {
+  return '<tr class="mfg-override-row" data-profile-id="' + escapeHtml(profileId) +
+    '" data-metric-key="' + escapeHtml(metricKey) +
+    '" data-override-id="' + escapeHtml(o.id) + '" style="background:var(--color-bg-primary)">' +
+    '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.78rem">↳ model</td>' +
+    '<td><code style="font-size:0.8rem">' + escapeHtml(o.modelPattern) + '</code> &rarr; <code style="font-size:0.8rem">' + escapeHtml(o.symbol) + '</code></td>' +
+    '<td><span style="font-size:0.78rem">' + escapeHtml(o.type) + '</span></td>' +
+    '<td><span style="font-size:0.78rem;color:var(--color-text-secondary)">' + (o.transform ? escapeHtml(transformLabel(o.transform)) : "—") + '</span></td>' +
+    '<td><button class="btn btn-sm btn-danger mfg-override-del">Del</button></td>' +
+  '</tr>';
+}
+
+function renderTypeSelect(current, cls) {
+  return '<select class="' + cls + '" style="font-size:0.78rem">' +
+    '<option value="scalar"' + (current === "scalar" ? " selected" : "") + '>scalar</option>' +
+    '<option value="table"'  + (current === "table"  ? " selected" : "") + '>table</option>' +
+  '</select>';
+}
+
+function renderTransformSelect(current, cls) {
+  var html = '<select class="' + cls + '" style="font-size:0.78rem">' +
+    '<option value="">— none —</option>';
+  _mfgProfileTransforms.forEach(function (t) {
+    html += '<option value="' + escapeHtml(t.kind) + '"' + (current === t.kind ? " selected" : "") + '>' + escapeHtml(t.label) + '</option>';
+  });
+  html += '</select>';
+  return html;
+}
+
+function transformLabel(kind) {
+  for (var i = 0; i < _mfgProfileTransforms.length; i++) {
+    if (_mfgProfileTransforms[i].kind === kind) return _mfgProfileTransforms[i].label;
+  }
+  return kind;
+}
+
+function wireManufacturerProfileControls() {
+  var addBtn = document.getElementById("btn-add-mfg-profile");
+  if (addBtn) addBtn.addEventListener("click", addManufacturerProfile);
+
+  var list = document.getElementById("mfg-profiles-list");
+  if (!list) return;
+
+  // Delegated click handler — one listener covers every row, every edit
+  // button, every save/cancel, override add/delete, profile delete.
+  list.addEventListener("click", function (e) {
+    var target = e.target;
+    if (!(target instanceof Element)) return;
+
+    var delBtn = target.closest(".mfg-profile-del");
+    if (delBtn) { e.stopPropagation(); return deleteManufacturerProfile(delBtn.getAttribute("data-id")); }
+
+    var header = target.closest(".mfg-profile-header");
+    if (header) return toggleProfileExpand(header.parentElement.getAttribute("data-profile-id"));
+
+    var editBtn = target.closest(".mfg-metric-edit");
+    if (editBtn) return beginMetricEdit(editBtn.closest("tr"));
+
+    var saveBtn = target.closest(".mfg-metric-save");
+    if (saveBtn) return saveMetricEdit(saveBtn.closest("tr"));
+
+    var cancelBtn = target.closest(".mfg-metric-cancel");
+    if (cancelBtn) return cancelMetricEdit(cancelBtn.closest("tr"));
+
+    var addOverBtn = target.closest(".mfg-override-add");
+    if (addOverBtn) return addOverride(addOverBtn.closest("tr"));
+
+    var delOverBtn = target.closest(".mfg-override-del");
+    if (delOverBtn) return deleteOverride(delOverBtn.closest("tr"));
+  });
+}
+
+async function addManufacturerProfile() {
+  var input = document.getElementById("f-mfg-profile-add-name");
+  var name = input && input.value ? input.value.trim() : "";
+  if (!name) { showToast("Manufacturer is required", "error"); return; }
+  try {
+    var resp = await api.serverSettings.createManufacturerProfile({ manufacturer: name });
+    if (resp && resp.profile) {
+      _mfgProfiles.unshift({
+        id:             resp.profile.id,
+        manufacturer:   resp.profile.manufacturer,
+        metricCount:    resp.profile.metrics.length,
+        overrideCount:  0,
+        widgetCount:    0,
+        scopedMibCount: 0,
+        createdAt:      resp.profile.createdAt,
+        updatedAt:      resp.profile.updatedAt,
+      });
+      _mfgProfileDetail[resp.profile.id] = resp.profile;
+      _mfgProfileExpanded[resp.profile.id] = true;
+    }
+    input.value = "";
+    showToast("Manufacturer profile added");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Create failed", "error");
+  }
+}
+
+async function deleteManufacturerProfile(id) {
+  var profile = _mfgProfiles.find(function (p) { return p.id === id; });
+  if (!profile) return;
+  var ok = await showConfirm('Delete the "' + profile.manufacturer + '" profile?', "Delete");
+  if (!ok) return;
+  try {
+    await api.serverSettings.deleteManufacturerProfile(id);
+    _mfgProfiles = _mfgProfiles.filter(function (p) { return p.id !== id; });
+    delete _mfgProfileDetail[id];
+    delete _mfgProfileExpanded[id];
+    showToast("Profile deleted");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Delete failed", "error");
+  }
+}
+
+async function toggleProfileExpand(id) {
+  if (!id) return;
+  if (_mfgProfileExpanded[id]) {
+    _mfgProfileExpanded[id] = false;
+    renderIdentificationTab();
+    return;
+  }
+  _mfgProfileExpanded[id] = true;
+  if (!_mfgProfileDetail[id]) {
+    renderIdentificationTab();
+    try {
+      var resp = await api.serverSettings.getManufacturerProfile(id);
+      _mfgProfileDetail[id] = resp.profile;
+      renderIdentificationTab();
+    } catch (err) {
+      showToast(err.message || "Load failed", "error");
+    }
+  } else {
+    renderIdentificationTab();
+  }
+}
+
+function beginMetricEdit(tr) {
+  if (!tr) return;
+  _mfgProfileMetricEdit[tr.getAttribute("data-profile-id") + ":" + tr.getAttribute("data-metric-key")] = true;
+  renderIdentificationTab();
+}
+
+function cancelMetricEdit(tr) {
+  if (!tr) return;
+  delete _mfgProfileMetricEdit[tr.getAttribute("data-profile-id") + ":" + tr.getAttribute("data-metric-key")];
+  renderIdentificationTab();
+}
+
+async function saveMetricEdit(tr) {
+  if (!tr) return;
+  var profileId = tr.getAttribute("data-profile-id");
+  var metricKey = tr.getAttribute("data-metric-key");
+  var symbol    = (tr.querySelector(".mfg-edit-symbol")    || {}).value || "";
+  var type      = (tr.querySelector(".mfg-edit-type")      || {}).value || "scalar";
+  var transform = (tr.querySelector(".mfg-edit-transform") || {}).value || "";
+  try {
+    var resp = await api.serverSettings.updateProfileMetric(profileId, metricKey, {
+      defaultSymbol:    symbol.trim() ? symbol.trim() : null,
+      defaultType:      type,
+      defaultTransform: transform || null,
+    });
+    if (resp && resp.metric) updateMetricInDetail(profileId, resp.metric);
+    delete _mfgProfileMetricEdit[profileId + ":" + metricKey];
+    showToast("Saved");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Save failed", "error");
+  }
+}
+
+async function addOverride(tr) {
+  if (!tr) return;
+  var profileId = tr.getAttribute("data-profile-id");
+  var metricKey = tr.getAttribute("data-metric-key");
+  var pattern   = (tr.querySelector(".mfg-new-override-pattern")   || {}).value || "";
+  var symbol    = (tr.querySelector(".mfg-new-override-symbol")    || {}).value || "";
+  var type      = (tr.querySelector(".mfg-new-override-type")      || {}).value || "scalar";
+  var transform = (tr.querySelector(".mfg-new-override-transform") || {}).value || "";
+  if (!pattern.trim() || !symbol.trim()) { showToast("Pattern and symbol are required", "error"); return; }
+  try {
+    var resp = await api.serverSettings.createProfileMetricOverride(profileId, metricKey, {
+      modelPattern: pattern.trim(),
+      symbol:       symbol.trim(),
+      type:         type,
+      transform:    transform || null,
+    });
+    if (resp && resp.override) appendOverrideToDetail(profileId, metricKey, resp.override);
+    showToast("Override added");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Add override failed", "error");
+  }
+}
+
+async function deleteOverride(tr) {
+  if (!tr) return;
+  var profileId  = tr.getAttribute("data-profile-id");
+  var metricKey  = tr.getAttribute("data-metric-key");
+  var overrideId = tr.getAttribute("data-override-id");
+  var ok = await showConfirm("Delete this override?", "Delete");
+  if (!ok) return;
+  try {
+    await api.serverSettings.deleteProfileMetricOverride(profileId, metricKey, overrideId);
+    removeOverrideFromDetail(profileId, metricKey, overrideId);
+    showToast("Override deleted");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Delete failed", "error");
+  }
+}
+
+function updateMetricInDetail(profileId, metric) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d) return;
+  for (var i = 0; i < d.metrics.length; i++) {
+    if (d.metrics[i].metricKey === metric.metricKey) {
+      d.metrics[i] = metric;
+      return;
+    }
+  }
+}
+
+function appendOverrideToDetail(profileId, metricKey, override) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d) return;
+  var m = d.metrics.find(function (mm) { return mm.metricKey === metricKey; });
+  if (!m) return;
+  m.overrides = (m.overrides || []).concat([override]);
+  // Bump summary count so the row's "N overrides" line stays in sync until
+  // the next full reload.
+  var summary = _mfgProfiles.find(function (p) { return p.id === profileId; });
+  if (summary) summary.overrideCount += 1;
+}
+
+function removeOverrideFromDetail(profileId, metricKey, overrideId) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d) return;
+  var m = d.metrics.find(function (mm) { return mm.metricKey === metricKey; });
+  if (!m) return;
+  m.overrides = (m.overrides || []).filter(function (o) { return o.id !== overrideId; });
+  var summary = _mfgProfiles.find(function (p) { return p.id === profileId; });
+  if (summary && summary.overrideCount > 0) summary.overrideCount -= 1;
 }

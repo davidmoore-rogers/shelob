@@ -530,6 +530,27 @@ const api = {
     createManufacturerAlias:   (body)  => request("POST",   "/manufacturer-aliases", body),
     updateManufacturerAlias:   (id, b) => request("PUT",    `/manufacturer-aliases/${encodeURIComponent(id)}`, b),
     deleteManufacturerAlias:   (id)    => request("DELETE", `/manufacturer-aliases/${encodeURIComponent(id)}`),
+    // Editable Manufacturer Profile (Slice 6). Reads = admin or assets-admin;
+    // writes admin-only. The monitoring path doesn't consume these rows yet
+    // — the resolver swap lands in a follow-up.
+    listManufacturerProfiles:    ()      => request("GET",    "/server-settings/manufacturer-profiles"),
+    getManufacturerProfile:      (id)    => request("GET",    `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}`),
+    createManufacturerProfile:   (body)  => request("POST",   "/server-settings/manufacturer-profiles", body),
+    deleteManufacturerProfile:   (id)    => request("DELETE", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}`),
+    updateProfileMetric:         (id, metricKey, body) =>
+      request("PUT", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/metrics/${encodeURIComponent(metricKey)}`, body),
+    createProfileMetricOverride: (id, metricKey, body) =>
+      request("POST", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/metrics/${encodeURIComponent(metricKey)}/overrides`, body),
+    updateProfileMetricOverride: (id, metricKey, overrideId, body) =>
+      request("PUT", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/metrics/${encodeURIComponent(metricKey)}/overrides/${encodeURIComponent(overrideId)}`, body),
+    deleteProfileMetricOverride: (id, metricKey, overrideId) =>
+      request("DELETE", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/metrics/${encodeURIComponent(metricKey)}/overrides/${encodeURIComponent(overrideId)}`),
+    createProfileWidget:         (id, body) =>
+      request("POST", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/widgets`, body),
+    updateProfileWidget:         (id, widgetId, body) =>
+      request("PUT", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/widgets/${encodeURIComponent(widgetId)}`, body),
+    deleteProfileWidget:         (id, widgetId) =>
+      request("DELETE", `/server-settings/manufacturer-profiles/${encodeURIComponent(id)}/widgets/${encodeURIComponent(widgetId)}`),
     getPgTuning: () => request("GET", "/server-settings/pg-tuning"),
     getQueueMode: () => request("GET", "/server-settings/queue-mode"),
     setQueueMode: (mode) => request("POST", "/server-settings/queue-mode", { mode: mode }),
