@@ -4,14 +4,16 @@
 // Windows, /proc on Linux, sysctl/IOKit on macOS — and that's where the
 // agent's footprint grows).
 //
-// The response-time stream is intentionally the simplest: "did the agent
-// run during the last interval, and how long did the loopback round-trip
-// take?" The reading isn't a network probe — it's a process-local
-// liveness signal that the agent is actually running its main loop. When
-// the agent has gone away (host rebooted, service crashed, network ATE
-// the host), no samples land; the server's last-seen-N-samples sliding
-// window flips to "down" via the same five-state machine the periodic
-// puller uses, and the operator sees red on the Device Map / asset list.
+// The response-time stream measures the round-trip from the agent to the
+// Polaris server (NOT a process-local liveness signal — that flat-zero
+// shape was confusing operators since it told them nothing about whether
+// the host could actually reach Polaris). The caller passes a probe
+// function that performs one HTTP call to Polaris (a /heartbeat ping is
+// what the agent uses); we time the call wall-clock and shape the result
+// into a server-side sample row. When the probe errors, success=false +
+// responseTimeMs=null = the standard "packet loss" signal in the existing
+// chart, and the server's five-state machine flips warning/down via the
+// same path the periodic puller uses.
 package collectors
 
 import (
@@ -20,22 +22,29 @@ import (
 	"github.com/polaris/agent/internal/transport"
 )
 
-// ResponseTimeOnce runs one observation. Returns a server-shaped sample
-// payload ready to push. Adds a small synthetic RTT (the time the agent
-// took to wake up and run this observation) so the chart isn't a flat line.
-func ResponseTimeOnce() *transport.ResponseTimeSample {
+// ResponseTimeOnce runs one agent → Polaris round-trip via the caller-
+// supplied probe function and shapes the result into a server-side
+// sample row. The probe is typically client.Heartbeat — bearer-gated,
+// cheap server-side (single DB update), runs through the same pinned
+// TLS transport the rest of the agent uses, so a TLS / cert / firewall
+// failure surfaces the same way real traffic would. Returns success
+// with the elapsed ms on a successful probe; success=false with the
+// error message and a nil responseTimeMs on failure (packet-loss
+// shape that the System tab chart already renders as a dropped sample).
+func ResponseTimeOnce(probe func() error) *transport.ResponseTimeSample {
 	start := time.Now()
-
-	// In Phase 3 the "probe" is a noop — we're not really measuring
-	// anything except that the agent is alive. Phase 5 layers an actual
-	// localhost reachability check on top (e.g. dial 127.0.0.1:<a default
-	// service port>) so the response-time line in the UI reflects real
-	// system load rather than a flat 0 ms.
+	err := probe()
 	elapsedMs := int(time.Since(start).Milliseconds())
 
-	return &transport.ResponseTimeSample{
-		Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
-		Success:        true,
-		ResponseTimeMs: &elapsedMs,
+	sample := &transport.ResponseTimeSample{
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Success:   err == nil,
 	}
+	if err == nil {
+		sample.ResponseTimeMs = &elapsedMs
+	} else {
+		msg := err.Error()
+		sample.Error = &msg
+	}
+	return sample
 }

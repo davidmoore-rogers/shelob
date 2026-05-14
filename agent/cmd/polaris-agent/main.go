@@ -137,7 +137,17 @@ func responseTimeLoop(ctx context.Context, cfg *config.Config, client *transport
 }
 
 func pushOne(client *transport.Client) {
-	sample := collectors.ResponseTimeOnce()
+	// Time the round-trip from agent to Polaris via a /heartbeat ping —
+	// that's what operators actually want to know ("how reachable is
+	// this host's path to Polaris right now"), not a process-local
+	// liveness noop. Heartbeat is the right probe target: bearer-gated,
+	// cheap server-side, runs through the same pinned TLS transport
+	// the rest of the agent uses (so a TLS / cert / firewall failure
+	// surfaces the same way real traffic would).
+	sample := collectors.ResponseTimeOnce(func() error {
+		_, err := client.Heartbeat()
+		return err
+	})
 	_, err := client.PushSamples(&transport.SamplesBody{
 		Stream:  "responseTime",
 		Samples: []*transport.ResponseTimeSample{sample},
@@ -205,7 +215,10 @@ func wsLoop(ctx context.Context, cfg *config.Config, client *transport.Client) {
 			_ = json.Unmarshal(f.Payload, &payload)
 			var resp transport.ResponseTimeSample
 			if payload.Stream == "responseTime" {
-				resp = *collectors.ResponseTimeOnce()
+				resp = *collectors.ResponseTimeOnce(func() error {
+					_, err := client.Heartbeat()
+					return err
+				})
 			}
 			resPayload, _ := json.Marshal(map[string]interface{}{
 				"success":        resp.Success,
