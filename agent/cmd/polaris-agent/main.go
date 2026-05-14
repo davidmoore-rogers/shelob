@@ -44,6 +44,13 @@ var version = "0.0.0-unstamped"
 const (
 	defaultResponseTimeIntervalSec = 60
 	defaultHeartbeatIntervalSec    = 300
+	// Telemetry default mirrors the server's tier-3 default for SNMP/REST
+	// polled assets (60 s). System info (interfaces + storage) defaults
+	// to 600 s — the OS readings change slowly and the full enumeration
+	// has more overhead than a CPU snapshot.
+	defaultTelemetryIntervalSec    = 60
+	defaultInterfacesIntervalSec   = 600
+	defaultStorageIntervalSec      = 600
 )
 
 func main() {
@@ -82,6 +89,9 @@ func main() {
 	// silently block heartbeats otherwise).
 	go responseTimeLoop(ctx, cfg, client)
 	go heartbeatLoop(ctx, cfg, client)
+	go telemetryLoop(ctx, cfg, client)
+	go interfacesLoop(ctx, cfg, client)
+	go storageLoop(ctx, cfg, client)
 	go wsLoop(ctx, cfg, client)
 
 	<-ctx.Done()
@@ -178,6 +188,113 @@ func heartbeatLoop(ctx context.Context, cfg *config.Config, client *transport.Cl
 				log.Printf("heartbeat: %v", err)
 			}
 		}
+	}
+}
+
+// telemetryLoop pushes a CPU+memory+temperatures sample on its own
+// cadence (default 60 s, configurable via telemetry_interval_sec in
+// agent.conf). The collector blocks ~1 s during CPU sampling so the
+// returned percentage reflects a real delta; running on a separate
+// goroutine keeps it from delaying the response-time loop.
+func telemetryLoop(ctx context.Context, cfg *config.Config, client *transport.Client) {
+	interval := time.Duration(cfg.TelemetryIntervalSec) * time.Second
+	if interval == 0 {
+		interval = defaultTelemetryIntervalSec * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	pushTelemetryOne(client)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pushTelemetryOne(client)
+		}
+	}
+}
+
+func pushTelemetryOne(client *transport.Client) {
+	sample := collectors.TelemetryOnce()
+	_, err := client.PushSamples(&transport.SamplesBody{
+		Stream:  "telemetry",
+		Samples: []*transport.TelemetrySample{sample},
+	})
+	if err != nil {
+		log.Printf("push telemetry sample: %v", err)
+	}
+}
+
+// interfacesLoop pushes per-NIC counter samples (default 600 s).
+// Slower cadence than telemetry because the full enumeration is
+// heavier and interface state changes slowly compared to CPU load.
+// Operators wanting sub-minute history on a specific NIC pin it via
+// monitoredInterfaces and the server's fast-cadence path picks it up.
+func interfacesLoop(ctx context.Context, cfg *config.Config, client *transport.Client) {
+	interval := time.Duration(cfg.InterfacesIntervalSec) * time.Second
+	if interval == 0 {
+		interval = defaultInterfacesIntervalSec * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	pushInterfacesOne(client)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pushInterfacesOne(client)
+		}
+	}
+}
+
+func pushInterfacesOne(client *transport.Client) {
+	samples := collectors.InterfacesOnce()
+	if len(samples) == 0 {
+		return
+	}
+	_, err := client.PushSamples(&transport.SamplesBody{
+		Stream:  "interfaces",
+		Samples: samples,
+	})
+	if err != nil {
+		log.Printf("push interfaces samples: %v", err)
+	}
+}
+
+// storageLoop pushes per-mountpoint usage samples (default 600 s).
+// disk.Usage can block briefly on a sluggish filesystem; gopsutil's
+// Partitions(false) filters out the network mounts and pseudo-fs that
+// most often cause those stalls.
+func storageLoop(ctx context.Context, cfg *config.Config, client *transport.Client) {
+	interval := time.Duration(cfg.StorageIntervalSec) * time.Second
+	if interval == 0 {
+		interval = defaultStorageIntervalSec * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	pushStorageOne(client)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pushStorageOne(client)
+		}
+	}
+}
+
+func pushStorageOne(client *transport.Client) {
+	samples := collectors.StorageOnce()
+	if len(samples) == 0 {
+		return
+	}
+	_, err := client.PushSamples(&transport.SamplesBody{
+		Stream:  "storage",
+		Samples: samples,
+	})
+	if err != nil {
+		log.Printf("push storage samples: %v", err)
 	}
 }
 

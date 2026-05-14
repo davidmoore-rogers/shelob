@@ -49,6 +49,9 @@ type Config struct {
 	// Optional knobs — leave empty for defaults.
 	ResponseTimeIntervalSec int
 	HeartbeatIntervalSec    int
+	TelemetryIntervalSec    int
+	InterfacesIntervalSec   int
+	StorageIntervalSec      int
 }
 
 // DefaultPath returns the canonical agent.conf path for the running OS.
@@ -114,6 +117,12 @@ func Load(path string) (*Config, error) {
 			fmt.Sscanf(val, "%d", &cfg.ResponseTimeIntervalSec)
 		case "heartbeat_interval_sec":
 			fmt.Sscanf(val, "%d", &cfg.HeartbeatIntervalSec)
+		case "telemetry_interval_sec":
+			fmt.Sscanf(val, "%d", &cfg.TelemetryIntervalSec)
+		case "interfaces_interval_sec":
+			fmt.Sscanf(val, "%d", &cfg.InterfacesIntervalSec)
+		case "storage_interval_sec":
+			fmt.Sscanf(val, "%d", &cfg.StorageIntervalSec)
 		default:
 			// Unknown key — ignored to stay forward-compatible with newer
 			// installer scripts writing keys this agent version doesn't read.
@@ -155,6 +164,15 @@ func (c *Config) Save() error {
 	}
 	if c.HeartbeatIntervalSec > 0 {
 		fmt.Fprintf(w, "heartbeat_interval_sec     = %d\n", c.HeartbeatIntervalSec)
+	}
+	if c.TelemetryIntervalSec > 0 {
+		fmt.Fprintf(w, "telemetry_interval_sec     = %d\n", c.TelemetryIntervalSec)
+	}
+	if c.InterfacesIntervalSec > 0 {
+		fmt.Fprintf(w, "interfaces_interval_sec    = %d\n", c.InterfacesIntervalSec)
+	}
+	if c.StorageIntervalSec > 0 {
+		fmt.Fprintf(w, "storage_interval_sec       = %d\n", c.StorageIntervalSec)
 	}
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("flush: %w", err)

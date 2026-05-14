@@ -113,6 +113,53 @@ type SamplesBody struct {
 	Samples interface{} `json:"samples"`
 }
 
+// TelemetrySample matches the server's TelemetrySampleSchema. cpuPct/memPct
+// are 0..100 percentages; memUsedBytes/memTotalBytes are absolute bytes.
+// Send one or the other (or both) — the server tolerates either shape.
+// Temperatures is the per-sensor reading list when the OS exposes them
+// (Linux /sys/class/thermal, lm-sensors on macOS, WMI on Windows).
+type TelemetrySample struct {
+	Timestamp     string                  `json:"timestamp,omitempty"`
+	CPUPct        *float64                `json:"cpuPct,omitempty"`
+	MemPct        *float64                `json:"memPct,omitempty"`
+	MemUsedBytes  *uint64                 `json:"memUsedBytes,omitempty"`
+	MemTotalBytes *uint64                 `json:"memTotalBytes,omitempty"`
+	Temperatures  []TelemetryTemperature  `json:"temperatures,omitempty"`
+}
+
+type TelemetryTemperature struct {
+	SensorName string   `json:"sensorName"`
+	Celsius    *float64 `json:"celsius"`
+}
+
+// InterfaceSample matches the server's InterfaceSampleSchema. One row per
+// physical/virtual NIC the agent enumerates. Pointer counter fields so
+// the server can distinguish "not reported" from "zero" — important for
+// per-interval throughput derivation, which subtracts consecutive samples.
+type InterfaceSample struct {
+	Timestamp   string  `json:"timestamp,omitempty"`
+	IfName      string  `json:"ifName"`
+	AdminStatus *string `json:"adminStatus,omitempty"` // "up" | "down" | ...
+	OperStatus  *string `json:"operStatus,omitempty"`
+	SpeedBps    *uint64 `json:"speedBps,omitempty"`
+	IPAddress   *string `json:"ipAddress,omitempty"`
+	MACAddress  *string `json:"macAddress,omitempty"`
+	InOctets    *uint64 `json:"inOctets,omitempty"`
+	OutOctets   *uint64 `json:"outOctets,omitempty"`
+	InErrors    *uint64 `json:"inErrors,omitempty"`
+	OutErrors   *uint64 `json:"outErrors,omitempty"`
+	IfType      *string `json:"ifType,omitempty"` // "physical" | "loopback" | "tunnel"
+}
+
+// StorageSample matches the server's StorageSampleSchema. One row per
+// mountpoint; mountPath is the canonical path (e.g. "/", "/var", "C:").
+type StorageSample struct {
+	Timestamp  string  `json:"timestamp,omitempty"`
+	MountPath  string  `json:"mountPath"`
+	TotalBytes *uint64 `json:"totalBytes,omitempty"`
+	UsedBytes  *uint64 `json:"usedBytes,omitempty"`
+}
+
 type SamplesResponse struct {
 	Accepted int `json:"accepted"`
 	Rejected int `json:"rejected"`
