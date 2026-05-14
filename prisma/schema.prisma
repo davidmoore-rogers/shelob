@@ -234,12 +234,14 @@ model Credential {
   temperatureAssets            Asset[]                @relation("AssetTempCred")
   interfacesAssets             Asset[]                @relation("AssetInterfacesCred")
   lldpAssets                   Asset[]                @relation("AssetLldpCred")
+  customWidgetAssets           Asset[]                @relation("AssetCustomWidgetCred")
   // Back-relations for per-stream class override credentials
   classOverrideRTAssets        MonitorClassOverride[] @relation("ClassOverrideRTCred")
   classOverrideCpuMemAssets    MonitorClassOverride[] @relation("ClassOverrideCpuMemCred")
   classOverrideTempAssets      MonitorClassOverride[] @relation("ClassOverrideTempCred")
   classOverrideIfAssets        MonitorClassOverride[] @relation("ClassOverrideIfCred")
   classOverrideLldpAssets      MonitorClassOverride[] @relation("ClassOverrideLldpCred")
+  classOverrideCustomWidgetAssets MonitorClassOverride[] @relation("ClassOverrideCustomWidgetCred")
   // Back-relation for the Polaris Agent install credential (one per
   // ManagedAgent row). SetNull on credential delete so removing a
   // credential doesn't block a stuck agent install — operator falls
@@ -293,6 +295,12 @@ model MonitorClassOverride {
   cpuMemoryIntervalSeconds  Int?
   temperatureIntervalSeconds Int?
   systemInfoIntervalSeconds Int?
+  // Custom-widget cadence (Slice 7) — drives ManufacturerCustomWidget probes
+  // for assets whose manufacturer has at least one widget defined. Default
+  // 60s when null at every tier.
+  customWidgetIntervalSeconds Int?
+  // Custom-widget per-request timeout (ms). null = inherit.
+  customWidgetTimeoutMs       Int?
   sampleRetentionDays       Int?
   // Single retention setting shared by AssetTelemetrySample (CPU/memory)
   // AND AssetTemperatureSample. The stream split only affects polling
@@ -310,6 +318,7 @@ model MonitorClassOverride {
   temperaturePolling        String?
   interfacesPolling         String?
   lldpPolling               String?
+  customWidgetPolling       String?
   // Per-stream credential overrides (FK to Credential, null = inherit)
   responseTimeCredentialId  String?
   responseTimeCredential    Credential?  @relation("ClassOverrideRTCred", fields: [responseTimeCredentialId], references: [id], onDelete: SetNull)
@@ -321,6 +330,8 @@ model MonitorClassOverride {
   interfacesCredential      Credential?  @relation("ClassOverrideIfCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
   lldpCredentialId          String?
   lldpCredential            Credential?  @relation("ClassOverrideLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
+  customWidgetCredentialId  String?
+  customWidgetCredential    Credential?  @relation("ClassOverrideCustomWidgetCred", fields: [customWidgetCredentialId], references: [id], onDelete: SetNull)
   // Per-stream MIB overrides (String: "std:<key>" or uploaded MIB UUID or null)
   responseTimeMibId         String?
   cpuMemoryMibId            String?
@@ -445,6 +456,8 @@ model Asset {
   interfacesCredential     Credential? @relation("AssetInterfacesCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
   lldpCredentialId         String?
   lldpCredential           Credential? @relation("AssetLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
+  customWidgetCredentialId String?
+  customWidgetCredential   Credential? @relation("AssetCustomWidgetCred", fields: [customWidgetCredentialId], references: [id], onDelete: SetNull)
   // Per-stream MIB overrides (String: "std:<key>" or uploaded MIB UUID or null)
   responseTimeMibId        String?
   cpuMemoryMibId           String?
@@ -470,6 +483,9 @@ model Asset {
   // timeout (ms). Range 1000..120000; null = inherit. Applied to FortiOS REST +
   // SNMP sessions inside collectSystemInfo + collectFastFiltered.
   systemInfoTimeoutMs      Int?
+  // Per-asset override for the custom-widget collector request timeout (ms).
+  // Range 1000..120000; null = inherit.
+  customWidgetTimeoutMs    Int?
   monitorStatus            String? // "up" | "warning" | "recovering" | "down" | "unknown"
   // Bumped whenever monitorStatus changes value (any transition, not just
   // up<->down). Drives the "how long has this been warning/down" duration on
@@ -495,6 +511,12 @@ model Asset {
   temperaturePolling  String?
   interfacesPolling   String?
   lldpPolling         String?
+  // Slice 7 — custom-widget cadence. When the asset's manufacturer has at
+  // least one ManufacturerCustomWidget AND this resolves to a non-"disabled"
+  // method, collectCustomWidgets fires on the heavy loop. Compatible methods:
+  // rest_api | snmp (same set used by telemetry). "disabled" suppresses the
+  // probe even when widgets exist for the manufacturer.
+  customWidgetPolling String?
 
   // System tab cadences. CPU/memory and temperature each ride their own
   // cadence — operators can poll CPU/memory every minute via REST while
@@ -504,8 +526,12 @@ model Asset {
   cpuMemoryIntervalSec  Int?
   temperatureIntervalSec Int?
   systemInfoIntervalSec Int?
+  // Slice 7 — per-asset custom-widget probe cadence (seconds). null = inherit.
+  customWidgetIntervalSec Int?
   lastTelemetryAt       DateTime?
   lastSystemInfoAt      DateTime?
+  // Bumped after every successful collectCustomWidgets pass.
+  lastCustomWidgetAt    DateTime?
 
   // ifNames the operator pinned for fast-cadence polling. Each name in this
   // array is also scraped on the response-time interval (default 60s) so that
@@ -591,6 +617,7 @@ model Asset {
   wirelessStations         AssetWirelessStation[] @relation("AssetWirelessStationsOnAp")
   wirelessStationMatches   AssetWirelessStation[] @relation("AssetWirelessStationMatch")
   mibFiles                 MibFile[]              @relation("MibFilesOnAsset")
+  customWidgetSamples      AssetCustomWidgetSample[] @relation("AssetCustomWidgetSamples")
   sources             AssetSource[]
   associatedIpRows    AssetAssociatedIp[]
   macAddressRows      AssetMacAddress[]
@@ -951,6 +978,30 @@ model AssetWirelessStation {
   @@index([matchedAssetId])
   @@index([staMacAddr])
   @@map("asset_wireless_stations")
+}
+
+// Slice 7 — time-series of custom-widget samples. Each row is one
+// ManufacturerCustomWidget probe result against one asset. `kind` is
+// "scalar" or "table" (mirrors the widget definition); `value` holds either
+// a single number (scalar) or an array of row objects (table). Pruned on
+// the system-info retention cadence — same retention knob as interfaces
+// since both ride the heavy loop.
+model AssetCustomWidgetSample {
+  id        String   @id @default(uuid())
+  assetId   String
+  asset     Asset    @relation("AssetCustomWidgetSamples", fields: [assetId], references: [id], onDelete: Cascade)
+  widgetId  String   // stable UUID from ManufacturerCustomWidget; NOT an FK so
+                     // a widget delete doesn't cascade-blow historical samples
+                     // (the Custom MIB tab still shows the last-known values
+                     // until retention prunes them out).
+  timestamp DateTime @default(now())
+  kind      String   // "scalar" | "table"
+  value     Json     // number for scalar; row array for table
+
+  @@index([assetId, timestamp])
+  @@index([assetId, widgetId, timestamp])
+  @@index([widgetId])
+  @@map("asset_custom_widget_samples")
 }
 
 // Per-mountpoint storage snapshot, written alongside interface samples.

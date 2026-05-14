@@ -2595,6 +2595,16 @@ async function openViewModal(id) {
     if (a.assetType === "access_point" && a.monitored) {
       tabs.push({ key: "stations", label: "Stations", html: _assetStationsTabHTML(a) });
     }
+    // Custom MIB tab — present whenever the asset's manufacturer has at least
+    // one custom widget defined under its ManufacturerProfile. The tab body
+    // is rendered async from /assets/:id/custom-widgets; if the manufacturer
+    // has no widgets the endpoint returns an empty array and the tab
+    // suppresses itself by removing its <li>. Cheaper than gating tab
+    // visibility on a synchronous "does this manufacturer have widgets"
+    // lookup, since that data isn't on the asset row.
+    if (a.manufacturer) {
+      tabs.push({ key: "customMib", label: "Custom MIB", html: _assetCustomMibTabHTML(a) });
+    }
     // Quarantine tab — assets-admin only, shown for any asset that has MACs or is quarantined.
     // Infrastructure assets (firewall/switch/access_point) only get the tab if they're
     // already quarantined (so Release stays reachable); they can't be newly quarantined.
@@ -2655,6 +2665,7 @@ async function openViewModal(id) {
     if (a.monitored) _loadSystemTabFor(a.id, _getChartRangePref("assetSystem", "1h"), a);
     if (a.monitored) _renderIntermittencyBar(a.id);
     if (a.monitored) _updateStreamSourceBadgesFromEffective(a.id, a);
+    if (a.manufacturer) _loadCustomMibTabFor(a);
     document.querySelectorAll(".asset-system-range-btn").forEach(function (b) {
       b.addEventListener("click", function () {
         var range = b.getAttribute("data-range");
@@ -4178,6 +4189,185 @@ function _renderWirelessStationsCard(container, si, asset) {
       if (assetId) openViewModal(assetId);
     });
   });
+}
+
+// ─── Custom MIB tab (Slice 7) ────────────────────────────────────────────
+// One tab per asset whose manufacturer has at least one
+// ManufacturerCustomWidget defined under its ManufacturerProfile. Widgets
+// are rendered per `widgetType`:
+//   * gauge — compact radial-arc with min/max + threshold ranges
+//   * line  — small SVG line chart over the last 60 sample window
+//   * table — flat table of the latest row array
+// The Polaris collector probes each widget on the customWidget cadence
+// (default 60s); the renderer doesn't poll — it shows the freshest sample
+// the server has. Operator clicks Refresh on the System tab to force-fetch.
+
+function _assetCustomMibTabHTML(_a) {
+  return '<div id="asset-custom-mib-mount">' +
+    '<span class="empty-state" style="padding:1rem 0">Loading custom widgets…</span>' +
+    '</div>';
+}
+
+async function _loadCustomMibTabFor(asset) {
+  var mount = document.getElementById("asset-custom-mib-mount");
+  if (!mount) return;
+  try {
+    var resp = await api.assets.customWidgets(asset.id);
+    var widgets = (resp && resp.widgets) || [];
+    if (widgets.length === 0) {
+      // Manufacturer has no widgets — suppress the tab entirely.
+      var li = document.querySelector('li[data-tab-key="customMib"]');
+      if (li) li.style.display = "none";
+      mount.innerHTML = "";
+      return;
+    }
+    mount.innerHTML = _customMibTabHTML(resp);
+  } catch (err) {
+    mount.innerHTML = '<p class="empty-state" style="padding:1rem 0;color:var(--color-danger)">' +
+      escapeHtml((err && err.message) || "Failed to load widgets") + '</p>';
+  }
+}
+
+function _customMibTabHTML(payload) {
+  var hint = 'Widgets from <b>' + escapeHtml(payload.manufacturer || "this manufacturer") + '</b> ' +
+    '— defined at Server Settings → Identification → Manufacturer Profiles.';
+  if (payload.polling === "disabled") {
+    hint += ' <span style="color:var(--color-warning)">Polling is disabled for this asset; data may be stale.</span>';
+  } else if (!payload.lastCustomWidgetAt) {
+    hint += ' <span style="color:var(--color-text-tertiary)">No sample collected yet — waiting for the next probe cycle.</span>';
+  }
+  var html = '<div style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.75rem">' + hint + '</div>';
+  html += '<div class="custom-mib-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">';
+  payload.widgets.forEach(function (w) {
+    html += '<div class="custom-mib-card" style="border:1px solid var(--color-border);border-radius:6px;padding:10px;background:var(--color-bg-secondary,rgba(0,0,0,0.03))">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">' +
+        '<span style="font-weight:600">' + escapeHtml(w.name) + '</span>' +
+        '<span style="font-size:0.72rem;color:var(--color-text-tertiary);font-family:var(--font-mono)">' + escapeHtml(w.symbol) + '</span>' +
+      '</div>' +
+      _renderCustomWidgetBody(w) +
+    '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function _renderCustomWidgetBody(w) {
+  if (!w.latest) {
+    return '<p class="empty-state" style="padding:0.5rem 0;margin:0">No sample yet.</p>';
+  }
+  if (w.widgetType === "gauge") return _renderCustomWidgetGauge(w);
+  if (w.widgetType === "line")  return _renderCustomWidgetLine(w);
+  if (w.widgetType === "table") return _renderCustomWidgetTable(w);
+  return '<p class="empty-state" style="padding:0.5rem 0;margin:0">Unknown widgetType: ' + escapeHtml(w.widgetType) + '</p>';
+}
+
+function _renderCustomWidgetGauge(w) {
+  // Compact radial-arc — 180° sweep from min to max with one threshold
+  // band drawn at displayOptions.warningAt if set, and the current value
+  // labeled. Falls through to a numeric readout when the sample isn't a
+  // scalar (e.g. an operator picked widgetType=gauge on a table-typed
+  // widget; the editor doesn't yet narrow widgetType by kind).
+  var raw = (w.latest && w.latest.value);
+  var n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n)) {
+    return '<div style="font-size:0.85rem">' + escapeHtml(String(raw)) + '</div>';
+  }
+  var opts = w.displayOptions || {};
+  var min = Number.isFinite(opts.min) ? opts.min : 0;
+  var max = Number.isFinite(opts.max) ? opts.max : 100;
+  var pct = max > min ? Math.max(0, Math.min(1, (n - min) / (max - min))) : 0;
+  var theta = Math.PI * (1 - pct);  // 180° -> 0°
+  var cx = 80, cy = 70, r = 56;
+  var startX = cx - r, startY = cy;
+  var endX = cx + r * Math.cos(theta);
+  var endY = cy - r * Math.sin(theta);
+  var largeArc = pct > 0.5 ? 1 : 0;
+  var unit = opts.unit ? (" " + opts.unit) : "";
+  return '<div style="text-align:center">' +
+    '<svg width="160" height="86" viewBox="0 0 160 86" aria-hidden="true">' +
+      '<path d="M ' + (cx - r) + ' ' + cy + ' A ' + r + ' ' + r + ' 0 0 1 ' + (cx + r) + ' ' + cy + '" stroke="var(--color-border)" stroke-width="10" fill="none" stroke-linecap="round"/>' +
+      '<path d="M ' + startX + ' ' + startY + ' A ' + r + ' ' + r + ' 0 ' + largeArc + ' 1 ' + endX + ' ' + endY + '" stroke="#22d3ee" stroke-width="10" fill="none" stroke-linecap="round"/>' +
+      '<text x="' + cx + '" y="' + (cy - 6) + '" text-anchor="middle" font-size="20" font-weight="600" fill="currentColor">' +
+        escapeHtml(_formatNumber(n)) + escapeHtml(unit) +
+      '</text>' +
+      '<text x="' + cx + '" y="' + (cy + 12) + '" text-anchor="middle" font-size="10" fill="var(--color-text-tertiary)">' +
+        escapeHtml(_formatNumber(min)) + ' &ndash; ' + escapeHtml(_formatNumber(max)) +
+      '</text>' +
+    '</svg>' +
+  '</div>';
+}
+
+function _renderCustomWidgetLine(w) {
+  // Minimal inline SVG line chart over the sample window the server
+  // returned. We don't reuse the larger System-tab chart helper (which
+  // hardcodes axes specific to telemetry / RTT) — custom widgets need to
+  // adapt their y-range to the actual data domain.
+  var pts = [];
+  (w.samples || []).forEach(function (s) {
+    var n = typeof s.value === "number" ? s.value : Number(s.value);
+    if (Number.isFinite(n)) pts.push({ t: new Date(s.timestamp).getTime(), v: n });
+  });
+  if (pts.length < 2) {
+    return _renderCustomWidgetScalarFallback(w);
+  }
+  var minV = pts[0].v, maxV = pts[0].v;
+  pts.forEach(function (p) { if (p.v < minV) minV = p.v; if (p.v > maxV) maxV = p.v; });
+  if (maxV === minV) { maxV = minV + 1; }
+  var minT = pts[0].t, maxT = pts[pts.length - 1].t;
+  var W = 280, H = 90, P = 4;
+  var coords = pts.map(function (p) {
+    var x = P + (W - 2 * P) * ((p.t - minT) / Math.max(1, maxT - minT));
+    var y = (H - P) - (H - 2 * P) * ((p.v - minV) / (maxV - minV));
+    return x.toFixed(1) + "," + y.toFixed(1);
+  });
+  var unit = (w.displayOptions && w.displayOptions.unit) ? (" " + w.displayOptions.unit) : "";
+  return '<svg width="100%" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block">' +
+    '<polyline fill="none" stroke="#22d3ee" stroke-width="1.4" points="' + coords.join(" ") + '"/>' +
+  '</svg>' +
+  '<div style="display:flex;justify-content:space-between;font-size:0.7rem;color:var(--color-text-tertiary);margin-top:2px">' +
+    '<span>min ' + escapeHtml(_formatNumber(minV)) + escapeHtml(unit) + '</span>' +
+    '<span>latest ' + escapeHtml(_formatNumber(pts[pts.length - 1].v)) + escapeHtml(unit) + '</span>' +
+    '<span>max ' + escapeHtml(_formatNumber(maxV)) + escapeHtml(unit) + '</span>' +
+  '</div>';
+}
+
+function _renderCustomWidgetTable(w) {
+  // The collector serializes table-typed widgets as an array of row objects;
+  // each row's keys are the column names the operator picked. Empty array
+  // = no data this cycle.
+  var rows = Array.isArray(w.latest && w.latest.value) ? w.latest.value : [];
+  if (rows.length === 0) return '<p class="empty-state" style="padding:0.5rem 0;margin:0">No rows.</p>';
+  var cols = Object.keys(rows[0] || {});
+  if (cols.length === 0) return '<p class="empty-state" style="padding:0.5rem 0;margin:0">No columns.</p>';
+  var html = '<div style="overflow:auto"><table class="ip-table" style="font-size:0.78rem"><thead><tr>';
+  cols.forEach(function (c) { html += '<th>' + escapeHtml(c) + '</th>'; });
+  html += '</tr></thead><tbody>';
+  rows.forEach(function (r) {
+    html += '<tr>';
+    cols.forEach(function (c) {
+      var v = r[c];
+      var txt = (v === null || v === undefined) ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v));
+      html += '<td>' + escapeHtml(txt) + '</td>';
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+function _renderCustomWidgetScalarFallback(w) {
+  var v = w.latest && w.latest.value;
+  var txt = (v === null || v === undefined) ? "—" :
+            (typeof v === "object" ? JSON.stringify(v) : String(v));
+  var unit = (w.displayOptions && w.displayOptions.unit) ? (" " + w.displayOptions.unit) : "";
+  return '<div style="font-size:1.4rem;font-weight:600">' + escapeHtml(txt) + escapeHtml(unit) + '</div>';
+}
+
+function _formatNumber(n) {
+  if (!Number.isFinite(n)) return String(n);
+  if (Math.abs(n) >= 1000) return n.toFixed(0);
+  if (Math.abs(n) >= 1)    return n.toFixed(1);
+  return n.toFixed(2);
 }
 
 // Bound a chart's X axis to the *requested* time window (since/until from the

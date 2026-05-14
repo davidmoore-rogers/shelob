@@ -255,6 +255,7 @@ const api = {
     updateSightingSettings: (body) => request("PUT", "/assets/sighting-settings", body),
     // System tab — telemetry, system-info snapshot, per-interface counters, per-mountpoint storage.
     systemInfo:           (id)  => request("GET", `/assets/${id}/system-info`),
+    customWidgets:        (id)  => request("GET", `/assets/${id}/custom-widgets`),
     telemetryHistory:     (id, opts) => {
       if (typeof opts === "string") opts = { range: opts };
       opts = opts || {};

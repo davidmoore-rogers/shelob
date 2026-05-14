@@ -1116,6 +1116,102 @@ router.get("/:id/system-info", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// GET /assets/:id/custom-widgets — Custom MIB tab data (Slice 7). Resolves
+// the asset's manufacturer profile, filters widgets by optional modelPattern,
+// and returns each widget's definition plus its latest sample (kind = "scalar"
+// returns the most recent point; kind = "line" / "table" returns a window of
+// recent samples that the gauge / chart / table renderer consumes directly).
+// Empty array when the manufacturer has no widgets or the polling stream is
+// resolved to "disabled" — the frontend hides the tab in that case.
+router.get("/:id/custom-widgets", async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const asset = await prisma.asset.findUnique({
+      where:  { id },
+      select: {
+        id: true, monitored: true, manufacturer: true, model: true,
+        customWidgetPolling: true, lastCustomWidgetAt: true,
+      },
+    });
+    if (!asset) throw new AppError(404, "Asset not found");
+
+    // The DB-backed profile cache is keyed by canonical manufacturer.
+    const { getProfileFor } = await import("../../services/manufacturerProfileService.js");
+    const profile = getProfileFor(asset.manufacturer);
+    if (!profile || profile.widgets.length === 0) {
+      return res.json({
+        manufacturer:    asset.manufacturer,
+        profileId:       profile?.id ?? null,
+        polling:         asset.customWidgetPolling ?? null,
+        lastCustomWidgetAt: asset.lastCustomWidgetAt,
+        widgets:         [],
+      });
+    }
+
+    // Apply per-model gating. Empty modelPattern = applies to every asset
+    // under the manufacturer; non-empty regex must match Asset.model.
+    const modelStr = asset.model ?? "";
+    const applicableWidgets = profile.widgets.filter((w) => {
+      if (!w.modelPattern) return true;
+      try { return new RegExp(w.modelPattern, "i").test(modelStr); }
+      catch { return false; }
+    });
+
+    if (applicableWidgets.length === 0) {
+      return res.json({
+        manufacturer:    asset.manufacturer,
+        profileId:       profile.id,
+        polling:         asset.customWidgetPolling ?? null,
+        lastCustomWidgetAt: asset.lastCustomWidgetAt,
+        widgets:         [],
+      });
+    }
+
+    // Bulk-fetch the last 60 samples per widget — line charts need a window;
+    // gauges + tables grab the freshest. One query covering every applicable
+    // widget id, then partition client-side.
+    const ids = applicableWidgets.map((w) => w.id);
+    const samples = await prisma.assetCustomWidgetSample.findMany({
+      where: { assetId: id, widgetId: { in: ids } },
+      orderBy: { timestamp: "desc" },
+      take:    60 * ids.length,
+      select:  { id: true, widgetId: true, timestamp: true, kind: true, value: true },
+    });
+    const byWidget = new Map<string, typeof samples>();
+    for (const s of samples) {
+      const arr = byWidget.get(s.widgetId) ?? [];
+      if (arr.length < 60) arr.push(s);
+      byWidget.set(s.widgetId, arr);
+    }
+
+    return res.json({
+      manufacturer:    asset.manufacturer,
+      profileId:       profile.id,
+      polling:         asset.customWidgetPolling ?? null,
+      lastCustomWidgetAt: asset.lastCustomWidgetAt,
+      widgets: applicableWidgets.map((w) => {
+        const window = byWidget.get(w.id) ?? [];
+        // Reverse so caller gets oldest-first for charts.
+        window.reverse();
+        return {
+          id:             w.id,
+          name:           w.name,
+          symbol:         w.symbol,
+          mibId:          w.mibId,
+          type:           w.type,
+          widgetType:     w.widgetType,
+          transform:      w.transform,
+          displayOptions: w.displayOptions,
+          order:          w.order,
+          modelPattern:   w.modelPattern,
+          samples:        window,
+          latest:         window.length ? window[window.length - 1] : null,
+        };
+      }),
+    });
+  } catch (err) { next(err); }
+});
+
 // GET /assets/:id/interface-history?ifName=...&range=... — per-interface counters
 router.get("/:id/interface-history", async (req, res, next) => {
   try {
