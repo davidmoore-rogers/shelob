@@ -1550,6 +1550,85 @@ router.post("/agents/prune", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Operator-settable URL override for what gets stamped into agent.conf at
+// install time. Empty / null means "use the cert-derived default" — the
+// resolver in agentInstallService.inferOwnServerUrl() falls back through
+// POLARIS_PUBLIC_URL → HTTPS cert SAN/CN/IP → POLARIS_PUBLIC_HOST.
+router.get("/agents/server-url", async (_req, res, next) => {
+  try {
+    const { prisma } = await import("../../db.js");
+    const { AGENT_SERVER_URL_SETTING_KEY, inferOwnServerUrl, inferOwnServerUrlSync } =
+      await import("../../services/agentInstallService.js");
+    const row = await prisma.setting.findUnique({ where: { key: AGENT_SERVER_URL_SETTING_KEY } });
+    const raw = (row?.value as { url?: string } | null)?.url;
+    const override = raw && typeof raw === "string" && raw.trim() ? raw.trim().replace(/\/$/, "") : null;
+    res.json({
+      override,
+      effective: await inferOwnServerUrl(),
+      derived:   inferOwnServerUrlSync(),
+    });
+  } catch (err) { next(err); }
+});
+
+router.put("/agents/server-url", async (req, res, next) => {
+  try {
+    const { prisma } = await import("../../db.js");
+    const { logEvent } = await import("./events.js");
+    const { AGENT_SERVER_URL_SETTING_KEY, inferOwnServerUrl, inferOwnServerUrlSync } =
+      await import("../../services/agentInstallService.js");
+    const actor = req.session?.username || "unknown";
+    const raw = req.body && typeof req.body.url !== "undefined" ? req.body.url : null;
+
+    // Empty string / null / whitespace clears the override and falls back
+    // to the derived default. Operators do this from the UI by emptying
+    // the input + clicking Save.
+    if (raw === null || (typeof raw === "string" && raw.trim() === "")) {
+      await prisma.setting.delete({ where: { key: AGENT_SERVER_URL_SETTING_KEY } }).catch(() => { /* already absent */ });
+      await logEvent({
+        action:       "agent.server_url.cleared",
+        level:        "info",
+        actor,
+        resourceType: "polaris-agent",
+        message:      "Agent server-URL override cleared",
+      });
+      return res.json({
+        override:  null,
+        effective: await inferOwnServerUrl(),
+        derived:   inferOwnServerUrlSync(),
+      });
+    }
+
+    if (typeof raw !== "string") {
+      return res.status(400).json({ error: "url must be a string" });
+    }
+    const trimmed = raw.trim().replace(/\/$/, "");
+    if (!/^https?:\/\//i.test(trimmed)) {
+      return res.status(400).json({ error: "url must start with http:// or https://" });
+    }
+    try { new URL(trimmed); }
+    catch { return res.status(400).json({ error: "url is not a valid absolute URL" }); }
+
+    await prisma.setting.upsert({
+      where:  { key: AGENT_SERVER_URL_SETTING_KEY },
+      update: { value: { url: trimmed } as any },
+      create: { key: AGENT_SERVER_URL_SETTING_KEY, value: { url: trimmed } as any },
+    });
+    await logEvent({
+      action:       "agent.server_url.set",
+      level:        "info",
+      actor,
+      resourceType: "polaris-agent",
+      message:      `Agent server-URL override set to ${trimmed}`,
+      details:      { url: trimmed },
+    });
+    res.json({
+      override:  trimmed,
+      effective: await inferOwnServerUrl(),
+      derived:   inferOwnServerUrlSync(),
+    });
+  } catch (err) { next(err); }
+});
+
 router.delete("/agents/build/:buildId", async (req, res, next) => {
   try {
     const { cancelBuild, BuildAlreadyFinishedError, BuildNotFoundError } =

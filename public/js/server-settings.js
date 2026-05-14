@@ -2297,6 +2297,34 @@ function renderAgentBuildInventory(inv) {
       '</div>';
   }
 
+  // Server-URL row: input pre-filled with the effective URL the agent
+  // would dial right now. The cert-derived default sits underneath as
+  // a hint so the operator can see what they'd inherit if they cleared
+  // the override (empty + Save → deletes the Setting row). The id is
+  // re-rendered from inv.serverUrl every time the card refreshes so the
+  // value stays in sync after a Save / cert rotation / etc.
+  var srvUrl = inv.serverUrl || { effective: "", override: null, derived: "" };
+  var srvUrlVal = srvUrl.override != null ? srvUrl.override : (srvUrl.derived || srvUrl.effective || "");
+  var srvUrlHint = srvUrl.override != null
+    ? 'Override active. Cert-derived default would be: <code>' + escapeHtml(srvUrl.derived || "—") + '</code>'
+    : 'Derived from the HTTPS certificate. Edit to override.';
+  var serverUrlRow =
+    '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border);font-size:0.85rem">' +
+      '<label for="agent-server-url-input" style="display:block;margin-bottom:0.3rem;color:var(--color-text-secondary)">' +
+        'Server URL stamped into agent.conf' +
+        (srvUrl.override != null
+          ? ' <span style="font-size:0.72rem;color:var(--color-accent);font-weight:600;margin-left:0.4rem">OVERRIDE</span>'
+          : '') +
+      '</label>' +
+      '<div style="display:flex;gap:0.5rem;align-items:center">' +
+        '<input type="text" id="agent-server-url-input" value="' + escapeHtml(srvUrlVal) + '" ' +
+          'placeholder="' + escapeHtml(srvUrl.derived || "https://your-host:443") + '" ' +
+          'style="flex:1;padding:5px 8px;font-family:var(--font-mono, monospace);font-size:0.85rem">' +
+        '<button class="btn btn-secondary" id="btn-agent-server-url-save" style="padding:4px 14px;font-size:0.8rem">Save</button>' +
+      '</div>' +
+      '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.3rem 0 0">' + srvUrlHint + '</p>' +
+    '</div>';
+
   // Auto-build toggle row. Initial state is loaded async — render the
   // checkbox unchecked, then flip it on settle so the toggle doesn't
   // flash misleadingly. Defaults to ON when the Setting row is absent.
@@ -2333,12 +2361,37 @@ function renderAgentBuildInventory(inv) {
     goVerLine +
     installedSummarySlot +
     cleanupLine +
+    serverUrlRow +
     autoBuildRow;
 
   var btn = document.getElementById("btn-agent-build");
   if (btn) btn.addEventListener("click", onAgentBuildClick);
   var pruneBtn = document.getElementById("btn-agent-prune");
   if (pruneBtn) pruneBtn.addEventListener("click", onAgentPruneClick);
+
+  var srvSaveBtn = document.getElementById("btn-agent-server-url-save");
+  var srvInput   = document.getElementById("agent-server-url-input");
+  if (srvSaveBtn && srvInput) {
+    srvSaveBtn.addEventListener("click", function () {
+      // Empty input clears the override (Setting row deleted server-side).
+      // Anything else is validated for http(s):// prefix server-side.
+      var raw = (srvInput.value || "").trim();
+      // If the input still matches the cert-derived default AND there was
+      // no override before, treat Save as a no-op clear so we don't
+      // persist a Setting that just mirrors the default.
+      var sendVal = raw === "" ? "" : raw;
+      srvSaveBtn.disabled = true;
+      api.serverSettings.agentServerUrlSet(sendVal).then(function () {
+        showToast(sendVal ? "Agent server URL updated" : "Agent server URL override cleared", "success");
+        // Refresh the inventory so the OVERRIDE pill + hint text reflect
+        // the new state. The whole card re-renders.
+        api.serverSettings.agentInventory().then(renderAgentBuildInventory);
+      }).catch(function (err) {
+        showToast("Failed: " + err.message, "error");
+        srvSaveBtn.disabled = false;
+      });
+    });
+  }
 
   var autoToggle = document.getElementById("agent-auto-build-toggle");
   if (autoToggle) {

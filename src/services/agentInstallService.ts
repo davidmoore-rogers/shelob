@@ -240,7 +240,7 @@ async function runInstall(input: StartInstallInput): Promise<void> {
 
   // Build the rendered agent.conf body that's about to be uploaded.
   const agentConfBody = renderAgentConf({
-    serverUrl:       inferOwnServerUrl(),
+    serverUrl:       await inferOwnServerUrl(),
     certFingerprint: row.serverCertFingerprint,
     enrollmentToken,
     agentId:         row.id,
@@ -268,7 +268,7 @@ async function runInstall(input: StartInstallInput): Promise<void> {
         cred: cred.config as Record<string, unknown>,
         agentConfBody,
         binaryFilename: binaryName,
-        serverUrl: inferOwnServerUrl(),
+        serverUrl: await inferOwnServerUrl(),
         certFingerprint: row.serverCertFingerprint,
         testOverrides,
       });
@@ -488,7 +488,7 @@ async function runUpgrade(input: RunUpgradeInput): Promise<void> {
         host,
         cred:            cred.config as Record<string, unknown>,
         binaryFilename:  binaryName,
-        serverUrl:       inferOwnServerUrl(),
+        serverUrl:       await inferOwnServerUrl(),
         certFingerprint: row.serverCertFingerprint,
         testOverrides:   input.testOverrides,
       });
@@ -859,36 +859,50 @@ function renderAgentConf(input: RenderAgentConfInput): string {
 
 // ─── Server-URL inference + binary manifest ───────────────────────────
 
+export const AGENT_SERVER_URL_SETTING_KEY = "agent.serverUrlOverride";
+
 /**
  * Own-server URL the installed agent should call back to. Stamped into
  * `agent.conf`'s server_url at install time. Resolution order:
  *
- *   1. `POLARIS_PUBLIC_URL` env var (the operator pin; covers reverse-
- *      proxy / split-DNS scenarios where neither the cert nor PORT can
- *      know the public-facing URL).
- *   2. The first DNS SAN on the running HTTPS leaf cert, plus the live
+ *   1. `Setting.agent.serverUrlOverride` — UI-settable from Server
+ *      Settings → Maintenance → Polaris Agent card. Persists across
+ *      restarts in Postgres; editable without shell access. This is
+ *      the new "easy operator path" added after the rhel8test debacle.
+ *   2. `POLARIS_PUBLIC_URL` env var (legacy operator override — kept
+ *      for scripted deployments + reverse-proxy / split-DNS shops who
+ *      already automated around it).
+ *   3. The first DNS SAN on the running HTTPS leaf cert, plus the live
  *      HTTPS port. The cert is the natural source of truth — operators
  *      generate it with the hostname they expect Polaris to be reached
  *      at, and the agent's pin is verifying that exact cert anyway.
- *   3. The cert's Common Name + live HTTPS port (cn-only certs without
- *      SANs are uncommon on modern installs but possible on legacy
- *      operator-generated certs).
- *   4. First IP SAN + live HTTPS port (covers IP-only certs used in
+ *   4. The cert's Common Name + live HTTPS port.
+ *   5. First IP SAN + live HTTPS port (covers IP-only certs used in
  *      isolated networks where there's no DNS).
- *   5. `POLARIS_PUBLIC_HOST` env var + PORT (legacy escape hatch — kept
- *      so operators on the previous fallback don't get broken).
- *   6. `localhost` + PORT (same-box installs only — the install kickoff
+ *   6. `POLARIS_PUBLIC_HOST` env var + PORT (legacy escape hatch).
+ *   7. `localhost` + PORT (same-box installs only — the install kickoff
  *      route guards this and refuses when the target host isn't loopback).
  *
  * The HTTPS port comes from httpsManager.getHttpsPort() — the actual
  * port Polaris is listening on, NOT process.env.PORT (which is the HTTP
  * port and may differ).
  */
-function inferOwnServerUrl(): string {
+export async function inferOwnServerUrl(): Promise<string> {
+  // (1) UI override Setting.
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: AGENT_SERVER_URL_SETTING_KEY } });
+    const v = (row?.value as { url?: string } | null)?.url;
+    if (v && typeof v === "string" && v.trim()) return v.trim().replace(/\/$/, "");
+  } catch {
+    // Defensive: if the Setting table is unreachable, fall through to
+    // the env/cert chain rather than fail the install.
+  }
+
+  // (2) Env override.
   const fromEnv = process.env.POLARIS_PUBLIC_URL;
   if (fromEnv) return fromEnv.replace(/\/$/, "");
 
-  // Cert-driven derivation.
+  // (3-5) Cert-driven derivation.
   const httpsPort = getHttpsPort();
   const hostnames = getServerCertHostnames();
   if (httpsPort != null && hostnames) {
@@ -896,9 +910,30 @@ function inferOwnServerUrl(): string {
     if (preferred) return `https://${preferred}:${httpsPort}`;
   }
 
-  // Legacy fallbacks. The install kickoff route enforces that we never
-  // produce a "https://localhost:<port>" URL for a non-loopback target,
-  // so these branches are safe to leave as a last-resort default.
+  // (6-7) Legacy fallbacks. The install kickoff route enforces that we
+  // never produce a "https://localhost:<port>" URL for a non-loopback
+  // target, so these branches are safe as a last-resort default.
+  const port = process.env.PORT ?? "3000";
+  const host = process.env.POLARIS_PUBLIC_HOST ?? "localhost";
+  return `https://${host}:${port}`;
+}
+
+/**
+ * Same resolver as inferOwnServerUrl(), but synchronous and without the
+ * UI-override Setting (since reading from Prisma is async). Returns the
+ * URL the install path WOULD produce if no Setting override exists.
+ * Used by the inventory endpoint to render the "effective default" hint
+ * next to the operator-facing URL input on the Maintenance card.
+ */
+export function inferOwnServerUrlSync(): string {
+  const fromEnv = process.env.POLARIS_PUBLIC_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  const httpsPort = getHttpsPort();
+  const hostnames = getServerCertHostnames();
+  if (httpsPort != null && hostnames) {
+    const preferred = hostnames.dnsSans[0] || hostnames.cn || hostnames.ipSans[0] || null;
+    if (preferred) return `https://${preferred}:${httpsPort}`;
+  }
   const port = process.env.PORT ?? "3000";
   const host = process.env.POLARIS_PUBLIC_HOST ?? "localhost";
   return `https://${host}:${port}`;

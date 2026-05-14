@@ -33,6 +33,11 @@ import { getAgentVersion, getAgentSourceDir } from "../utils/version.js";
 import { logEvent } from "../api/routes/events.js";
 import { logger } from "../utils/logger.js";
 import { prisma } from "../db.js";
+import {
+  AGENT_SERVER_URL_SETTING_KEY,
+  inferOwnServerUrl,
+  inferOwnServerUrlSync,
+} from "./agentInstallService.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -677,6 +682,21 @@ export interface InventoryResult {
    * the real freed bytes can be smaller. Cheap to compute (one readdir).
    */
   oldVersions: Array<{ version: string; bytes: number; mtime: string }>;
+  /**
+   * What the agent.conf's server_url would be stamped to RIGHT NOW if an
+   * operator clicked Install. Three fields:
+   *   effective: the actual URL (operator override OR derived from cert)
+   *   override:  what the UI-settable Setting holds (null = derive default)
+   *   derived:   what would be used without the override (cert / env / etc)
+   * UI uses these to render the input + a "Default would be: <derived>"
+   * placeholder so operators can see what they'd inherit if they clear
+   * the override.
+   */
+  serverUrl: {
+    effective: string;
+    override:  string | null;
+    derived:   string;
+  };
 }
 
 /**
@@ -750,6 +770,23 @@ export async function getInventory(): Promise<InventoryResult> {
     oldVersions.sort((a, b) => new Date(b.mtime).getTime() - new Date(a.mtime).getTime());
   } catch { /* directory missing — no old versions */ }
 
+  // Server-URL: render what install would actually use right now (effective),
+  // alongside the raw operator-set override (so the UI input is editable) and
+  // the cert-derived default (so the placeholder names what they'd inherit
+  // if they cleared the override). All three are read independently so the
+  // override field stays editable to its current value even when the live
+  // effective URL came from somewhere else (e.g. POLARIS_PUBLIC_URL env).
+  let serverUrlOverride: string | null = null;
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: AGENT_SERVER_URL_SETTING_KEY } });
+    const raw = (row?.value as { url?: string } | null)?.url;
+    if (raw && typeof raw === "string" && raw.trim()) {
+      serverUrlOverride = raw.trim().replace(/\/$/, "");
+    }
+  } catch { /* Setting table unreachable — treat as unset */ }
+  const serverUrlEffective = await inferOwnServerUrl();
+  const serverUrlDerived   = inferOwnServerUrlSync();
+
   return {
     goAvailable: go.ok,
     goVersion:   go.version,
@@ -758,6 +795,11 @@ export async function getInventory(): Promise<InventoryResult> {
     files,
     agentSourceVersion,
     oldVersions,
+    serverUrl: {
+      effective: serverUrlEffective,
+      override:  serverUrlOverride,
+      derived:   serverUrlDerived,
+    },
   };
 }
 
