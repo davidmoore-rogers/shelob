@@ -67,6 +67,14 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY public ./public
+# Polaris Agent Go source — the in-app build feature (Server Settings →
+# Maintenance → Polaris Agent → Build) shells out to `go build` against
+# this directory. Without it, agentBuildService throws "agent/ source
+# directory not found" before the first compiler invocation. Source-only;
+# no compiled binaries are baked into the image — operators click Build
+# on the running container to produce the per-platform agent binaries
+# under /app/state/data/agents/<version>/.
+COPY agent ./agent
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
