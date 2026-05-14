@@ -549,7 +549,29 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
       ...asset,
       discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
     });
-    res.json(result);
+    // mibLookup: every non-null MIB UUID across the four streams, mapped to
+    // its moduleName so the frontend's monitoring chips can append a "MIB:
+    // <module>" segment without a second round-trip. Standard MIB ids (the
+    // `std:<key>` namespace, owned entirely by the frontend) are skipped —
+    // those resolve through `_SNMP_STANDARD_MIBS` in assets.js.
+    const mibIds = new Set<string>();
+    for (const id of [
+      result.resolved.responseTimeMibId,
+      result.resolved.telemetryMibId,
+      result.resolved.interfacesMibId,
+      result.resolved.lldpMibId,
+    ]) {
+      if (typeof id === "string" && id && !id.startsWith("std:")) mibIds.add(id);
+    }
+    const mibLookup: Record<string, { moduleName: string }> = {};
+    if (mibIds.size > 0) {
+      const rows = await prisma.mibFile.findMany({
+        where:  { id: { in: [...mibIds] } },
+        select: { id: true, moduleName: true },
+      });
+      for (const r of rows) mibLookup[r.id] = { moduleName: r.moduleName };
+    }
+    res.json({ ...result, mibLookup });
   } catch (err) {
     next(err);
   }

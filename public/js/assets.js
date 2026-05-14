@@ -5311,7 +5311,32 @@ function _formatPollingInterval(seconds) {
   return seconds + "s";
 }
 
-// Builds the badge label "<polling>[ (<details>)][ · every <interval>] · <tier>"
+// Resolve a per-stream MIB id (the resolved value from
+// /effective-monitor-settings) into a human-readable label. Returns null
+// when the id is falsy. Standard MIBs (`std:<key>`) resolve via the
+// frontend-local `_SNMP_STANDARD_MIBS` table; uploaded MIBs (UUIDs) resolve
+// via the `mibLookup` map the backend attaches to the response. Returns
+// the raw id if neither lookup matches so the operator at least sees
+// *something* instead of silently swallowing the chip.
+function _resolveStreamMibLabel(mibId, mibLookup) {
+  if (!mibId) return null;
+  if (typeof mibId === "string" && mibId.indexOf("std:") === 0) {
+    var std = _SNMP_STANDARD_MIBS.find(function (m) { return m.id === mibId; });
+    if (std) {
+      // Strip the parenthetical RFC suffix on the chip — operators care
+      // about the module name, not the standards body. The full label
+      // remains in `_SNMP_STANDARD_MIBS` for the SNMP Walk dropdown.
+      return std.label.split(" (")[0].split(" — ").pop();
+    }
+    return mibId;
+  }
+  if (mibLookup && mibLookup[mibId] && mibLookup[mibId].moduleName) {
+    return mibLookup[mibId].moduleName;
+  }
+  return null; // UUID with no lookup entry — backend will fill it in on next refresh
+}
+
+// Builds the badge label "<polling>[ (<details>)][ · every <interval>] · <tier>[ · MIB: <name>]"
 // used next to each chart header. <details> bundles the transport
 // descriptor and the credential name together in one parenthetical,
 // comma-separated. `provenanceTier` is one of asset|class|integration|
@@ -5320,7 +5345,10 @@ function _formatPollingInterval(seconds) {
 // → manual tier). The async path passes the real provenance.
 // `intervalSeconds` is the resolved cadence for this stream (response-time
 // /telemetry/system-info); pass null to omit the slot entirely.
-function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSeconds, effectiveResolved) {
+// `mibLabel` is the resolved MIB module name (from
+// _resolveStreamMibLabel); pass null to omit the MIB chip — the sync
+// render does this, the async refresh fills it in.
+function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSeconds, effectiveResolved, mibLabel) {
   var pollingLabel = _POLLING_LABELS[resolvedRaw] || resolvedRaw;
   var transport = _streamTransportLabel(asset, resolvedRaw);
   var credential = _streamCredential(asset, stream, resolvedRaw, effectiveResolved);
@@ -5339,7 +5367,8 @@ function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSe
     else if (asset.discoveredByIntegration) tier = _TIER_LABELS.integration;
     else tier = _TIER_LABELS.manual;
   }
-  return pollingLabel + detailsStr + intervalStr + " · " + tier;
+  var mibStr = mibLabel ? " · MIB: " + mibLabel : "";
+  return pollingLabel + detailsStr + intervalStr + " · " + tier + mibStr;
 }
 
 // Renders the badge content used next to each chart header. Returns ""
@@ -5412,7 +5441,21 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
     var prov = eff.provenance && eff.provenance[stream + "Polling"];
     var intervalField = _streamIntervalEffectiveField(stream);
     var intervalSeconds = intervalField ? eff.resolved[intervalField] : null;
-    span.textContent = _streamBadgeText(asset, stream, resolved, prov, intervalSeconds, eff.resolved);
+    // Per-stream MIB id + provenance — only response-time / telemetry /
+    // interfaces / lldp carry a *MibId column. The same provenance tier
+    // (asset|class|integration|manual) feeds the tooltip so operators can
+    // see at a glance which tier supplied the MIB choice.
+    var mibId = eff.resolved[stream + "MibId"];
+    var mibLabel = _resolveStreamMibLabel(mibId, eff.mibLookup);
+    var mibProv = eff.provenance && eff.provenance[stream + "MibId"];
+    span.textContent = _streamBadgeText(asset, stream, resolved, prov, intervalSeconds, eff.resolved, mibLabel);
+    // Tooltip carries the MIB provenance so the operator doesn't have to
+    // open the edit modal to confirm where the MIB pin came from.
+    if (mibLabel && mibProv && _TIER_LABELS[mibProv]) {
+      span.title = "Polling method · Where this setting comes from · MIB pinned at " + _TIER_LABELS[mibProv].toLowerCase();
+    } else {
+      span.title = "Polling method · Where this setting comes from";
+    }
   });
 }
 
