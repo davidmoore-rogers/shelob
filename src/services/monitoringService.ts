@@ -46,6 +46,11 @@ import {
   type VendorTelemetryProfile,
 } from "./vendorTelemetryProfiles.js";
 import {
+  getProfileFor as getDbManufacturerProfile,
+  type MetricKey,
+  type MetricRow,
+} from "./manufacturerProfileService.js";
+import {
   startPassTimer,
   startWorkTimer,
   recordWorkOutcome,
@@ -3410,6 +3415,76 @@ export async function snmpWalkRaw(
   });
 }
 
+// Per-asset metric resolution from the editable Manufacturer Profile (Slice 6c).
+// Walks the profile's per-model overrides in `order` and picks the first whose
+// `modelPattern` regex matches `Asset.model`; falls back to the metric row's
+// `defaultSymbol`. Returns null when the DB has no opinion — the caller then
+// uses the hardcoded `VENDOR_TELEMETRY_PROFILES` entry unchanged.
+function resolveDbMetric(metric: MetricRow | undefined, model: string | null | undefined): { symbol: string; type: "scalar" | "table" } | null {
+  if (!metric) return null;
+  const modelStr = model ?? "";
+  for (const o of (metric.overrides || [])) {
+    try {
+      if (new RegExp(o.modelPattern, "i").test(modelStr)) {
+        return { symbol: o.symbol, type: o.type };
+      }
+    } catch { /* malformed regex; skip — write-path validates so this is defensive only */ }
+  }
+  if (metric.defaultSymbol) return { symbol: metric.defaultSymbol, type: metric.defaultType };
+  return null;
+}
+
+// Layer the editable Manufacturer Profile on top of the hardcoded vendor
+// profile. The DB owns operator-edited symbols + per-model exceptions; when
+// the DB has a non-null choice we swap the primary symbol on a CLONE of the
+// hardcoded profile so the rest of the probe shape (memory bytes derivation,
+// walk-avg mode for Cisco, etc.) survives unchanged. Pure CPU/memory pct
+// fields are the only ones we override today — the full rich-shape swap
+// (multi-symbol memory queries, etc.) waits until operators have a use case
+// the editor surface can't express. Returns the hardcoded profile unchanged
+// when the DB cache hasn't loaded yet OR no matching DB profile exists.
+function pickVendorProfileMerged(
+  manufacturer: string | null | undefined,
+  os: string | null | undefined,
+  model: string | null | undefined,
+): VendorTelemetryProfile | null {
+  const base = pickVendorProfile(manufacturer, os, model);
+  const dbProfile = getDbManufacturerProfile(manufacturer);
+  if (!dbProfile) return base;
+
+  // Pluck the three metric rows we currently consult during telemetry probes.
+  const cpuRow         = dbProfile.metrics.find((m) => m.metricKey === ("cpu" as MetricKey));
+  const memoryRow      = dbProfile.metrics.find((m) => m.metricKey === ("memory" as MetricKey));
+  const temperatureRow = dbProfile.metrics.find((m) => m.metricKey === ("temperature" as MetricKey));
+
+  const cpuPick  = resolveDbMetric(cpuRow,         model);
+  const memPick  = resolveDbMetric(memoryRow,      model);
+  const tempPick = resolveDbMetric(temperatureRow, model);
+
+  // Nothing operator-overridden? Skip the clone allocation entirely.
+  if (!cpuPick && !memPick && !tempPick) return base;
+
+  // Clone shallowly so we can swap fields without mutating the shared
+  // VENDOR_TELEMETRY_PROFILES array entry.
+  const merged: VendorTelemetryProfile = base
+    ? { ...base, cpu: base.cpu && { ...base.cpu }, memory: base.memory && { ...base.memory }, temperature: base.temperature && { ...base.temperature } }
+    : { vendor: dbProfile.manufacturer, match: /__db_profile__/, cpu: undefined, memory: undefined, temperature: undefined };
+
+  if (cpuPick) {
+    merged.cpu = { symbol: cpuPick.symbol, mode: cpuPick.type === "table" ? "walk-avg" : "scalar" };
+  }
+  if (memPick) {
+    // The DB stores one symbol per metric; we put it in pctSymbol unless the
+    // hardcoded base specified the bytes form (preserved through the clone
+    // when the operator hasn't overridden it).
+    merged.memory = { pctSymbol: memPick.symbol, walkSubtree: memPick.type === "table" };
+  }
+  if (tempPick) {
+    merged.temperature = { symbol: tempPick.symbol, mode: "scalar" };
+  }
+  return merged;
+}
+
 async function collectTelemetrySnmp(
   host: string,
   config: Record<string, unknown>,
@@ -3447,7 +3522,7 @@ async function collectTelemetrySnmp(
       profileOs           = mib.moduleName;
     }
   }
-  const profile = pickVendorProfile(profileManufacturer, profileOs, profileModel);
+  const profile = pickVendorProfileMerged(profileManufacturer, profileOs, profileModel);
   // Scope still uses the *asset's* manufacturer/model so symbol resolution
   // through oidRegistry continues to pick up device-specific MIB overrides
   // for the actual asset, not the MIB pointed at by telemetryMibId.
@@ -3768,7 +3843,7 @@ async function collectSystemInfoSnmp(
   // Vendor profile is read once up-front so the disk fallback (below) can
   // consult it without re-deriving. Cheap — VENDOR_TELEMETRY_PROFILES is in
   // memory; ensureRegistryLoaded is called by the disk fallback when it runs.
-  const vendorProfile = pickVendorProfile(opts.manufacturer, opts.os, opts.model);
+  const vendorProfile = pickVendorProfileMerged(opts.manufacturer, opts.os, opts.model);
   const vendorScope   = { manufacturer: opts.manufacturer, model: opts.model };
 
   return await withSnmpSession(host, config, async (session) => {
