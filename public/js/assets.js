@@ -5379,6 +5379,11 @@ function _streamSourceBadgeHTML(asset, stream) {
 // wrong row.
 async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
   if (!assetId || !asset) return;
+  // _streamCredential needs the credential cache to resolve a class-override
+  // *CredentialId into a name. Without this the badge silently falls through
+  // to the integration's credential when the cache hasn't been warmed by
+  // another surface (Server Settings / Monitoring Settings modal).
+  if (!_credentialCache.loaded) await _ensureCredentials().catch(function () {});
   var eff;
   try { eff = await api.assets.effectiveMonitorSettings(assetId); } catch (_) { return; }
   if (!eff || !eff.resolved) return;
