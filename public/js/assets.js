@@ -1571,6 +1571,7 @@ function assetFormHTML(defaults) {
     ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
         '<div class="form-group"><label>Hostname</label><div class="form-value">' + escapeHtml(d.hostname || "-") + '</div></div>' +
         '<div class="form-group"><label>DNS Name</label><div class="form-value">' + escapeHtml(d.dnsName || "-") + '</div></div>' +
+        '<div class="form-group" style="grid-column:1 / -1"><label>Serial Number</label><input type="text" id="f-serialNumber" value="' + escapeHtml(d.serialNumber || "") + '" placeholder="e.g. SN-DELL-001"></div>' +
       '</div>'
     : '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px">' +
         '<div class="form-group"><label>Hostname</label><input type="text" id="f-hostname" value="' + escapeHtml(d.hostname || "") + '" placeholder="e.g. server-01"></div>' +
