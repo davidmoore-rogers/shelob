@@ -5257,11 +5257,22 @@ function _streamTransportLabel(asset, resolvedPolling) {
 // integration's API token, which isn't a Credential row and stays implicit
 // in the "Proxy via …" / "Direct" transport label). ICMP doesn't
 // authenticate.
-function _streamCredential(asset, stream, resolvedPolling) {
+function _streamCredential(asset, stream, resolvedPolling, effectiveResolved) {
   if (!asset || resolvedPolling === "icmp" || resolvedPolling === "disabled") return null;
   var perStream = asset[stream + "Credential"];
   if (perStream && perStream.name) return perStream;
   if (asset.monitorCredential && asset.monitorCredential.name) return asset.monitorCredential;
+  // Class-override per-stream credential — only available when the caller
+  // passed eff.resolved from /effective-monitor-settings. Look the
+  // credential up by id in the credential cache so the badge labels match
+  // what the probe actually uses after the resolver fix.
+  if (effectiveResolved) {
+    var credId = effectiveResolved[stream + "CredentialId"];
+    if (credId && _credentialCache && Array.isArray(_credentialCache.list)) {
+      var found = _credentialCache.list.find(function (c) { return c.id === credId; });
+      if (found && found.name) return found;
+    }
+  }
   if ((resolvedPolling === "snmp" || resolvedPolling === "winrm" || resolvedPolling === "ssh") &&
       asset.integrationMonitorCredential && asset.integrationMonitorCredential.name) {
     return asset.integrationMonitorCredential;
@@ -5309,10 +5320,10 @@ function _formatPollingInterval(seconds) {
 // → manual tier). The async path passes the real provenance.
 // `intervalSeconds` is the resolved cadence for this stream (response-time
 // /telemetry/system-info); pass null to omit the slot entirely.
-function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSeconds) {
+function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSeconds, effectiveResolved) {
   var pollingLabel = _POLLING_LABELS[resolvedRaw] || resolvedRaw;
   var transport = _streamTransportLabel(asset, resolvedRaw);
-  var credential = _streamCredential(asset, stream, resolvedRaw);
+  var credential = _streamCredential(asset, stream, resolvedRaw, effectiveResolved);
   var details = [];
   if (transport)  details.push(transport);
   if (credential) details.push(credential.name);
@@ -5396,7 +5407,7 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
     var prov = eff.provenance && eff.provenance[stream + "Polling"];
     var intervalField = _streamIntervalEffectiveField(stream);
     var intervalSeconds = intervalField ? eff.resolved[intervalField] : null;
-    span.textContent = _streamBadgeText(asset, stream, resolved, prov, intervalSeconds);
+    span.textContent = _streamBadgeText(asset, stream, resolved, prov, intervalSeconds, eff.resolved);
   });
 }
 
@@ -9800,6 +9811,32 @@ function _monsetOverrideSummary(o) {
   return parts.length === 0 ? "(empty — all fields inherited)" : parts.join(", ");
 }
 
+// Warning banner shown inside the class-override editor when the operator picks
+// (class=switch|access_point) + (source=FMG/FortiGate integration whose
+// per-class `enabled` flag — fortiswitchMonitor.enabled / fortiapMonitor.enabled
+// — is false). In that state discovery never stamps `Asset.monitorCredentialId`
+// on the managed switch/AP rows, so a class override with no per-stream
+// credential set will fall through to the integration's top-level
+// `monitorCredentialId` (the FortiGate's SNMP credential) — usually wrong for
+// FortiLink-side switches/APs. Returns empty string when the warning doesn't apply.
+function _monsetDirectPollWarningHTML(integrationId, assetType) {
+  if (assetType !== "switch" && assetType !== "access_point") return "";
+  if (!integrationId || integrationId === "null") return "";
+  var intg = _monsetIntegrations.find(function (i) { return i.id === integrationId; });
+  if (!intg) return "";
+  if (intg.type !== "fortimanager" && intg.type !== "fortigate") return "";
+  var cfg = intg.config || {};
+  var blockKey = assetType === "switch" ? "fortiswitchMonitor" : "fortiapMonitor";
+  var block = cfg[blockKey] || {};
+  if (block.enabled === true) return "";
+  var classLabel = assetType === "switch" ? "FortiSwitches" : "FortiAPs";
+  return '<div id="monset-ov-direct-poll-warning-inner" style="margin:0.25rem 0 0.75rem 0;padding:0.5rem 0.75rem;background:rgba(245,158,11,0.08);border:1px solid var(--color-warning);border-radius:4px;color:var(--color-warning);font-size:0.82rem">' +
+    '&#9888; <strong>Direct Polling is off</strong> for ' + escapeHtml(classLabel) + ' on this integration. ' +
+    'Discovery won\'t stamp an SNMP credential on the asset row, so a class override without an explicit per-stream credential will fall through to the FortiGate\'s SNMP credential (usually wrong for FortiLink-side ' + escapeHtml(classLabel.toLowerCase()) + '). ' +
+    'Either set the per-stream credentials below, or enable Direct Polling under the integration\'s ' + escapeHtml(classLabel) + ' subtab.' +
+  '</div>';
+}
+
 function _monsetOpenOverrideEditor(existing) {
   var isEdit = !!existing;
   var classOpts = Object.keys(ASSET_TYPE_LABELS).map(function (key) {
@@ -9829,6 +9866,7 @@ function _monsetOpenOverrideEditor(existing) {
       '</div>' +
     '</div>' +
     (isEdit ? '<p class="hint" style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.25rem 0 0.75rem 0">Class and source are fixed for an existing override; delete and re-create to change them.</p>' : '') +
+    '<div id="monset-ov-direct-poll-warning">' + _monsetDirectPollWarningHTML(existing && existing.integrationId, existing && existing.assetType) + '</div>' +
     '<p class="hint" style="margin:0.5rem 0 0.75rem 0;color:var(--color-text-tertiary)">Leave a field blank to inherit from the source\'s tier.</p>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem 1rem">' +
       _monsetField("monset-ov-intervalSeconds",           "Probe interval",         "seconds",                        v.intervalSeconds,           1,    86400,  false) +
@@ -9877,6 +9915,23 @@ function _monsetOpenOverrideEditor(existing) {
     var pollEl = document.getElementById("monset-ov-" + stream + "Polling");
     if (pollEl) pollEl.addEventListener("change", _refreshOvStreamSubRows);
   });
+
+  // Refresh the direct-poll warning whenever class or source changes (add
+  // mode only — both pickers are disabled on edit).
+  function _refreshOvDirectPollWarning() {
+    var wrap   = document.getElementById("monset-ov-direct-poll-warning");
+    var clsSel = document.getElementById("monset-ov-class");
+    var srcSel = document.getElementById("monset-ov-source");
+    if (!wrap || !clsSel || !srcSel) return;
+    var integrationId = srcSel.value === "null" ? null : srcSel.value;
+    wrap.innerHTML = _monsetDirectPollWarningHTML(integrationId, clsSel.value);
+  }
+  if (!isEdit) {
+    var clsSelEl = document.getElementById("monset-ov-class");
+    if (clsSelEl) clsSelEl.addEventListener("change", _refreshOvDirectPollWarning);
+    var srcSelEl = document.getElementById("monset-ov-source");
+    if (srcSelEl) srcSelEl.addEventListener("change", _refreshOvDirectPollWarning);
+  }
 
   // Re-render the polling block when the source changes — methods compatible
   // with the new source replace the old options. Disabled in edit mode (the
