@@ -66,6 +66,13 @@ const FLOOR = {
   telemetryMibId:            null,
   interfacesMibId:           null,
   lldpMibId:                 null,
+  // Per-stream credential IDs are class-override-only, but the resolver
+  // unconditionally writes null for them at every other tier so toEqual()
+  // sees a stable shape.
+  responseTimeCredentialId:  null,
+  telemetryCredentialId:     null,
+  interfacesCredentialId:    null,
+  lldpCredentialId:          null,
 };
 
 const TUNED_TIER = {
@@ -89,6 +96,10 @@ const TUNED_TIER = {
   telemetryMibId:            null,
   interfacesMibId:           null,
   lldpMibId:                 null,
+  responseTimeCredentialId:  null,
+  telemetryCredentialId:     null,
+  interfacesCredentialId:    null,
+  lldpCredentialId:          null,
 };
 
 // Per-stream polling defaults the resolver applies for a given source kind.
