@@ -28,6 +28,13 @@ const EXEMPT_PATH_PREFIXES = [
   "/api/v1/auth/login",        // pre-session; rate limiter is the defense
   "/api/v1/auth/azure/",       // SAML flow is cross-origin by design; signed assertion + RelayState are the CSRF guarantee
   "/api/setup/",               // first-run wizard runs on a separate server without sessions
+  "/api/v1/agents/",           // Polaris Agent endpoints — agents are programmatic clients with NO browser session.
+                                //   * /enroll authenticates via a one-shot enrollment token in the request body
+                                //   * /samples, /heartbeat, /config authenticate via the per-agent bearer
+                                //     in the Authorization header (issued at /enroll time, asset-bound)
+                                //   * /binary/<name> is a public GET (whitelist-checked against manifest.json)
+                                // None of these have a session to carry a CSRF token in. Same security
+                                // model as /auth/login above — token-based auth is the CSRF defense.
 ];
 
 export function csrfMiddleware(req: Request, res: Response, next: NextFunction) {
