@@ -69,7 +69,7 @@ async function _initSubnetsPage() {
   loadSubnets();
 
   var addBtn = document.getElementById("btn-add-subnet");
-  if (addBtn) addBtn.addEventListener("click", openCreateModal);
+  if (addBtn) addBtn.addEventListener("click", openSubnetCreateModal);
   var allocBtn = document.getElementById("btn-auto-alloc");
   if (allocBtn) allocBtn.addEventListener("click", openAllocateModal);
   document.getElementById("subnets-tbody").addEventListener("click", function (e) {
@@ -264,8 +264,8 @@ function renderSubnetsPage() {
       '<td>' + source + '</td>' +
       '<td>' + (s._count ? s._count.reservations : 0) + '</td>' +
       '<td class="actions">' +
-        (canEditSubnet(s) ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + s.id + '\')">Edit</button>' +
-        '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\', ' + (s._count ? s._count.reservations : 0) + ')">Del</button>' : '') +
+        (canEditSubnet(s) ? '<button class="btn btn-sm btn-secondary" onclick="openSubnetEditModal(\'' + s.id + '\')">Edit</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="confirmDeleteSubnet(\'' + s.id + '\', \'' + escapeHtml(s.cidr) + '\', ' + (s._count ? s._count.reservations : 0) + ')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
   _subnetsUpdateSelectAll();
@@ -405,7 +405,7 @@ async function openBulkEditSubnetsModal() {
   });
 }
 
-async function openCreateModal() {
+async function openSubnetCreateModal() {
   await _ensureTagCache();
   var body = '<div class="form-group"><label>Block *</label>' + blockSelectHTML("f-blockId", true) + '</div>' +
     '<div class="form-group"><label>CIDR *</label><input type="text" id="f-cidr" placeholder="e.g. 10.0.3.0/24"></div>' +
@@ -1031,7 +1031,7 @@ async function _onAllocSubmit() {
   }
 }
 
-async function openEditModal(id) {
+async function openSubnetEditModal(id) {
   try {
     var results = await Promise.all([api.subnets.get(id), _ensureTagCache()]);
     var subnet = results[0];
@@ -1131,7 +1131,7 @@ async function openEditModal(id) {
   }
 }
 
-async function confirmDelete(id, cidr, reservationCount) {
+async function confirmDeleteSubnet(id, cidr, reservationCount) {
   var msg = 'Delete network "' + cidr + '"?';
   if (reservationCount > 0) {
     msg += ' This will also delete ' + reservationCount + ' reservation' + (reservationCount !== 1 ? 's' : '') + '.';

@@ -533,7 +533,7 @@ function _searchTargetFor(hit) {
     return {
       page: "/ipam.html",
       hash: "#tab=blocks&view=block:" + encodeURIComponent(hit.id),
-      handler: function () { if (typeof openEditModal === "function") openEditModal(hit.id); },
+      handler: function () { if (typeof openBlockEditModal === "function") openBlockEditModal(hit.id); },
     };
   }
   if (hit.type === "subnet") {
@@ -599,10 +599,10 @@ function processSearchHash() {
     setTimeout(function () {
       if (type === "asset" && path.indexOf("/assets.html") !== -1 && typeof openViewModal === "function") {
         openViewModal(id);
-      } else if (type === "block" && (onIpamPage || path.indexOf("/blocks.html") !== -1) && typeof openEditModal === "function") {
-        openEditModal(id);
-      } else if (type === "subnet" && (onIpamPage || path.indexOf("/subnets.html") !== -1) && typeof openEditModal === "function") {
-        openEditModal(id);
+      } else if (type === "block" && (onIpamPage || path.indexOf("/blocks.html") !== -1) && typeof openBlockEditModal === "function") {
+        openBlockEditModal(id);
+      } else if (type === "subnet" && (onIpamPage || path.indexOf("/subnets.html") !== -1) && typeof openSubnetEditModal === "function") {
+        openSubnetEditModal(id);
       } else if (type === "reservation" && (onIpamPage || path.indexOf("/subnets.html") !== -1) && typeof openReservationModal === "function") {
         openReservationModal(id);
       }

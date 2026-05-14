@@ -78,7 +78,7 @@ async function _initBlocksPage() {
   });
 
   var addBtn = document.getElementById("btn-add-block");
-  if (addBtn) addBtn.addEventListener("click", openCreateModal);
+  if (addBtn) addBtn.addEventListener("click", openBlockCreateModal);
   document.getElementById("filter-version").addEventListener("change", function () { _blocksPage = 1; loadBlocks(); _saveBlocksPrefs(); });
   document.getElementById("filter-tag").addEventListener("input", debounce(function () { _blocksPage = 1; loadBlocks(); _saveBlocksPrefs(); }, 300));
   document.getElementById("filter-pagesize").addEventListener("change", function () {
@@ -140,8 +140,8 @@ function renderBlocksPage() {
       '<td>' + (b._count ? b._count.subnets : 0) + '</td>' +
       '<td>' + formatDate(b.createdAt) + '</td>' +
       '<td class="actions">' +
-        (canManageNetworks() ? '<button class="btn btn-sm btn-secondary" onclick="openEditModal(\'' + b.id + '\')">Edit</button>' +
-        '<button class="btn btn-sm btn-danger" onclick="confirmDelete(\'' + b.id + '\', \'' + escapeHtml(b.cidr) + '\')">Del</button>' : '') +
+        (canManageNetworks() ? '<button class="btn btn-sm btn-secondary" onclick="openBlockEditModal(\'' + b.id + '\')">Edit</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="confirmDeleteBlock(\'' + b.id + '\', \'' + escapeHtml(b.cidr) + '\')">Del</button>' : '') +
       '</td></tr>';
   }).join("");
   renderPageControls("pagination", sfData.length, _blocksPageSize, _blocksPage, function (p) {
@@ -150,7 +150,7 @@ function renderBlocksPage() {
   });
 }
 
-async function openCreateModal() {
+async function openBlockCreateModal() {
   await _ensureTagCache();
   var body = formHTML({ name: "", cidr: "", description: "" }) + tagFieldHTML([]);
   var footer = '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button><button class="btn btn-primary" id="btn-save">Create Block</button>';
@@ -178,7 +178,7 @@ async function openCreateModal() {
   });
 }
 
-async function openEditModal(id) {
+async function openBlockEditModal(id) {
   try {
     var block = await api.blocks.get(id);
     await _ensureTagCache();
@@ -223,7 +223,7 @@ async function openEditModal(id) {
   }
 }
 
-async function confirmDelete(id, cidr) {
+async function confirmDeleteBlock(id, cidr) {
   var ok = await showConfirm('Delete block "' + cidr + '"? This cannot be undone.');
   if (!ok) return;
   try {
