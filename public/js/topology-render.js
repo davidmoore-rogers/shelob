@@ -361,9 +361,41 @@
     return style;
   }
 
+  // Legend rows for the topology overlay. Colors here mirror the constants
+  // used by `fortinetNodeColor()` (status hues) and `topologyStylesheet()`
+  // (node fills + edge styles) so a stylesheet change has exactly one place
+  // the legend has to follow.
+  function topologyLegendSpec() {
+    return {
+      nodes: [
+        { label: "FortiGate",         kind: "circle",          size: "lg", fill: "data(nodeColor)", desc: "Color = monitor health" },
+        { label: "FortiSwitch",       kind: "circle",          size: "md", fill: "data(nodeColor)" },
+        { label: "FortiAP",           kind: "circle",          size: "sm", fill: "data(nodeColor)" },
+        { label: "Endpoint",          kind: "round-rectangle", size: "md", fill: "data(nodeColor)", desc: "Color = monitor health (when monitored)" },
+        { label: "Wireless station",  kind: "diamond",         size: "sm", fill: "#0e2a3a", border: "#22d3ee" },
+        { label: "LLDP ghost",        kind: "circle",          size: "md", fill: "#7a4f1a", border: "#f59e0b", borderStyle: "dashed", desc: "Non-Polaris device" },
+        { label: "Remote asset",      kind: "circle",          size: "md", fill: "#1e3a5f", border: "#4fc3f7", desc: "Polaris asset at another site" },
+      ],
+      health: [
+        { label: "Up",                color: "#2e7d32" },
+        { label: "Degraded",          color: "#f9a825" },
+        { label: "Down",              color: "#c62828" },
+        { label: "Dep. Down",         color: "#607d8b" },
+        { label: "Unmonitored",       color: "#757575" },
+      ],
+      edges: [
+        { label: "Controller",        color: "#6a7388", style: "solid",  desc: "FortiLink / managed-AP authoritative" },
+        { label: "Interface-inferred",color: "#14b8a6", style: "solid",  desc: "Naming-convention peer link" },
+        { label: "LLDP",              color: "#f59e0b", style: "dashed" },
+        { label: "Wireless",          color: "#22d3ee", style: "dashed", desc: "AP → station" },
+      ],
+    };
+  }
+
   window.PolarisTopologyRender = {
     fortinetNodeColor: fortinetNodeColor,
     buildTopologyElements: buildTopologyElements,
     topologyStylesheet: topologyStylesheet,
+    topologyLegendSpec: topologyLegendSpec,
   };
 })();

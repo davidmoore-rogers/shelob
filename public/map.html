@@ -58,6 +58,16 @@
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
             </svg>
           </button>
+          <button type="button" class="btn-icon" id="topology-legend" aria-label="Toggle legend" title="Toggle legend" style="line-height:0">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="6" cy="6" r="2"/>
+              <line x1="11" y1="6" x2="21" y2="6"/>
+              <circle cx="6" cy="12" r="2"/>
+              <line x1="11" y1="12" x2="21" y2="12"/>
+              <circle cx="6" cy="18" r="2"/>
+              <line x1="11" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
           <button type="button" class="btn-icon" id="topology-reset-layout" aria-label="Reset layout" title="Reset layout (discard manual node positions)" style="line-height:0">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="1 4 1 10 7 10"/>
@@ -83,7 +93,15 @@
       </div>
       <div class="modal-body">
         <div class="topology-layout">
-          <div id="topology-graph" class="topology-graph"></div>
+          <div id="topology-graph" class="topology-graph">
+            <div id="topology-legend-overlay" class="topology-legend" hidden>
+              <header class="topology-legend-header">
+                <span class="topology-legend-title">Legend</span>
+                <button type="button" class="btn-icon" id="topology-legend-close" aria-label="Close legend" title="Close">&times;</button>
+              </header>
+              <div id="topology-legend-body" class="topology-legend-body"></div>
+            </div>
+          </div>
           <aside id="topology-info" class="topology-info"></aside>
         </div>
       </div>

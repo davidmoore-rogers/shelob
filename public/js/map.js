@@ -21,6 +21,12 @@
   var topoSearchDebounce = null;
   var topoSuggestState  = { open: false, items: [], index: -1 };
   var POSITION_STORAGE_PREFIX = "polaris.topology.positions:";
+  // Legend overlay: per-user (singleton) — same key for every site, since
+  // the legend describes the rendering rules, not site-specific content.
+  // Persisted state is `{visible, x, y}` so opening the modal restores the
+  // operator's last spot. Drag offsets are clamped on render to keep the
+  // panel inside the graph if the modal was resized between sessions.
+  var LEGEND_STORAGE_KEY = "polaris.topology.legend";
 
   // Register cytoscape-dagre once. Both globals are populated by the UMD builds
   // loaded in map.html. Guarded so hot-reload doesn't throw.
@@ -387,6 +393,8 @@
     var fullscreenBtn = document.getElementById("topology-fullscreen");
     var refreshBtn = document.getElementById("topology-refresh");
     var resetBtn = document.getElementById("topology-reset-layout");
+    var legendBtn = document.getElementById("topology-legend");
+    var legendCloseBtn = document.getElementById("topology-legend-close");
     var showFullBtn = document.getElementById("topology-show-full");
     var searchInput = document.getElementById("topology-search-input");
     closeBtn.addEventListener("click", closeTopology);
@@ -394,8 +402,14 @@
     if (fullscreenBtn) fullscreenBtn.addEventListener("click", toggleFullscreenTopology);
     if (refreshBtn) refreshBtn.addEventListener("click", refreshTopology);
     if (resetBtn) resetBtn.addEventListener("click", resetTopologyLayout);
+    if (legendBtn) legendBtn.addEventListener("click", toggleTopologyLegend);
+    if (legendCloseBtn) legendCloseBtn.addEventListener("click", function () { setLegendVisible(false); });
     if (showFullBtn) showFullBtn.addEventListener("click", clearConnectionPathOverlay);
     if (searchInput) wireTopologySearch(searchInput);
+    wireLegendDrag();
+    // Restore legend visibility on first open per page load so operators
+    // who left it visible see it again the next time they pop the modal.
+    renderTopologyLegend();
     // Intercept clicks on asset links in the topology right-bar so they open
     // the asset details slide-over instead of navigating away to assets.html.
     var infoPanel = document.getElementById("topology-info");
@@ -534,6 +548,153 @@
     catch (e) { /* quota / private mode — proceed with re-render anyway */ }
     renderTopologyGraph(topoState.data);
     if (typeof showToast === "function") showToast("Layout reset");
+  }
+
+  // ── Legend overlay ────────────────────────────────────────────────────────
+  function _readLegendPrefs() {
+    try {
+      var raw = localStorage.getItem(LEGEND_STORAGE_KEY);
+      if (!raw) return { visible: false, x: null, y: null };
+      var p = JSON.parse(raw);
+      return { visible: !!p.visible, x: (typeof p.x === "number" ? p.x : null), y: (typeof p.y === "number" ? p.y : null) };
+    } catch (e) { return { visible: false, x: null, y: null }; }
+  }
+  function _writeLegendPrefs(prefs) {
+    try { localStorage.setItem(LEGEND_STORAGE_KEY, JSON.stringify(prefs)); } catch (e) {}
+  }
+  function setLegendVisible(visible) {
+    var prefs = _readLegendPrefs();
+    prefs.visible = !!visible;
+    _writeLegendPrefs(prefs);
+    renderTopologyLegend();
+  }
+  function toggleTopologyLegend() {
+    setLegendVisible(!_readLegendPrefs().visible);
+  }
+  function renderTopologyLegend() {
+    var el = document.getElementById("topology-legend-overlay");
+    if (!el) return;
+    var prefs = _readLegendPrefs();
+    if (!prefs.visible) { el.hidden = true; return; }
+    var spec = (window.PolarisTopologyRender && window.PolarisTopologyRender.topologyLegendSpec)
+      ? window.PolarisTopologyRender.topologyLegendSpec() : null;
+    if (!spec) { el.hidden = true; return; }
+    var body = document.getElementById("topology-legend-body");
+    if (body && !body.dataset.rendered) {
+      body.innerHTML = _buildLegendHTML(spec);
+      body.dataset.rendered = "1";
+    }
+    el.hidden = false;
+    // Restore saved position (clamped to the graph container so a smaller
+    // viewport doesn't strand the panel off-screen). Default = top-left
+    // inset, the CSS-anchored position.
+    var graph = document.getElementById("topology-graph");
+    if (graph && prefs.x !== null && prefs.y !== null) {
+      var maxX = Math.max(0, graph.clientWidth  - el.offsetWidth  - 4);
+      var maxY = Math.max(0, graph.clientHeight - el.offsetHeight - 4);
+      var x = Math.min(Math.max(0, prefs.x), maxX);
+      var y = Math.min(Math.max(0, prefs.y), maxY);
+      el.style.left = x + "px";
+      el.style.top  = y + "px";
+    } else {
+      el.style.left = ""; el.style.top = "";
+    }
+  }
+  function _buildLegendHTML(spec) {
+    function nodeSwatch(row) {
+      var size = row.size === "lg" ? 22 : (row.size === "sm" ? 14 : 18);
+      var border = row.border ? row.border : "rgba(255,255,255,0.85)";
+      var borderStyle = row.borderStyle === "dashed" ? "dashed" : "solid";
+      var fill = row.fill === "data(nodeColor)" ? "#2e7d32" : row.fill;
+      var shape = "";
+      if (row.kind === "diamond") {
+        shape = '<div style="width:' + size + 'px;height:' + size + 'px;background:' + fill +
+                ';border:2px ' + borderStyle + ' ' + border + ';transform:rotate(45deg)"></div>';
+      } else if (row.kind === "round-rectangle") {
+        shape = '<div style="width:' + (size + 8) + 'px;height:' + size + 'px;background:' + fill +
+                ';border:2px ' + borderStyle + ' ' + border + ';border-radius:4px"></div>';
+      } else {
+        shape = '<div style="width:' + size + 'px;height:' + size + 'px;background:' + fill +
+                ';border:2px ' + borderStyle + ' ' + border + ';border-radius:50%"></div>';
+      }
+      return '<span class="topology-legend-swatch">' + shape + '</span>';
+    }
+    function edgeSwatch(row) {
+      var dash = row.style === "dashed" ? "4 3" : "0";
+      return '<span class="topology-legend-swatch">' +
+        '<svg width="28" height="12" viewBox="0 0 28 12" aria-hidden="true">' +
+          '<line x1="2" y1="6" x2="26" y2="6" stroke="' + row.color +
+          '" stroke-width="2.4" stroke-dasharray="' + dash + '" stroke-linecap="round"/>' +
+        '</svg></span>';
+    }
+    function healthSwatch(row) {
+      return '<span class="topology-legend-swatch">' +
+        '<div style="width:14px;height:14px;background:' + row.color +
+        ';border-radius:50%;border:2px solid rgba(255,255,255,0.85)"></div></span>';
+    }
+    function row(swatchHtml, label, desc) {
+      var html = '<div class="topology-legend-row">' + swatchHtml +
+                 '<span class="topology-legend-label">' + escapeHtml(label) + '</span></div>';
+      if (desc) html += '<div class="topology-legend-desc">' + escapeHtml(desc) + '</div>';
+      return html;
+    }
+    var parts = [];
+    parts.push('<div class="topology-legend-section"><div class="topology-legend-section-title">Nodes</div>');
+    spec.nodes.forEach(function (n) { parts.push(row(nodeSwatch(n), n.label, n.desc)); });
+    parts.push('</div>');
+    parts.push('<div class="topology-legend-section"><div class="topology-legend-section-title">Monitor health</div>');
+    spec.health.forEach(function (h) { parts.push(row(healthSwatch(h), h.label)); });
+    parts.push('</div>');
+    parts.push('<div class="topology-legend-section"><div class="topology-legend-section-title">Edges</div>');
+    spec.edges.forEach(function (e) { parts.push(row(edgeSwatch(e), e.label, e.desc)); });
+    parts.push('</div>');
+    return parts.join("");
+  }
+  // Header drag — pointer-events-based so it works on touch laptops too.
+  // Coordinates are stored relative to the graph container so resizing the
+  // browser between sessions never strands the legend off-screen.
+  function wireLegendDrag() {
+    var el = document.getElementById("topology-legend-overlay");
+    var header = el && el.querySelector(".topology-legend-header");
+    if (!header) return;
+    var dragging = false, dx = 0, dy = 0;
+    header.addEventListener("pointerdown", function (e) {
+      // Ignore drags initiated on the close button.
+      if (e.target.closest("button")) return;
+      var graph = document.getElementById("topology-graph");
+      if (!graph) return;
+      var rect = el.getBoundingClientRect();
+      var graphRect = graph.getBoundingClientRect();
+      dx = e.clientX - rect.left;
+      dy = e.clientY - rect.top;
+      dragging = true;
+      header.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      function onMove(ev) {
+        if (!dragging) return;
+        var x = ev.clientX - graphRect.left - dx;
+        var y = ev.clientY - graphRect.top  - dy;
+        var maxX = Math.max(0, graph.clientWidth  - el.offsetWidth  - 4);
+        var maxY = Math.max(0, graph.clientHeight - el.offsetHeight - 4);
+        x = Math.min(Math.max(0, x), maxX);
+        y = Math.min(Math.max(0, y), maxY);
+        el.style.left = x + "px";
+        el.style.top  = y + "px";
+      }
+      function onUp() {
+        if (!dragging) return;
+        dragging = false;
+        try { header.releasePointerCapture(e.pointerId); } catch (err) {}
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        var prefs = _readLegendPrefs();
+        prefs.x = parseFloat(el.style.left) || 0;
+        prefs.y = parseFloat(el.style.top)  || 0;
+        _writeLegendPrefs(prefs);
+      }
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+    });
   }
 
   // ── Position persistence ───────────────────────────────────────────────────
