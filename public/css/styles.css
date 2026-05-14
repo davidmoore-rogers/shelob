@@ -2074,6 +2074,9 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   grid-template-columns: 1fr 1fr;
   gap: 4px 24px;
 }
+@container (max-width: 520px) {
+  .asset-view-grid { grid-template-columns: 1fr; }
+}
 
 /* ─── Dependency Tree block (asset details General tab) ──────────────────────
  * Compact vertical tree: parents above the current asset, children below. The
@@ -2713,6 +2716,7 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 /* Asset details panel content padding (slideover-body has padding:0) */
 .asset-panel-content {
   padding: 1rem 1.25rem 1rem 2.5rem;
+  container-type: inline-size;
 }
 
 /* IP panel (reservations slide-in) content padding — match the asset details
@@ -2892,10 +2896,13 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 
 /* ── Click-to-copy cells ─────────────────────────────────────────────── */
 .copy-cell {
+  display: inline-block;
+  max-width: 100%;
   cursor: pointer;
   border-radius: 3px;
   padding: 1px 3px;
   margin: -1px -3px;
+  overflow-wrap: anywhere;
   transition: background 0.15s, color 0.15s;
 }
 .copy-cell:hover {
