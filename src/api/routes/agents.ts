@@ -370,6 +370,128 @@ agentsRouter.post("/heartbeat", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── /system-info (bearer) ────────────────────────────────────────────
+//
+// The agent runs ON the host so it sees the truth for hostname / OS /
+// manufacturer / model / serial via OS APIs + DMI/SMBIOS. We persist
+// that observation as an `AssetSource` row keyed on the ManagedAgent's
+// id (one row per installed agent), then re-project the asset and
+// write back the discovery-owned fields. Beats AD/Entra/Intune in the
+// priority table — see assetProjection.ts.
+//
+// Cadence: agent pushes at startup + every heartbeat tick (default 5 min).
+// Cheap to do — host identity doesn't change between firmware updates so
+// most pushes are no-ops on the DB side (same observed blob → same
+// projection → no Asset write).
+
+const SystemInfoSchema = z.object({
+  hostname:       z.string().max(255).optional(),
+  os:             z.string().max(255).optional(),    // human-readable, e.g. "Red Hat Enterprise Linux 8.10"
+  osVersion:      z.string().max(64).optional(),     // os-release VERSION_ID, sw_vers ProductVersion, Windows build
+  kernelVersion:  z.string().max(255).optional(),
+  kernelArch:     z.string().max(32).optional(),
+  manufacturer:   z.string().max(255).optional(),
+  model:          z.string().max(255).optional(),
+  serialNumber:   z.string().max(255).optional(),
+  biosVersion:    z.string().max(255).optional(),
+  primaryMac:     z.string().max(64).optional(),
+  primaryIp:      z.string().max(64).optional(),
+  agentVersion:   z.string().max(64).optional(),     // copy of the running binary's version; informational
+});
+
+agentsRouter.post("/system-info", async (req, res, next) => {
+  try {
+    const body         = SystemInfoSchema.parse(req.body ?? {});
+    const assetId      = req.managedAgent!.assetId;
+    const managedAgentId = req.managedAgent!.managedAgentId;
+    const now          = new Date();
+
+    // Build the observed blob — strip undefined so the priority rules'
+    // truthy-check works cleanly.
+    const observed: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) {
+      if (v !== undefined && v !== null && v !== "") observed[k] = v;
+    }
+
+    // Upsert the per-agent source row. The externalId is the ManagedAgent
+    // id (stable per install, rotates on reinstall) — matches the pattern
+    // every other source uses (entra.deviceId, ad.objectGUID, etc.).
+    await prisma.assetSource.upsert({
+      where: {
+        sourceKind_externalId: {
+          sourceKind: "polaris-agent",
+          externalId: managedAgentId,
+        },
+      },
+      update: {
+        observed: observed as any,
+        syncedAt: now,
+        lastSeen: now,
+        inferred: false,
+      },
+      create: {
+        assetId,
+        sourceKind: "polaris-agent",
+        externalId: managedAgentId,
+        observed:   observed as any,
+        inferred:   false,
+        firstSeen:  now,
+        lastSeen:   now,
+        syncedAt:   now,
+      },
+    });
+
+    // Re-project + write back any field where projection now disagrees
+    // with what's on Asset. Mirrors the Phase 11 reprojection in
+    // syncDhcpSubnets but scoped to one asset.
+    const allSources = await prisma.assetSource.findMany({
+      where:  { assetId },
+      select: { sourceKind: true, inferred: true, observed: true },
+    });
+    const projInput = allSources.map((s) => ({
+      sourceKind: s.sourceKind,
+      inferred:   s.inferred,
+      observed:   s.observed as Record<string, unknown> | null,
+    }));
+    const { projectAssetFromSources } = await import("../../utils/assetProjection.js");
+    const { projected } = projectAssetFromSources(projInput);
+
+    const current = await prisma.asset.findUnique({
+      where:  { id: assetId },
+      select: {
+        hostname: true, serialNumber: true, manufacturer: true, model: true,
+        os: true, osVersion: true, learnedLocation: true,
+      },
+    });
+    if (current) {
+      const diff: Record<string, string | null> = {};
+      const FIELDS: Array<keyof typeof current> = [
+        "hostname", "serialNumber", "manufacturer", "model", "os", "osVersion",
+      ];
+      for (const f of FIELDS) {
+        const next = projected[f as keyof typeof projected];
+        if (next !== null && current[f] !== next) {
+          diff[f] = next as string;
+        }
+      }
+      if (Object.keys(diff).length > 0) {
+        await prisma.asset.update({ where: { id: assetId }, data: diff as any });
+      }
+    }
+
+    // Bump the running agent's version stamp opportunistically — keeps
+    // the asset details modal's Agent panel current without waiting for
+    // the next heartbeat tick.
+    if (body.agentVersion) {
+      await prisma.managedAgent
+        .update({ where: { id: managedAgentId }, data: { agentVersion: body.agentVersion } })
+        .catch(() => { /* best-effort */ });
+    }
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
 // ─── Helpers ──────────────────────────────────────────────────────────
 
 async function computeConfigEtag(assetId: string): Promise<string> {

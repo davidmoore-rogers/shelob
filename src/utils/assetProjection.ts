@@ -60,6 +60,7 @@ export type AssetSourceKind =
   | "fortiswitch"
   | "fortiap"
   | "fortigate-endpoint"
+  | "polaris-agent"
   | "manual";
 
 export interface AssetSourceForProjection {
@@ -116,7 +117,13 @@ type FieldRule = {
 };
 
 const HOSTNAME_RULES: FieldRule[] = [
-  // FQDN from AD wins — when an AD source has a dnsHostName containing a
+  // Polaris Agent runs ON the host — it knows the configured hostname
+  // (os.Hostname / Win32 GetComputerNameEx / Darwin sysctl) authoritatively.
+  // Wins over every inferred source (AD, Entra, Intune) because those infer
+  // hostname from elsewhere (DNS, MDM enrollment, computer-object name)
+  // and can drift from what the host actually answers to.
+  { sourceKind: "polaris-agent", pick: (o) => obsString(o, "hostname") },
+  // FQDN from AD wins next — when an AD source has a dnsHostName containing a
   // dot, that's the FQDN form operators search for in DNS / DHCP / logs.
   // Tuned from production shadow-drift logs where ~7k entries per 24h
   // showed Asset.hostname (FQDN) drifting against an Intune/Entra-only
@@ -147,6 +154,14 @@ const HOSTNAME_RULES: FieldRule[] = [
 ];
 
 const SERIAL_RULES: FieldRule[] = [
+  // Polaris Agent reads DMI/SMBIOS directly (/sys/class/dmi/id/product_serial
+  // on Linux; ioreg IOPlatformSerialNumber on macOS; HKLM\HARDWARE\DESCRIPTION
+  // \System\BIOS on Windows). Authoritative — beats MDM serial fields that
+  // are populated by inventory-time enrollment and can be empty/cached.
+  // On hardened Linux hosts product_serial may be 0400 (root only); the
+  // agent's DynamicUser then gets no value and the projection falls through
+  // to Intune.
+  { sourceKind: "polaris-agent", pick: (o) => obsString(o, "serialNumber") },
   { sourceKind: "intune", pick: (o) => obsString(o, "serialNumber") },
   { sourceKind: "fortigate-firewall", pick: (o) => obsString(o, "serial") },
   { sourceKind: "fortiswitch", pick: (o) => obsString(o, "serial") },
@@ -154,6 +169,14 @@ const SERIAL_RULES: FieldRule[] = [
 ];
 
 const MANUFACTURER_RULES: FieldRule[] = [
+  // Polaris Agent reads DMI sys_vendor / IOPlatformManufacturer / BIOS
+  // registry — the manufacturer string the firmware itself reports. Run
+  // through normalizeManufacturer so it matches the canonical Asset value.
+  { sourceKind: "polaris-agent", pick: (o) => {
+      const raw = obsString(o, "manufacturer");
+      return raw ? normalizeManufacturer(raw) : null;
+    }
+  },
   // Intune carries the actual hardware vendor ("Dell Inc.", "LENOVO", ...)
   // pre-canonicalization. Run through normalizeManufacturer so the
   // projected value matches what the Prisma extension stamps on
@@ -182,6 +205,10 @@ const MANUFACTURER_RULES: FieldRule[] = [
 ];
 
 const MODEL_RULES: FieldRule[] = [
+  // Polaris Agent reads DMI product_name / IOPlatformProduct / BIOS
+  // registry. Beats Intune for the same DMI-is-authoritative reason as
+  // manufacturer; falls through when DMI is unreadable.
+  { sourceKind: "polaris-agent", pick: (o) => obsString(o, "model") },
   { sourceKind: "intune", pick: (o) => obsString(o, "model") },
   // FortiSwitch's observed blob always carries `model: "FortiSwitch"` which
   // is too generic to be useful — skip it here and let the asset row keep
@@ -195,6 +222,14 @@ const MODEL_RULES: FieldRule[] = [
 ];
 
 const OS_RULES: FieldRule[] = [
+  // Polaris Agent reads os-release on Linux (PRETTY_NAME → "Red Hat
+  // Enterprise Linux 8.10"), sw_vers on macOS ("macOS 14.4.1"), or
+  // Windows version registry. Beats AD's edition string because the
+  // agent reflects what's actually running right now (post-upgrade,
+  // post-reimage), whereas AD's operatingSystem only updates when
+  // a domain-joined client re-registers — which can lag months on
+  // long-running servers.
+  { sourceKind: "polaris-agent", pick: (o) => obsString(o, "os") },
   // AD's operatingSystem carries the Windows edition ("Windows 10 Pro",
   // "Windows 11 Enterprise"). Intune/Entra collapse to just "Windows".
   // Edition is operationally meaningful — keep AD when present.
@@ -208,6 +243,10 @@ const OS_RULES: FieldRule[] = [
 ];
 
 const OS_VERSION_RULES: FieldRule[] = [
+  // Polaris Agent reports VERSION_ID from os-release (Linux) or the
+  // actual kernel / OS build (macOS sw_vers, Windows registry).
+  // Authoritative for "what version is actually running now."
+  { sourceKind: "polaris-agent", pick: (o) => obsString(o, "osVersion") },
   { sourceKind: "intune", pick: (o) => obsString(o, "osVersion") },
   { sourceKind: "entra", pick: (o) => obsString(o, "operatingSystemVersion") },
   { sourceKind: "ad", pick: (o) => obsString(o, "operatingSystemVersion") },

@@ -186,6 +186,40 @@ type HeartbeatResponse struct {
 	ConfigETag string `json:"configEtag"`
 }
 
+// ─── SystemInfo ───────────────────────────────────────────────────────
+
+// SystemInfoBody mirrors the server's SystemInfoSchema. All fields
+// optional; omitempty on the struct + the agent's "strip-blanks"
+// pre-send pass keeps the wire compact.
+type SystemInfoBody struct {
+	Hostname      string `json:"hostname,omitempty"`
+	OS            string `json:"os,omitempty"`
+	OSVersion     string `json:"osVersion,omitempty"`
+	KernelVersion string `json:"kernelVersion,omitempty"`
+	KernelArch    string `json:"kernelArch,omitempty"`
+	Manufacturer  string `json:"manufacturer,omitempty"`
+	Model         string `json:"model,omitempty"`
+	SerialNumber  string `json:"serialNumber,omitempty"`
+	BiosVersion   string `json:"biosVersion,omitempty"`
+	PrimaryMAC    string `json:"primaryMac,omitempty"`
+	PrimaryIP     string `json:"primaryIp,omitempty"`
+	AgentVersion  string `json:"agentVersion,omitempty"`
+}
+
+// PushSystemInfo POSTs the host identity blob. Server upserts the
+// per-agent AssetSource row and re-projects the asset; same agent
+// pushing the same blob is a no-op DB-side.
+func (c *Client) PushSystemInfo(body *SystemInfoBody) error {
+	if c.bearer == "" {
+		return errors.New("PushSystemInfo called without a bearer token — enroll first")
+	}
+	var out struct{ OK bool `json:"ok"` }
+	if err := c.do("POST", "/api/v1/agents/system-info", body, &out, true); err != nil {
+		return fmt.Errorf("system-info: %w", err)
+	}
+	return nil
+}
+
 // Heartbeat is the fallback the agent uses to bump lastSeenAt + refresh
 // agentVersion when there's no live WebSocket. The returned ConfigETag
 // lets the agent know whether it needs to refresh /config — when it

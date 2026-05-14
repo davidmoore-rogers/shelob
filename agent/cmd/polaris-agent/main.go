@@ -92,6 +92,7 @@ func main() {
 	go telemetryLoop(ctx, cfg, client)
 	go interfacesLoop(ctx, cfg, client)
 	go storageLoop(ctx, cfg, client)
+	go systemInfoLoop(ctx, cfg, client)
 	go wsLoop(ctx, cfg, client)
 
 	<-ctx.Done()
@@ -295,6 +296,51 @@ func pushStorageOne(client *transport.Client) {
 	})
 	if err != nil {
 		log.Printf("push storage samples: %v", err)
+	}
+}
+
+// systemInfoLoop pushes host identity (hostname / OS / vendor / model
+// / serial) on the heartbeat cadence (default 300 s). Host identity
+// doesn't change between firmware updates, so most pushes are no-ops
+// server-side (same observed blob → same projection → no Asset write).
+// Cheaper than its own cadence + matches the operator's intuition
+// that "agent is alive AND I know what it is" is one signal.
+func systemInfoLoop(ctx context.Context, cfg *config.Config, client *transport.Client) {
+	interval := time.Duration(cfg.HeartbeatIntervalSec) * time.Second
+	if interval == 0 {
+		interval = defaultHeartbeatIntervalSec * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	pushSystemInfoOne(client)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pushSystemInfoOne(client)
+		}
+	}
+}
+
+func pushSystemInfoOne(client *transport.Client) {
+	info := collectors.SystemInfoOnce(version)
+	body := &transport.SystemInfoBody{
+		Hostname:      info.Hostname,
+		OS:            info.OS,
+		OSVersion:     info.OSVersion,
+		KernelVersion: info.KernelVersion,
+		KernelArch:    info.KernelArch,
+		Manufacturer:  info.Manufacturer,
+		Model:         info.Model,
+		SerialNumber:  info.SerialNumber,
+		BiosVersion:   info.BiosVersion,
+		PrimaryMAC:    info.PrimaryMAC,
+		PrimaryIP:     info.PrimaryIP,
+		AgentVersion:  info.AgentVersion,
+	}
+	if err := client.PushSystemInfo(body); err != nil {
+		log.Printf("push system-info: %v", err)
 	}
 }
 
