@@ -8762,8 +8762,8 @@ function _renderSnmpWalkRows(result) {
   }).join("");
   container.innerHTML = truncated +
     '<div class="table-wrapper" style="max-height:60vh;overflow:auto">' +
-      '<table class="data-table" style="font-size:0.82rem">' +
-        '<thead><tr><th>OID</th><th>Type</th><th>Value</th></tr></thead>' +
+      '<table class="data-table" style="font-size:0.82rem;min-width:max-content">' +
+        '<thead><tr><th style="white-space:nowrap">OID</th><th style="white-space:nowrap">Type</th><th style="white-space:nowrap">Value</th></tr></thead>' +
         '<tbody>' + rowsHtml + '</tbody>' +
       '</table>' +
     '</div>';
@@ -8790,7 +8790,7 @@ function _renderMibWalkResult(result) {
       return;
     }
     var cols = t.columns;
-    var thHtml = "<th>Index</th>" + cols.map(function (c) { return "<th>" + escapeHtml(c) + "</th>"; }).join("");
+    var thHtml = '<th style="white-space:nowrap">Index</th>' + cols.map(function (c) { return '<th style="white-space:nowrap">' + escapeHtml(c) + "</th>"; }).join("");
     var rowsHtml = t.rows.map(function (row) {
       var cells = '<td style="font-family:var(--font-mono,monospace);font-size:0.78rem;white-space:nowrap">' + escapeHtml(row.index) + "</td>";
       cells += cols.map(function (col) {
@@ -8806,7 +8806,7 @@ function _renderMibWalkResult(result) {
     }).join("");
     container.innerHTML = header +
       '<div class="table-wrapper" style="max-height:60vh;overflow:auto">' +
-        '<table class="data-table" style="font-size:0.82rem">' +
+        '<table class="data-table" style="font-size:0.82rem;min-width:max-content">' +
           "<thead><tr>" + thHtml + "</tr></thead>" +
           "<tbody>" + rowsHtml + "</tbody>" +
         "</table>" +
@@ -8836,8 +8836,8 @@ function _renderMibWalkResult(result) {
   }).join("");
   container.innerHTML = header +
     '<div class="table-wrapper" style="max-height:60vh;overflow:auto">' +
-      '<table class="data-table" style="font-size:0.82rem">' +
-        "<thead><tr><th>OID</th><th>Symbol</th><th>Value</th></tr></thead>" +
+      '<table class="data-table" style="font-size:0.82rem;min-width:max-content">' +
+        '<thead><tr><th style="white-space:nowrap">OID</th><th style="white-space:nowrap">Symbol</th><th style="white-space:nowrap">Value</th></tr></thead>' +
         "<tbody>" + rowsHtml + "</tbody>" +
       "</table>" +
     "</div>";
