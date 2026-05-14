@@ -183,6 +183,18 @@ export interface MonitorTierSettings {
   telemetryMibId:            string | null;
   interfacesMibId:           string | null;
   lldpMibId:                 string | null;
+  /**
+   * Per-stream Credential FK ids. Only the class-override tier (tier-2) stores
+   * these — tier-3 (integration / manual) keeps its credential out-of-band on
+   * `Integration.config.monitorCredentialId`, and tier-1 (per-asset) goes
+   * through Prisma `include` on the asset row. Resolved value reflects the
+   * class override; dispatchers check resolved-vs-per-asset to pick the
+   * credential record actually used at probe time.
+   */
+  responseTimeCredentialId:  string | null;
+  telemetryCredentialId:     string | null;
+  interfacesCredentialId:    string | null;
+  lldpCredentialId:          string | null;
 }
 
 export type MonitorOverrideSettings = Partial<MonitorTierSettings>;
@@ -221,6 +233,12 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
   telemetryMibId:            null,
   interfacesMibId:           null,
   lldpMibId:                 null,
+  // Per-stream credential IDs only exist on the class-override tier; tier-3
+  // and the floor always carry null and dispatchers fall through.
+  responseTimeCredentialId:  null,
+  telemetryCredentialId:     null,
+  interfacesCredentialId:    null,
+  lldpCredentialId:          null,
 };
 
 // ─── Legacy global-tier types (transitional, scheduled for removal) ────────
@@ -467,6 +485,14 @@ function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTie
     telemetryMibId:            readMibIdFromJson(flat.telemetryMibId),
     interfacesMibId:           readMibIdFromJson(flat.interfacesMibId),
     lldpMibId:                 readMibIdFromJson(flat.lldpMibId),
+    // Tier-3 storage doesn't carry per-stream credentials — they only live
+    // on the class-override row (tier-2). Always null here; loadClassOverride
+    // surfaces the real values, and resolveMonitorSettings merges them onto
+    // the final resolved object.
+    responseTimeCredentialId:  null,
+    telemetryCredentialId:     null,
+    interfacesCredentialId:    null,
+    lldpCredentialId:          null,
   };
 }
 
@@ -576,6 +602,10 @@ async function loadClassOverride(
       telemetryMibId:            true,
       interfacesMibId:           true,
       lldpMibId:                 true,
+      responseTimeCredentialId:  true,
+      telemetryCredentialId:     true,
+      interfacesCredentialId:    true,
+      lldpCredentialId:          true,
     },
   });
   let result: MonitorOverrideSettings | null = null;
@@ -599,6 +629,14 @@ async function loadClassOverride(
     if (isPollingMethod(row.telemetryPolling))    result.telemetryPolling    = row.telemetryPolling;
     if (isPollingMethod(row.interfacesPolling))   result.interfacesPolling   = row.interfacesPolling;
     if (isPollingMethod(row.lldpPolling))         result.lldpPolling         = row.lldpPolling;
+    if (row.responseTimeMibId)                    result.responseTimeMibId   = row.responseTimeMibId;
+    if (row.telemetryMibId)                       result.telemetryMibId      = row.telemetryMibId;
+    if (row.interfacesMibId)                      result.interfacesMibId     = row.interfacesMibId;
+    if (row.lldpMibId)                            result.lldpMibId           = row.lldpMibId;
+    if (row.responseTimeCredentialId)             result.responseTimeCredentialId = row.responseTimeCredentialId;
+    if (row.telemetryCredentialId)                result.telemetryCredentialId    = row.telemetryCredentialId;
+    if (row.interfacesCredentialId)               result.interfacesCredentialId   = row.interfacesCredentialId;
+    if (row.lldpCredentialId)                     result.lldpCredentialId         = row.lldpCredentialId;
   }
   classOverrideCache.set(key, result);
   return result;
@@ -759,6 +797,13 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
   merged.interfacesMibId   = resolveMibId(tier3.interfacesMibId,   classOverride?.interfacesMibId,   asset.interfacesMibId);
   merged.lldpMibId         = resolveMibId(tier3.lldpMibId,         classOverride?.lldpMibId,         asset.lldpMibId);
 
+  // Per-stream credential IDs from the class override. Per-asset overrides
+  // come from the Prisma `include` on each dispatcher, not the resolver.
+  merged.responseTimeCredentialId = classOverride?.responseTimeCredentialId ?? null;
+  merged.telemetryCredentialId    = classOverride?.telemetryCredentialId    ?? null;
+  merged.interfacesCredentialId   = classOverride?.interfacesCredentialId   ?? null;
+  merged.lldpCredentialId         = classOverride?.lldpCredentialId         ?? null;
+
   return merged;
 }
 
@@ -824,6 +869,13 @@ export async function resolveMonitorSettingsWithProvenance(
     telemetryMibId:            tier3Source,
     interfacesMibId:           tier3Source,
     lldpMibId:                 tier3Source,
+    // Credential IDs are class-override only; UI badges treat the resolved
+    // value as "class" when set, but the initial label tracks the tier-3
+    // source for consistency. The dispatcher walks the same fallback chain.
+    responseTimeCredentialId:  tier3Source,
+    telemetryCredentialId:     tier3Source,
+    interfacesCredentialId:    tier3Source,
+    lldpCredentialId:          tier3Source,
   };
 
   if (classOverride) {
@@ -849,6 +901,10 @@ export async function resolveMonitorSettingsWithProvenance(
     if (classOverride.telemetryMibId)             { resolved.telemetryMibId      = classOverride.telemetryMibId;      provenance.telemetryMibId      = "class"; }
     if (classOverride.interfacesMibId)            { resolved.interfacesMibId     = classOverride.interfacesMibId;     provenance.interfacesMibId     = "class"; }
     if (classOverride.lldpMibId)                  { resolved.lldpMibId           = classOverride.lldpMibId;           provenance.lldpMibId           = "class"; }
+    if (classOverride.responseTimeCredentialId)   { resolved.responseTimeCredentialId = classOverride.responseTimeCredentialId; provenance.responseTimeCredentialId = "class"; }
+    if (classOverride.telemetryCredentialId)      { resolved.telemetryCredentialId    = classOverride.telemetryCredentialId;    provenance.telemetryCredentialId    = "class"; }
+    if (classOverride.interfacesCredentialId)     { resolved.interfacesCredentialId   = classOverride.interfacesCredentialId;   provenance.interfacesCredentialId   = "class"; }
+    if (classOverride.lldpCredentialId)           { resolved.lldpCredentialId         = classOverride.lldpCredentialId;         provenance.lldpCredentialId         = "class"; }
   }
 
   // Per-asset (only the four overridable fields).
@@ -916,6 +972,25 @@ export async function resolveMonitorSettingsWithProvenance(
  * when neither is an SNMP credential. Throws on missing/wrong-type credentials
  * so the caller can surface the reason in the System tab error toast.
  */
+/**
+ * Resolve the credential to use for one stream when the per-asset slot
+ * didn't supply a usable one. Looks up the class-override-tier credential id
+ * (resolved by `resolveMonitorSettings` onto the `*CredentialId` fields of
+ * `ResolvedMonitorSettings`) and returns the matching Credential row when its
+ * type matches what the polling method needs. Returns null otherwise so the
+ * caller falls through to the integration-tier credential.
+ */
+async function loadClassOverrideStreamCredential(
+  credentialId: string | null,
+  expectedType: "snmp" | "winrm" | "ssh" | "restapi",
+): Promise<{ type: string; config: unknown } | null> {
+  if (!credentialId) return null;
+  const cred = await prisma.credential.findUnique({ where: { id: credentialId } });
+  if (!cred) return null;
+  if (cred.type !== expectedType) return null;
+  return cred;
+}
+
 async function loadSnmpCredentialConfigForFortinetAsset(
   effectiveCred: { type: string; config: unknown } | null | undefined,
   integration: { config?: unknown } | null | undefined,
@@ -1064,9 +1139,14 @@ export async function probeAsset(
       return finish(start, false, "REST API polling requires either a Fortinet integration or a REST API credential");
     }
     if (polling === "snmp") {
-      // Per-stream credential wins, then asset default, then integration fallback.
+      // Per-stream asset credential wins, then asset default, then class-
+      // override credential, then integration fallback.
       if (effectiveRTCred?.type === "snmp") {
         return await probeSnmp(targetIp, effectiveRTCred.config as Record<string, unknown>, start, timeoutMs);
+      }
+      const classCred = await loadClassOverrideStreamCredential(effective.responseTimeCredentialId, "snmp");
+      if (classCred) {
+        return await probeSnmp(targetIp, classCred.config as Record<string, unknown>, start, timeoutMs);
       }
       if (isFortinetSrc && integration) {
         try {
@@ -1978,15 +2058,21 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
       return { supported: true, data };
     }
     if (polling === "snmp") {
-      // Per-stream credential wins, then asset default, then integration fallback.
+      // Per-stream asset credential wins, then asset default, then class-
+      // override credential, then integration fallback.
       const effectiveTelemetryCred = asset.telemetryCredential ?? asset.monitorCredential;
       let snmpCfg: Record<string, unknown>;
       if (effectiveTelemetryCred?.type === "snmp") {
         snmpCfg = effectiveTelemetryCred.config as Record<string, unknown>;
-      } else if (isFortinetSrc && integration) {
-        snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveTelemetryCred, integration);
       } else {
-        return { supported: true, error: "No SNMP credential selected" };
+        const classCred = await loadClassOverrideStreamCredential(effective.telemetryCredentialId, "snmp");
+        if (classCred) {
+          snmpCfg = classCred.config as Record<string, unknown>;
+        } else if (isFortinetSrc && integration) {
+          snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveTelemetryCred, integration);
+        } else {
+          return { supported: true, error: "No SNMP credential selected" };
+        }
       }
       const data = await collectTelemetrySnmp(
         targetIp,
@@ -2076,10 +2162,15 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
       let snmpCfg: Record<string, unknown>;
       if (effectiveIfacesCred?.type === "snmp") {
         snmpCfg = effectiveIfacesCred.config as Record<string, unknown>;
-      } else if (isFortinetSrc && integration) {
-        snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveIfacesCred, integration);
       } else {
-        return { supported: true, error: "No SNMP credential selected" };
+        const classCred = await loadClassOverrideStreamCredential(effective.interfacesCredentialId, "snmp");
+        if (classCred) {
+          snmpCfg = classCred.config as Record<string, unknown>;
+        } else if (isFortinetSrc && integration) {
+          snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveIfacesCred, integration);
+        } else {
+          return { supported: true, error: "No SNMP credential selected" };
+        }
       }
       full = await collectSystemInfoSnmp(targetIp, snmpCfg, {
         includeLldp:  false,
@@ -2222,10 +2313,15 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
       if (interfacesPolling === "snmp") {
         if (effectiveIfacesCred?.type === "snmp") {
           snmpCfg = effectiveIfacesCred.config as Record<string, unknown>;
-        } else if (isFortinetSrc && integration) {
-          snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveIfacesCred, integration);
         } else {
-          return { supported: true, error: "No SNMP credential selected" };
+          const classCred = await loadClassOverrideStreamCredential(effective.interfacesCredentialId, "snmp");
+          if (classCred) {
+            snmpCfg = classCred.config as Record<string, unknown>;
+          } else if (isFortinetSrc && integration) {
+            snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveIfacesCred, integration);
+          } else {
+            return { supported: true, error: "No SNMP credential selected" };
+          }
         }
       }
       if (lldpPolling === "snmp") {
@@ -2235,10 +2331,15 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
           // Cross-transport: LLDP needs its own session with the LLDP credential.
           if (effectiveLldpCred?.type === "snmp") {
             lldpSnmpCfg = effectiveLldpCred.config as Record<string, unknown>;
-          } else if (isFortinetSrc && integration) {
-            lldpSnmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveLldpCred, integration);
           } else {
-            return { supported: true, error: "No SNMP credential selected for LLDP stream" };
+            const classCred = await loadClassOverrideStreamCredential(effective.lldpCredentialId, "snmp");
+            if (classCred) {
+              lldpSnmpCfg = classCred.config as Record<string, unknown>;
+            } else if (isFortinetSrc && integration) {
+              lldpSnmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveLldpCred, integration);
+            } else {
+              return { supported: true, error: "No SNMP credential selected for LLDP stream" };
+            }
           }
         }
       }
