@@ -927,7 +927,7 @@ router.get("/:id/system-info", async (req, res, next) => {
     });
     if (!asset) throw new AppError(404, "Asset not found");
 
-    const [latestTelemetry, latestIfaceMeta, latestStorageMeta, latestTempMeta, latestIpsecMeta, lldpNeighbors] = await Promise.all([
+    const [latestTelemetry, latestIfaceMeta, latestStorageMeta, latestTempMeta, latestIpsecMeta, lldpNeighbors, wirelessStations] = await Promise.all([
       prisma.assetTelemetrySample.findFirst({
         where: { assetId: id },
         orderBy: { timestamp: "desc" },
@@ -959,6 +959,20 @@ router.get("/:id/system-info", async (req, res, next) => {
       prisma.assetLldpNeighbor.findMany({
         where: { assetId: id },
         orderBy: [{ localIfName: "asc" }, { systemName: "asc" }],
+        include: {
+          matchedAsset: {
+            select: { id: true, hostname: true, ipAddress: true, assetType: true },
+          },
+        },
+      }),
+      // Wireless stations connected to this AP (current-state, like LLDP).
+      // Empty for non-AP assets — the table only carries rows when the
+      // SNMP fapStationTable scrape ran on an `assetType="access_point"`
+      // asset. matchedAsset cross-links to the connected endpoint when the
+      // station's MAC resolved against the inventory.
+      prisma.assetWirelessStation.findMany({
+        where: { apAssetId: id },
+        orderBy: [{ ssid: "asc" }, { staMacAddr: "asc" }],
         include: {
           matchedAsset: {
             select: { id: true, hostname: true, ipAddress: true, assetType: true },
@@ -1067,6 +1081,31 @@ router.get("/:id/system-info", async (req, res, next) => {
               hostname:  n.matchedAsset.hostname,
               ipAddress: n.matchedAsset.ipAddress,
               assetType: n.matchedAsset.assetType,
+            }
+          : null,
+      })),
+      wirelessStations: wirelessStations.map((w) => ({
+        staMacAddr:     w.staMacAddr,
+        staIpAddr:      w.staIpAddr,
+        ssid:           w.ssid,
+        radioId:        w.radioId,
+        wlanId:         w.wlanId,
+        vlanId:         w.vlanId,
+        bssid:          w.bssid,
+        signalStrength: w.signalStrength,
+        noise:          w.noise,
+        bandwidthTx:    w.bandwidthTx,
+        bandwidthRx:    w.bandwidthRx,
+        idleSeconds:    w.idleSeconds,
+        source:         w.source,
+        firstSeen:      w.firstSeen,
+        lastSeen:       w.lastSeen,
+        matchedAsset:   w.matchedAsset
+          ? {
+              id:        w.matchedAsset.id,
+              hostname:  w.matchedAsset.hostname,
+              ipAddress: w.matchedAsset.ipAddress,
+              assetType: w.matchedAsset.assetType,
             }
           : null,
       })),

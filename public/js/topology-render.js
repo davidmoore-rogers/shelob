@@ -71,6 +71,33 @@
           hasIcon: a.iconUrl ? 1 : 0,
         },
       });
+      // Wireless stations connected to this AP. Each station becomes a
+      // small diamond node hanging off the AP via a dashed-cyan "wireless"
+      // edge. Stations matched to a Polaris asset get the asset's
+      // hostname as the label and the asset id as a tap target; unmatched
+      // stations show their MAC (the only identity available).
+      (a.stations || []).forEach(function (s) {
+        var stationNodeId = "wsta-" + a.id + "-" + s.macAddress;
+        elements.push({
+          data: {
+            id:        stationNodeId,
+            label:     s.hostname || s.macAddress,
+            role:      "wireless-station",
+            assetId:   s.id || null,
+            assetType: s.assetType || null,
+            ssid:      s.ssid || null,
+            mac:       s.macAddress,
+          },
+        });
+        elements.push({
+          data: {
+            id: "we-" + a.id + "-" + s.macAddress,
+            source: a.id, target: stationNodeId,
+            label: s.ssid || "",
+            isWireless: 1,
+          },
+        });
+      });
     });
     (data.edges || []).forEach(function (e, i) {
       elements.push({
@@ -177,6 +204,24 @@
           height: 44,
         },
       },
+      // Wireless station — diamond shape so it's visually distinct from
+      // wired endpoints + LLDP ghosts. Smaller than an AP since one AP
+      // can carry dozens of stations and we don't want them dominating
+      // the layout. Cyan border-bg matches the "wireless" edge style so
+      // the eye groups the AP + its stations as one cluster.
+      {
+        selector: 'node[role="wireless-station"]',
+        style: {
+          "background-color": "#0e2a3a",
+          "border-color":     "#22d3ee",
+          "border-style":     "solid",
+          "border-width":     2,
+          shape:              "diamond",
+          width:              24,
+          height:             24,
+          "font-size":        "9px",
+        },
+      },
       // Vendor logo overlay. Both signals stay visible: the THICK
       // colored border carries the monitor health (green/amber/red/
       // grey — the same role/nodeColor used on plain nodes), the
@@ -235,6 +280,19 @@
           "line-color": "#14b8a6",
           "target-arrow-color": "#14b8a6",
           width: 2.4,
+        },
+      },
+      // Wireless edge: AP → connected station. Dashed cyan, lighter than
+      // the wired controller / interface edges so the eye doesn't read
+      // station-cluster fanout as critical topology.
+      {
+        selector: 'edge[isWireless = 1]',
+        style: {
+          "line-style": "dashed",
+          "line-color": "#22d3ee",
+          "target-arrow-color": "#22d3ee",
+          width: 1.4,
+          opacity: 0.7,
         },
       },
       {

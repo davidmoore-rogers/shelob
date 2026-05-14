@@ -350,6 +350,15 @@ router.get("/sites/:id/topology", async (req, res, next) => {
       }
     }
 
+    type StationSummary = {
+      id: string | null;            // null when the MAC didn't match an inventory asset
+      hostname: string | null;
+      ipAddress: string | null;
+      macAddress: string;
+      assetType: string | null;
+      ssid: string | null;
+      lastSeen: Date | null;
+    };
     const aps = siblings
       .filter((s) => s.assetType === "access_point")
       .map((s) => {
@@ -377,8 +386,46 @@ router.get("/sites/:id/topology", async (req, res, next) => {
           dependencyLayer: s.dependencyLayer,
           dependencySuppressed: s.dependencySuppressed,
           iconUrl: resolveIconUrl({ manufacturer: s.manufacturer, model: s.model, assetType: "access_point" }, iconCache),
+          stationCount: 0,
+          stations: [] as StationSummary[],
         };
       });
+
+    // Wireless stations per AP. Populated by the SNMP fapStationTable
+    // scrape on monitored APs; empty arrays for APs on REST-API path or
+    // unmonitored. Top-25 by lastSeen per AP — same shape as switch
+    // endpoints. The topology renderer hangs each station off its AP as
+    // a "wireless-station" node connected by a "wireless" edge.
+    if (aps.length > 0) {
+      const apIds = aps.map((a) => a.id);
+      const stationRows = await prisma.assetWirelessStation.findMany({
+        where: { apAssetId: { in: apIds } },
+        orderBy: { lastSeen: "desc" },
+        include: {
+          matchedAsset: {
+            select: { id: true, hostname: true, ipAddress: true, assetType: true },
+          },
+        },
+      });
+      const apById = new Map<string, typeof aps[number]>();
+      for (const a of aps) apById.set(a.id, a);
+      const countByAp = new Map<string, number>();
+      for (const row of stationRows) {
+        countByAp.set(row.apAssetId, (countByAp.get(row.apAssetId) ?? 0) + 1);
+        const ap = apById.get(row.apAssetId);
+        if (!ap || ap.stations.length >= 25) continue;
+        ap.stations.push({
+          id:         row.matchedAsset?.id ?? null,
+          hostname:   row.matchedAsset?.hostname ?? null,
+          ipAddress:  row.matchedAsset?.ipAddress ?? row.staIpAddr ?? null,
+          macAddress: row.staMacAddr,
+          assetType:  row.matchedAsset?.assetType ?? null,
+          ssid:       row.ssid ?? null,
+          lastSeen:   row.lastSeen,
+        });
+      }
+      for (const a of aps) a.stationCount = countByAp.get(a.id) ?? 0;
+    }
 
     // Subnets behind this FortiGate — shown in the modal sidebar, not as graph
     // nodes (a site with 30 subnets would blow up the graph). Include VLAN so

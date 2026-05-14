@@ -2086,6 +2086,28 @@ export interface LldpNeighborSample {
   capabilities?:      string[];
 }
 
+/**
+ * Wireless station seen connected to a FortiAP. Collected from SNMP
+ * `fapStationTable` (1.3.6.1.4.1.12356.120.8.1.1) and persisted via the
+ * system-info pass into AssetWirelessStation. MAC is normalized
+ * colon-uppercase before persist; the persist layer resolves
+ * `matchedAssetId` by MAC lookup against the endpoint inventory.
+ */
+export interface WirelessStationSample {
+  staMacAddr:      string;
+  staIpAddr?:      string | null;
+  ssid?:           string | null;
+  radioId?:        number | null;
+  wlanId?:         number | null;
+  vlanId?:         number | null;
+  bssid?:          string | null;
+  signalStrength?: number | null;
+  noise?:          number | null;
+  bandwidthTx?:    number | null;
+  bandwidthRx?:    number | null;
+  idleSeconds?:    number | null;
+}
+
 export interface SystemInfoSample {
   interfaces:    InterfaceSample[];
   storage:       StorageSample[];
@@ -2099,6 +2121,13 @@ export interface SystemInfoSample {
   lldpNeighbors?: LldpNeighborSample[];
   /** Which transport produced lldpNeighbors. Stamped onto each persisted row for diagnostics. */
   lldpSource?:    "fortios" | "snmp";
+  /**
+   * Wireless stations connected to a FortiAP, observed during this
+   * scrape. Same undefined/[] semantics as lldpNeighbors. Only populated
+   * by the SNMP fapStationTable path on `assetType="access_point"`
+   * assets; FortiOS-REST AP telemetry path stays undefined.
+   */
+  wirelessStations?: WirelessStationSample[];
 }
 
 export interface CollectionResult<T> {
@@ -2299,6 +2328,7 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
         manufacturer: asset.manufacturer,
         model:        asset.model,
         os:           asset.os,
+        assetType:    asset.assetType,
       });
       // Fortinet-discovered firewalls running SNMP still benefit from the
       // integration's interface filter (CMDB blocklist) and from the FortiOS
@@ -2487,6 +2517,7 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
           manufacturer: asset.manufacturer,
           model:        asset.model,
           os:           asset.os,
+          assetType:    asset.assetType,
         });
         if (isFortinetSrc && integration) {
           applyFortiInterfaceFilter(data.interfaces, integration as any);
@@ -3152,6 +3183,18 @@ const OID = {
   lldpRemSysDesc:          "1.0.8802.1.1.2.1.4.1.1.10",
   lldpRemSysCapEnabled:    "1.0.8802.1.1.2.1.4.1.1.12",
   lldpRemManAddr:          "1.0.8802.1.1.2.1.4.2.1",
+  // FORTINET-FORTIAP-MIB::fapStationTable — wireless clients connected to a
+  // FortiAP. INDEX = { fapStaRadioId, fapStaWlanId, fapStaMacAddr } where the
+  // MAC is encoded as length-prefixed 6 octets (SMIv2 default for OCTET
+  // STRING in INDEX), so each row's suffix is 9 parts:
+  //   <radioId>.<wlanId>.6.<b0>.<b1>.<b2>.<b3>.<b4>.<b5>
+  // collectWirelessStationsSnmp walks fapStaSSID as the discriminator
+  // (every row has it set), then looks up the parallel columns by the
+  // identical suffix.
+  fapStaBSSID:        "1.3.6.1.4.1.12356.120.8.1.1.4",
+  fapStaVlanId:       "1.3.6.1.4.1.12356.120.8.1.1.5",
+  fapStaIpAddr:       "1.3.6.1.4.1.12356.120.8.1.1.6",
+  fapStaSSID:         "1.3.6.1.4.1.12356.120.8.1.1.7",
 };
 
 function buildSnmpSession(host: string, config: Record<string, unknown>, timeoutMs?: number): any {
@@ -3718,6 +3761,8 @@ async function collectSystemInfoSnmp(
     model?:        string | null;
     /** Asset OS — same fallback path. */
     os?:           string | null;
+    /** Asset type — drives the fapStationTable walk for FortiAPs. */
+    assetType?:    string | null;
   } = {},
 ): Promise<SystemInfoSample> {
   // Vendor profile is read once up-front so the disk fallback (below) can
@@ -3862,11 +3907,24 @@ async function collectSystemInfoSnmp(
       } catch { /* leave undefined; persist layer leaves stored rows alone */ }
     }
 
+    // Wireless stations — only attempted on FortiAP assets. fapStationTable
+    // is FORTINET-FORTIAP-MIB-specific; firing it on every SNMP system-info
+    // pass would burn worker time on devices that can't respond. Same
+    // undefined/[] semantics as lldpNeighbors: undefined leaves stored rows
+    // alone, [] wipes them.
+    let wirelessStations: WirelessStationSample[] | undefined;
+    if (opts.assetType === "access_point") {
+      try {
+        wirelessStations = await collectWirelessStationsSnmp(session);
+      } catch { /* leave undefined */ }
+    }
+
     return {
       interfaces,
       storage,
       lldpNeighbors,
       lldpSource: opts.includeLldp !== false ? "snmp" : undefined,
+      wirelessStations,
     };
   }, opts.timeoutMs);
 }
@@ -4035,6 +4093,78 @@ function parseLldpChassisId(subtype: number | null, raw: unknown): string | null
   }
   const s = String(raw).trim();
   return s || null;
+}
+
+/**
+ * Walk FORTINET-FORTIAP-MIB::fapStationTable and return one
+ * WirelessStationSample per connected wireless client. Returns `undefined`
+ * when the table is absent (device doesn't implement FORTINET-FORTIAP-MIB
+ * or no SSID column is populated) so the caller leaves stored rows alone;
+ * returns `[]` when the device was queried but reported zero stations
+ * (caller wipes stored rows).
+ *
+ * INDEX = { fapStaRadioId, fapStaWlanId, fapStaMacAddr (6|8 octets) }.
+ * For 6-byte Ethernet MACs the SMIv2 default-encoded suffix has 9 parts:
+ *   <radioId>.<wlanId>.6.<b0>.<b1>.<b2>.<b3>.<b4>.<b5>
+ * Each parallel column walk lookup uses the same suffix string.
+ */
+async function collectWirelessStationsSnmp(session: any): Promise<WirelessStationSample[] | undefined> {
+  const [ssids, bssids, vlans, ipAddrs] = await Promise.all([
+    snmpWalk(session, OID.fapStaSSID).catch(() => new Map()),
+    snmpWalk(session, OID.fapStaBSSID).catch(() => new Map()),
+    snmpWalk(session, OID.fapStaVlanId).catch(() => new Map()),
+    snmpWalk(session, OID.fapStaIpAddr).catch(() => new Map()),
+  ]);
+
+  // Treat all-empty as "table unsupported" so we don't wipe stored rows on
+  // a transport that can't report. A genuinely empty AP with the MIB in
+  // place still returns at least one column with zero rows — the
+  // collector sees an empty Map, suffix loop produces no rows, returns
+  // []. The undefined return is reserved for "couldn't query at all."
+  if (ssids.size === 0 && bssids.size === 0 && vlans.size === 0 && ipAddrs.size === 0) return undefined;
+
+  // Decode the index suffix back into (radioId, wlanId, MAC). Skip rows
+  // whose suffix doesn't match the expected 6-byte-MAC shape — 8-byte
+  // forms (PhysAddress SIZE(6|8)) are valid per MIB but FortiAPs in the
+  // field only emit 6-byte MACs; an 8-byte row would still decode but
+  // wouldn't match anything in Polaris's endpoint inventory anyway. Drop
+  // those silently rather than persist a malformed MAC.
+  const out: WirelessStationSample[] = [];
+  for (const suffix of ssids.keys()) {
+    const parts = String(suffix).split(".");
+    if (parts.length !== 9) continue;
+    if (parts[2] !== "6") continue;
+    const radioId = Number(parts[0]);
+    const wlanId  = Number(parts[1]);
+    const macBytes = parts.slice(3, 9).map((p) => Number(p));
+    if (macBytes.some((b) => !Number.isFinite(b) || b < 0 || b > 255)) continue;
+    const staMacAddr = macBytes.map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(":");
+
+    const ssid  = snmpVbToString(ssids.get(suffix)).trim() || null;
+    const bssidRaw = bssids.get(suffix);
+    const bssid = bssidRaw ? snmpMacFromBuffer(bssidRaw) : null;
+    const vlanId = snmpVbToNumber(vlans.get(suffix));
+    // fapStaIpAddr is IpAddress (4 bytes). snmpVbToString gives us dotted-quad on
+    // most encodings; we fall through to null on the all-zero "unknown" case
+    // so the row carries no IP rather than "0.0.0.0".
+    let staIpAddr: string | null = null;
+    const ipRaw = ipAddrs.get(suffix);
+    if (ipRaw) {
+      const s = snmpVbToString(ipRaw).trim();
+      if (s && s !== "0.0.0.0") staIpAddr = s;
+    }
+
+    out.push({
+      staMacAddr,
+      staIpAddr,
+      ssid,
+      radioId: Number.isFinite(radioId) ? radioId : null,
+      wlanId:  Number.isFinite(wlanId)  ? wlanId  : null,
+      vlanId:  vlanId,
+      bssid,
+    });
+  }
+  return out;
 }
 
 function parseLldpPortId(subtype: number | null, raw: unknown): string | null {
@@ -4240,6 +4370,15 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
       await persistLldpNeighbors(assetId, d.lldpNeighbors, now, d.lldpSource ?? "fortios");
       stopWrite();
     }
+    // Wireless stations (FortiAP only). Same undefined/[] semantics as LLDP —
+    // undefined leaves rows alone, [] wipes them. Per-scrape full-replace
+    // with NO 48h stickiness window: wireless clients are transient by
+    // design and a missing station means the client roamed or disconnected.
+    if (Array.isArray(d.wirelessStations)) {
+      const stopWrite = startSampleWriteTimer("asset_wireless_stations");
+      await persistWirelessStations(assetId, d.wirelessStations);
+      stopWrite();
+    }
     // Only bump lastSystemInfoAt when the scrape returned interfaces. The
     // /system-info GET endpoint anchors its interface query to this
     // timestamp, so bumping it on an empty interfaces[] silently empties the
@@ -4410,6 +4549,119 @@ async function persistLldpNeighbors(
   }
   if (toDelete.length > 0) {
     await prisma.assetLldpNeighbor.deleteMany({ where: { id: { in: toDelete } } });
+  }
+}
+
+/**
+ * Persist a fapStationTable scrape into `AssetWirelessStation`. Full-replace
+ * semantics per (apAssetId, staMacAddr): every row that's in the fresh
+ * scrape is upserted (timestamps + ssid/signal/etc bumped), every stored
+ * row absent from the fresh scrape is deleted. **No 48h stickiness** —
+ * wireless clients are transient by design; a station that roamed or
+ * disconnected should drop from the table immediately.
+ *
+ * `matchedAssetId` is resolved by MAC lookup against the endpoint
+ * inventory using the same cached index LLDP uses. When a match lands,
+ * the endpoint's `Asset.lastSeenAp` is bumped to the AP's hostname so the
+ * endpoint's asset details page shows which AP last saw it.
+ */
+async function persistWirelessStations(
+  apAssetId: string,
+  stations: WirelessStationSample[],
+): Promise<void> {
+  // Reuse the LLDP match index — same lookup shape (MAC → assetId) and the
+  // 60 s TTL already covers the system-info cadence. Wireless rows only
+  // match by MAC (the index also carries IP / hostname maps but those are
+  // not relevant here — a station's MAC is the only stable identity in
+  // the AP's view).
+  const matchIndex = await getLldpAssetMatchIndex();
+
+  // Look up the AP's hostname once so we can stamp every matched endpoint's
+  // lastSeenAp without re-fetching per-station.
+  const apRow = await prisma.asset.findUnique({
+    where: { id: apAssetId },
+    select: { hostname: true },
+  });
+  const apHostname = apRow?.hostname ?? null;
+
+  // Existing rows for diffing. Keyed by MAC (the unique constraint half
+  // that varies — apAssetId is fixed for this call).
+  const existing = await prisma.assetWirelessStation.findMany({ where: { apAssetId } });
+  const existingByMac = new Map<string, typeof existing[number]>();
+  for (const e of existing) existingByMac.set(e.staMacAddr, e);
+
+  const seen = new Set<string>();
+  const toCreate: Array<Record<string, unknown>> = [];
+  const toUpdate: Array<{ id: string; data: Record<string, unknown> }> = [];
+  // Endpoint-side `lastSeenAp` stamps. One per matched station; deduplicated
+  // by endpoint id so a single AP with N rooms-worth of clients still hits
+  // each endpoint's row once.
+  const endpointStamps = new Map<string, string>(); // assetId → apHostname
+
+  for (const s of stations) {
+    const mac = s.staMacAddr.toUpperCase();
+    if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) continue; // malformed; skip
+    seen.add(mac);
+    const matchedAssetId = matchIndex.byMac.get(mac) ?? null;
+    if (matchedAssetId && matchedAssetId !== apAssetId && apHostname) {
+      endpointStamps.set(matchedAssetId, apHostname);
+    }
+    const data = {
+      staMacAddr:     mac,
+      staIpAddr:      s.staIpAddr ?? null,
+      ssid:           s.ssid ?? null,
+      radioId:        s.radioId ?? null,
+      wlanId:         s.wlanId ?? null,
+      vlanId:         s.vlanId ?? null,
+      bssid:          s.bssid ?? null,
+      signalStrength: s.signalStrength ?? null,
+      noise:          s.noise ?? null,
+      bandwidthTx:    s.bandwidthTx ?? null,
+      bandwidthRx:    s.bandwidthRx ?? null,
+      idleSeconds:    s.idleSeconds ?? null,
+      matchedAssetId,
+      source:         "snmp",
+      lastSeen:       new Date(),
+    };
+    const ex = existingByMac.get(mac);
+    if (ex) {
+      toUpdate.push({ id: ex.id, data });
+    } else {
+      toCreate.push({ ...data, apAssetId, firstSeen: new Date() });
+    }
+  }
+
+  // Anything stored but not in the fresh scrape → drop. Same semantics as
+  // associatedIp's monitor-source rows: per-scrape full-replace, no grace
+  // period.
+  const toDelete: string[] = [];
+  for (const e of existing) {
+    if (!seen.has(e.staMacAddr)) toDelete.push(e.id);
+  }
+
+  if (toCreate.length > 0) {
+    await prisma.assetWirelessStation.createMany({ data: toCreate as any });
+  }
+  if (toUpdate.length > 0) {
+    await prisma.$transaction(
+      toUpdate.map((u) =>
+        prisma.assetWirelessStation.update({ where: { id: u.id }, data: u.data as any }),
+      ),
+    );
+  }
+  if (toDelete.length > 0) {
+    await prisma.assetWirelessStation.deleteMany({ where: { id: { in: toDelete } } });
+  }
+
+  // Stamp each matched endpoint's lastSeenAp. Don't block the persist on
+  // these — they're operator-visible breadcrumbs, not load-bearing data —
+  // but await so the System tab sees the change on the next refresh.
+  if (endpointStamps.size > 0) {
+    await prisma.$transaction(
+      [...endpointStamps.entries()].map(([endpointId, ap]) =>
+        prisma.asset.update({ where: { id: endpointId }, data: { lastSeenAp: ap } }),
+      ),
+    );
   }
 }
 

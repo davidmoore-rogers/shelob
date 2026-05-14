@@ -585,6 +585,11 @@ model Asset {
   ipsecTunnelSamples  AssetIpsecTunnelSample[]
   lldpNeighbors       AssetLldpNeighbor[]      @relation("AssetLldpNeighbors")
   lldpNeighborMatches AssetLldpNeighbor[]      @relation("AssetLldpNeighborMatch")
+  // Wireless stations connected to this asset (when it's a FortiAP) and
+  // back-link for endpoints matched to a station's MAC via the SNMP
+  // fapStationTable scrape.
+  wirelessStations         AssetWirelessStation[] @relation("AssetWirelessStationsOnAp")
+  wirelessStationMatches   AssetWirelessStation[] @relation("AssetWirelessStationMatch")
   sources             AssetSource[]
   associatedIpRows    AssetAssociatedIp[]
   macAddressRows      AssetMacAddress[]
@@ -900,6 +905,51 @@ model AssetLldpNeighbor {
   @@index([assetId, localIfName])
   @@index([matchedAssetId])
   @@map("asset_lldp_neighbors")
+}
+
+// Wireless stations connected to a FortiAP. Populated from SNMP
+// `fapStationTable` (1.3.6.1.4.1.12356.120.8.1.1) by the system-info pass
+// on `assetType="access_point"` assets monitored via SNMP. Mirrors the
+// AssetLldpNeighbor shape but **without** the 48h stickiness window —
+// wireless clients are transient by design; a station absent from a fresh
+// scrape means the client roamed or disconnected, drop it immediately.
+//
+// `matchedAssetId` is resolved at persist time via a MAC-match against
+// the endpoint inventory (same logic as LLDP). When set, the endpoint
+// owning that MAC gets its `Asset.lastSeenAp` stamped to the AP's
+// hostname so the asset details view shows which AP last saw the
+// device.
+model AssetWirelessStation {
+  id             String @id @default(uuid())
+  apAssetId      String
+  apAsset        Asset  @relation("AssetWirelessStationsOnAp", fields: [apAssetId], references: [id], onDelete: Cascade)
+  staMacAddr     String  // normalized colon-uppercase (AA:BB:CC:DD:EE:FF)
+
+  staIpAddr      String?
+  ssid           String?
+  radioId        Int?
+  wlanId         Int?
+  vlanId         Int?
+  bssid          String?
+  signalStrength Int?    // dBm
+  noise          Int?    // dBm
+  bandwidthTx    Int?    // kbps
+  bandwidthRx    Int?    // kbps
+  idleSeconds    Int?
+
+  matchedAssetId String?
+  matchedAsset   Asset?  @relation("AssetWirelessStationMatch", fields: [matchedAssetId], references: [id], onDelete: SetNull)
+
+  source         String  // "snmp" (FortiOS REST path lands in a follow-up commit)
+
+  firstSeen      DateTime @default(now())
+  lastSeen       DateTime @default(now())
+
+  @@unique([apAssetId, staMacAddr])
+  @@index([apAssetId])
+  @@index([matchedAssetId])
+  @@index([staMacAddr])
+  @@map("asset_wireless_stations")
 }
 
 // Per-mountpoint storage snapshot, written alongside interface samples.

@@ -2586,6 +2586,15 @@ async function openViewModal(id) {
       await _ensureCredentials();
       tabs.push({ key: "snmp", label: "SNMP Walk", html: assetSnmpWalkViewHTML(a) });
     }
+    // Stations tab — visible on FortiAPs that have wireless clients
+    // reported by the most recent SNMP fapStationTable scrape. The
+    // content is loaded async from /system-info so initial render is a
+    // placeholder; _loadSystemTabFor() reuses the same endpoint, so
+    // when the operator clicks Stations the data is already in cache
+    // from the System tab's first fetch.
+    if (a.assetType === "access_point" && a.monitored) {
+      tabs.push({ key: "stations", label: "Stations", html: _assetStationsTabHTML(a) });
+    }
     // Quarantine tab — assets-admin only, shown for any asset that has MACs or is quarantined.
     // Infrastructure assets (firewall/switch/access_point) only get the tab if they're
     // already quarantined (so Release stays reachable); they can't be newly quarantined.
@@ -3294,6 +3303,7 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
   var storage = document.getElementById("asset-system-storage");
   var temps   = document.getElementById("asset-system-temps");
   var lldp    = document.getElementById("asset-system-lldp");
+  var stations = document.getElementById("asset-system-stations"); // FortiAP-only mount inside the Stations tab
   if (!chart) return;
   // Accept a range string ("24h") or a { from, to } object for custom windows.
   var telOpts = (typeof range === "string" || !range) ? { range: range || "24h" } : range;
@@ -3332,6 +3342,7 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
     _renderStorageTable(storage, si, asset);
     _renderTemperatures(temps, si, asset);
     _renderLldpNeighborsCard(lldp, si, asset);
+    if (stations) _renderWirelessStationsCard(stations, si, asset);
   } catch (err) {
     if (!silent) {
       chart.textContent = "Error: " + (err.message || "failed to load");
@@ -4081,6 +4092,86 @@ function _renderLldpNeighborsCard(container, si, asset) {
   // details slide-in directly — same in-place pattern the inline
   // interface-table Neighbor cell uses, no full-page nav.
   container.querySelectorAll(".asset-lldp-link").forEach(function (link) {
+    link.addEventListener("click", function (e) {
+      e.preventDefault();
+      var assetId = link.getAttribute("data-asset-id");
+      if (assetId) openViewModal(assetId);
+    });
+  });
+}
+
+// Stations tab content for FortiAPs. Empty placeholder filled by
+// _loadSystemTabFor() on modal open (which fetches /system-info once and
+// hydrates every tab's mount, so opening Stations after System never
+// re-fetches). Includes a stub message that flips to the populated
+// table once the data lands.
+function _assetStationsTabHTML(a) {
+  if (!a.monitored) {
+    return '<p class="empty-state" style="padding:1rem 0">Monitoring is disabled for this AP — enable it to start collecting wireless station data via the FORTINET-FORTIAP-MIB fapStationTable SNMP walk.</p>';
+  }
+  return '<div id="asset-system-stations">' +
+    '<span class="empty-state">Loading wireless stations…</span>' +
+    '</div>';
+}
+
+// Render the wireless-station table from the system-info response.
+// Same shape as _renderLldpNeighborsCard — current-state list, no time
+// series. Stations matched to a Polaris asset surface the asset name
+// as a clickable link that opens the matched asset's details modal;
+// unmatched stations just show the MAC.
+function _renderWirelessStationsCard(container, si, asset) {
+  if (!container) return;
+  var stations = (si && si.wirelessStations) || [];
+  if (stations.length === 0) {
+    var pollingLabel = _assetMonitorStreamSource(asset, "interfaces").polling || "the configured transport";
+    container.innerHTML = '<p class="empty-state" style="padding:1rem 0">' +
+      'No wireless stations reported. Either no clients are currently connected, ' +
+      'or the SNMP fapStationTable walk hasn’t run yet — confirm interfacesPolling is set to SNMP ' +
+      '(currently: ' + escapeHtml(pollingLabel) + ') on this AP.' +
+      '</p>';
+    return;
+  }
+  // Stable sort: SSID → MAC. Same order the backend returns, but
+  // re-establishing here lets the function stand on its own.
+  stations.sort(function (a, b) {
+    var sa = String(a.ssid || ""), sb = String(b.ssid || "");
+    if (sa !== sb) return sa.localeCompare(sb);
+    return String(a.staMacAddr).localeCompare(String(b.staMacAddr));
+  });
+  var rows = stations.map(function (s) {
+    var endpointHtml;
+    if (s.matchedAsset && s.matchedAsset.id) {
+      endpointHtml = '<a href="#" class="asset-station-link" data-asset-id="' + escapeHtml(s.matchedAsset.id) +
+        '" style="color:var(--color-accent);text-decoration:none">' +
+        escapeHtml(s.matchedAsset.hostname || s.matchedAsset.ipAddress || s.matchedAsset.id) +
+        '</a>';
+    } else {
+      endpointHtml = '<span style="color:var(--color-text-tertiary)">(not in inventory)</span>';
+    }
+    var radioLabel = "";
+    if (s.radioId != null) radioLabel = "radio " + s.radioId + (s.wlanId != null ? " · wlan " + s.wlanId : "");
+    var signalLabel = (s.signalStrength != null) ? (s.signalStrength + " dBm") : "—";
+    var idle       = (s.idleSeconds   != null) ? (s.idleSeconds + "s") : "—";
+    return '<tr>' +
+      '<td>' + escapeHtml(s.ssid || "—") + '</td>' +
+      '<td class="mono">' + escapeHtml(s.staMacAddr) + '</td>' +
+      '<td class="mono">' + escapeHtml(s.staIpAddr || "—") + '</td>' +
+      '<td>' + endpointHtml + '</td>' +
+      '<td style="font-size:0.78rem;color:var(--color-text-secondary)">' + escapeHtml(radioLabel) + '</td>' +
+      '<td style="text-align:right">' + escapeHtml(signalLabel) + '</td>' +
+      '<td style="text-align:right">' + escapeHtml(idle) + '</td>' +
+    '</tr>';
+  }).join("");
+  var staleBanner = _staleBannerHTML(asset && asset.id, asset, "systemInfo", si && si.lastSystemInfoAt);
+  container.innerHTML = staleBanner +
+    '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
+      '<th>SSID</th><th>MAC</th><th>IP</th><th>Endpoint</th><th>Radio/WLAN</th>' +
+      '<th style="text-align:right">Signal</th><th style="text-align:right">Idle</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+
+  // Click-through on matched-endpoint links — opens the endpoint asset's
+  // own details modal directly. Same pattern as the LLDP neighbor links.
+  container.querySelectorAll(".asset-station-link").forEach(function (link) {
     link.addEventListener("click", function (e) {
       e.preventDefault();
       var assetId = link.getAttribute("data-asset-id");
