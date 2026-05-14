@@ -148,7 +148,8 @@ export async function consumeEnrollmentToken(
         where: { id: row.assetId },
         data: {
           responseTimePolling: "agent",
-          telemetryPolling:    "agent",
+          cpuMemoryPolling:    "agent",
+          temperaturePolling:  "agent",
           interfacesPolling:   "agent",
           lldpPolling:         "agent",
         },

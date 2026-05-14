@@ -321,9 +321,16 @@ agentsRouter.get("/config", async (req, res, next) => {
           timeoutMs:   eff.probeTimeoutMs,
         },
         telemetry: {
-          enabled:     eff.telemetryPolling === "agent",
-          intervalSec: eff.telemetryIntervalSeconds,
-          timeoutMs:   eff.telemetryTimeoutMs,
+          // Stream-split (Slice 2): the agent's "telemetry" stream still
+          // covers CPU/memory + temperature together; the agent isn't yet
+          // taught about the two-stream split. Read cpuMemoryPolling as
+          // the unified telemetry signal — temperaturePolling is intended
+          // to diverge from cpuMemoryPolling only on appliance sources
+          // (FortiAP wants SNMP for temperature even when CPU/mem is REST),
+          // which the agent never runs on.
+          enabled:     eff.cpuMemoryPolling === "agent",
+          intervalSec: eff.cpuMemoryIntervalSeconds,
+          timeoutMs:   eff.cpuMemoryTimeoutMs,
         },
         interfaces: {
           enabled:     eff.interfacesPolling === "agent",
@@ -506,7 +513,7 @@ async function computeConfigEtag(assetId: string): Promise<string> {
   });
   const compact = {
     rt:    [eff.responseTimePolling, eff.intervalSeconds,           eff.probeTimeoutMs],
-    tel:   [eff.telemetryPolling,    eff.telemetryIntervalSeconds,  eff.telemetryTimeoutMs],
+    tel:   [eff.cpuMemoryPolling,    eff.cpuMemoryIntervalSeconds,  eff.cpuMemoryTimeoutMs],
     ifc:   [eff.interfacesPolling,   eff.systemInfoIntervalSeconds, eff.systemInfoTimeoutMs],
     lldp:  [eff.lldpPolling,         eff.systemInfoIntervalSeconds, eff.systemInfoTimeoutMs],
     mon:   asset.monitored,

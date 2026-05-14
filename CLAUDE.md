@@ -417,30 +417,36 @@ Asset
   -- (PUT /assets/:id, monitor-settings/* writes) reject incompatible
   -- methods at write time so the operator sees the error early.
   responseTimePolling       String?
-  telemetryPolling          String?
+  cpuMemoryPolling          String?
+  temperaturePolling        String?
   interfacesPolling         String?
   lldpPolling               String?
   -- Per-stream MIB id hints. Either `"std:<key>"` (built-in MIB; UI-only,
   -- ignored by the collector) or an uploaded MibFile UUID. null = inherit
-  -- from the resolved tier. Consumed by `collectTelemetrySnmp`: when
-  -- `telemetryMibId` resolves to an uploaded MibFile, its `manufacturer +
-  -- moduleName + model` are fed into `pickVendorProfile` instead of the
-  -- asset's own identity — lets operators redirect a misclassified asset
-  -- (e.g. a FortiSwitch whose discovery sources stamped manufacturer=
-  -- Fortinet with no model hint) into the right profile without renaming.
-  -- Symbol resolution scope (oidRegistry) still uses the asset's own
-  -- manufacturer/model so per-device MIB uploads continue to win.
+  -- from the resolved tier. Consumed by `collectCpuMemorySnmp` /
+  -- `collectTemperatureSnmp`: when `cpuMemoryMibId` resolves to an uploaded
+  -- MibFile, its `manufacturer + moduleName + model` are fed into
+  -- `pickVendorProfile` instead of the asset's own identity — lets operators
+  -- redirect a misclassified asset (e.g. a FortiSwitch whose discovery
+  -- sources stamped manufacturer=Fortinet with no model hint) into the right
+  -- profile without renaming. Symbol resolution scope (oidRegistry) still
+  -- uses the asset's own manufacturer/model so per-device MIB uploads
+  -- continue to win.
   responseTimeMibId         String?
-  telemetryMibId            String?
+  cpuMemoryMibId            String?
+  temperatureMibId          String?
   interfacesMibId           String?
   lldpMibId                 String?
   -- System tab cadences (asset details modal). Same monitorAssets job, but
-  -- on independent timers from the response-time probe. Telemetry =
-  -- CPU+memory snapshot (~60s default); systemInfo = full interface +
-  -- storage scrape (~600s default). Per-asset *IntervalSec columns override
-  -- the global telemetryIntervalSeconds / systemInfoIntervalSeconds settings.
-  telemetryIntervalSec  Int?
-  systemInfoIntervalSec Int?
+  -- on independent timers from the response-time probe. CPU/memory + temperature
+  -- are split into two streams as of Slice 2 — each carries its own polling
+  -- method / credential / MIB / timeout / cadence column. The dispatcher
+  -- still pulls both in one collectTelemetry call for now (driven by the
+  -- cpuMemoryIntervalSeconds cadence); a follow-up commit splits the
+  -- dispatcher loop so temperature gets its own independent timer.
+  cpuMemoryIntervalSec   Int?
+  temperatureIntervalSec Int?
+  systemInfoIntervalSec  Int?
   lastTelemetryAt       DateTime?
   lastSystemInfoAt      DateTime?
   -- ifNames pinned for fast-cadence polling on the System tab. Each entry
@@ -750,9 +756,11 @@ MonitorClassOverride            -- Tier-2 of the monitor settings hierarchy. One
   intervalSeconds           Int?
   failureThreshold          Int?
   probeTimeoutMs            Int?
-  telemetryTimeoutMs        Int?  -- Per-request timeout (ms) for the telemetry collector (CPU + memory + temperature). null = inherit from the tier below. Range 1000..120000.
+  cpuMemoryTimeoutMs        Int?  -- Per-request timeout (ms) for the CPU+memory collector. null = inherit from the tier below. Range 1000..120000.
+  temperatureTimeoutMs      Int?  -- Per-request timeout (ms) for the temperature collector. null = inherit. Range 1000..120000.
   systemInfoTimeoutMs       Int?  -- Per-request timeout (ms) for the interface / storage / LLDP collector. null = inherit. Range 1000..120000.
-  telemetryIntervalSeconds  Int?
+  cpuMemoryIntervalSeconds  Int?
+  temperatureIntervalSeconds Int?
   systemInfoIntervalSeconds Int?
   sampleRetentionDays       Int?
   telemetryRetentionDays    Int?
@@ -954,7 +962,7 @@ Reads open to any authenticated caller (the asset edit modal's tier-badge UI nee
 - `POST   /monitor-settings/class-overrides`     *(assetsadmin)* — Create. Body: `{ integrationId: uuid | null, assetType, ...partialTierSettings }`. Every settings field is optional — null means inherit from below. 409 if a row already exists for `(integrationId, assetType)`. 400 if `integrationId` is non-null but doesn't reference a real integration.
 - `PUT    /monitor-settings/class-overrides/:id` *(assetsadmin)* — Update. Body accepts any subset of the 8 settings fields; each null clears that field (= inherit from below).
 - `DELETE /monitor-settings/class-overrides/:id` *(assetsadmin)* — Remove the row.
-- `GET    /monitor-settings/asset-overrides`     *(auth)* — Reverse lookup. Returns assets that have at least one of `monitorIntervalSec` / `telemetryIntervalSec` / `systemInfoIntervalSec` / `probeTimeoutMs` set, filterable by `?integrationId=` (URL sentinel `null` = manual scope) and `?assetType=`. Capped at 500 rows. Drives the asset edit modal's "Show other asset overrides under this scope" slide-over.
+- `GET    /monitor-settings/asset-overrides`     *(auth)* — Reverse lookup. Returns assets that have at least one of `monitorIntervalSec` / `cpuMemoryIntervalSec` / `temperatureIntervalSec` / `systemInfoIntervalSec` / `probeTimeoutMs` / `cpuMemoryTimeoutMs` / `temperatureTimeoutMs` / `systemInfoTimeoutMs` set OR any per-stream polling column non-null, filterable by `?integrationId=` (URL sentinel `null` = manual scope) and `?assetType=`. Capped at 500 rows. Drives the asset edit modal's "Show other asset overrides under this scope" slide-over.
 
 #### Monitor Settings Hierarchy
 
@@ -967,8 +975,8 @@ asset override  →  (assetType + integration) class override
                 →  hardcoded floor   (final fallback; never user-visible)
 ```
 
-- **Tier-1 / per-asset** — columns on `Asset`: `monitorIntervalSec`, `telemetryIntervalSec`, `systemInfoIntervalSec`, `probeTimeoutMs`, `telemetryTimeoutMs`, `systemInfoTimeoutMs`. null = inherit. The six cadence/timeout fields are the ONLY settings that cascade to the per-asset tier; `failureThreshold` and the three retentions stop at tier-2.
-- **Tier-2 / class override** — `MonitorClassOverride` row keyed on `(integrationId, assetType)`. Every settings field is nullable; null = inherit. Includes its own `telemetryTimeoutMs` / `systemInfoTimeoutMs` alongside `probeTimeoutMs`.
+- **Tier-1 / per-asset** — columns on `Asset`: `monitorIntervalSec`, `cpuMemoryIntervalSec`, `temperatureIntervalSec`, `systemInfoIntervalSec`, `probeTimeoutMs`, `cpuMemoryTimeoutMs`, `temperatureTimeoutMs`, `systemInfoTimeoutMs`. null = inherit. The eight cadence/timeout fields are the ONLY settings that cascade to the per-asset tier; `failureThreshold` and the three retentions stop at tier-2. CPU/memory and temperature each carry their own per-stream column set as of Slice 2 — see "Stream split" below.
+- **Tier-2 / class override** — `MonitorClassOverride` row keyed on `(integrationId, assetType)`. Every settings field is nullable; null = inherit. Includes its own `cpuMemoryTimeoutMs` / `temperatureTimeoutMs` / `systemInfoTimeoutMs` alongside `probeTimeoutMs`.
 - **Tier-3 / integration or manual** — full 10-field tier-settings block (8 cadence/retention/threshold + the three timeout fields), complete (no nulls). Stored at `Integration.config.monitorSettings` for integration-discovered assets, or in the `manualMonitorSettings` Setting row for orphan assets. Existing tier-3 rows written before `telemetryTimeoutMs` / `systemInfoTimeoutMs` were added fall through to the hardcoded floor (10000ms) via the resolver's `tierFromJson` default until an operator saves new values.
 - **Hardcoded floor** — values baked into `monitoringService.ts` (60s probe, 60s telemetry, 600s sysinfo, 5000ms probe timeout, 10000ms telemetry timeout, 10000ms system-info timeout, threshold 3, 30d retentions). Final fallback only used when the migration job hasn't seeded tier-3 yet AND the legacy `monitorSettings` Setting row is also gone.
 
@@ -981,7 +989,7 @@ There is **no probe backoff for confirmed-down hosts**. Down assets keep probing
 - **Tier-3 integration** — each integration's edit modal has a **Monitoring tab** with a **Cadence & Retention** section carrying the eight tier-3 fields. FMG / FortiGate / Active Directory / Entra ID / Windows Server integration types all expose the tab. Save Changes writes via `PUT /api/v1/monitor-settings/integration/:id`.
 - **Tier-3 manual** — Assets page header → **Monitoring Settings** button → modal's **Manual Monitoring** section. Same eight fields. Used by orphan / manually-created assets.
 - **Tier-2 class overrides** — Assets-page **Monitoring Settings** modal → **Class Overrides** section. Cross-source view; the asset-source picker offers every integration plus Manual, so operators can edit overrides scoped to any source from one place. The integration edit modal's Monitoring tab no longer carries a per-integration Class Overrides surface — class overrides for one specific integration are reachable from the Assets-page modal by selecting that integration in the source picker.
-- **Tier-1 per-asset** — the asset edit modal's **Monitoring tab** carries the four cadence/timeout overrides (`monitorIntervalSec`, `probeTimeoutMs`, plus the per-asset `telemetryIntervalSec` / `systemInfoIntervalSec` columns), tier-source badges from `/effective-monitor-settings`, and a **Show other asset overrides under this scope** button that opens a slide-over listing peer assets with their own per-asset overrides.
+- **Tier-1 per-asset** — the asset edit modal's **Monitoring tab** carries the cadence/timeout overrides (`monitorIntervalSec`, `probeTimeoutMs`, plus the per-asset `cpuMemoryIntervalSec` / `temperatureIntervalSec` / `systemInfoIntervalSec` columns), tier-source badges from `/effective-monitor-settings`, and a **Show other asset overrides under this scope** button that opens a slide-over listing peer assets with their own per-asset overrides.
 
 The integration's Monitoring tab additionally carries a **Discovery Defaults** section on FMG/FortiGate types only, with three subtabs (FortiGates / FortiSwitches / FortiAPs). Each subtab holds discovery-time concerns: `addAsMonitored`, `snmpCredentialId`, `sshCredentialId`, `autoMonitorInterfaces`. **Cadence inputs are no longer in these subtabs** — they live in the Cadence & Retention section above and apply uniformly across the integration's entire fleet. The credential rows are **type-aware**: the SNMP picker is rendered only when at least one of the four integration-tier polling dropdowns is set to SNMP, the SSH picker only when at least one is set to SSH, and both stay hidden when neither is selected. Credentials persist regardless of visibility, so flipping back later restores the prior selection.
 

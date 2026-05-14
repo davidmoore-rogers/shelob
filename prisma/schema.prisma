@@ -228,16 +228,18 @@ model Credential {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  assets                  Asset[]                @relation("AssetMonitorCred") // default credential back-relation
-  rtAssets                Asset[]                @relation("AssetRTCred")
-  telemetryAssets         Asset[]                @relation("AssetTelemetryCred")
-  interfacesAssets        Asset[]                @relation("AssetInterfacesCred")
-  lldpAssets              Asset[]                @relation("AssetLldpCred")
+  assets                       Asset[]                @relation("AssetMonitorCred") // default credential back-relation
+  rtAssets                     Asset[]                @relation("AssetRTCred")
+  cpuMemoryAssets              Asset[]                @relation("AssetCpuMemCred")
+  temperatureAssets            Asset[]                @relation("AssetTempCred")
+  interfacesAssets             Asset[]                @relation("AssetInterfacesCred")
+  lldpAssets                   Asset[]                @relation("AssetLldpCred")
   // Back-relations for per-stream class override credentials
-  classOverrideRTAssets   MonitorClassOverride[] @relation("ClassOverrideRTCred")
-  classOverrideTelAssets  MonitorClassOverride[] @relation("ClassOverrideTelCred")
-  classOverrideIfAssets   MonitorClassOverride[] @relation("ClassOverrideIfCred")
-  classOverrideLldpAssets MonitorClassOverride[] @relation("ClassOverrideLldpCred")
+  classOverrideRTAssets        MonitorClassOverride[] @relation("ClassOverrideRTCred")
+  classOverrideCpuMemAssets    MonitorClassOverride[] @relation("ClassOverrideCpuMemCred")
+  classOverrideTempAssets      MonitorClassOverride[] @relation("ClassOverrideTempCred")
+  classOverrideIfAssets        MonitorClassOverride[] @relation("ClassOverrideIfCred")
+  classOverrideLldpAssets      MonitorClassOverride[] @relation("ClassOverrideLldpCred")
   // Back-relation for the Polaris Agent install credential (one per
   // ManagedAgent row). SetNull on credential delete so removing a
   // credential doesn't block a stuck agent install — operator falls
@@ -275,17 +277,27 @@ model MonitorClassOverride {
   intervalSeconds           Int?
   failureThreshold          Int?
   probeTimeoutMs            Int?
-  // Per-request timeout (ms) for the telemetry collector (CPU + memory +
-  // temperature). 1000..120000; null = inherit from the tier below. Applied
-  // to FortiOS REST + SNMP session timeouts in collectTelemetry.
-  telemetryTimeoutMs        Int?
+  // Per-request timeout (ms) for the CPU+memory collector. 1000..120000;
+  // null = inherit from the tier below. Applied to FortiOS REST + SNMP
+  // session timeouts in collectCpuMemory.
+  cpuMemoryTimeoutMs        Int?
+  // Per-request timeout (ms) for the temperature collector. 1000..120000;
+  // null = inherit. Applied to FortiOS REST + SNMP session timeouts in
+  // collectTemperature (ENTITY-SENSOR-MIB walk + the FortiAP scalar
+  // fallback).
+  temperatureTimeoutMs      Int?
   // Per-request timeout (ms) for the interface / storage / LLDP collector.
   // 1000..120000; null = inherit. Applied to FortiOS REST + SNMP sessions in
   // collectSystemInfo + collectFastFiltered.
   systemInfoTimeoutMs       Int?
-  telemetryIntervalSeconds  Int?
+  cpuMemoryIntervalSeconds  Int?
+  temperatureIntervalSeconds Int?
   systemInfoIntervalSeconds Int?
   sampleRetentionDays       Int?
+  // Single retention setting shared by AssetTelemetrySample (CPU/memory)
+  // AND AssetTemperatureSample. The stream split only affects polling
+  // method / cadence / credential / MIB / timeout — sample retention is
+  // table-level, so one knob covers both.
   telemetryRetentionDays    Int?
   systemInfoRetentionDays   Int?
   // Per-stream polling-method overrides. null = inherit from the integration
@@ -294,21 +306,25 @@ model MonitorClassOverride {
   // resolver silently falls through when the chosen method isn't valid for
   // the asset's source — see CLAUDE.md "Polling-method compatibility matrix".
   responseTimePolling       String?
-  telemetryPolling          String?
+  cpuMemoryPolling          String?
+  temperaturePolling        String?
   interfacesPolling         String?
   lldpPolling               String?
   // Per-stream credential overrides (FK to Credential, null = inherit)
   responseTimeCredentialId  String?
   responseTimeCredential    Credential?  @relation("ClassOverrideRTCred", fields: [responseTimeCredentialId], references: [id], onDelete: SetNull)
-  telemetryCredentialId     String?
-  telemetryCredential       Credential?  @relation("ClassOverrideTelCred", fields: [telemetryCredentialId], references: [id], onDelete: SetNull)
+  cpuMemoryCredentialId     String?
+  cpuMemoryCredential       Credential?  @relation("ClassOverrideCpuMemCred", fields: [cpuMemoryCredentialId], references: [id], onDelete: SetNull)
+  temperatureCredentialId   String?
+  temperatureCredential     Credential?  @relation("ClassOverrideTempCred", fields: [temperatureCredentialId], references: [id], onDelete: SetNull)
   interfacesCredentialId    String?
   interfacesCredential      Credential?  @relation("ClassOverrideIfCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
   lldpCredentialId          String?
   lldpCredential            Credential?  @relation("ClassOverrideLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
   // Per-stream MIB overrides (String: "std:<key>" or uploaded MIB UUID or null)
   responseTimeMibId         String?
-  telemetryMibId            String?
+  cpuMemoryMibId            String?
+  temperatureMibId          String?
   interfacesMibId           String?
   lldpMibId                 String?
   createdAt                 DateTime     @default(now())
@@ -421,15 +437,18 @@ model Asset {
   monitorCredential        Credential? @relation("AssetMonitorCred", fields: [monitorCredentialId], references: [id], onDelete: SetNull)
   responseTimeCredentialId String?
   responseTimeCredential   Credential? @relation("AssetRTCred", fields: [responseTimeCredentialId], references: [id], onDelete: SetNull)
-  telemetryCredentialId    String?
-  telemetryCredential      Credential? @relation("AssetTelemetryCred", fields: [telemetryCredentialId], references: [id], onDelete: SetNull)
+  cpuMemoryCredentialId    String?
+  cpuMemoryCredential      Credential? @relation("AssetCpuMemCred", fields: [cpuMemoryCredentialId], references: [id], onDelete: SetNull)
+  temperatureCredentialId  String?
+  temperatureCredential    Credential? @relation("AssetTempCred", fields: [temperatureCredentialId], references: [id], onDelete: SetNull)
   interfacesCredentialId   String?
   interfacesCredential     Credential? @relation("AssetInterfacesCred", fields: [interfacesCredentialId], references: [id], onDelete: SetNull)
   lldpCredentialId         String?
   lldpCredential           Credential? @relation("AssetLldpCred", fields: [lldpCredentialId], references: [id], onDelete: SetNull)
   // Per-stream MIB overrides (String: "std:<key>" or uploaded MIB UUID or null)
   responseTimeMibId        String?
-  telemetryMibId           String?
+  cpuMemoryMibId           String?
+  temperatureMibId         String?
   interfacesMibId          String?
   lldpMibId                String?
   monitorIntervalSec       Int? // Per-asset override for response-time probes; falls back to the resolved tier-3 setting
@@ -438,10 +457,15 @@ model Asset {
   // Below 500ms the UI shows a warning icon — at that range probes start to
   // false-fail on healthy networks under transient latency.
   probeTimeoutMs           Int?
-  // Per-asset override for the telemetry collector request timeout (ms).
+  // Per-asset override for the CPU+memory collector request timeout (ms).
   // Range 1000..120000; null = inherit. Applied to FortiOS REST + SNMP sessions
-  // inside collectTelemetry (CPU + memory + temperature).
-  telemetryTimeoutMs       Int?
+  // inside collectCpuMemory.
+  cpuMemoryTimeoutMs       Int?
+  // Per-asset override for the temperature collector request timeout (ms).
+  // Range 1000..120000; null = inherit. Applied to FortiOS REST + SNMP sessions
+  // inside collectTemperature (ENTITY-SENSOR-MIB walk + FortiAP scalar
+  // fallback).
+  temperatureTimeoutMs     Int?
   // Per-asset override for the interface / storage / LLDP collector request
   // timeout (ms). Range 1000..120000; null = inherit. Applied to FortiOS REST +
   // SNMP sessions inside collectSystemInfo + collectFastFiltered.
@@ -467,14 +491,18 @@ model Asset {
   // utils/pollingCompatibility — values that don't match the asset's
   // source are silently ignored at resolution time.
   responseTimePolling String?
-  telemetryPolling    String?
+  cpuMemoryPolling    String?
+  temperaturePolling  String?
   interfacesPolling   String?
   lldpPolling         String?
 
-  // System tab cadences. Telemetry = CPU% + memory snapshot, taken once per minute by default.
-  // System info = full interface + storage scrape, taken once per ten minutes by default.
+  // System tab cadences. CPU/memory and temperature each ride their own
+  // cadence — operators can poll CPU/memory every minute via REST while
+  // temperature scrapes every five minutes via SNMP, etc. System info = full
+  // interface + storage scrape, taken once per ten minutes by default.
   // The per-asset *IntervalSec columns override the global setting when non-null.
-  telemetryIntervalSec  Int?
+  cpuMemoryIntervalSec  Int?
+  temperatureIntervalSec Int?
   systemInfoIntervalSec Int?
   lastTelemetryAt       DateTime?
   lastSystemInfoAt      DateTime?

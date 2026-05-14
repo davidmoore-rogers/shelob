@@ -58,57 +58,66 @@ const PollingMethodEnum = z.enum(["rest_api", "snmp", "winrm", "ssh", "icmp", "d
 // alongside the cadence fields in Integration.config.monitorSettings (tier-3
 // integration) or in the Setting "manualMonitorSettings" row (tier-3 manual).
 const TierSettingsSchema = z.object({
-  intervalSeconds:           z.number().int().min(1).max(86400),
-  failureThreshold:          z.number().int().min(1).max(100),
-  probeTimeoutMs:            z.number().int().min(100).max(60000),
-  // Telemetry + system-info collectors. Range deliberately wider than the
-  // response-time probe (1s..120s) — these endpoints can be slow on busy
-  // gateways, and a too-tight value here false-fails an entire scrape.
-  telemetryTimeoutMs:        z.number().int().min(1000).max(120000).nullable().optional(),
-  systemInfoTimeoutMs:       z.number().int().min(1000).max(120000).nullable().optional(),
-  telemetryIntervalSeconds:  z.number().int().min(15).max(86400),
-  systemInfoIntervalSeconds: z.number().int().min(60).max(86400),
-  sampleRetentionDays:       z.number().int().min(0).max(3650),
-  telemetryRetentionDays:    z.number().int().min(0).max(3650),
-  systemInfoRetentionDays:   z.number().int().min(0).max(3650),
-  responseTimePolling:       PollingMethodEnum.nullable().optional(),
-  telemetryPolling:          PollingMethodEnum.nullable().optional(),
-  interfacesPolling:         PollingMethodEnum.nullable().optional(),
-  lldpPolling:               PollingMethodEnum.nullable().optional(),
+  intervalSeconds:            z.number().int().min(1).max(86400),
+  failureThreshold:           z.number().int().min(1).max(100),
+  probeTimeoutMs:             z.number().int().min(100).max(60000),
+  // CPU/memory + temperature + system-info collectors. Range deliberately
+  // wider than the response-time probe (1s..120s) — these endpoints can be
+  // slow on busy gateways, and a too-tight value here false-fails the scrape.
+  cpuMemoryTimeoutMs:         z.number().int().min(1000).max(120000).nullable().optional(),
+  temperatureTimeoutMs:       z.number().int().min(1000).max(120000).nullable().optional(),
+  systemInfoTimeoutMs:        z.number().int().min(1000).max(120000).nullable().optional(),
+  cpuMemoryIntervalSeconds:   z.number().int().min(15).max(86400),
+  temperatureIntervalSeconds: z.number().int().min(15).max(86400),
+  systemInfoIntervalSeconds:  z.number().int().min(60).max(86400),
+  sampleRetentionDays:        z.number().int().min(0).max(3650),
+  telemetryRetentionDays:     z.number().int().min(0).max(3650),
+  systemInfoRetentionDays:    z.number().int().min(0).max(3650),
+  responseTimePolling:        PollingMethodEnum.nullable().optional(),
+  cpuMemoryPolling:           PollingMethodEnum.nullable().optional(),
+  temperaturePolling:         PollingMethodEnum.nullable().optional(),
+  interfacesPolling:          PollingMethodEnum.nullable().optional(),
+  lldpPolling:                PollingMethodEnum.nullable().optional(),
   // Per-stream MIB IDs stored in the JSON blob ("std:<key>" | uploaded UUID | null)
-  responseTimeMibId:         z.string().nullable().optional(),
-  telemetryMibId:            z.string().nullable().optional(),
-  interfacesMibId:           z.string().nullable().optional(),
-  lldpMibId:                 z.string().nullable().optional(),
+  responseTimeMibId:          z.string().nullable().optional(),
+  cpuMemoryMibId:             z.string().nullable().optional(),
+  temperatureMibId:           z.string().nullable().optional(),
+  interfacesMibId:            z.string().nullable().optional(),
+  lldpMibId:                  z.string().nullable().optional(),
 });
 
 // Override shape — every field optional/nullable, null = inherit from tier
 // below. Used by the class-override CRUD endpoints.
 const OverrideSettingsSchema = z.object({
-  intervalSeconds:           z.number().int().min(1).max(86400).nullable().optional(),
-  failureThreshold:          z.number().int().min(1).max(100).nullable().optional(),
-  probeTimeoutMs:            z.number().int().min(100).max(60000).nullable().optional(),
-  telemetryTimeoutMs:        z.number().int().min(1000).max(120000).nullable().optional(),
-  systemInfoTimeoutMs:       z.number().int().min(1000).max(120000).nullable().optional(),
-  telemetryIntervalSeconds:  z.number().int().min(15).max(86400).nullable().optional(),
-  systemInfoIntervalSeconds: z.number().int().min(60).max(86400).nullable().optional(),
-  sampleRetentionDays:       z.number().int().min(0).max(3650).nullable().optional(),
-  telemetryRetentionDays:    z.number().int().min(0).max(3650).nullable().optional(),
-  systemInfoRetentionDays:   z.number().int().min(0).max(3650).nullable().optional(),
-  responseTimePolling:       PollingMethodEnum.nullable().optional(),
-  telemetryPolling:          PollingMethodEnum.nullable().optional(),
-  interfacesPolling:         PollingMethodEnum.nullable().optional(),
-  lldpPolling:               PollingMethodEnum.nullable().optional(),
+  intervalSeconds:            z.number().int().min(1).max(86400).nullable().optional(),
+  failureThreshold:           z.number().int().min(1).max(100).nullable().optional(),
+  probeTimeoutMs:             z.number().int().min(100).max(60000).nullable().optional(),
+  cpuMemoryTimeoutMs:         z.number().int().min(1000).max(120000).nullable().optional(),
+  temperatureTimeoutMs:       z.number().int().min(1000).max(120000).nullable().optional(),
+  systemInfoTimeoutMs:        z.number().int().min(1000).max(120000).nullable().optional(),
+  cpuMemoryIntervalSeconds:   z.number().int().min(15).max(86400).nullable().optional(),
+  temperatureIntervalSeconds: z.number().int().min(15).max(86400).nullable().optional(),
+  systemInfoIntervalSeconds:  z.number().int().min(60).max(86400).nullable().optional(),
+  sampleRetentionDays:        z.number().int().min(0).max(3650).nullable().optional(),
+  telemetryRetentionDays:     z.number().int().min(0).max(3650).nullable().optional(),
+  systemInfoRetentionDays:    z.number().int().min(0).max(3650).nullable().optional(),
+  responseTimePolling:        PollingMethodEnum.nullable().optional(),
+  cpuMemoryPolling:           PollingMethodEnum.nullable().optional(),
+  temperaturePolling:         PollingMethodEnum.nullable().optional(),
+  interfacesPolling:          PollingMethodEnum.nullable().optional(),
+  lldpPolling:                PollingMethodEnum.nullable().optional(),
   // Per-stream credential IDs (FK to Credential, null = inherit)
-  responseTimeCredentialId:  z.string().uuid().nullable().optional(),
-  telemetryCredentialId:     z.string().uuid().nullable().optional(),
-  interfacesCredentialId:    z.string().uuid().nullable().optional(),
-  lldpCredentialId:          z.string().uuid().nullable().optional(),
+  responseTimeCredentialId:   z.string().uuid().nullable().optional(),
+  cpuMemoryCredentialId:      z.string().uuid().nullable().optional(),
+  temperatureCredentialId:    z.string().uuid().nullable().optional(),
+  interfacesCredentialId:     z.string().uuid().nullable().optional(),
+  lldpCredentialId:           z.string().uuid().nullable().optional(),
   // Per-stream MIB IDs ("std:<key>" | uploaded UUID | null = inherit)
-  responseTimeMibId:         z.string().nullable().optional(),
-  telemetryMibId:            z.string().nullable().optional(),
-  interfacesMibId:           z.string().nullable().optional(),
-  lldpMibId:                 z.string().nullable().optional(),
+  responseTimeMibId:          z.string().nullable().optional(),
+  cpuMemoryMibId:             z.string().nullable().optional(),
+  temperatureMibId:           z.string().nullable().optional(),
+  interfacesMibId:            z.string().nullable().optional(),
+  lldpMibId:                  z.string().nullable().optional(),
 });
 
 // Polling-method compatibility check shared by integration-tier and
@@ -117,7 +126,7 @@ const OverrideSettingsSchema = z.object({
 // apply on the assets it covers — the resolver would silently fall through
 // and the operator would never see why their setting "didn't take." Manual
 // tier accepts every method (it covers any source).
-const POLLING_FIELDS = ["responseTimePolling", "telemetryPolling", "interfacesPolling", "lldpPolling"] as const;
+const POLLING_FIELDS = ["responseTimePolling", "cpuMemoryPolling", "temperaturePolling", "interfacesPolling", "lldpPolling"] as const;
 type PollingField = (typeof POLLING_FIELDS)[number];
 
 function assertPollingCompatible(
@@ -386,16 +395,19 @@ router.get("/asset-overrides", async (req, res, next) => {
 
     const where: Record<string, unknown> = {
       OR: [
-        { monitorIntervalSec:    { not: null } },
-        { telemetryIntervalSec:  { not: null } },
-        { systemInfoIntervalSec: { not: null } },
-        { probeTimeoutMs:        { not: null } },
-        { telemetryTimeoutMs:    { not: null } },
-        { systemInfoTimeoutMs:   { not: null } },
-        { responseTimePolling:   { not: null } },
-        { telemetryPolling:      { not: null } },
-        { interfacesPolling:     { not: null } },
-        { lldpPolling:           { not: null } },
+        { monitorIntervalSec:     { not: null } },
+        { cpuMemoryIntervalSec:   { not: null } },
+        { temperatureIntervalSec: { not: null } },
+        { systemInfoIntervalSec:  { not: null } },
+        { probeTimeoutMs:         { not: null } },
+        { cpuMemoryTimeoutMs:     { not: null } },
+        { temperatureTimeoutMs:   { not: null } },
+        { systemInfoTimeoutMs:    { not: null } },
+        { responseTimePolling:    { not: null } },
+        { cpuMemoryPolling:       { not: null } },
+        { temperaturePolling:     { not: null } },
+        { interfacesPolling:      { not: null } },
+        { lldpPolling:            { not: null } },
       ],
     };
     if (integrationIdParam === "null") where.discoveredByIntegrationId = null;
@@ -405,20 +417,23 @@ router.get("/asset-overrides", async (req, res, next) => {
     const assets = await prisma.asset.findMany({
       where,
       select: {
-        id:                      true,
-        hostname:                true,
-        ipAddress:               true,
-        assetType:               true,
-        monitorIntervalSec:      true,
-        telemetryIntervalSec:    true,
-        systemInfoIntervalSec:   true,
-        probeTimeoutMs:          true,
-        telemetryTimeoutMs:      true,
-        systemInfoTimeoutMs:     true,
-        responseTimePolling:     true,
-        telemetryPolling:        true,
-        interfacesPolling:       true,
-        lldpPolling:             true,
+        id:                       true,
+        hostname:                 true,
+        ipAddress:                true,
+        assetType:                true,
+        monitorIntervalSec:       true,
+        cpuMemoryIntervalSec:     true,
+        temperatureIntervalSec:   true,
+        systemInfoIntervalSec:    true,
+        probeTimeoutMs:           true,
+        cpuMemoryTimeoutMs:       true,
+        temperatureTimeoutMs:     true,
+        systemInfoTimeoutMs:      true,
+        responseTimePolling:      true,
+        cpuMemoryPolling:         true,
+        temperaturePolling:       true,
+        interfacesPolling:        true,
+        lldpPolling:              true,
         discoveredByIntegrationId: true,
       },
       orderBy: { hostname: "asc" },

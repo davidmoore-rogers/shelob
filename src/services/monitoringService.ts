@@ -100,10 +100,12 @@ export interface AssetMonitorSnapshot {
   consecutiveSuccesses: number;
   discoveredByIntegrationId: string | null;
   monitorIntervalSec: number | null;
-  telemetryIntervalSec: number | null;
+  cpuMemoryIntervalSec: number | null;
+  temperatureIntervalSec: number | null;
   systemInfoIntervalSec: number | null;
   probeTimeoutMs: number | null;
-  telemetryTimeoutMs?: number | null;
+  cpuMemoryTimeoutMs?: number | null;
+  temperatureTimeoutMs?: number | null;
   systemInfoTimeoutMs?: number | null;
 }
 
@@ -140,20 +142,34 @@ export interface MonitorTierSettings {
   /** Probe TCP/UDP/HTTP timeout in milliseconds. Default 5000. Range 100..60000. */
   probeTimeoutMs:            number;
   /**
-   * Per-request timeout (ms) for the telemetry collector (CPU + memory +
-   * temperature). Applied to FortiOS REST + SNMP sessions inside
-   * collectTelemetry. Default 10000. Range 1000..120000.
+   * Per-request timeout (ms) for the CPU+memory collector. Applied to
+   * FortiOS REST + SNMP sessions inside collectCpuMemory. Default 10000.
+   * Range 1000..120000.
    */
-  telemetryTimeoutMs:        number;
+  cpuMemoryTimeoutMs:        number;
+  /**
+   * Per-request timeout (ms) for the temperature collector. Applied to
+   * FortiOS REST + SNMP sessions inside collectTemperature (ENTITY-SENSOR-MIB
+   * walk, Fortinet sensor-name heuristic, FortiAP scalar fallback). Default
+   * 10000. Range 1000..120000.
+   */
+  temperatureTimeoutMs:      number;
   /**
    * Per-request timeout (ms) for the interface / storage / LLDP collector.
    * Applied to FortiOS REST + SNMP sessions inside collectSystemInfo +
    * collectFastFiltered. Default 10000. Range 1000..120000.
    */
   systemInfoTimeoutMs:       number;
-  telemetryIntervalSeconds:  number;
+  cpuMemoryIntervalSeconds:  number;
+  temperatureIntervalSeconds: number;
   systemInfoIntervalSeconds: number;
   sampleRetentionDays:       number;
+  /**
+   * Single retention setting shared by AssetTelemetrySample (CPU/memory)
+   * AND AssetTemperatureSample. The stream split affects polling method /
+   * cadence / credential / MIB / timeout — sample retention is table-level
+   * so one knob covers both sample tables.
+   */
   telemetryRetentionDays:    number;
   systemInfoRetentionDays:   number;
   /**
@@ -164,7 +180,8 @@ export interface MonitorTierSettings {
    * doesn't apply to an Active Directory asset since AD can't speak REST API).
    */
   responseTimePolling:       PollingMethod | null;
-  telemetryPolling:          PollingMethod | null;
+  cpuMemoryPolling:          PollingMethod | null;
+  temperaturePolling:        PollingMethod | null;
   interfacesPolling:         PollingMethod | null;
   lldpPolling:               PollingMethod | null;
   /**
@@ -173,14 +190,15 @@ export interface MonitorTierSettings {
    * symbol resolution; ignored by the telemetry collector), or the UUID of
    * an uploaded MibFile row. null at any tier = inherit from below.
    *
-   * Consumed by `collectTelemetrySnmp` to override vendor-profile selection
-   * when an uploaded MIB is set — useful for assets whose
-   * `manufacturer + model` would otherwise fall into the wrong profile (the
-   * canonical case being FortiSwitches that pre-Phase-4d landed under the
-   * generic Fortinet profile and queried FortiGate-only OIDs).
+   * Consumed by `collectCpuMemorySnmp` / `collectTemperatureSnmp` to override
+   * vendor-profile selection when an uploaded MIB is set — useful for assets
+   * whose `manufacturer + model` would otherwise fall into the wrong profile
+   * (the canonical case being FortiSwitches that pre-Phase-4d landed under
+   * the generic Fortinet profile and queried FortiGate-only OIDs).
    */
   responseTimeMibId:         string | null;
-  telemetryMibId:            string | null;
+  cpuMemoryMibId:            string | null;
+  temperatureMibId:          string | null;
   interfacesMibId:           string | null;
   lldpMibId:                 string | null;
   /**
@@ -192,7 +210,8 @@ export interface MonitorTierSettings {
    * credential record actually used at probe time.
    */
   responseTimeCredentialId:  string | null;
-  telemetryCredentialId:     string | null;
+  cpuMemoryCredentialId:     string | null;
+  temperatureCredentialId:   string | null;
   interfacesCredentialId:    string | null;
   lldpCredentialId:          string | null;
 }
@@ -212,9 +231,11 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
   intervalSeconds:           60,
   failureThreshold:          3,
   probeTimeoutMs:            5000,
-  telemetryTimeoutMs:        10_000,
+  cpuMemoryTimeoutMs:        10_000,
+  temperatureTimeoutMs:      10_000,
   systemInfoTimeoutMs:       10_000,
-  telemetryIntervalSeconds:  60,
+  cpuMemoryIntervalSeconds:  60,
+  temperatureIntervalSeconds: 60,
   systemInfoIntervalSeconds: 600,
   sampleRetentionDays:       30,
   telemetryRetentionDays:    30,
@@ -224,19 +245,22 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
   // responseTime + null for the other streams) are applied by the resolver
   // via defaultPollingForSource().
   responseTimePolling:       null,
-  telemetryPolling:          null,
+  cpuMemoryPolling:          null,
+  temperaturePolling:        null,
   interfacesPolling:         null,
   lldpPolling:               null,
   // MIB ID hints default to null at the floor — vendor profile selection
   // uses the asset's own manufacturer/model when no tier supplies a MIB.
   responseTimeMibId:         null,
-  telemetryMibId:            null,
+  cpuMemoryMibId:            null,
+  temperatureMibId:          null,
   interfacesMibId:           null,
   lldpMibId:                 null,
   // Per-stream credential IDs only exist on the class-override tier; tier-3
   // and the floor always carry null and dispatchers fall through.
   responseTimeCredentialId:  null,
-  telemetryCredentialId:     null,
+  cpuMemoryCredentialId:     null,
+  temperatureCredentialId:   null,
   interfacesCredentialId:    null,
   lldpCredentialId:          null,
 };
@@ -270,7 +294,21 @@ export interface MonitorSettings extends MonitorClassSettings {
 const SETTING_KEY = "monitorSettings";
 const MANUAL_SETTING_KEY = "manualMonitorSettings";
 
-const DEFAULT_CLASS_SETTINGS: MonitorClassSettings = { ...HARDCODED_FLOOR };
+// Legacy default shape — maps the new stream-split floor back to the
+// pre-split `telemetryIntervalSeconds` field name that the deprecated
+// MonitorClassSettings + MonitorSettings types still expose. Used only by
+// the transitional legacy-row fallback path (loadLegacyGlobalAsTier +
+// capacityService); new code reads HARDCODED_FLOOR directly.
+const DEFAULT_CLASS_SETTINGS: MonitorClassSettings = {
+  intervalSeconds:           HARDCODED_FLOOR.intervalSeconds,
+  failureThreshold:          HARDCODED_FLOOR.failureThreshold,
+  probeTimeoutMs:            HARDCODED_FLOOR.probeTimeoutMs,
+  sampleRetentionDays:       HARDCODED_FLOOR.sampleRetentionDays,
+  telemetryIntervalSeconds:  HARDCODED_FLOOR.cpuMemoryIntervalSeconds,
+  systemInfoIntervalSeconds: HARDCODED_FLOOR.systemInfoIntervalSeconds,
+  telemetryRetentionDays:    HARDCODED_FLOOR.telemetryRetentionDays,
+  systemInfoRetentionDays:   HARDCODED_FLOOR.systemInfoRetentionDays,
+};
 
 const DEFAULT_SETTINGS: MonitorSettings = {
   ...DEFAULT_CLASS_SETTINGS,
@@ -466,34 +504,55 @@ function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTie
   // Try nested first; fall back to the flat key so both formats work.
   const pollingBlock = (o.polling as Record<string, unknown> | undefined) ?? undefined;
   const flat = o as Record<string, unknown>;
+  // Stream-split migration compatibility: tier-3 JSON written before the
+  // split carried `telemetryIntervalSeconds` / `telemetryTimeoutMs` /
+  // `telemetryPolling` / `telemetryMibId`. The migration SQL rewrites those
+  // keys in-place, but a fresh install booting against an older row (e.g.
+  // recovery / replay) needs the fallback so existing operator selections
+  // carry forward identically.
+  const legacyInterval = toPositiveIntOr(o.telemetryIntervalSeconds, null);
+  const legacyTimeout  = toPositiveIntOr(o.telemetryTimeoutMs,        null);
   return {
-    intervalSeconds:           toPositiveInt(o.intervalSeconds,           HARDCODED_FLOOR.intervalSeconds),
-    failureThreshold:          toPositiveInt(o.failureThreshold,          HARDCODED_FLOOR.failureThreshold),
-    probeTimeoutMs:            toPositiveInt(o.probeTimeoutMs,            HARDCODED_FLOOR.probeTimeoutMs),
-    telemetryTimeoutMs:        toPositiveInt(o.telemetryTimeoutMs,        HARDCODED_FLOOR.telemetryTimeoutMs),
-    systemInfoTimeoutMs:       toPositiveInt(o.systemInfoTimeoutMs,       HARDCODED_FLOOR.systemInfoTimeoutMs),
-    telemetryIntervalSeconds:  toPositiveInt(o.telemetryIntervalSeconds,  HARDCODED_FLOOR.telemetryIntervalSeconds),
-    systemInfoIntervalSeconds: toPositiveInt(o.systemInfoIntervalSeconds, HARDCODED_FLOOR.systemInfoIntervalSeconds),
-    sampleRetentionDays:       toPositiveInt(o.sampleRetentionDays,       HARDCODED_FLOOR.sampleRetentionDays),
-    telemetryRetentionDays:    toPositiveInt(o.telemetryRetentionDays,    HARDCODED_FLOOR.telemetryRetentionDays),
-    systemInfoRetentionDays:   toPositiveInt(o.systemInfoRetentionDays,   HARDCODED_FLOOR.systemInfoRetentionDays),
-    responseTimePolling:       readPollingFromJson(pollingBlock, "responseTime") ?? readPollingFromJson(flat, "responseTimePolling"),
-    telemetryPolling:          readPollingFromJson(pollingBlock, "telemetry")    ?? readPollingFromJson(flat, "telemetryPolling"),
-    interfacesPolling:         readPollingFromJson(pollingBlock, "interfaces")   ?? readPollingFromJson(flat, "interfacesPolling"),
-    lldpPolling:               readPollingFromJson(pollingBlock, "lldp")         ?? readPollingFromJson(flat, "lldpPolling"),
-    responseTimeMibId:         readMibIdFromJson(flat.responseTimeMibId),
-    telemetryMibId:            readMibIdFromJson(flat.telemetryMibId),
-    interfacesMibId:           readMibIdFromJson(flat.interfacesMibId),
-    lldpMibId:                 readMibIdFromJson(flat.lldpMibId),
+    intervalSeconds:            toPositiveInt(o.intervalSeconds,           HARDCODED_FLOOR.intervalSeconds),
+    failureThreshold:           toPositiveInt(o.failureThreshold,          HARDCODED_FLOOR.failureThreshold),
+    probeTimeoutMs:             toPositiveInt(o.probeTimeoutMs,            HARDCODED_FLOOR.probeTimeoutMs),
+    cpuMemoryTimeoutMs:         toPositiveInt(o.cpuMemoryTimeoutMs,        legacyTimeout  ?? HARDCODED_FLOOR.cpuMemoryTimeoutMs),
+    temperatureTimeoutMs:       toPositiveInt(o.temperatureTimeoutMs,      legacyTimeout  ?? HARDCODED_FLOOR.temperatureTimeoutMs),
+    systemInfoTimeoutMs:        toPositiveInt(o.systemInfoTimeoutMs,       HARDCODED_FLOOR.systemInfoTimeoutMs),
+    cpuMemoryIntervalSeconds:   toPositiveInt(o.cpuMemoryIntervalSeconds,  legacyInterval ?? HARDCODED_FLOOR.cpuMemoryIntervalSeconds),
+    temperatureIntervalSeconds: toPositiveInt(o.temperatureIntervalSeconds, legacyInterval ?? HARDCODED_FLOOR.temperatureIntervalSeconds),
+    systemInfoIntervalSeconds:  toPositiveInt(o.systemInfoIntervalSeconds, HARDCODED_FLOOR.systemInfoIntervalSeconds),
+    sampleRetentionDays:        toPositiveInt(o.sampleRetentionDays,       HARDCODED_FLOOR.sampleRetentionDays),
+    telemetryRetentionDays:     toPositiveInt(o.telemetryRetentionDays,    HARDCODED_FLOOR.telemetryRetentionDays),
+    systemInfoRetentionDays:    toPositiveInt(o.systemInfoRetentionDays,   HARDCODED_FLOOR.systemInfoRetentionDays),
+    responseTimePolling:        readPollingFromJson(pollingBlock, "responseTime") ?? readPollingFromJson(flat, "responseTimePolling"),
+    cpuMemoryPolling:           readPollingFromJson(pollingBlock, "cpuMemory")    ?? readPollingFromJson(flat, "cpuMemoryPolling")    ?? readPollingFromJson(pollingBlock, "telemetry") ?? readPollingFromJson(flat, "telemetryPolling"),
+    temperaturePolling:         readPollingFromJson(pollingBlock, "temperature")  ?? readPollingFromJson(flat, "temperaturePolling")  ?? readPollingFromJson(pollingBlock, "telemetry") ?? readPollingFromJson(flat, "telemetryPolling"),
+    interfacesPolling:          readPollingFromJson(pollingBlock, "interfaces")   ?? readPollingFromJson(flat, "interfacesPolling"),
+    lldpPolling:                readPollingFromJson(pollingBlock, "lldp")         ?? readPollingFromJson(flat, "lldpPolling"),
+    responseTimeMibId:          readMibIdFromJson(flat.responseTimeMibId),
+    cpuMemoryMibId:             readMibIdFromJson(flat.cpuMemoryMibId)   ?? readMibIdFromJson(flat.telemetryMibId),
+    temperatureMibId:           readMibIdFromJson(flat.temperatureMibId) ?? readMibIdFromJson(flat.telemetryMibId),
+    interfacesMibId:            readMibIdFromJson(flat.interfacesMibId),
+    lldpMibId:                  readMibIdFromJson(flat.lldpMibId),
     // Tier-3 storage doesn't carry per-stream credentials — they only live
     // on the class-override row (tier-2). Always null here; loadClassOverride
     // surfaces the real values, and resolveMonitorSettings merges them onto
     // the final resolved object.
-    responseTimeCredentialId:  null,
-    telemetryCredentialId:     null,
-    interfacesCredentialId:    null,
-    lldpCredentialId:          null,
+    responseTimeCredentialId:   null,
+    cpuMemoryCredentialId:      null,
+    temperatureCredentialId:    null,
+    interfacesCredentialId:     null,
+    lldpCredentialId:           null,
   };
+}
+
+// Like toPositiveInt but returns the fallback as-is (including null) when
+// the input isn't a positive integer. Used by the stream-split tierFromJson
+// to chain legacy-key fallback before defaulting to the hardcoded floor.
+function toPositiveIntOr(v: unknown, fallback: number | null): number | null {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return Math.trunc(v);
+  return fallback;
 }
 
 function readMibIdFromJson(v: unknown): string | null {
@@ -518,7 +577,7 @@ function readMibIdFromJson(v: unknown): string | null {
  */
 function defaultPollingForSource(
   source: AssetSourceKind,
-  stream: "responseTime" | "telemetry" | "interfaces" | "lldp",
+  stream: "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp",
 ): PollingMethod | null {
   if (source === "fortimanager" || source === "fortigate") {
     // FortiOS exposes lldp-neighbors but most fleets don't enable LLDP per
@@ -584,59 +643,69 @@ async function loadClassOverride(
   const row = await prisma.monitorClassOverride.findFirst({
     where: { integrationId, assetType },
     select: {
-      intervalSeconds:           true,
-      failureThreshold:          true,
-      probeTimeoutMs:            true,
-      telemetryTimeoutMs:        true,
-      systemInfoTimeoutMs:       true,
-      telemetryIntervalSeconds:  true,
-      systemInfoIntervalSeconds: true,
-      sampleRetentionDays:       true,
-      telemetryRetentionDays:    true,
-      systemInfoRetentionDays:   true,
-      responseTimePolling:       true,
-      telemetryPolling:          true,
-      interfacesPolling:         true,
-      lldpPolling:               true,
-      responseTimeMibId:         true,
-      telemetryMibId:            true,
-      interfacesMibId:           true,
-      lldpMibId:                 true,
-      responseTimeCredentialId:  true,
-      telemetryCredentialId:     true,
-      interfacesCredentialId:    true,
-      lldpCredentialId:          true,
+      intervalSeconds:            true,
+      failureThreshold:           true,
+      probeTimeoutMs:             true,
+      cpuMemoryTimeoutMs:         true,
+      temperatureTimeoutMs:       true,
+      systemInfoTimeoutMs:        true,
+      cpuMemoryIntervalSeconds:   true,
+      temperatureIntervalSeconds: true,
+      systemInfoIntervalSeconds:  true,
+      sampleRetentionDays:        true,
+      telemetryRetentionDays:     true,
+      systemInfoRetentionDays:    true,
+      responseTimePolling:        true,
+      cpuMemoryPolling:           true,
+      temperaturePolling:         true,
+      interfacesPolling:          true,
+      lldpPolling:                true,
+      responseTimeMibId:          true,
+      cpuMemoryMibId:             true,
+      temperatureMibId:           true,
+      interfacesMibId:            true,
+      lldpMibId:                  true,
+      responseTimeCredentialId:   true,
+      cpuMemoryCredentialId:      true,
+      temperatureCredentialId:    true,
+      interfacesCredentialId:     true,
+      lldpCredentialId:           true,
     },
   });
   let result: MonitorOverrideSettings | null = null;
   if (row) {
     result = {};
-    if (row.intervalSeconds           != null) result.intervalSeconds           = row.intervalSeconds;
-    if (row.failureThreshold          != null) result.failureThreshold          = row.failureThreshold;
-    if (row.probeTimeoutMs            != null) result.probeTimeoutMs            = row.probeTimeoutMs;
-    if (row.telemetryTimeoutMs        != null) result.telemetryTimeoutMs        = row.telemetryTimeoutMs;
-    if (row.systemInfoTimeoutMs       != null) result.systemInfoTimeoutMs       = row.systemInfoTimeoutMs;
-    if (row.telemetryIntervalSeconds  != null) result.telemetryIntervalSeconds  = row.telemetryIntervalSeconds;
-    if (row.systemInfoIntervalSeconds != null) result.systemInfoIntervalSeconds = row.systemInfoIntervalSeconds;
-    if (row.sampleRetentionDays       != null) result.sampleRetentionDays       = row.sampleRetentionDays;
-    if (row.telemetryRetentionDays    != null) result.telemetryRetentionDays    = row.telemetryRetentionDays;
-    if (row.systemInfoRetentionDays   != null) result.systemInfoRetentionDays   = row.systemInfoRetentionDays;
+    if (row.intervalSeconds            != null) result.intervalSeconds            = row.intervalSeconds;
+    if (row.failureThreshold           != null) result.failureThreshold           = row.failureThreshold;
+    if (row.probeTimeoutMs             != null) result.probeTimeoutMs             = row.probeTimeoutMs;
+    if (row.cpuMemoryTimeoutMs         != null) result.cpuMemoryTimeoutMs         = row.cpuMemoryTimeoutMs;
+    if (row.temperatureTimeoutMs       != null) result.temperatureTimeoutMs       = row.temperatureTimeoutMs;
+    if (row.systemInfoTimeoutMs        != null) result.systemInfoTimeoutMs        = row.systemInfoTimeoutMs;
+    if (row.cpuMemoryIntervalSeconds   != null) result.cpuMemoryIntervalSeconds   = row.cpuMemoryIntervalSeconds;
+    if (row.temperatureIntervalSeconds != null) result.temperatureIntervalSeconds = row.temperatureIntervalSeconds;
+    if (row.systemInfoIntervalSeconds  != null) result.systemInfoIntervalSeconds  = row.systemInfoIntervalSeconds;
+    if (row.sampleRetentionDays        != null) result.sampleRetentionDays        = row.sampleRetentionDays;
+    if (row.telemetryRetentionDays     != null) result.telemetryRetentionDays     = row.telemetryRetentionDays;
+    if (row.systemInfoRetentionDays    != null) result.systemInfoRetentionDays    = row.systemInfoRetentionDays;
     // Polling columns are nullable strings; only adopt them when they pass
     // the type guard so a stale legacy value (e.g. "rest") in the DB doesn't
     // smuggle through as a typed PollingMethod here. Bad values are silently
     // dropped — the resolver falls through to the next tier.
     if (isPollingMethod(row.responseTimePolling)) result.responseTimePolling = row.responseTimePolling;
-    if (isPollingMethod(row.telemetryPolling))    result.telemetryPolling    = row.telemetryPolling;
+    if (isPollingMethod(row.cpuMemoryPolling))    result.cpuMemoryPolling    = row.cpuMemoryPolling;
+    if (isPollingMethod(row.temperaturePolling))  result.temperaturePolling  = row.temperaturePolling;
     if (isPollingMethod(row.interfacesPolling))   result.interfacesPolling   = row.interfacesPolling;
     if (isPollingMethod(row.lldpPolling))         result.lldpPolling         = row.lldpPolling;
     if (row.responseTimeMibId)                    result.responseTimeMibId   = row.responseTimeMibId;
-    if (row.telemetryMibId)                       result.telemetryMibId      = row.telemetryMibId;
+    if (row.cpuMemoryMibId)                       result.cpuMemoryMibId      = row.cpuMemoryMibId;
+    if (row.temperatureMibId)                     result.temperatureMibId    = row.temperatureMibId;
     if (row.interfacesMibId)                      result.interfacesMibId     = row.interfacesMibId;
     if (row.lldpMibId)                            result.lldpMibId           = row.lldpMibId;
-    if (row.responseTimeCredentialId)             result.responseTimeCredentialId = row.responseTimeCredentialId;
-    if (row.telemetryCredentialId)                result.telemetryCredentialId    = row.telemetryCredentialId;
-    if (row.interfacesCredentialId)               result.interfacesCredentialId   = row.interfacesCredentialId;
-    if (row.lldpCredentialId)                     result.lldpCredentialId         = row.lldpCredentialId;
+    if (row.responseTimeCredentialId)             result.responseTimeCredentialId  = row.responseTimeCredentialId;
+    if (row.cpuMemoryCredentialId)                result.cpuMemoryCredentialId     = row.cpuMemoryCredentialId;
+    if (row.temperatureCredentialId)              result.temperatureCredentialId   = row.temperatureCredentialId;
+    if (row.interfacesCredentialId)               result.interfacesCredentialId    = row.interfacesCredentialId;
+    if (row.lldpCredentialId)                     result.lldpCredentialId          = row.lldpCredentialId;
   }
   classOverrideCache.set(key, result);
   return result;
@@ -654,25 +723,31 @@ export interface AssetMonitorContext {
    */
   discoveredByIntegrationType?: string | null;
   monitorIntervalSec:        number | null;
-  telemetryIntervalSec:      number | null;
+  cpuMemoryIntervalSec:      number | null;
+  temperatureIntervalSec:    number | null;
   systemInfoIntervalSec:     number | null;
   probeTimeoutMs:            number | null;
-  /** Per-asset telemetry collector timeout override (ms). null = inherit. */
-  telemetryTimeoutMs?:       number | null;
+  /** Per-asset CPU+memory collector timeout override (ms). null = inherit. */
+  cpuMemoryTimeoutMs?:       number | null;
+  /** Per-asset temperature collector timeout override (ms). null = inherit. */
+  temperatureTimeoutMs?:     number | null;
   /** Per-asset interface/storage/LLDP collector timeout override (ms). null = inherit. */
   systemInfoTimeoutMs?:      number | null;
   // Per-stream polling overrides on the asset itself. null = inherit.
   // String? on disk so legacy values can sit alongside; resolver adopts
   // them only when they pass isPollingMethod().
   responseTimePolling?:      string | null;
-  telemetryPolling?:         string | null;
+  cpuMemoryPolling?:         string | null;
+  temperaturePolling?:       string | null;
   interfacesPolling?:        string | null;
   lldpPolling?:              string | null;
   // Per-stream MIB id overrides on the asset itself. null = inherit.
   // Either `"std:<key>"` (UI hint only) or an uploaded MibFile UUID
-  // (consumed by `collectTelemetrySnmp` to override vendor-profile selection).
+  // (consumed by `collectCpuMemorySnmp` / `collectTemperatureSnmp` to override
+  // vendor-profile selection).
   responseTimeMibId?:        string | null;
-  telemetryMibId?:           string | null;
+  cpuMemoryMibId?:           string | null;
+  temperatureMibId?:         string | null;
   interfacesMibId?:          string | null;
   lldpMibId?:                string | null;
 }
@@ -714,29 +789,33 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
   // are resolved separately below with the compatibility-aware fallthrough.
   const merged: ResolvedMonitorSettings = { ...tier3 };
   if (classOverride) {
-    if (classOverride.intervalSeconds           != null) merged.intervalSeconds           = classOverride.intervalSeconds;
-    if (classOverride.failureThreshold          != null) merged.failureThreshold          = classOverride.failureThreshold;
-    if (classOverride.probeTimeoutMs            != null) merged.probeTimeoutMs            = classOverride.probeTimeoutMs;
-    if (classOverride.telemetryTimeoutMs        != null) merged.telemetryTimeoutMs        = classOverride.telemetryTimeoutMs;
-    if (classOverride.systemInfoTimeoutMs       != null) merged.systemInfoTimeoutMs       = classOverride.systemInfoTimeoutMs;
-    if (classOverride.telemetryIntervalSeconds  != null) merged.telemetryIntervalSeconds  = classOverride.telemetryIntervalSeconds;
-    if (classOverride.systemInfoIntervalSeconds != null) merged.systemInfoIntervalSeconds = classOverride.systemInfoIntervalSeconds;
-    if (classOverride.sampleRetentionDays       != null) merged.sampleRetentionDays       = classOverride.sampleRetentionDays;
-    if (classOverride.telemetryRetentionDays    != null) merged.telemetryRetentionDays    = classOverride.telemetryRetentionDays;
-    if (classOverride.systemInfoRetentionDays   != null) merged.systemInfoRetentionDays   = classOverride.systemInfoRetentionDays;
+    if (classOverride.intervalSeconds            != null) merged.intervalSeconds            = classOverride.intervalSeconds;
+    if (classOverride.failureThreshold           != null) merged.failureThreshold           = classOverride.failureThreshold;
+    if (classOverride.probeTimeoutMs             != null) merged.probeTimeoutMs             = classOverride.probeTimeoutMs;
+    if (classOverride.cpuMemoryTimeoutMs         != null) merged.cpuMemoryTimeoutMs         = classOverride.cpuMemoryTimeoutMs;
+    if (classOverride.temperatureTimeoutMs       != null) merged.temperatureTimeoutMs       = classOverride.temperatureTimeoutMs;
+    if (classOverride.systemInfoTimeoutMs        != null) merged.systemInfoTimeoutMs        = classOverride.systemInfoTimeoutMs;
+    if (classOverride.cpuMemoryIntervalSeconds   != null) merged.cpuMemoryIntervalSeconds   = classOverride.cpuMemoryIntervalSeconds;
+    if (classOverride.temperatureIntervalSeconds != null) merged.temperatureIntervalSeconds = classOverride.temperatureIntervalSeconds;
+    if (classOverride.systemInfoIntervalSeconds  != null) merged.systemInfoIntervalSeconds  = classOverride.systemInfoIntervalSeconds;
+    if (classOverride.sampleRetentionDays        != null) merged.sampleRetentionDays        = classOverride.sampleRetentionDays;
+    if (classOverride.telemetryRetentionDays     != null) merged.telemetryRetentionDays     = classOverride.telemetryRetentionDays;
+    if (classOverride.systemInfoRetentionDays    != null) merged.systemInfoRetentionDays    = classOverride.systemInfoRetentionDays;
   }
 
   // Tier 1 (per-asset cadence / timeout overrides).
-  if (asset.monitorIntervalSec    != null) merged.intervalSeconds           = asset.monitorIntervalSec;
-  if (asset.telemetryIntervalSec  != null) merged.telemetryIntervalSeconds  = asset.telemetryIntervalSec;
-  if (asset.systemInfoIntervalSec != null) merged.systemInfoIntervalSeconds = asset.systemInfoIntervalSec;
-  if (asset.probeTimeoutMs        != null) merged.probeTimeoutMs            = asset.probeTimeoutMs;
-  if (asset.telemetryTimeoutMs    != null) merged.telemetryTimeoutMs        = asset.telemetryTimeoutMs;
-  if (asset.systemInfoTimeoutMs   != null) merged.systemInfoTimeoutMs       = asset.systemInfoTimeoutMs;
+  if (asset.monitorIntervalSec     != null) merged.intervalSeconds            = asset.monitorIntervalSec;
+  if (asset.cpuMemoryIntervalSec   != null) merged.cpuMemoryIntervalSeconds   = asset.cpuMemoryIntervalSec;
+  if (asset.temperatureIntervalSec != null) merged.temperatureIntervalSeconds = asset.temperatureIntervalSec;
+  if (asset.systemInfoIntervalSec  != null) merged.systemInfoIntervalSeconds  = asset.systemInfoIntervalSec;
+  if (asset.probeTimeoutMs         != null) merged.probeTimeoutMs             = asset.probeTimeoutMs;
+  if (asset.cpuMemoryTimeoutMs     != null) merged.cpuMemoryTimeoutMs         = asset.cpuMemoryTimeoutMs;
+  if (asset.temperatureTimeoutMs   != null) merged.temperatureTimeoutMs       = asset.temperatureTimeoutMs;
+  if (asset.systemInfoTimeoutMs    != null) merged.systemInfoTimeoutMs        = asset.systemInfoTimeoutMs;
 
   // Per-stream polling resolution — see header comment above for rules.
   function resolveStream(
-    stream: "responseTime" | "telemetry" | "interfaces" | "lldp",
+    stream: "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp",
     tierVal: PollingMethod | null,
     classVal: PollingMethod | null | undefined,
     assetVal: string | null | undefined,
@@ -760,11 +839,17 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
     classOverride?.responseTimePolling ?? null,
     asset.responseTimePolling,
   );
-  merged.telemetryPolling = resolveStream(
-    "telemetry",
-    tier3.telemetryPolling,
-    classOverride?.telemetryPolling ?? null,
-    asset.telemetryPolling,
+  merged.cpuMemoryPolling = resolveStream(
+    "cpuMemory",
+    tier3.cpuMemoryPolling,
+    classOverride?.cpuMemoryPolling ?? null,
+    asset.cpuMemoryPolling,
+  );
+  merged.temperaturePolling = resolveStream(
+    "temperature",
+    tier3.temperaturePolling,
+    classOverride?.temperaturePolling ?? null,
+    asset.temperaturePolling,
   );
   merged.interfacesPolling = resolveStream(
     "interfaces",
@@ -781,7 +866,8 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
 
   // Per-stream MIB id resolution. Same tier order as polling, but no
   // compatibility check — the MIB id is a hint that gets consumed downstream
-  // (collectTelemetrySnmp looks up the MibFile to override profile selection).
+  // (collectCpuMemorySnmp / collectTemperatureSnmp look up the MibFile to
+  // override profile selection).
   function resolveMibId(
     tier3Val: string | null,
     classVal: string | null | undefined,
@@ -793,14 +879,16 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
     return resolved;
   }
   merged.responseTimeMibId = resolveMibId(tier3.responseTimeMibId, classOverride?.responseTimeMibId, asset.responseTimeMibId);
-  merged.telemetryMibId    = resolveMibId(tier3.telemetryMibId,    classOverride?.telemetryMibId,    asset.telemetryMibId);
+  merged.cpuMemoryMibId    = resolveMibId(tier3.cpuMemoryMibId,    classOverride?.cpuMemoryMibId,    asset.cpuMemoryMibId);
+  merged.temperatureMibId  = resolveMibId(tier3.temperatureMibId,  classOverride?.temperatureMibId,  asset.temperatureMibId);
   merged.interfacesMibId   = resolveMibId(tier3.interfacesMibId,   classOverride?.interfacesMibId,   asset.interfacesMibId);
   merged.lldpMibId         = resolveMibId(tier3.lldpMibId,         classOverride?.lldpMibId,         asset.lldpMibId);
 
   // Per-stream credential IDs from the class override. Per-asset overrides
   // come from the Prisma `include` on each dispatcher, not the resolver.
   merged.responseTimeCredentialId = classOverride?.responseTimeCredentialId ?? null;
-  merged.telemetryCredentialId    = classOverride?.telemetryCredentialId    ?? null;
+  merged.cpuMemoryCredentialId    = classOverride?.cpuMemoryCredentialId    ?? null;
+  merged.temperatureCredentialId  = classOverride?.temperatureCredentialId  ?? null;
   merged.interfacesCredentialId   = classOverride?.interfacesCredentialId   ?? null;
   merged.lldpCredentialId         = classOverride?.lldpCredentialId         ?? null;
 
@@ -851,31 +939,36 @@ export async function resolveMonitorSettingsWithProvenance(
   // overwrite below. Listing the keys explicitly keeps the type checker happy
   // (Record<keyof X, ...>) without an Object.fromEntries dance.
   const provenance: Record<keyof MonitorTierSettings, ProvenanceTier> = {
-    intervalSeconds:           tier3Source,
-    failureThreshold:          tier3Source,
-    probeTimeoutMs:            tier3Source,
-    telemetryTimeoutMs:        tier3Source,
-    systemInfoTimeoutMs:       tier3Source,
-    telemetryIntervalSeconds:  tier3Source,
-    systemInfoIntervalSeconds: tier3Source,
-    sampleRetentionDays:       tier3Source,
-    telemetryRetentionDays:    tier3Source,
-    systemInfoRetentionDays:   tier3Source,
-    responseTimePolling:       tier3Source,
-    telemetryPolling:          tier3Source,
-    interfacesPolling:         tier3Source,
-    lldpPolling:               tier3Source,
-    responseTimeMibId:         tier3Source,
-    telemetryMibId:            tier3Source,
-    interfacesMibId:           tier3Source,
-    lldpMibId:                 tier3Source,
+    intervalSeconds:            tier3Source,
+    failureThreshold:           tier3Source,
+    probeTimeoutMs:             tier3Source,
+    cpuMemoryTimeoutMs:         tier3Source,
+    temperatureTimeoutMs:       tier3Source,
+    systemInfoTimeoutMs:        tier3Source,
+    cpuMemoryIntervalSeconds:   tier3Source,
+    temperatureIntervalSeconds: tier3Source,
+    systemInfoIntervalSeconds:  tier3Source,
+    sampleRetentionDays:        tier3Source,
+    telemetryRetentionDays:     tier3Source,
+    systemInfoRetentionDays:    tier3Source,
+    responseTimePolling:        tier3Source,
+    cpuMemoryPolling:           tier3Source,
+    temperaturePolling:         tier3Source,
+    interfacesPolling:          tier3Source,
+    lldpPolling:                tier3Source,
+    responseTimeMibId:          tier3Source,
+    cpuMemoryMibId:             tier3Source,
+    temperatureMibId:           tier3Source,
+    interfacesMibId:            tier3Source,
+    lldpMibId:                  tier3Source,
     // Credential IDs are class-override only; UI badges treat the resolved
     // value as "class" when set, but the initial label tracks the tier-3
     // source for consistency. The dispatcher walks the same fallback chain.
-    responseTimeCredentialId:  tier3Source,
-    telemetryCredentialId:     tier3Source,
-    interfacesCredentialId:    tier3Source,
-    lldpCredentialId:          tier3Source,
+    responseTimeCredentialId:   tier3Source,
+    cpuMemoryCredentialId:      tier3Source,
+    temperatureCredentialId:    tier3Source,
+    interfacesCredentialId:     tier3Source,
+    lldpCredentialId:           tier3Source,
   };
 
   if (classOverride) {
@@ -883,38 +976,47 @@ export async function resolveMonitorSettingsWithProvenance(
     // for cadence, PollingMethod for polling) make the previous loop hostile
     // to TypeScript's narrowing — listing each field explicitly keeps the
     // types straight without `as any`.
-    if (classOverride.intervalSeconds           != null) { resolved.intervalSeconds           = classOverride.intervalSeconds;           provenance.intervalSeconds           = "class"; }
-    if (classOverride.failureThreshold          != null) { resolved.failureThreshold          = classOverride.failureThreshold;          provenance.failureThreshold          = "class"; }
-    if (classOverride.probeTimeoutMs            != null) { resolved.probeTimeoutMs            = classOverride.probeTimeoutMs;            provenance.probeTimeoutMs            = "class"; }
-    if (classOverride.telemetryTimeoutMs        != null) { resolved.telemetryTimeoutMs        = classOverride.telemetryTimeoutMs;        provenance.telemetryTimeoutMs        = "class"; }
-    if (classOverride.systemInfoTimeoutMs       != null) { resolved.systemInfoTimeoutMs       = classOverride.systemInfoTimeoutMs;       provenance.systemInfoTimeoutMs       = "class"; }
-    if (classOverride.telemetryIntervalSeconds  != null) { resolved.telemetryIntervalSeconds  = classOverride.telemetryIntervalSeconds;  provenance.telemetryIntervalSeconds  = "class"; }
-    if (classOverride.systemInfoIntervalSeconds != null) { resolved.systemInfoIntervalSeconds = classOverride.systemInfoIntervalSeconds; provenance.systemInfoIntervalSeconds = "class"; }
-    if (classOverride.sampleRetentionDays       != null) { resolved.sampleRetentionDays       = classOverride.sampleRetentionDays;       provenance.sampleRetentionDays       = "class"; }
-    if (classOverride.telemetryRetentionDays    != null) { resolved.telemetryRetentionDays    = classOverride.telemetryRetentionDays;    provenance.telemetryRetentionDays    = "class"; }
-    if (classOverride.systemInfoRetentionDays   != null) { resolved.systemInfoRetentionDays   = classOverride.systemInfoRetentionDays;   provenance.systemInfoRetentionDays   = "class"; }
-    if (classOverride.responseTimePolling)        { resolved.responseTimePolling = classOverride.responseTimePolling; provenance.responseTimePolling = "class"; }
-    if (classOverride.telemetryPolling)           { resolved.telemetryPolling    = classOverride.telemetryPolling;    provenance.telemetryPolling    = "class"; }
-    if (classOverride.interfacesPolling)          { resolved.interfacesPolling   = classOverride.interfacesPolling;   provenance.interfacesPolling   = "class"; }
-    if (classOverride.lldpPolling)                { resolved.lldpPolling         = classOverride.lldpPolling;         provenance.lldpPolling         = "class"; }
-    if (classOverride.responseTimeMibId)          { resolved.responseTimeMibId   = classOverride.responseTimeMibId;   provenance.responseTimeMibId   = "class"; }
-    if (classOverride.telemetryMibId)             { resolved.telemetryMibId      = classOverride.telemetryMibId;      provenance.telemetryMibId      = "class"; }
-    if (classOverride.interfacesMibId)            { resolved.interfacesMibId     = classOverride.interfacesMibId;     provenance.interfacesMibId     = "class"; }
-    if (classOverride.lldpMibId)                  { resolved.lldpMibId           = classOverride.lldpMibId;           provenance.lldpMibId           = "class"; }
-    if (classOverride.responseTimeCredentialId)   { resolved.responseTimeCredentialId = classOverride.responseTimeCredentialId; provenance.responseTimeCredentialId = "class"; }
-    if (classOverride.telemetryCredentialId)      { resolved.telemetryCredentialId    = classOverride.telemetryCredentialId;    provenance.telemetryCredentialId    = "class"; }
-    if (classOverride.interfacesCredentialId)     { resolved.interfacesCredentialId   = classOverride.interfacesCredentialId;   provenance.interfacesCredentialId   = "class"; }
-    if (classOverride.lldpCredentialId)           { resolved.lldpCredentialId         = classOverride.lldpCredentialId;         provenance.lldpCredentialId         = "class"; }
+    if (classOverride.intervalSeconds            != null) { resolved.intervalSeconds            = classOverride.intervalSeconds;            provenance.intervalSeconds            = "class"; }
+    if (classOverride.failureThreshold           != null) { resolved.failureThreshold           = classOverride.failureThreshold;           provenance.failureThreshold           = "class"; }
+    if (classOverride.probeTimeoutMs             != null) { resolved.probeTimeoutMs             = classOverride.probeTimeoutMs;             provenance.probeTimeoutMs             = "class"; }
+    if (classOverride.cpuMemoryTimeoutMs         != null) { resolved.cpuMemoryTimeoutMs         = classOverride.cpuMemoryTimeoutMs;         provenance.cpuMemoryTimeoutMs         = "class"; }
+    if (classOverride.temperatureTimeoutMs       != null) { resolved.temperatureTimeoutMs       = classOverride.temperatureTimeoutMs;       provenance.temperatureTimeoutMs       = "class"; }
+    if (classOverride.systemInfoTimeoutMs        != null) { resolved.systemInfoTimeoutMs        = classOverride.systemInfoTimeoutMs;        provenance.systemInfoTimeoutMs        = "class"; }
+    if (classOverride.cpuMemoryIntervalSeconds   != null) { resolved.cpuMemoryIntervalSeconds   = classOverride.cpuMemoryIntervalSeconds;   provenance.cpuMemoryIntervalSeconds   = "class"; }
+    if (classOverride.temperatureIntervalSeconds != null) { resolved.temperatureIntervalSeconds = classOverride.temperatureIntervalSeconds; provenance.temperatureIntervalSeconds = "class"; }
+    if (classOverride.systemInfoIntervalSeconds  != null) { resolved.systemInfoIntervalSeconds  = classOverride.systemInfoIntervalSeconds;  provenance.systemInfoIntervalSeconds  = "class"; }
+    if (classOverride.sampleRetentionDays        != null) { resolved.sampleRetentionDays        = classOverride.sampleRetentionDays;        provenance.sampleRetentionDays        = "class"; }
+    if (classOverride.telemetryRetentionDays     != null) { resolved.telemetryRetentionDays     = classOverride.telemetryRetentionDays;     provenance.telemetryRetentionDays     = "class"; }
+    if (classOverride.systemInfoRetentionDays    != null) { resolved.systemInfoRetentionDays    = classOverride.systemInfoRetentionDays;    provenance.systemInfoRetentionDays    = "class"; }
+    if (classOverride.responseTimePolling)         { resolved.responseTimePolling = classOverride.responseTimePolling; provenance.responseTimePolling = "class"; }
+    if (classOverride.cpuMemoryPolling)            { resolved.cpuMemoryPolling    = classOverride.cpuMemoryPolling;    provenance.cpuMemoryPolling    = "class"; }
+    if (classOverride.temperaturePolling)          { resolved.temperaturePolling  = classOverride.temperaturePolling;  provenance.temperaturePolling  = "class"; }
+    if (classOverride.interfacesPolling)           { resolved.interfacesPolling   = classOverride.interfacesPolling;   provenance.interfacesPolling   = "class"; }
+    if (classOverride.lldpPolling)                 { resolved.lldpPolling         = classOverride.lldpPolling;         provenance.lldpPolling         = "class"; }
+    if (classOverride.responseTimeMibId)           { resolved.responseTimeMibId   = classOverride.responseTimeMibId;   provenance.responseTimeMibId   = "class"; }
+    if (classOverride.cpuMemoryMibId)              { resolved.cpuMemoryMibId      = classOverride.cpuMemoryMibId;      provenance.cpuMemoryMibId      = "class"; }
+    if (classOverride.temperatureMibId)            { resolved.temperatureMibId    = classOverride.temperatureMibId;    provenance.temperatureMibId    = "class"; }
+    if (classOverride.interfacesMibId)             { resolved.interfacesMibId     = classOverride.interfacesMibId;     provenance.interfacesMibId     = "class"; }
+    if (classOverride.lldpMibId)                   { resolved.lldpMibId           = classOverride.lldpMibId;           provenance.lldpMibId           = "class"; }
+    if (classOverride.responseTimeCredentialId)    { resolved.responseTimeCredentialId  = classOverride.responseTimeCredentialId;  provenance.responseTimeCredentialId  = "class"; }
+    if (classOverride.cpuMemoryCredentialId)       { resolved.cpuMemoryCredentialId     = classOverride.cpuMemoryCredentialId;     provenance.cpuMemoryCredentialId     = "class"; }
+    if (classOverride.temperatureCredentialId)     { resolved.temperatureCredentialId   = classOverride.temperatureCredentialId;   provenance.temperatureCredentialId   = "class"; }
+    if (classOverride.interfacesCredentialId)      { resolved.interfacesCredentialId    = classOverride.interfacesCredentialId;    provenance.interfacesCredentialId    = "class"; }
+    if (classOverride.lldpCredentialId)            { resolved.lldpCredentialId          = classOverride.lldpCredentialId;          provenance.lldpCredentialId          = "class"; }
   }
 
-  // Per-asset (only the four overridable fields).
+  // Per-asset (only the cadence + timeout overrides).
   if (asset.monitorIntervalSec != null) {
     resolved.intervalSeconds = asset.monitorIntervalSec;
     provenance.intervalSeconds = "asset";
   }
-  if (asset.telemetryIntervalSec != null) {
-    resolved.telemetryIntervalSeconds = asset.telemetryIntervalSec;
-    provenance.telemetryIntervalSeconds = "asset";
+  if (asset.cpuMemoryIntervalSec != null) {
+    resolved.cpuMemoryIntervalSeconds = asset.cpuMemoryIntervalSec;
+    provenance.cpuMemoryIntervalSeconds = "asset";
+  }
+  if (asset.temperatureIntervalSec != null) {
+    resolved.temperatureIntervalSeconds = asset.temperatureIntervalSec;
+    provenance.temperatureIntervalSeconds = "asset";
   }
   if (asset.systemInfoIntervalSec != null) {
     resolved.systemInfoIntervalSeconds = asset.systemInfoIntervalSec;
@@ -924,9 +1026,13 @@ export async function resolveMonitorSettingsWithProvenance(
     resolved.probeTimeoutMs = asset.probeTimeoutMs;
     provenance.probeTimeoutMs = "asset";
   }
-  if (asset.telemetryTimeoutMs != null) {
-    resolved.telemetryTimeoutMs = asset.telemetryTimeoutMs;
-    provenance.telemetryTimeoutMs = "asset";
+  if (asset.cpuMemoryTimeoutMs != null) {
+    resolved.cpuMemoryTimeoutMs = asset.cpuMemoryTimeoutMs;
+    provenance.cpuMemoryTimeoutMs = "asset";
+  }
+  if (asset.temperatureTimeoutMs != null) {
+    resolved.temperatureTimeoutMs = asset.temperatureTimeoutMs;
+    provenance.temperatureTimeoutMs = "asset";
   }
   if (asset.systemInfoTimeoutMs != null) {
     resolved.systemInfoTimeoutMs = asset.systemInfoTimeoutMs;
@@ -937,27 +1043,29 @@ export async function resolveMonitorSettingsWithProvenance(
   // legacy "rest" or an incompatible value silently falls through to the
   // class/tier value.
   const sourceKindForAsset = assetSourceKindFromIntegrationType(asset.discoveredByIntegrationType ?? null);
-  function takeAssetPolling(stream: keyof Pick<MonitorTierSettings, "responseTimePolling" | "telemetryPolling" | "interfacesPolling" | "lldpPolling">, raw: string | null | undefined) {
+  function takeAssetPolling(stream: keyof Pick<MonitorTierSettings, "responseTimePolling" | "cpuMemoryPolling" | "temperaturePolling" | "interfacesPolling" | "lldpPolling">, raw: string | null | undefined) {
     if (isPollingMethod(raw) && isPollingMethodCompatible(sourceKindForAsset, raw)) {
       resolved[stream] = raw;
       provenance[stream] = "asset";
     }
   }
   takeAssetPolling("responseTimePolling", asset.responseTimePolling);
-  takeAssetPolling("telemetryPolling",    asset.telemetryPolling);
+  takeAssetPolling("cpuMemoryPolling",    asset.cpuMemoryPolling);
+  takeAssetPolling("temperaturePolling",  asset.temperaturePolling);
   takeAssetPolling("interfacesPolling",   asset.interfacesPolling);
   takeAssetPolling("lldpPolling",         asset.lldpPolling);
 
   // Per-asset MIB id overrides. Empty strings are treated as inherit; only
   // non-empty values take effect (matches the resolver's resolveMibId rule).
-  function takeAssetMibId(stream: keyof Pick<MonitorTierSettings, "responseTimeMibId" | "telemetryMibId" | "interfacesMibId" | "lldpMibId">, raw: string | null | undefined) {
+  function takeAssetMibId(stream: keyof Pick<MonitorTierSettings, "responseTimeMibId" | "cpuMemoryMibId" | "temperatureMibId" | "interfacesMibId" | "lldpMibId">, raw: string | null | undefined) {
     if (typeof raw === "string" && raw.trim().length > 0) {
       resolved[stream] = raw;
       provenance[stream] = "asset";
     }
   }
   takeAssetMibId("responseTimeMibId", asset.responseTimeMibId);
-  takeAssetMibId("telemetryMibId",    asset.telemetryMibId);
+  takeAssetMibId("cpuMemoryMibId",    asset.cpuMemoryMibId);
+  takeAssetMibId("temperatureMibId",  asset.temperatureMibId);
   takeAssetMibId("interfacesMibId",   asset.interfacesMibId);
   takeAssetMibId("lldpMibId",         asset.lldpMibId);
 
@@ -2008,7 +2116,7 @@ const SNMP_WALK_MAX = 1000;
 export async function collectTelemetry(assetId: string): Promise<CollectionResult<TelemetrySample>> {
   const asset = await prisma.asset.findUnique({
     where: { id: assetId },
-    include: { monitorCredential: true, telemetryCredential: true, discoveredByIntegration: true },
+    include: { monitorCredential: true, cpuMemoryCredential: true, discoveredByIntegration: true },
   });
   if (!asset)            return { supported: false, error: "Asset not found" };
   if (!asset.monitored)  return { supported: false };
@@ -2020,13 +2128,23 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
     ...asset,
     discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
   });
-  const polling = effective.telemetryPolling;
+  // Pragmatic stream-split dispatch: collectTelemetry covers CPU + memory +
+  // temperature in one session. The resolver now exposes separate
+  // cpuMemoryPolling / temperaturePolling — for this dispatch path we read
+  // cpuMemoryPolling as the unified telemetry method (CPU/memory is the
+  // primary signal, temperature is collected alongside as a bonus via the
+  // ENTITY-SENSOR walk + scalar fallback in collectTemperaturesSnmp). A
+  // future commit splits the loop into two independent SNMP sessions so
+  // operators can run CPU/memory over REST while temperature scrapes over
+  // SNMP — for now the unified path keeps the resolver simple and the
+  // collector unchanged.
+  const polling = effective.cpuMemoryPolling;
   if (!polling) return { supported: false };
   // Agent-mode: the Polaris Agent on the host pushes telemetry via
   // POST /api/v1/agents/samples on its own schedule. Periodic puller stays
   // out of the way — `recordTelemetryResult` already no-ops on supported=false.
   if (polling === "agent") return { supported: false };
-  const telemetryTimeout = effective.telemetryTimeoutMs;
+  const telemetryTimeout = effective.cpuMemoryTimeoutMs;
 
   // FQDN fallback for credentialed methods that resolve hostnames natively.
   const targetIp =
@@ -2059,13 +2177,16 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
     }
     if (polling === "snmp") {
       // Per-stream asset credential wins, then asset default, then class-
-      // override credential, then integration fallback.
-      const effectiveTelemetryCred = asset.telemetryCredential ?? asset.monitorCredential;
+      // override credential, then integration fallback. The pragmatic
+      // unified dispatch reads from cpuMemoryCredential — when a temperature
+      // -only credential differs, the unified loop won't see it until the
+      // collector loop is split into two sessions in a follow-up commit.
+      const effectiveTelemetryCred = asset.cpuMemoryCredential ?? asset.monitorCredential;
       let snmpCfg: Record<string, unknown>;
       if (effectiveTelemetryCred?.type === "snmp") {
         snmpCfg = effectiveTelemetryCred.config as Record<string, unknown>;
       } else {
-        const classCred = await loadClassOverrideStreamCredential(effective.telemetryCredentialId, "snmp");
+        const classCred = await loadClassOverrideStreamCredential(effective.cpuMemoryCredentialId, "snmp");
         if (classCred) {
           snmpCfg = classCred.config as Record<string, unknown>;
         } else if (isFortinetSrc && integration) {
@@ -2081,7 +2202,7 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
         asset.model,
         asset.os,
         telemetryTimeout,
-        effective.telemetryMibId,
+        effective.cpuMemoryMibId,
       );
       return { supported: true, data };
     }
@@ -4491,7 +4612,8 @@ export async function recordProbeResult(
       consecutiveSuccesses: true,
       discoveredByIntegrationId: true,
       monitorIntervalSec: true,
-      telemetryIntervalSec: true,
+      cpuMemoryIntervalSec: true,
+      temperatureIntervalSec: true,
       systemInfoIntervalSec: true,
       probeTimeoutMs: true,
     },
@@ -4818,11 +4940,12 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       discoveredByIntegration: { select: { type: true, id: true, name: true } },
       monitorStatus: true, consecutiveFailures: true,
       lastMonitorAt: true, monitorIntervalSec: true,
-      lastTelemetryAt: true, telemetryIntervalSec: true,
+      lastTelemetryAt: true, cpuMemoryIntervalSec: true, temperatureIntervalSec: true,
       lastSystemInfoAt: true, systemInfoIntervalSec: true,
       probeTimeoutMs: true,
       responseTimePolling: true,
-      telemetryPolling:    true,
+      cpuMemoryPolling:    true,
+      temperaturePolling:  true,
       interfacesPolling:   true,
       lldpPolling:         true,
       monitoredInterfaces: true,
@@ -4867,7 +4990,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
   for (const a of candidates) {
     const integrationType = a.discoveredByIntegration?.type;
     const probeT = a.responseTimePolling || defaultProbeTransport(integrationType);
-    const telT   = a.telemetryPolling    || defaultHeavyTransport(integrationType);
+    const telT   = a.cpuMemoryPolling    || defaultHeavyTransport(integrationType);
     const ifT    = a.interfacesPolling   || defaultHeavyTransport(integrationType);
     transportByCadenceById.set(a.id, {
       probe:        probeT,
@@ -4912,7 +5035,13 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
         ? eff.intervalSeconds * 2
         : eff.intervalSeconds;
     const probe      = isDue(a.lastMonitorAt,    probeIntervalSec);
-    const telemetry  = isDue(a.lastTelemetryAt,  eff.telemetryIntervalSeconds);
+    // Pragmatic stream-split: the dispatcher tick treats CPU/memory's
+    // cadence as the unified "telemetry due" trigger. collectTelemetry
+    // still pulls temperature on the same session — operators who want a
+    // shorter temperature cadence get the per-stream column today but the
+    // independent timer lands in a follow-up commit when the collector
+    // loop splits.
+    const telemetry  = isDue(a.lastTelemetryAt,  eff.cpuMemoryIntervalSeconds);
     const systemInfo = isDue(a.lastSystemInfoAt, eff.systemInfoIntervalSeconds);
     const hasFastPin =
       (Array.isArray(a.monitoredInterfaces)   && a.monitoredInterfaces.length   > 0) ||
@@ -4935,11 +5064,11 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // {supported:false} for those methods regardless of assetType).
     const isManagedSwitchOrAp = a.assetType === "switch" || a.assetType === "access_point";
     const canTelemetry =
-      eff.telemetryPolling !== null &&
-      eff.telemetryPolling !== "icmp"  &&
-      eff.telemetryPolling !== "winrm" &&
-      eff.telemetryPolling !== "ssh"   &&
-      !(eff.telemetryPolling === "rest_api" && isManagedSwitchOrAp);
+      eff.cpuMemoryPolling !== null &&
+      eff.cpuMemoryPolling !== "icmp"  &&
+      eff.cpuMemoryPolling !== "winrm" &&
+      eff.cpuMemoryPolling !== "ssh"   &&
+      !(eff.cpuMemoryPolling === "rest_api" && isManagedSwitchOrAp);
     // systemInfo is supported for winrm/ssh paths; only exclude the REST API
     // + managed-switch/AP combination that has no direct endpoint.
     const canSystemInfo =

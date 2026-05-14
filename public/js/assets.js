@@ -1670,10 +1670,10 @@ function getAssetFormData() {
       var ptRaw = ptEl.value === "" ? null : parseInt(ptEl.value, 10);
       data.probeTimeoutMs = (Number.isFinite(ptRaw) && ptRaw >= 100 && ptRaw <= 60000) ? ptRaw : null;
     }
-    var telTimeoutEl = document.getElementById("f-telemetryTimeoutMs");
+    var telTimeoutEl = document.getElementById("f-cpuMemoryTimeoutMs");
     if (telTimeoutEl) {
       var telRaw = telTimeoutEl.value === "" ? null : parseInt(telTimeoutEl.value, 10);
-      data.telemetryTimeoutMs = (Number.isFinite(telRaw) && telRaw >= 1000 && telRaw <= 120000) ? telRaw : null;
+      data.cpuMemoryTimeoutMs = (Number.isFinite(telRaw) && telRaw >= 1000 && telRaw <= 120000) ? telRaw : null;
     }
     var sysTimeoutEl = document.getElementById("f-systemInfoTimeoutMs");
     if (sysTimeoutEl) {
@@ -1685,17 +1685,17 @@ function getAssetFormData() {
     var polling = _polarisReadPollingFourStream("f-");
     if (document.getElementById("f-responseTimePolling")) {
       data.responseTimePolling = polling.responseTimePolling;
-      data.telemetryPolling    = polling.telemetryPolling;
+      data.cpuMemoryPolling    = polling.cpuMemoryPolling;
       data.interfacesPolling   = polling.interfacesPolling;
       data.lldpPolling         = polling.lldpPolling;
     }
     // Per-stream credential overrides. Empty string → null (source default).
     var rtCredEl  = document.getElementById("f-responseTimeCredential");
-    var telCredEl = document.getElementById("f-telemetryCredential");
+    var telCredEl = document.getElementById("f-cpuMemoryCredential");
     var ifCredEl  = document.getElementById("f-interfacesCredential");
     var lldpCredEl= document.getElementById("f-lldpCredential");
     data.responseTimeCredentialId = rtCredEl   ? (rtCredEl.value   || null) : undefined;
-    data.telemetryCredentialId    = telCredEl  ? (telCredEl.value  || null) : undefined;
+    data.cpuMemoryCredentialId    = telCredEl  ? (telCredEl.value  || null) : undefined;
     data.interfacesCredentialId   = ifCredEl   ? (ifCredEl.value   || null) : undefined;
     data.lldpCredentialId         = lldpCredEl ? (lldpCredEl.value || null) : undefined;
     // Per-stream MIB overrides. Empty string → null (Automatic).
@@ -1704,7 +1704,7 @@ function getAssetFormData() {
     var ifMibEl   = document.getElementById("f-interfacesMib");
     var lldpMibEl = document.getElementById("f-lldpMib");
     data.responseTimeMibId = rtMibEl   ? (rtMibEl.value   || null) : undefined;
-    data.telemetryMibId    = telMibEl  ? (telMibEl.value  || null) : undefined;
+    data.cpuMemoryMibId    = telMibEl  ? (telMibEl.value  || null) : undefined;
     data.interfacesMibId   = ifMibEl   ? (ifMibEl.value   || null) : undefined;
     data.lldpMibId         = lldpMibEl ? (lldpMibEl.value || null) : undefined;
   }
@@ -1716,7 +1716,7 @@ function getAssetFormData() {
 function assetMonitoringFormHTML(asset, managedAgent) {
   var interval = asset && asset.monitorIntervalSec != null ? asset.monitorIntervalSec : "";
   var probeTimeout = asset && asset.probeTimeoutMs != null ? asset.probeTimeoutMs : "";
-  var telemetryTimeout  = asset && asset.telemetryTimeoutMs  != null ? asset.telemetryTimeoutMs  : "";
+  var telemetryTimeout  = asset && asset.cpuMemoryTimeoutMs  != null ? asset.cpuMemoryTimeoutMs  : "";
   var systemInfoTimeout = asset && asset.systemInfoTimeoutMs != null ? asset.systemInfoTimeoutMs : "";
   var monitored = asset && asset.monitored ? " checked" : "";
   // Asset id is needed to fetch effective settings + populate the Asset
@@ -1733,19 +1733,19 @@ function assetMonitoringFormHTML(asset, managedAgent) {
   if (!_POLLING_COMPAT[assetSourceKind]) assetSourceKind = "manual";
   var pollingCurrent = {
     responseTimePolling: asset && asset.responseTimePolling,
-    telemetryPolling:    asset && asset.telemetryPolling,
+    cpuMemoryPolling:    asset && asset.cpuMemoryPolling,
     interfacesPolling:   asset && asset.interfacesPolling,
     lldpPolling:         asset && asset.lldpPolling,
   };
   // Per-stream credential IDs (null = use source default at runtime).
   var rtCredId   = (asset && asset.responseTimeCredentialId)  || "";
-  var telCredId  = (asset && asset.telemetryCredentialId)     || "";
+  var telCredId  = (asset && asset.cpuMemoryCredentialId)     || "";
   var ifCredId   = (asset && asset.interfacesCredentialId)    || "";
   var lldpCredId = (asset && asset.lldpCredentialId)          || "";
 
   // Per-stream MIB IDs (null = Automatic).
   var rtMibId   = (asset && asset.responseTimeMibId)  || "";
-  var telMibId  = (asset && asset.telemetryMibId)     || "";
+  var telMibId  = (asset && asset.cpuMemoryMibId)     || "";
   var ifMibId   = (asset && asset.interfacesMibId)    || "";
   var lldpMibId = (asset && asset.lldpMibId)          || "";
 
@@ -1796,7 +1796,7 @@ function assetMonitoringFormHTML(asset, managedAgent) {
       '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.5rem 0 0.5rem 0">Polling Methods</p>' +
       '<div style="display:grid;grid-template-columns:200px 1fr;gap:0.5rem 1rem;align-items:center;margin-bottom:0.75rem">' +
         streamRow("Response time",  "responseTime", "f-responseTimePolling", "f-responseTimeCredential", "f-responseTimeMib", pollingCurrent.responseTimePolling, rtCredId,   rtMibId,   _autoMibNames.responseTime) +
-        streamRow("Telemetry",      "telemetry",    "f-telemetryPolling",    "f-telemetryCredential",    "f-telemetryMib",    pollingCurrent.telemetryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
+        streamRow("Telemetry",      "telemetry",    "f-cpuMemoryPolling",    "f-cpuMemoryCredential",    "f-telemetryMib",    pollingCurrent.cpuMemoryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
         streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   "f-interfacesMib",   pollingCurrent.interfacesPolling,   ifCredId,   ifMibId,   _autoMibNames.interfaces) +
         streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         "f-lldpMib",         pollingCurrent.lldpPolling,         lldpCredId, lldpMibId, _autoMibNames.lldp) +
       '</div>' +
@@ -1900,8 +1900,8 @@ function assetMonitoringFormHTML(asset, managedAgent) {
       '<p class="hint">Range 100..60000 ms; default is 5000 ms. Inherits from the resolved tier when blank.</p>' +
     '</div>' +
     '<div class="form-group">' +
-      '<label>Telemetry Timeout Override (ms) <span class="tier-badge" id="f-telemetryTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
-      '<input type="number" id="f-telemetryTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(telemetryTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
+      '<label>Telemetry Timeout Override (ms) <span class="tier-badge" id="f-cpuMemoryTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
+      '<input type="number" id="f-cpuMemoryTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(telemetryTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
       '<p class="hint">Per-request timeout for the telemetry collector (FortiOS REST + SNMP, CPU + memory + temperature). Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
     '</div>' +
     '<div class="form-group">' +
@@ -1954,7 +1954,7 @@ async function _wireMonitorEditTab(asset) {
   // Per-stream selects and their corresponding polling selects.
   var streamDefs = [
     { pollId: "f-responseTimePolling", credId: "f-responseTimeCredential", mibId: "f-responseTimeMib" },
-    { pollId: "f-telemetryPolling",    credId: "f-telemetryCredential",    mibId: "f-telemetryMib"    },
+    { pollId: "f-cpuMemoryPolling",    credId: "f-cpuMemoryCredential",    mibId: "f-telemetryMib"    },
     { pollId: "f-interfacesPolling",   credId: "f-interfacesCredential",   mibId: "f-interfacesMib"   },
     { pollId: "f-lldpPolling",         credId: "f-lldpCredential",         mibId: "f-lldpMib"         },
   ];
@@ -2066,7 +2066,7 @@ async function _populateAssetMonitorTierBadges(asset) {
   }
   setBadge("f-monitorInterval-tier",      "intervalSeconds",     " s");
   setBadge("f-probeTimeoutMs-tier",       "probeTimeoutMs",      " ms");
-  setBadge("f-telemetryTimeoutMs-tier",   "telemetryTimeoutMs",  " ms");
+  setBadge("f-cpuMemoryTimeoutMs-tier",   "cpuMemoryTimeoutMs",  " ms");
   setBadge("f-systemInfoTimeoutMs-tier",  "systemInfoTimeoutMs", " ms");
 
   // Update each polling dropdown's "Inherit" option to show the actual resolved
@@ -2094,7 +2094,7 @@ async function _populateAssetMonitorTierBadges(asset) {
     inheritOpt.textContent = "Inherit (" + tierStr + ": " + methodLabel + ")";
   }
   updatePollingInheritLabel("f-responseTimePolling", "responseTimePolling");
-  updatePollingInheritLabel("f-telemetryPolling",    "telemetryPolling");
+  updatePollingInheritLabel("f-cpuMemoryPolling",    "cpuMemoryPolling");
   updatePollingInheritLabel("f-interfacesPolling",   "interfacesPolling");
   updatePollingInheritLabel("f-lldpPolling",         "lldpPolling");
 }
@@ -2163,10 +2163,10 @@ async function _openAssetOverridesSlideover(scope) {
       others.map(function (a) {
         var bits = [];
         if (a.monitorIntervalSec    != null) bits.push("interval=" + a.monitorIntervalSec + "s");
-        if (a.telemetryIntervalSec  != null) bits.push("telemetry=" + a.telemetryIntervalSec + "s");
+        if (a.cpuMemoryIntervalSec  != null) bits.push("telemetry=" + a.cpuMemoryIntervalSec + "s");
         if (a.systemInfoIntervalSec != null) bits.push("sysinfo=" + a.systemInfoIntervalSec + "s");
         if (a.probeTimeoutMs        != null) bits.push("probe-timeout=" + a.probeTimeoutMs + "ms");
-        if (a.telemetryTimeoutMs    != null) bits.push("tel-timeout=" + a.telemetryTimeoutMs + "ms");
+        if (a.cpuMemoryTimeoutMs    != null) bits.push("tel-timeout=" + a.cpuMemoryTimeoutMs + "ms");
         if (a.systemInfoTimeoutMs   != null) bits.push("sysinfo-timeout=" + a.systemInfoTimeoutMs + "ms");
         return '<tr style="cursor:pointer" data-asset-link="' + escapeHtml(a.id) + '">' +
           '<td style="padding:6px 8px"><a href="#" onclick="return false">' + escapeHtml(a.hostname || "(no hostname)") + '</a></td>' +
@@ -2819,7 +2819,7 @@ function _assetHasAgentIntent(a, agent) {
   if (agent) return true;
   if (!a) return false;
   return a.responseTimePolling === "agent" ||
-         a.telemetryPolling    === "agent" ||
+         a.cpuMemoryPolling    === "agent" ||
          a.interfacesPolling   === "agent" ||
          a.lldpPolling         === "agent";
 }
@@ -3357,7 +3357,7 @@ async function _loadSystemTabFor(assetId, range, asset, opts) {
   // disable the chain.
   var settings = _monitorSettingsCache || {};
   var refAsset = asset || _currentAssetForRefresh;
-  var ms = _refreshIntervalMs(refAsset && refAsset.telemetryIntervalSec, settings.telemetryIntervalSeconds, 60);
+  var ms = _refreshIntervalMs(refAsset && refAsset.cpuMemoryIntervalSec, settings.cpuMemoryIntervalSeconds, 60);
   _scheduleAssetSystemRefresh(assetId, refAsset, ms);
 }
 
@@ -3980,7 +3980,7 @@ function _renderTemperatures(container, si, asset) {
       container.innerHTML = _notAvailableViaPollingHTML("Temperature", tempPolling);
     } else {
       var isFortinetRestFirewall = asset && asset.assetType === "firewall" && (function () {
-        var tp = asset.telemetryPolling;
+        var tp = asset.cpuMemoryPolling;
         if (tp === "rest_api") return true;
         if (tp) return false;
         var sk = (asset.discoveredByIntegration && asset.discoveredByIntegration.type) || "manual";
@@ -4347,7 +4347,7 @@ async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
   // samples are written by collectTelemetry, not the response-time probe.
   var settings = _monitorSettingsCache || {};
   var asset = _currentAssetForRefresh;
-  var ms = _refreshIntervalMs(asset && asset.telemetryIntervalSec, settings.telemetryIntervalSeconds, 60);
+  var ms = _refreshIntervalMs(asset && asset.cpuMemoryIntervalSec, settings.cpuMemoryIntervalSeconds, 60);
   _scheduleSensorRefresh(assetId, sensorName, ms);
 }
 
@@ -5286,7 +5286,7 @@ function _streamCredential(asset, stream, resolvedPolling, effectiveResolved) {
 // system-info column since both ride the system-info pass.
 function _streamIntervalAssetField(stream) {
   if (stream === "responseTime") return "monitorIntervalSec";
-  if (stream === "telemetry")    return "telemetryIntervalSec";
+  if (stream === "telemetry")    return "cpuMemoryIntervalSec";
   if (stream === "interfaces" || stream === "lldp") return "systemInfoIntervalSec";
   return null;
 }
@@ -5296,7 +5296,7 @@ function _streamIntervalAssetField(stream) {
 // cadence — same rationale as the per-asset mapping above.
 function _streamIntervalEffectiveField(stream) {
   if (stream === "responseTime") return "intervalSeconds";
-  if (stream === "telemetry")    return "telemetryIntervalSeconds";
+  if (stream === "telemetry")    return "cpuMemoryIntervalSeconds";
   if (stream === "interfaces" || stream === "lldp") return "systemInfoIntervalSeconds";
   return null;
 }
@@ -5669,7 +5669,7 @@ async function _renderIntermittencyBar(assetId) {
 /**
  * Fetches asset.updated events for one asset within the chart window and
  * returns transition markers — one per event whose change-set touched the
- * polling-method fields (responseTimePolling / telemetryPolling /
+ * polling-method fields (responseTimePolling / cpuMemoryPolling /
  * interfacesPolling / lldpPolling) or monitorCredentialId. Each marker
  * carries { timestamp, label } so the chart can render a vertical line at
  * that timestamp with the human-readable transition string in its tooltip.
@@ -5682,7 +5682,7 @@ async function _renderIntermittencyBar(assetId) {
 async function _fetchPollingTransitions(assetId, since, until) {
   var TRACKED = {
     responseTimePolling:       "Response-time polling",
-    telemetryPolling:          "Telemetry polling",
+    cpuMemoryPolling:          "Telemetry polling",
     interfacesPolling:         "Interfaces polling",
     lldpPolling:               "LLDP polling",
     monitorCredentialId:       "Credential",
@@ -9630,9 +9630,9 @@ var MON_TIER_DEFAULTS = {
   intervalSeconds:           60,
   failureThreshold:          3,
   probeTimeoutMs:            5000,
-  telemetryTimeoutMs:        10000,
+  cpuMemoryTimeoutMs:        10000,
   systemInfoTimeoutMs:       10000,
-  telemetryIntervalSeconds:  60,
+  cpuMemoryIntervalSeconds:  60,
   systemInfoIntervalSeconds: 600,
   sampleRetentionDays:       30,
   telemetryRetentionDays:    30,
@@ -9734,8 +9734,8 @@ function _monsetManualSectionHTML(v) {
       _monsetField("monset-manual-intervalSeconds",           "Probe interval",         "seconds",                        values.intervalSeconds,           1,    86400,  false) +
       _monsetField("monset-manual-failureThreshold",          "Failure threshold",      "consecutive failures",           values.failureThreshold,          1,    100,    false) +
       _monsetField("monset-manual-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",         values.probeTimeoutMs,            100,  60000,  true)  +
-      _monsetField("monset-manual-telemetryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  values.telemetryIntervalSeconds,  15,   86400,  false) +
-      _monsetField("monset-manual-telemetryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       values.telemetryTimeoutMs,        1000, 120000, false) +
+      _monsetField("monset-manual-cpuMemoryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  values.cpuMemoryIntervalSeconds,  15,   86400,  false) +
+      _monsetField("monset-manual-cpuMemoryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       values.cpuMemoryTimeoutMs,        1000, 120000, false) +
       _monsetField("monset-manual-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)", values.systemInfoIntervalSeconds, 60,   86400,  false) +
       _monsetField("monset-manual-systemInfoTimeoutMs",       "System info timeout",    "ms (interface/storage/LLDP)",    values.systemInfoTimeoutMs,       1000, 120000, false) +
       _monsetField("monset-manual-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",             values.sampleRetentionDays,       0,    3650,   false) +
@@ -9781,9 +9781,9 @@ async function _monsetSaveManual() {
     intervalSeconds:           _monsetReadField("monset-manual-intervalSeconds",           MON_TIER_DEFAULTS.intervalSeconds),
     failureThreshold:          _monsetReadField("monset-manual-failureThreshold",          MON_TIER_DEFAULTS.failureThreshold),
     probeTimeoutMs:            _monsetReadField("monset-manual-probeTimeoutMs",            MON_TIER_DEFAULTS.probeTimeoutMs),
-    telemetryTimeoutMs:        _monsetReadField("monset-manual-telemetryTimeoutMs",        MON_TIER_DEFAULTS.telemetryTimeoutMs),
+    cpuMemoryTimeoutMs:        _monsetReadField("monset-manual-cpuMemoryTimeoutMs",        MON_TIER_DEFAULTS.cpuMemoryTimeoutMs),
     systemInfoTimeoutMs:       _monsetReadField("monset-manual-systemInfoTimeoutMs",       MON_TIER_DEFAULTS.systemInfoTimeoutMs),
-    telemetryIntervalSeconds:  _monsetReadField("monset-manual-telemetryIntervalSeconds",  MON_TIER_DEFAULTS.telemetryIntervalSeconds),
+    cpuMemoryIntervalSeconds:  _monsetReadField("monset-manual-cpuMemoryIntervalSeconds",  MON_TIER_DEFAULTS.cpuMemoryIntervalSeconds),
     systemInfoIntervalSeconds: _monsetReadField("monset-manual-systemInfoIntervalSeconds", MON_TIER_DEFAULTS.systemInfoIntervalSeconds),
     sampleRetentionDays:       _monsetReadField("monset-manual-sampleRetentionDays",       MON_TIER_DEFAULTS.sampleRetentionDays),
     telemetryRetentionDays:    _monsetReadField("monset-manual-telemetryRetentionDays",    MON_TIER_DEFAULTS.telemetryRetentionDays),
@@ -9842,15 +9842,15 @@ function _monsetOverrideSummary(o) {
     intervalSeconds:           "probe",
     failureThreshold:          "threshold",
     probeTimeoutMs:            "probe-timeout",
-    telemetryTimeoutMs:        "tel-timeout",
+    cpuMemoryTimeoutMs:        "tel-timeout",
     systemInfoTimeoutMs:       "sysinfo-timeout",
-    telemetryIntervalSeconds:  "telemetry",
+    cpuMemoryIntervalSeconds:  "telemetry",
     systemInfoIntervalSeconds: "sysinfo",
     sampleRetentionDays:       "probe-retain",
     telemetryRetentionDays:    "telem-retain",
     systemInfoRetentionDays:   "sysinfo-retain",
     responseTimePolling:       "rt-poll",
-    telemetryPolling:          "tel-poll",
+    cpuMemoryPolling:          "tel-poll",
     interfacesPolling:         "if-poll",
     lldpPolling:               "lldp-poll",
   };
@@ -9921,8 +9921,8 @@ function _monsetOpenOverrideEditor(existing) {
       _monsetField("monset-ov-intervalSeconds",           "Probe interval",         "seconds",                        v.intervalSeconds,           1,    86400,  false) +
       _monsetField("monset-ov-failureThreshold",          "Failure threshold",      "consecutive failures",           v.failureThreshold,          1,    100,    false) +
       _monsetField("monset-ov-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",         v.probeTimeoutMs,            100,  60000,  true)  +
-      _monsetField("monset-ov-telemetryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  v.telemetryIntervalSeconds,  15,   86400,  false) +
-      _monsetField("monset-ov-telemetryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       v.telemetryTimeoutMs,        1000, 120000, false) +
+      _monsetField("monset-ov-cpuMemoryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  v.cpuMemoryIntervalSeconds,  15,   86400,  false) +
+      _monsetField("monset-ov-cpuMemoryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       v.cpuMemoryTimeoutMs,        1000, 120000, false) +
       _monsetField("monset-ov-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)", v.systemInfoIntervalSeconds, 60,   86400,  false) +
       _monsetField("monset-ov-systemInfoTimeoutMs",       "System info timeout",    "ms (interface/storage/LLDP)",    v.systemInfoTimeoutMs,       1000, 120000, false) +
       _monsetField("monset-ov-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",             v.sampleRetentionDays,       0,    3650,   false) +
@@ -10000,7 +10000,7 @@ function _monsetOpenOverrideEditor(existing) {
           _polarisReadMibFourStream("monset-ov-")
         );
         var allowed = _POLLING_COMPAT[kind] || _POLLING_COMPAT.manual;
-        ["responseTimePolling", "telemetryPolling", "interfacesPolling", "lldpPolling"].forEach(function (k) {
+        ["responseTimePolling", "cpuMemoryPolling", "interfacesPolling", "lldpPolling"].forEach(function (k) {
           if (currentValues[k] && allowed.indexOf(currentValues[k]) === -1) currentValues[k] = null;
         });
         var block = document.getElementById("monset-ov-polling-block");
@@ -10042,9 +10042,9 @@ async function _monsetSaveOverride(existing) {
     intervalSeconds:           readOptional("monset-ov-intervalSeconds"),
     failureThreshold:          readOptional("monset-ov-failureThreshold"),
     probeTimeoutMs:            readOptional("monset-ov-probeTimeoutMs"),
-    telemetryTimeoutMs:        readOptional("monset-ov-telemetryTimeoutMs"),
+    cpuMemoryTimeoutMs:        readOptional("monset-ov-cpuMemoryTimeoutMs"),
     systemInfoTimeoutMs:       readOptional("monset-ov-systemInfoTimeoutMs"),
-    telemetryIntervalSeconds:  readOptional("monset-ov-telemetryIntervalSeconds"),
+    cpuMemoryIntervalSeconds:  readOptional("monset-ov-cpuMemoryIntervalSeconds"),
     systemInfoIntervalSeconds: readOptional("monset-ov-systemInfoIntervalSeconds"),
     sampleRetentionDays:       readOptional("monset-ov-sampleRetentionDays"),
     telemetryRetentionDays:    readOptional("monset-ov-telemetryRetentionDays"),

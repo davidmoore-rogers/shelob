@@ -140,12 +140,14 @@ const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   monitored:             z.boolean().optional(),
   monitorCredentialId:          z.string().uuid().nullable().optional(),
   responseTimeCredentialId:     z.string().uuid().nullable().optional(),
-  telemetryCredentialId:        z.string().uuid().nullable().optional(),
+  cpuMemoryCredentialId:        z.string().uuid().nullable().optional(),
+  temperatureCredentialId:      z.string().uuid().nullable().optional(),
   interfacesCredentialId:       z.string().uuid().nullable().optional(),
   lldpCredentialId:             z.string().uuid().nullable().optional(),
   // Per-stream MIB overrides ("std:<key>" | uploaded MIB UUID | null = inherit)
   responseTimeMibId:            z.string().nullable().optional(),
-  telemetryMibId:               z.string().nullable().optional(),
+  cpuMemoryMibId:               z.string().nullable().optional(),
+  temperatureMibId:             z.string().nullable().optional(),
   interfacesMibId:              z.string().nullable().optional(),
   lldpMibId:                    z.string().nullable().optional(),
   monitorIntervalSec:           z.number().int().min(5).max(86400).nullable().optional(),
@@ -155,19 +157,22 @@ const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   // Per-asset overrides for the heavy collectors. 1000..120000 ms; null = inherit.
   // Wider range than probeTimeoutMs — these scrapes pull dozens of OIDs or
   // multi-MB FortiOS payloads, and a too-tight ceiling false-fails the run.
-  telemetryTimeoutMs:    z.number().int().min(1000).max(120000).nullable().optional(),
+  cpuMemoryTimeoutMs:    z.number().int().min(1000).max(120000).nullable().optional(),
+  temperatureTimeoutMs:  z.number().int().min(1000).max(120000).nullable().optional(),
   systemInfoTimeoutMs:   z.number().int().min(1000).max(120000).nullable().optional(),
   // Per-stream polling-method overrides — top-tier override, falls through
   // to the class override / integration tier / source default. Compatibility
   // with the asset's source kind is enforced at PUT time below.
   responseTimePolling:   PollingMethodEnum.nullable().optional(),
-  telemetryPolling:      PollingMethodEnum.nullable().optional(),
+  cpuMemoryPolling:      PollingMethodEnum.nullable().optional(),
+  temperaturePolling:    PollingMethodEnum.nullable().optional(),
   interfacesPolling:     PollingMethodEnum.nullable().optional(),
   lldpPolling:           PollingMethodEnum.nullable().optional(),
   // Per-asset cadence overrides for the System tab. Null falls back to the
-  // resolved tier-3 telemetry / system-info interval.
-  telemetryIntervalSec:  z.number().int().min(15).max(86400).nullable().optional(),
-  systemInfoIntervalSec: z.number().int().min(60).max(86400).nullable().optional(),
+  // resolved tier-3 cadence (cpuMemory / temperature / system-info).
+  cpuMemoryIntervalSec:   z.number().int().min(15).max(86400).nullable().optional(),
+  temperatureIntervalSec: z.number().int().min(15).max(86400).nullable().optional(),
+  systemInfoIntervalSec:  z.number().int().min(60).max(86400).nullable().optional(),
   // ifNames the operator pinned for fast-cadence polling on the System tab.
   // Cap at 64 so an accidental "select-all on a 200-port chassis" can't
   // saturate the device every probe interval.
@@ -455,7 +460,8 @@ router.get("/:id", async (req, res, next) => {
         discoveredByIntegration:  { select: { id: true, name: true, type: true, config: true } },
         monitorCredential:        { select: { id: true, name: true, type: true } },
         responseTimeCredential:   { select: { id: true, name: true, type: true } },
-        telemetryCredential:      { select: { id: true, name: true, type: true } },
+        cpuMemoryCredential:      { select: { id: true, name: true, type: true } },
+        temperatureCredential:    { select: { id: true, name: true, type: true } },
         interfacesCredential:     { select: { id: true, name: true, type: true } },
         lldpCredential:           { select: { id: true, name: true, type: true } },
         associatedIpRows:         { select: ASSOCIATED_IP_SELECT },
@@ -520,28 +526,33 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
     const asset = await prisma.asset.findUnique({
       where: { id },
       select: {
-        id:                        true,
-        assetType:                 true,
-        discoveredByIntegrationId: true,
-        discoveredByIntegration:   { select: { type: true } },
-        monitorIntervalSec:        true,
-        telemetryIntervalSec:      true,
-        systemInfoIntervalSec:     true,
-        probeTimeoutMs:            true,
-        telemetryTimeoutMs:        true,
-        systemInfoTimeoutMs:       true,
-        responseTimePolling:       true,
-        telemetryPolling:          true,
-        interfacesPolling:         true,
-        lldpPolling:               true,
-        responseTimeMibId:         true,
-        telemetryMibId:            true,
-        interfacesMibId:           true,
-        lldpMibId:                 true,
-        responseTimeCredentialId:  true,
-        telemetryCredentialId:     true,
-        interfacesCredentialId:    true,
-        lldpCredentialId:          true,
+        id:                         true,
+        assetType:                  true,
+        discoveredByIntegrationId:  true,
+        discoveredByIntegration:    { select: { type: true } },
+        monitorIntervalSec:         true,
+        cpuMemoryIntervalSec:       true,
+        temperatureIntervalSec:     true,
+        systemInfoIntervalSec:      true,
+        probeTimeoutMs:             true,
+        cpuMemoryTimeoutMs:         true,
+        temperatureTimeoutMs:       true,
+        systemInfoTimeoutMs:        true,
+        responseTimePolling:        true,
+        cpuMemoryPolling:           true,
+        temperaturePolling:         true,
+        interfacesPolling:          true,
+        lldpPolling:                true,
+        responseTimeMibId:          true,
+        cpuMemoryMibId:             true,
+        temperatureMibId:           true,
+        interfacesMibId:            true,
+        lldpMibId:                  true,
+        responseTimeCredentialId:   true,
+        cpuMemoryCredentialId:      true,
+        temperatureCredentialId:    true,
+        interfacesCredentialId:     true,
+        lldpCredentialId:           true,
       },
     });
     if (!asset) throw new AppError(404, "Asset not found");
@@ -549,7 +560,7 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
       ...asset,
       discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
     });
-    // mibLookup: every non-null MIB UUID across the four streams, mapped to
+    // mibLookup: every non-null MIB UUID across the five streams, mapped to
     // its moduleName so the frontend's monitoring chips can append a "MIB:
     // <module>" segment without a second round-trip. Standard MIB ids (the
     // `std:<key>` namespace, owned entirely by the frontend) are skipped —
@@ -557,7 +568,8 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
     const mibIds = new Set<string>();
     for (const id of [
       result.resolved.responseTimeMibId,
-      result.resolved.telemetryMibId,
+      result.resolved.cpuMemoryMibId,
+      result.resolved.temperatureMibId,
       result.resolved.interfacesMibId,
       result.resolved.lldpMibId,
     ]) {
@@ -1323,9 +1335,10 @@ router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
     // confused about why their selection didn't take.
     {
       const sourceKind = assetSourceKindFromIntegrationType(existing.discoveredByIntegration?.type ?? null);
-      const fields: Array<["responseTimePolling" | "telemetryPolling" | "interfacesPolling" | "lldpPolling", PollingMethod | null | undefined]> = [
+      const fields: Array<["responseTimePolling" | "cpuMemoryPolling" | "temperaturePolling" | "interfacesPolling" | "lldpPolling", PollingMethod | null | undefined]> = [
         ["responseTimePolling", input.responseTimePolling],
-        ["telemetryPolling",    input.telemetryPolling],
+        ["cpuMemoryPolling",    input.cpuMemoryPolling],
+        ["temperaturePolling",  input.temperaturePolling],
         ["interfacesPolling",   input.interfacesPolling],
         ["lldpPolling",         input.lldpPolling],
       ];
@@ -2906,7 +2919,8 @@ router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
           where: { id: assetId },
           data: {
             responseTimePolling: null,
-            telemetryPolling:    null,
+            cpuMemoryPolling:    null,
+            temperaturePolling:  null,
             interfacesPolling:   null,
             lldpPolling:         null,
           },

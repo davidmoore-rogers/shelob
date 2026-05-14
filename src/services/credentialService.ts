@@ -336,7 +336,8 @@ export async function deleteCredential(id: string): Promise<void> {
       OR: [
         { monitorCredentialId:      id },
         { responseTimeCredentialId: id },
-        { telemetryCredentialId:    id },
+        { cpuMemoryCredentialId:    id },
+        { temperatureCredentialId:  id },
         { interfacesCredentialId:   id },
         { lldpCredentialId:         id },
       ],

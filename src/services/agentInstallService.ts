@@ -380,7 +380,8 @@ async function runUninstall(input: StartUninstallInput): Promise<void> {
       where: { id: row.assetId },
       data: {
         responseTimePolling: null,
-        telemetryPolling:    null,
+        cpuMemoryPolling:    null,
+        temperaturePolling:  null,
         interfacesPolling:   null,
         lldpPolling:         null,
       },

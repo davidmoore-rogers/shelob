@@ -46,73 +46,85 @@ import { prisma } from "../../src/db.js";
 // compatibility matrix, so the expected resolved shape varies per test. Each
 // test that uses toEqual() picks the right polling defaults below.
 const FLOOR = {
-  intervalSeconds:           60,
-  failureThreshold:          3,
-  probeTimeoutMs:            5000,
-  telemetryTimeoutMs:        10000,
-  systemInfoTimeoutMs:       10000,
-  telemetryIntervalSeconds:  60,
-  systemInfoIntervalSeconds: 600,
-  sampleRetentionDays:       30,
-  telemetryRetentionDays:    30,
-  systemInfoRetentionDays:   30,
-  responseTimePolling:       null,
-  telemetryPolling:          null,
-  interfacesPolling:         null,
-  lldpPolling:               null,
+  intervalSeconds:            60,
+  failureThreshold:           3,
+  probeTimeoutMs:             5000,
+  cpuMemoryTimeoutMs:         10000,
+  temperatureTimeoutMs:       10000,
+  systemInfoTimeoutMs:        10000,
+  cpuMemoryIntervalSeconds:   60,
+  temperatureIntervalSeconds: 60,
+  systemInfoIntervalSeconds:  600,
+  sampleRetentionDays:        30,
+  telemetryRetentionDays:     30,
+  systemInfoRetentionDays:    30,
+  responseTimePolling:        null,
+  cpuMemoryPolling:           null,
+  temperaturePolling:         null,
+  interfacesPolling:          null,
+  lldpPolling:                null,
   // Per-stream MIB id hints — tierFromJson always includes them on the
   // resolved shape (null when unseeded). Mirrored here so toEqual() lines up.
-  responseTimeMibId:         null,
-  telemetryMibId:            null,
-  interfacesMibId:           null,
-  lldpMibId:                 null,
+  responseTimeMibId:          null,
+  cpuMemoryMibId:             null,
+  temperatureMibId:           null,
+  interfacesMibId:            null,
+  lldpMibId:                  null,
   // Per-stream credential IDs are class-override-only, but the resolver
   // unconditionally writes null for them at every other tier so toEqual()
   // sees a stable shape.
-  responseTimeCredentialId:  null,
-  telemetryCredentialId:     null,
-  interfacesCredentialId:    null,
-  lldpCredentialId:          null,
+  responseTimeCredentialId:   null,
+  cpuMemoryCredentialId:      null,
+  temperatureCredentialId:    null,
+  interfacesCredentialId:     null,
+  lldpCredentialId:           null,
 };
 
 const TUNED_TIER = {
-  intervalSeconds:           120,
-  failureThreshold:          5,
-  probeTimeoutMs:            7500,
+  intervalSeconds:            120,
+  failureThreshold:           5,
+  probeTimeoutMs:             7500,
   // Tuned tier doesn't set the new timeout fields — they fall through to the
   // hardcoded floor (10000 ms each) per the resolver's tierFromJson default.
-  telemetryTimeoutMs:        10000,
-  systemInfoTimeoutMs:       10000,
-  telemetryIntervalSeconds:  90,
-  systemInfoIntervalSeconds: 1200,
-  sampleRetentionDays:       60,
-  telemetryRetentionDays:    14,
-  systemInfoRetentionDays:   14,
-  responseTimePolling:       null,
-  telemetryPolling:          null,
-  interfacesPolling:         null,
-  lldpPolling:               null,
-  responseTimeMibId:         null,
-  telemetryMibId:            null,
-  interfacesMibId:           null,
-  lldpMibId:                 null,
-  responseTimeCredentialId:  null,
-  telemetryCredentialId:     null,
-  interfacesCredentialId:    null,
-  lldpCredentialId:          null,
+  cpuMemoryTimeoutMs:         10000,
+  temperatureTimeoutMs:       10000,
+  systemInfoTimeoutMs:        10000,
+  cpuMemoryIntervalSeconds:   90,
+  temperatureIntervalSeconds: 90,
+  systemInfoIntervalSeconds:  1200,
+  sampleRetentionDays:        60,
+  telemetryRetentionDays:     14,
+  systemInfoRetentionDays:    14,
+  responseTimePolling:        null,
+  cpuMemoryPolling:           null,
+  temperaturePolling:         null,
+  interfacesPolling:          null,
+  lldpPolling:                null,
+  responseTimeMibId:          null,
+  cpuMemoryMibId:             null,
+  temperatureMibId:           null,
+  interfacesMibId:            null,
+  lldpMibId:                  null,
+  responseTimeCredentialId:   null,
+  cpuMemoryCredentialId:      null,
+  temperatureCredentialId:    null,
+  interfacesCredentialId:     null,
+  lldpCredentialId:           null,
 };
 
 // Per-stream polling defaults the resolver applies for a given source kind.
 // Mirrors defaultPollingForSource in monitoringService.ts.
 const MANUAL_POLLING_DEFAULT = {
   responseTimePolling: "icmp" as const,
-  telemetryPolling:    null,
+  cpuMemoryPolling:    null,
+  temperaturePolling:  null,
   interfacesPolling:   null,
   lldpPolling:         null,
 };
 const FORTI_POLLING_DEFAULT = {
   responseTimePolling: "rest_api" as const,
-  telemetryPolling:    "rest_api" as const,
+  cpuMemoryPolling:    "rest_api" as const,
+  temperaturePolling:  "rest_api" as const,
   interfacesPolling:   "rest_api" as const,
   // LLDP defaults to "disabled" on FMG/FortiGate sources because the
   // FortiOS REST `lldp-neighbors` endpoint is empty on most fleets;
@@ -136,7 +148,8 @@ describe("resolveMonitorSettings — tier-3 fallback", () => {
       assetType:                 "workstation",
       discoveredByIntegrationId: null,
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -154,7 +167,8 @@ describe("resolveMonitorSettings — tier-3 fallback", () => {
       assetType:                 "server",
       discoveredByIntegrationId: null,
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -176,7 +190,8 @@ describe("resolveMonitorSettings — tier-3 fallback", () => {
       assetType:                 "switch",
       discoveredByIntegrationId: null,
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -194,7 +209,8 @@ describe("resolveMonitorSettings — tier-3 fallback", () => {
       discoveredByIntegrationId: "fmg-1",
       discoveredByIntegrationType: "fortimanager",
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -215,7 +231,8 @@ describe("resolveMonitorSettings — class override layering", () => {
       intervalSeconds:           300,
       failureThreshold:          null,
       probeTimeoutMs:            8000,
-      telemetryIntervalSeconds:  null,
+      cpuMemoryIntervalSeconds:   null,
+      temperatureIntervalSeconds: null,
       systemInfoIntervalSeconds: null,
       sampleRetentionDays:       null,
       telemetryRetentionDays:    null,
@@ -226,7 +243,8 @@ describe("resolveMonitorSettings — class override layering", () => {
       assetType:                 "switch",
       discoveredByIntegrationId: "fmg-1",
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -234,7 +252,7 @@ describe("resolveMonitorSettings — class override layering", () => {
     expect(out.probeTimeoutMs).toBe(8000);
     // Untouched fields keep tier-3 values.
     expect(out.failureThreshold).toBe(TUNED_TIER.failureThreshold);
-    expect(out.telemetryIntervalSeconds).toBe(TUNED_TIER.telemetryIntervalSeconds);
+    expect(out.cpuMemoryIntervalSeconds).toBe(TUNED_TIER.cpuMemoryIntervalSeconds);
     expect(out.sampleRetentionDays).toBe(TUNED_TIER.sampleRetentionDays);
   });
 
@@ -245,7 +263,8 @@ describe("resolveMonitorSettings — class override layering", () => {
       // the orphan-asset scope.
       if (args.where.integrationId === null && args.where.assetType === "printer") {
         return { intervalSeconds: 900, failureThreshold: null, probeTimeoutMs: null,
-                 telemetryIntervalSeconds: null, systemInfoIntervalSeconds: null,
+                 cpuMemoryIntervalSeconds:   null, systemInfoIntervalSeconds: null,
+                 temperatureIntervalSeconds: null, systemInfoIntervalSeconds: null,
                  sampleRetentionDays: null, telemetryRetentionDays: null, systemInfoRetentionDays: null };
       }
       return null;
@@ -255,7 +274,8 @@ describe("resolveMonitorSettings — class override layering", () => {
       assetType:                 "printer",
       discoveredByIntegrationId: null,
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -271,7 +291,8 @@ describe("resolveMonitorSettings — per-asset overrides win", () => {
     (prisma.integration.findUnique as any).mockResolvedValue({ config: { monitorSettings: TUNED_TIER } });
     (prisma.monitorClassOverride.findFirst as any).mockResolvedValue({
       intervalSeconds: 300, failureThreshold: null, probeTimeoutMs: 8000,
-      telemetryIntervalSeconds: null, systemInfoIntervalSeconds: null,
+      cpuMemoryIntervalSeconds:   null, systemInfoIntervalSeconds: null,
+      temperatureIntervalSeconds: null, systemInfoIntervalSeconds: null,
       sampleRetentionDays: null, telemetryRetentionDays: null, systemInfoRetentionDays: null,
     });
 
@@ -279,7 +300,8 @@ describe("resolveMonitorSettings — per-asset overrides win", () => {
       assetType:                 "switch",
       discoveredByIntegrationId: "fmg-1",
       monitorIntervalSec:        45,    // beats class (300) and tier (120)
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            500,   // beats class (8000) and tier (7500)
     });
@@ -287,7 +309,7 @@ describe("resolveMonitorSettings — per-asset overrides win", () => {
     expect(out.probeTimeoutMs).toBe(500);
     // No per-asset override on these → still resolves through class → tier.
     expect(out.failureThreshold).toBe(TUNED_TIER.failureThreshold);
-    expect(out.telemetryIntervalSeconds).toBe(TUNED_TIER.telemetryIntervalSeconds);
+    expect(out.cpuMemoryIntervalSeconds).toBe(TUNED_TIER.cpuMemoryIntervalSeconds);
   });
 
   it("per-asset overrides only apply for the four overridable fields (cadence + timeout)", async () => {
@@ -300,12 +322,13 @@ describe("resolveMonitorSettings — per-asset overrides win", () => {
       assetType:                 "firewall",
       discoveredByIntegrationId: "fmg-1",
       monitorIntervalSec:        45,
-      telemetryIntervalSec:      77,
+      cpuMemoryIntervalSec:   77,
+      temperatureIntervalSec: 77,
       systemInfoIntervalSec:     333,
       probeTimeoutMs:            444,
     });
     expect(out.intervalSeconds).toBe(45);
-    expect(out.telemetryIntervalSeconds).toBe(77);
+    expect(out.cpuMemoryIntervalSeconds).toBe(77);
     expect(out.systemInfoIntervalSeconds).toBe(333);
     expect(out.probeTimeoutMs).toBe(444);
     // failureThreshold + retentions inherit from tier-3.
@@ -327,7 +350,8 @@ describe("resolveMonitorSettings — caches tier and class lookups", () => {
       assetType:                 "switch",
       discoveredByIntegrationId: "fmg-1",
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     };
@@ -349,11 +373,11 @@ describe("resolveMonitorSettings — caches tier and class lookups", () => {
 
     await resolveMonitorSettings({
       assetType: "switch", discoveredByIntegrationId: "fmg-1",
-      monitorIntervalSec: null, telemetryIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
+      monitorIntervalSec: null, cpuMemoryIntervalSec: null, temperatureIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
     });
     await resolveMonitorSettings({
       assetType: "switch", discoveredByIntegrationId: "fmg-2",
-      monitorIntervalSec: null, telemetryIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
+      monitorIntervalSec: null, cpuMemoryIntervalSec: null, temperatureIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
     });
     expect((prisma.integration.findUnique as any).mock.calls.length).toBe(2);
 
@@ -361,11 +385,11 @@ describe("resolveMonitorSettings — caches tier and class lookups", () => {
     invalidateMonitorSettingsCache({ integrationId: "fmg-1" });
     await resolveMonitorSettings({
       assetType: "switch", discoveredByIntegrationId: "fmg-1",
-      monitorIntervalSec: null, telemetryIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
+      monitorIntervalSec: null, cpuMemoryIntervalSec: null, temperatureIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
     });
     await resolveMonitorSettings({
       assetType: "switch", discoveredByIntegrationId: "fmg-2",
-      monitorIntervalSec: null, telemetryIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
+      monitorIntervalSec: null, cpuMemoryIntervalSec: null, temperatureIntervalSec: null, systemInfoIntervalSec: null, probeTimeoutMs: null,
     });
     // fmg-1 hit DB again; fmg-2 still cached.
     expect((prisma.integration.findUnique as any).mock.calls.length).toBe(3);
@@ -383,7 +407,8 @@ describe("resolveMonitorSettingsWithProvenance — labels each field", () => {
       assetType:                 "firewall",
       discoveredByIntegrationId: "fmg-1",
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -400,7 +425,8 @@ describe("resolveMonitorSettingsWithProvenance — labels each field", () => {
       assetType:                 "workstation",
       discoveredByIntegrationId: null,
       monitorIntervalSec:        null,
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });
@@ -412,13 +438,15 @@ describe("resolveMonitorSettingsWithProvenance — labels each field", () => {
     (prisma.integration.findUnique as any).mockResolvedValue({ config: { monitorSettings: TUNED_TIER } });
     (prisma.monitorClassOverride.findFirst as any).mockResolvedValue({
       intervalSeconds: 300, failureThreshold: null, probeTimeoutMs: 8000,
-      telemetryIntervalSeconds: null, systemInfoIntervalSeconds: null,
+      cpuMemoryIntervalSeconds:   null, systemInfoIntervalSeconds: null,
+      temperatureIntervalSeconds: null, systemInfoIntervalSeconds: null,
       sampleRetentionDays: null, telemetryRetentionDays: null, systemInfoRetentionDays: null,
     });
     // Class-row id lookup for the badge UI.
     (prisma.monitorClassOverride.findFirst as any).mockResolvedValueOnce({
       intervalSeconds: 300, failureThreshold: null, probeTimeoutMs: 8000,
-      telemetryIntervalSeconds: null, systemInfoIntervalSeconds: null,
+      cpuMemoryIntervalSeconds:   null, systemInfoIntervalSeconds: null,
+      temperatureIntervalSeconds: null, systemInfoIntervalSeconds: null,
       sampleRetentionDays: null, telemetryRetentionDays: null, systemInfoRetentionDays: null,
     });
     (prisma.monitorClassOverride.findFirst as any).mockResolvedValueOnce({ id: "class-row-id" });
@@ -427,7 +455,8 @@ describe("resolveMonitorSettingsWithProvenance — labels each field", () => {
       assetType:                 "switch",
       discoveredByIntegrationId: "fmg-1",
       monitorIntervalSec:        45,    // per-asset
-      telemetryIntervalSec:      null,
+      cpuMemoryIntervalSec:   null,
+      temperatureIntervalSec: null,
       systemInfoIntervalSec:     null,
       probeTimeoutMs:            null,
     });

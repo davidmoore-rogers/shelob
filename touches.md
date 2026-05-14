@@ -117,7 +117,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **What it is:** Four-tier cascade resolving which polling method (REST API / SNMP / WinRM / SSH / ICMP / Disabled / Polaris Agent) is used for each asset's response-time / telemetry / system-info / fastFiltered probes (see "Monitor Settings Hierarchy" + "Polling-method compatibility matrix" in CLAUDE.md). The `"agent"` method short-circuits the periodic puller (probeAsset / collectTelemetry / collectSystemInfo / collectFastFiltered all early-return) because the Polaris Agent on the host pushes its own samples via `POST /api/v1/agents/samples`.
 
 **Writers** (files that mutate or emit this state):
-- `src/api/routes/assets.ts` — PUT /assets/:id sets per-asset override columns (responseTimePolling / telemetryPolling / interfacesPolling / lldpPolling)
+- `src/api/routes/assets.ts` — PUT /assets/:id sets per-asset override columns (responseTimePolling / cpuMemoryPolling / temperaturePolling / interfacesPolling / lldpPolling)
 - `src/api/routes/monitorSettings.ts` — POST MonitorClassOverride upserts class-tier overrides for (integrationId, assetType)
 - `src/api/routes/integrations.ts` — Integration config JSON holds tier-3 Integration.config.monitorSettings
 - `src/api/routes/serverSettings.ts` — PUT /server-settings updates tier-4 manualMonitorSettings Setting
@@ -144,7 +144,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Compatibility matrix changes require design review and manual tier updates across the codebase (four UI surfaces).
 - If adding a new polling method, update: pollingCompatibility.ts, monitoringService.ts dispatch branches, all four UI tiers (assets.js / integrations.js / serverSettings.js), and test tier resolution.
 - Verify fallthrough logic: resolve a method that's incompatible for an asset's source and confirm it doesn't get used (add a test to monitoringService).
-- Check every stream independently: one asset might have responseTimePolling=snmp, telemetryPolling=rest_api, systemInfoPolling=icmp; all valid per source.
+- Check every stream independently: one asset might have responseTimePolling=snmp, cpuMemoryPolling=rest_api, temperaturePolling=snmp, systemInfoPolling=icmp; all valid per source.
 - Audit UI disable-logic matches the matrix (if a source doesn't support REST API, the dropdown should not offer it).
 
 ---
@@ -982,7 +982,7 @@ Listed alphabetically.
 - SNMP v2c requires community; v3 requires username + security level + auth/priv keys per level.
 - SSH requires username + (password OR privateKey); WinRM requires both username + password.
 - REST API requires baseUrl (http/https only, no trailing slash stored) + apiToken; verifyTls defaults false.
-- Delete fails with 409 if any asset.monitorCredentialId points to it; check all five Asset credential type columns (monitorCredentialId, responseTimeCredentialId, telemetryCredentialId, interfacesCredentialId, lldpCredentialId). MonitorClassOverride also has four per-stream credential FK columns (responseTimeCredentialId … lldpCredentialId) with ON DELETE SET NULL — Postgres nulls those automatically, no application 409 needed.
+- Delete fails with 409 if any asset.monitorCredentialId points to it; check all six Asset credential type columns (monitorCredentialId, responseTimeCredentialId, cpuMemoryCredentialId, temperatureCredentialId, interfacesCredentialId, lldpCredentialId). MonitorClassOverride also has five per-stream credential FK columns (responseTimeCredentialId / cpuMemoryCredentialId / temperatureCredentialId / interfacesCredentialId / lldpCredentialId) with ON DELETE SET NULL — Postgres nulls those automatically, no application 409 needed.
 - validateConfig is called on CREATE and on PUT (after merge), catching type/field mismatches early.
 
 **When changing this:**
@@ -1328,7 +1328,7 @@ Listed alphabetically.
 **Used by:** `src/app.ts:47` — boot timescale detection; `src/api/routes/credentials.ts:17` — probe credential testing; `src/api/routes/integrations.ts:24` — AD monitor protocol selection; `src/api/routes/assets.ts:24` — effective monitor settings + probe request; `src/api/routes/monitorSettings.ts:23` — cache invalidation; `src/jobs/monitorAssets.ts:40` — core monitor loop dispatch; `src/jobs/migrateMonitorSettingsHierarchy.ts:36` — cache invalidation; `src/services/capacityService.ts:41` — monitor settings for capacity calculation.
 
 **Invariants:**
-- **Four-tier resolver:** per-asset overrides (top) → class override → integration/manual tier → hardcoded floor. Call `invalidateMonitorSettingsCache(scope)` after any tier-3 or tier-2 write to refresh `resolveMonitorSettings()` on next call. The six cadence/timeout fields (`intervalSeconds`, `telemetryIntervalSeconds`, `systemInfoIntervalSeconds`, `probeTimeoutMs`, `telemetryTimeoutMs`, `systemInfoTimeoutMs`) cascade through every tier; `failureThreshold` and the three retentions stop at tier-2 (class override). `telemetryTimeoutMs` (default 10000ms) and `systemInfoTimeoutMs` (default 10000ms) are passed into the SNMP session timeout and FortiOS `fgRequest` opts for the matching collector, replacing the old hardcoded `COLLECTOR_REQUEST_TIMEOUT_MS` floor at every callsite.
+- **Four-tier resolver:** per-asset overrides (top) → class override → integration/manual tier → hardcoded floor. Call `invalidateMonitorSettingsCache(scope)` after any tier-3 or tier-2 write to refresh `resolveMonitorSettings()` on next call. The eight cadence/timeout fields (`intervalSeconds`, `cpuMemoryIntervalSeconds`, `temperatureIntervalSeconds`, `systemInfoIntervalSeconds`, `probeTimeoutMs`, `cpuMemoryTimeoutMs`, `temperatureTimeoutMs`, `systemInfoTimeoutMs`) cascade through every tier; `failureThreshold` and the three retentions stop at tier-2 (class override). The stream split (Slice 2) means CPU/memory and temperature carry independent polling method / credential / MIB / timeout / cadence columns at every tier — the dispatcher consumes `cpuMemoryPolling` / `cpuMemoryTimeoutMs` / `cpuMemoryIntervalSeconds` / `cpuMemoryCredentialId` / `cpuMemoryMibId` as the unified telemetry signal for now; a follow-up commit splits the dispatcher loop so temperature gets its own independent SNMP session.
 - **Five-state machine:** unknown → (cs≥threshold) recovering, (cf≥threshold) warning; recovering → (cs≥threshold) up, (cf≥threshold) down; up → (cf=1) warning, (cf≥threshold) down; warning → (cs≥threshold) up, (cf≥threshold) down; down → (cs=1) recovering, stay down.
 - **Heavy-cadence suppression:** telemetry/systemInfo/fastFiltered run only when `monitorStatus === "up"`; all other states suppress to avoid unreliable samples.
 - **Per-transport dispatch:** probes dispatch on polling method (rest_api → probeFortinet/probeFortinetController; snmp → probeSnmp; winrm → probeWinRm; ssh → probeSsh; icmp → probeIcmp). REST API probes to `/api/v2/monitor/system/status`; SNMP probes `sysUpTime` OID.

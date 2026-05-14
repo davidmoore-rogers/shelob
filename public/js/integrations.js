@@ -171,7 +171,7 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
 
   var streams = [
     { key: "responseTime",  label: "Response time",  pollField: "responseTimePolling",  credField: "responseTimeCredentialId",  mibField: "responseTimeMibId"  },
-    { key: "telemetry",     label: "Telemetry",      pollField: "telemetryPolling",     credField: "telemetryCredentialId",     mibField: "telemetryMibId"     },
+    { key: "telemetry",     label: "Telemetry",      pollField: "cpuMemoryPolling",     credField: "cpuMemoryCredentialId",     mibField: "cpuMemoryMibId"     },
     { key: "interfaces",    label: "Interfaces",     pollField: "interfacesPolling",    credField: "interfacesCredentialId",    mibField: "interfacesMibId"    },
     { key: "lldp",          label: "LLDP neighbors", pollField: "lldpPolling",          credField: "lldpCredentialId",          mibField: "lldpMibId"          },
   ];
@@ -223,14 +223,14 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
 function _polarisReadPollingFourStream(idPrefix) {
   return {
     responseTimePolling: _polarisReadPollingDropdown(idPrefix + "responseTimePolling"),
-    telemetryPolling:    _polarisReadPollingDropdown(idPrefix + "telemetryPolling"),
+    cpuMemoryPolling:    _polarisReadPollingDropdown(idPrefix + "cpuMemoryPolling"),
     interfacesPolling:   _polarisReadPollingDropdown(idPrefix + "interfacesPolling"),
     lldpPolling:         _polarisReadPollingDropdown(idPrefix + "lldpPolling"),
   };
 }
 
 // Read per-stream MIB IDs from selects rendered by _polarisPollingFourStreamHTML.
-// Returns {responseTimeMibId, telemetryMibId, interfacesMibId, lldpMibId} with
+// Returns {responseTimeMibId, cpuMemoryMibId, interfacesMibId, lldpMibId} with
 // null for streams whose select is absent or set to "Automatic".
 function _polarisReadMibFourStream(idPrefix) {
   function mibVal(stream) {
@@ -239,7 +239,7 @@ function _polarisReadMibFourStream(idPrefix) {
   }
   return {
     responseTimeMibId: mibVal("responseTime"),
-    telemetryMibId:    mibVal("telemetry"),
+    cpuMemoryMibId:    mibVal("telemetry"),
     interfacesMibId:   mibVal("interfaces"),
     lldpMibId:         mibVal("lldp"),
   };
@@ -254,7 +254,7 @@ function _polarisReadCredFourStream(idPrefix) {
   }
   return {
     responseTimeCredentialId: credVal("responseTime"),
-    telemetryCredentialId:    credVal("telemetry"),
+    cpuMemoryCredentialId:    credVal("telemetry"),
     interfacesCredentialId:   credVal("interfaces"),
     lldpCredentialId:         credVal("lldp"),
   };
@@ -734,8 +734,8 @@ function _integrationCadenceSectionHTML(s, integrationType) {
     '<p class="hint" style="margin:0 0 0.75rem 0">Per-stream polling method. "Inherit" falls through to the source default. When SNMP is selected, optionally pin a specific MIB (default: Automatic).</p>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Telemetry (CPU + memory + temperature)</p>' +
-    num("telemetryIntervalSeconds", "Telemetry interval (seconds)", s.telemetryIntervalSeconds, 60,    15,   86400,  "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
-    num("telemetryTimeoutMs",       "Telemetry timeout (ms)",       s.telemetryTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the telemetry collector (FortiOS REST + SNMP). Default 10000 ms.", false) +
+    num("cpuMemoryIntervalSeconds", "Telemetry interval (seconds)", s.cpuMemoryIntervalSeconds, 60,    15,   86400,  "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
+    num("cpuMemoryTimeoutMs",       "Telemetry timeout (ms)",       s.cpuMemoryTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the telemetry collector (FortiOS REST + SNMP). Default 10000 ms.", false) +
     num("telemetryRetentionDays",   "Telemetry retention (days)",   s.telemetryRetentionDays,   30,    0,    3650,   "How long telemetry samples are kept. 0 = forever.", false) +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface, storage &amp; LLDP discovery</p>' +
@@ -1179,7 +1179,7 @@ function _wireProbeTimeoutWarning() {
 function _syncCredentialPickerVisibility() {
   var streamDefs = [
     { pollId: "f-mon-tier-responseTimePolling", mibWrapId: "f-mon-tier-responseTime-mib-wrap" },
-    { pollId: "f-mon-tier-telemetryPolling",    mibWrapId: "f-mon-tier-telemetry-mib-wrap"    },
+    { pollId: "f-mon-tier-cpuMemoryPolling",    mibWrapId: "f-mon-tier-telemetry-mib-wrap"    },
     { pollId: "f-mon-tier-interfacesPolling",   mibWrapId: "f-mon-tier-interfaces-mib-wrap"   },
     { pollId: "f-mon-tier-lldpPolling",         mibWrapId: "f-mon-tier-lldp-mib-wrap"         },
   ];
@@ -1210,7 +1210,7 @@ function _syncCredentialPickerVisibility() {
 // method. Also runs once on initial mount so a freshly-opened modal lands in
 // the correct state.
 function _wireCredentialPickerVisibility() {
-  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-telemetryPolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
+  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-cpuMemoryPolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
   var any = false;
   for (var i = 0; i < ids.length; i++) {
     var el = document.getElementById(ids[i]);
@@ -1246,9 +1246,9 @@ function _readIntegrationCadenceForm() {
     intervalSeconds:           n("intervalSeconds"),
     failureThreshold:          n("failureThreshold"),
     probeTimeoutMs:            n("probeTimeoutMs"),
-    telemetryTimeoutMs:        n("telemetryTimeoutMs"),
+    cpuMemoryTimeoutMs:        n("cpuMemoryTimeoutMs"),
     systemInfoTimeoutMs:       n("systemInfoTimeoutMs"),
-    telemetryIntervalSeconds:  n("telemetryIntervalSeconds"),
+    cpuMemoryIntervalSeconds:  n("cpuMemoryIntervalSeconds"),
     systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
     sampleRetentionDays:       n("sampleRetentionDays"),
     telemetryRetentionDays:    n("telemetryRetentionDays"),

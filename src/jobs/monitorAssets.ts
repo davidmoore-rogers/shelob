@@ -123,11 +123,12 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       discoveredByIntegration: { select: { type: true, config: true } },
       monitorStatus: true,
       lastMonitorAt: true, monitorIntervalSec: true,
-      lastTelemetryAt: true, telemetryIntervalSec: true,
+      lastTelemetryAt: true, cpuMemoryIntervalSec: true, temperatureIntervalSec: true,
       lastSystemInfoAt: true, systemInfoIntervalSec: true,
       probeTimeoutMs: true,
       responseTimePolling: true,
-      telemetryPolling:    true,
+      cpuMemoryPolling:    true,
+      temperaturePolling:  true,
       interfacesPolling:   true,
       lldpPolling:         true,
       monitoredInterfaces: true,
@@ -159,7 +160,11 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
         ? eff.intervalSeconds * 2
         : eff.intervalSeconds;
     const probe      = isDue(a.lastMonitorAt,    probeIntervalSec);
-    const telemetry  = isDue(a.lastTelemetryAt,  eff.telemetryIntervalSeconds);
+    // Pragmatic stream-split: cpuMemoryIntervalSeconds drives the unified
+    // telemetry tick; collectTelemetry covers temperature in the same
+    // session. A follow-up commit will split the dispatcher loop so
+    // temperature gets its own independent cadence.
+    const telemetry  = isDue(a.lastTelemetryAt,  eff.cpuMemoryIntervalSeconds);
     const systemInfo = isDue(a.lastSystemInfoAt, eff.systemInfoIntervalSeconds);
     const hasFastPin =
       (Array.isArray(a.monitoredInterfaces)   && a.monitoredInterfaces.length   > 0) ||
@@ -173,11 +178,11 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
     // they permanently inflate the pg-boss queue on every tick.
     const isManagedSwitchOrAp = a.assetType === "switch" || a.assetType === "access_point";
     const canTelemetry =
-      eff.telemetryPolling !== null &&
-      eff.telemetryPolling !== "icmp"  &&
-      eff.telemetryPolling !== "winrm" &&
-      eff.telemetryPolling !== "ssh"   &&
-      !(eff.telemetryPolling === "rest_api" && isManagedSwitchOrAp);
+      eff.cpuMemoryPolling !== null &&
+      eff.cpuMemoryPolling !== "icmp"  &&
+      eff.cpuMemoryPolling !== "winrm" &&
+      eff.cpuMemoryPolling !== "ssh"   &&
+      !(eff.cpuMemoryPolling === "rest_api" && isManagedSwitchOrAp);
     const canSystemInfo =
       eff.interfacesPolling !== null &&
       !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
@@ -195,7 +200,7 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
     // of truth — same fidelity as runMonitorPass in monitoringService.
     const assetType = a.assetType ?? "unknown";
     const probeTransport = eff.responseTimePolling || "unknown";
-    const telTransport   = eff.telemetryPolling    || "unknown";
+    const telTransport   = eff.cpuMemoryPolling    || "unknown";
     const ifTransport    = eff.interfacesPolling   || "unknown";
     // Per-integration verbose debug toggle — stamped on every job for assets
     // owned by an integration with `config.verboseLogging === true` AND within
