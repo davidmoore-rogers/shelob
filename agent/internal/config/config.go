@@ -1,5 +1,8 @@
 // Package config reads the agent's runtime configuration from a single
-// INI-style file: /etc/polaris-agent/agent.conf on Linux/macOS,
+// INI-style file: /var/lib/polaris-agent/agent.conf on Linux (writable
+// via systemd's StateDirectory= so the agent can persist its bearer
+// after /enroll — /etc/ is read-only under ProtectSystem=strict),
+// /etc/polaris-agent/agent.conf on macOS,
 // %ProgramData%\Polaris\agent\agent.conf on Windows.
 //
 // The file is generated server-side by agentInstallService at install time
@@ -61,7 +64,13 @@ func DefaultPath() string {
 			base = `C:\ProgramData`
 		}
 		return filepath.Join(base, "Polaris", "agent", "agent.conf")
-	default: // linux, darwin, others
+	case "linux":
+		// /var/lib/ rather than /etc/ — systemd's StateDirectory exposes
+		// this path to the DynamicUser as writable; /etc/ is read-only
+		// under ProtectSystem=strict so cfg.Save() after /enroll would
+		// fail there and the agent would loop on the consumed token.
+		return "/var/lib/polaris-agent/agent.conf"
+	default: // darwin, others — launchd plist doesn't use ProtectSystem
 		return "/etc/polaris-agent/agent.conf"
 	}
 }

@@ -701,12 +701,19 @@ function uninstallerScript(platform: "linux" | "darwin"): Buffer {
 const LINUX_INSTALL_SCRIPT = `#!/usr/bin/env bash
 # Polaris Agent installer for Linux (systemd). Run by polaris-agent-install.sh
 # as root via sudo -n. Reads pre-staged binary + config from /tmp/.
+#
+# Config lives under /var/lib/polaris-agent/ rather than /etc/polaris-agent/
+# so the systemd DynamicUser can rewrite it after /enroll succeeds (the
+# unit uses ProtectSystem=strict which makes /etc/ read-only for the
+# process — but /var/lib/ is exposed writable via StateDirectory=). The
+# legacy /etc/polaris-agent path is cleaned up if it exists so operators
+# don't accumulate orphans on reinstall.
 set -euo pipefail
 
 BIN_SRC=/tmp/polaris-agent.bin
 CONF_SRC=/tmp/polaris-agent.conf
 BIN_DST=/usr/local/bin/polaris-agent
-CONF_DIR=/etc/polaris-agent
+CONF_DIR=/var/lib/polaris-agent
 CONF_DST=\${CONF_DIR}/agent.conf
 UNIT=/etc/systemd/system/polaris-agent.service
 
@@ -715,7 +722,11 @@ systemctl stop  polaris-agent 2>/dev/null || true
 
 install -m 0755 -o root -g root "\${BIN_SRC}"  "\${BIN_DST}"
 mkdir -p "\${CONF_DIR}"
+chmod 0700 "\${CONF_DIR}"
 install -m 0600 -o root -g root "\${CONF_SRC}" "\${CONF_DST}"
+
+# Legacy location from pre-StateDirectory installs. Harmless if absent.
+rm -rf /etc/polaris-agent 2>/dev/null || true
 
 cat > "\${UNIT}" <<'UNIT'
 [Unit]
@@ -724,7 +735,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/polaris-agent -conf /etc/polaris-agent/agent.conf
+ExecStart=/usr/local/bin/polaris-agent -conf /var/lib/polaris-agent/agent.conf
 Restart=on-failure
 RestartSec=5
 # Dedicated unprivileged user for the agent. Falls back to root if the
@@ -733,6 +744,13 @@ RestartSec=5
 # no privileged operations needed at runtime.
 User=polaris-agent
 DynamicUser=yes
+# StateDirectory exposes /var/lib/polaris-agent as the unit's writable
+# state directory; systemd chowns it to the DynamicUser at start so the
+# agent can atomically rewrite agent.conf after /enroll lands (the
+# bearer must be persisted across restarts or the agent loops on the
+# already-consumed enrollment token).
+StateDirectory=polaris-agent
+StateDirectoryMode=0700
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
@@ -741,11 +759,6 @@ NoNewPrivileges=true
 [Install]
 WantedBy=multi-user.target
 UNIT
-
-# DynamicUser=yes needs the unit-managed user to own the config; chmod
-# at boot is handled by systemd's ReadOnlyPaths semantics. The config
-# file stays root-owned but world-readable for the dynamic user.
-chmod 0644 "\${CONF_DST}"
 
 systemctl daemon-reload
 systemctl enable polaris-agent
@@ -767,7 +780,8 @@ systemctl disable polaris-agent 2>/dev/null || true
 rm -f /etc/systemd/system/polaris-agent.service
 systemctl daemon-reload || true
 
-rm -rf /etc/polaris-agent
+rm -rf /var/lib/polaris-agent
+rm -rf /etc/polaris-agent       # legacy pre-StateDirectory location
 rm -f  /usr/local/bin/polaris-agent
 
 echo "Polaris Agent removed"
