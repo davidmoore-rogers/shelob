@@ -640,6 +640,7 @@ Listed alphabetically.
 - Check SID cross-link stamping `sid:{SID}` (uppercase) for hybrid-join asset deduplication.
 - Validate syncActiveDirectoryDevices creates correct AssetSource rows with sourceKind="ad".
 - Test paged search (page size 1000) doesn't miss assets with large OU hierarchies.
+- syncActiveDirectoryDevices in integrations.ts runs a forward-DNS pre-pass (via dnsService.getConfiguredResolver) to fill Asset.ipAddress for new + IP-less existing assets. Gate is `!existing.ipAddress` — never overwrites a non-empty IP from FortiGate/Entra/operator. ipSource stamped "activedirectory-dns".
 
 ---
 

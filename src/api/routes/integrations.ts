@@ -5671,6 +5671,52 @@ async function syncActiveDirectoryDevices(
     }
   }
 
+  // ─── Forward-DNS pre-pass ─────────────────────────────────────────────────
+  // Fill ipAddress for new + IP-less existing assets via A/AAAA lookup. Hosts
+  // that already have an ipAddress (set by FortiGate DHCP/ARP, Entra, or an
+  // operator) are skipped — DNS can lag the real network state. Failures
+  // leave ipAddress null and retry next cycle so a temporarily-missing DNS
+  // record self-heals.
+  const dnsLookupResults = new Map<string, string>(); // guidKey → resolved IP
+  const hostsToLookup: Array<{ guidKey: string; lookupName: string }> = [];
+  for (const dev of result.devices) {
+    const guidKey = dev.objectGuid.toLowerCase();
+    if (!guidKey) continue;
+    const lookupName = (dev.dnsHostName || dev.cn || "").trim();
+    if (!lookupName) continue;
+    let existingAsset: any = adSourceByGuid.get(guidKey)?.asset ?? null;
+    if (!existingAsset && dev.objectSid) {
+      const sidAssetId = assetIdBySid.get(dev.objectSid.toUpperCase());
+      if (sidAssetId) existingAsset = assetById.get(sidAssetId) ?? null;
+    }
+    if (existingAsset?.ipAddress) continue;
+    hostsToLookup.push({ guidKey, lookupName });
+  }
+
+  if (hostsToLookup.length > 0) {
+    syncLog("info", `Forward DNS: resolving ${hostsToLookup.length} hostname(s) for AD-discovered assets without IP`);
+    let resolver: Awaited<ReturnType<typeof getConfiguredResolver>> | null = null;
+    try {
+      resolver = await getConfiguredResolver();
+    } catch (err: any) {
+      syncLog("warning", `Forward DNS: failed to build resolver — skipping IP backfill (${err.message || "unknown error"})`);
+    }
+    if (resolver) {
+      const r = resolver;
+      let resolved = 0;
+      await batchSettled(hostsToLookup, async (h) => {
+        try {
+          const records = await r.lookup(h.lookupName);
+          if (records.length > 0) {
+            dnsLookupResults.set(h.guidKey, records[0].address);
+            resolved++;
+          }
+        } catch { /* per-host failure: leave ipAddress null, retry next cycle */ }
+      });
+      syncLog("info", `Forward DNS: resolved ${resolved} of ${hostsToLookup.length} hostname(s)`);
+    }
+  }
+
   for (const dev of result.devices) {
     const guidKey = dev.objectGuid.toLowerCase();
     if (!guidKey) {
@@ -5761,6 +5807,16 @@ async function syncActiveDirectoryDevices(
       // acquiredAt: backfill with AD whenCreated only if older than current.
       if (whenCreated && (!existing.acquiredAt || whenCreated < new Date(existing.acquiredAt))) {
         updateData.acquiredAt = whenCreated;
+      }
+      // ipAddress: fill only when the existing asset has no IP. The pre-pass
+      // already skipped lookups for hosts with an IP, so a hit here means the
+      // asset genuinely needs the value. Never overwrites a non-empty IP.
+      if (!existing.ipAddress) {
+        const dnsIp = dnsLookupResults.get(guidKey);
+        if (dnsIp) {
+          updateData.ipAddress = dnsIp;
+          updateData.ipSource = "activedirectory-dns";
+        }
       }
       // assetType: only set if still default "other" (respect manual recategorization).
       if (existing.assetType === "other" && assetType !== "other") updateData.assetType = assetType;
@@ -5882,6 +5938,7 @@ async function syncActiveDirectoryDevices(
         { sourceKind: "ad", inferred: false, observed: adObserved },
       ]);
 
+      const dnsIp = dnsLookupResults.get(guidKey);
       const createData: Record<string, unknown> = {
         // Phase 4d: legacy `assetTag = ad:<objectGuid>` write retired —
         // upsertAdAssetSource below stamps the AssetSource ad row that
@@ -5899,6 +5956,7 @@ async function syncActiveDirectoryDevices(
         lastSeen: lastLogon,
         acquiredAt: whenCreated,
         tags,
+        ...(dnsIp ? { ipAddress: dnsIp, ipSource: "activedirectory-dns" } : {}),
         // Stamp the AD source link on realm-monitorable hosts so the
         // polling-method resolver picks AD's source default (ICMP) when the
         // operator later enables monitoring on this asset. We no longer
