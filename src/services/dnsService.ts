@@ -122,7 +122,9 @@ export async function createResolver(settings: DnsSettings): Promise<ResolverLik
   }
   // Standard mode — setServers() requires IPs, so resolve any hostnames first.
   // Node's dns.Resolver.reverse() does not expose TTL, so we wrap it and return ttl: null.
-  const resolver = new dns.Resolver();
+  // tries: 1 — c-ares defaults to 4 attempts per name, which turns one unresponsive
+  // upstream into ~20s of per-host wall-clock on the AD forward-DNS pre-pass.
+  const resolver = new dns.Resolver({ timeout: 5000, tries: 1 });
   if (settings.servers.length > 0) {
     const ips = await resolveServerNames(settings.servers);
     if (ips.length > 0) resolver.setServers(ips);

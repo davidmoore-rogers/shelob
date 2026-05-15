@@ -1144,6 +1144,7 @@ Listed alphabetically.
 - Per-asset PTR caching lives on AssetAssociatedIp.ptrName/ptrTtl/ptrFetchedAt (separate call path for bulk DNS job).
 - IPv6 PTR queries use fully-expanded form with nibble reversal (e.g., 2001:db8::1 → 1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa).
 - DoH and DoT timeouts are 5 seconds; DoH rejectUnauthorized=false for self-signed certs.
+- Standard mode resolver is constructed with `{ timeout: 5000, tries: 1 }` to keep one unresponsive upstream from compounding into ~20s of per-host wall-clock (c-ares defaults to 4 tries) — critical for the AD forward-DNS pre-pass which can fan out hundreds of names.
 
 **When changing this:**
 - Test all three modes end-to-end; verify TTL handling (null for standard, numeric for DoT/DoH).
