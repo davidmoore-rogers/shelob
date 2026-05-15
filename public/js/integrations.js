@@ -733,10 +733,13 @@ function _integrationCadenceSectionHTML(s, integrationType) {
     _polarisPollingFourStreamHTML("f-mon-tier-", sourceKind, s, { showMibRows: true, mibValues: s }) +
     '<p class="hint" style="margin:0 0 0.75rem 0">Per-stream polling method. "Inherit" falls through to the source default. When SNMP is selected, optionally pin a specific MIB (default: Automatic).</p>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Telemetry (CPU + memory + temperature)</p>' +
-    num("cpuMemoryIntervalSeconds", "Telemetry interval (seconds)", s.cpuMemoryIntervalSeconds, 60,    15,   86400,  "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
-    num("cpuMemoryTimeoutMs",       "Telemetry timeout (ms)",       s.cpuMemoryTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the telemetry collector (FortiOS REST + SNMP). Default 10000 ms.", false) +
-    num("telemetryRetentionDays",   "Telemetry retention (days)",   s.telemetryRetentionDays,   30,    0,    3650,   "How long telemetry samples are kept. 0 = forever.", false) +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">CPU + memory</p>' +
+    num("cpuMemoryIntervalSeconds", "CPU/memory interval (seconds)", s.cpuMemoryIntervalSeconds, 60,    15,   86400,  "How often each asset's CPU and memory snapshot is taken. Default 60 s.", false) +
+    num("cpuMemoryTimeoutMs",       "CPU/memory timeout (ms)",       s.cpuMemoryTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the CPU/memory collector (FortiOS REST + SNMP). Default 10000 ms.", false) +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.75rem 0">Temperature</p>' +
+    num("temperatureIntervalSeconds", "Temperature interval (seconds)", s.temperatureIntervalSeconds, 60,    15,   86400,  "How often each asset's temperature sensors are scraped. Default 60 s — set higher to ease load on small-branch FortiGates whose sensor endpoint is slow to respond.", false) +
+    num("temperatureTimeoutMs",       "Temperature timeout (ms)",       s.temperatureTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the temperature collector. Default 10000 ms.", false) +
+    num("telemetryRetentionDays",   "Telemetry retention (days)",   s.telemetryRetentionDays,   30,    0,    3650,   "Shared retention setting — applies to both CPU/memory samples and temperature samples. 0 = forever.", false) +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface, storage &amp; LLDP discovery</p>' +
     num("systemInfoIntervalSeconds","Discovery interval (seconds)", s.systemInfoIntervalSeconds, 600,   60,   86400,  "How often interfaces, storage, IPsec and LLDP neighbors are scraped. Default 600 s (10 min).", false) +
@@ -1247,13 +1250,25 @@ function _readIntegrationCadenceForm() {
     failureThreshold:          n("failureThreshold"),
     probeTimeoutMs:            n("probeTimeoutMs"),
     cpuMemoryTimeoutMs:        n("cpuMemoryTimeoutMs"),
+    temperatureTimeoutMs:      n("temperatureTimeoutMs"),
     systemInfoTimeoutMs:       n("systemInfoTimeoutMs"),
     cpuMemoryIntervalSeconds:  n("cpuMemoryIntervalSeconds"),
+    temperatureIntervalSeconds: n("temperatureIntervalSeconds"),
     systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
     sampleRetentionDays:       n("sampleRetentionDays"),
     telemetryRetentionDays:    n("telemetryRetentionDays"),
     systemInfoRetentionDays:   n("systemInfoRetentionDays"),
   };
+  // Slice 2 split telemetry into cpuMemory + temperature streams server-side
+  // (TierSettingsSchema requires both). The integration edit modal hasn't
+  // grown a separate temperature input yet — until it does, mirror the
+  // cpuMemory values so existing forms continue to save without a 400.
+  if (out.temperatureIntervalSeconds === undefined) {
+    out.temperatureIntervalSeconds = out.cpuMemoryIntervalSeconds;
+  }
+  if (out.temperatureTimeoutMs === undefined) {
+    out.temperatureTimeoutMs = out.cpuMemoryTimeoutMs;
+  }
   Object.assign(out, _polarisReadPollingFourStream("f-mon-tier-"));
   Object.assign(out, _polarisReadMibFourStream("f-mon-tier-"));
   return out;

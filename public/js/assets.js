@@ -9912,8 +9912,10 @@ var MON_TIER_DEFAULTS = {
   failureThreshold:          3,
   probeTimeoutMs:            5000,
   cpuMemoryTimeoutMs:        10000,
+  temperatureTimeoutMs:      10000,
   systemInfoTimeoutMs:       10000,
   cpuMemoryIntervalSeconds:  60,
+  temperatureIntervalSeconds: 60,
   systemInfoIntervalSeconds: 600,
   sampleRetentionDays:       30,
   telemetryRetentionDays:    30,
@@ -10015,13 +10017,15 @@ function _monsetManualSectionHTML(v) {
       _monsetField("monset-manual-intervalSeconds",           "Probe interval",         "seconds",                        values.intervalSeconds,           1,    86400,  false) +
       _monsetField("monset-manual-failureThreshold",          "Failure threshold",      "consecutive failures",           values.failureThreshold,          1,    100,    false) +
       _monsetField("monset-manual-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",         values.probeTimeoutMs,            100,  60000,  true)  +
-      _monsetField("monset-manual-cpuMemoryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  values.cpuMemoryIntervalSeconds,  15,   86400,  false) +
-      _monsetField("monset-manual-cpuMemoryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       values.cpuMemoryTimeoutMs,        1000, 120000, false) +
-      _monsetField("monset-manual-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)", values.systemInfoIntervalSeconds, 60,   86400,  false) +
-      _monsetField("monset-manual-systemInfoTimeoutMs",       "System info timeout",    "ms (interface/storage/LLDP)",    values.systemInfoTimeoutMs,       1000, 120000, false) +
-      _monsetField("monset-manual-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",             values.sampleRetentionDays,       0,    3650,   false) +
-      _monsetField("monset-manual-telemetryRetentionDays",    "Telemetry retention",    "days (0 = forever)",             values.telemetryRetentionDays,    0,    3650,   false) +
-      _monsetField("monset-manual-systemInfoRetentionDays",   "System info retention",  "days (0 = forever)",             values.systemInfoRetentionDays,   0,    3650,   false) +
+      _monsetField("monset-manual-cpuMemoryIntervalSeconds",   "CPU/memory interval",    "seconds",                        values.cpuMemoryIntervalSeconds,   15,   86400,  false) +
+      _monsetField("monset-manual-cpuMemoryTimeoutMs",         "CPU/memory timeout",     "ms (FortiOS REST + SNMP)",       values.cpuMemoryTimeoutMs,         1000, 120000, false) +
+      _monsetField("monset-manual-temperatureIntervalSeconds", "Temperature interval",   "seconds",                        values.temperatureIntervalSeconds, 15,   86400,  false) +
+      _monsetField("monset-manual-temperatureTimeoutMs",       "Temperature timeout",    "ms",                             values.temperatureTimeoutMs,       1000, 120000, false) +
+      _monsetField("monset-manual-systemInfoIntervalSeconds",  "System info interval",   "seconds (interfaces + storage)", values.systemInfoIntervalSeconds,  60,   86400,  false) +
+      _monsetField("monset-manual-systemInfoTimeoutMs",        "System info timeout",    "ms (interface/storage/LLDP)",    values.systemInfoTimeoutMs,        1000, 120000, false) +
+      _monsetField("monset-manual-sampleRetentionDays",        "Probe sample retention", "days (0 = forever)",             values.sampleRetentionDays,        0,    3650,   false) +
+      _monsetField("monset-manual-telemetryRetentionDays",     "Telemetry retention",    "days (CPU/mem + temp share this; 0 = forever)", values.telemetryRetentionDays, 0, 3650, false) +
+      _monsetField("monset-manual-systemInfoRetentionDays",    "System info retention",  "days (0 = forever)",             values.systemInfoRetentionDays,    0,    3650,   false) +
     '</div>' +
     '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
     _polarisPollingFourStreamHTML("monset-manual-", "manual", values) +
@@ -10063,8 +10067,10 @@ async function _monsetSaveManual() {
     failureThreshold:          _monsetReadField("monset-manual-failureThreshold",          MON_TIER_DEFAULTS.failureThreshold),
     probeTimeoutMs:            _monsetReadField("monset-manual-probeTimeoutMs",            MON_TIER_DEFAULTS.probeTimeoutMs),
     cpuMemoryTimeoutMs:        _monsetReadField("monset-manual-cpuMemoryTimeoutMs",        MON_TIER_DEFAULTS.cpuMemoryTimeoutMs),
+    temperatureTimeoutMs:      _monsetReadField("monset-manual-temperatureTimeoutMs",      MON_TIER_DEFAULTS.temperatureTimeoutMs),
     systemInfoTimeoutMs:       _monsetReadField("monset-manual-systemInfoTimeoutMs",       MON_TIER_DEFAULTS.systemInfoTimeoutMs),
     cpuMemoryIntervalSeconds:  _monsetReadField("monset-manual-cpuMemoryIntervalSeconds",  MON_TIER_DEFAULTS.cpuMemoryIntervalSeconds),
+    temperatureIntervalSeconds: _monsetReadField("monset-manual-temperatureIntervalSeconds", MON_TIER_DEFAULTS.temperatureIntervalSeconds),
     systemInfoIntervalSeconds: _monsetReadField("monset-manual-systemInfoIntervalSeconds", MON_TIER_DEFAULTS.systemInfoIntervalSeconds),
     sampleRetentionDays:       _monsetReadField("monset-manual-sampleRetentionDays",       MON_TIER_DEFAULTS.sampleRetentionDays),
     telemetryRetentionDays:    _monsetReadField("monset-manual-telemetryRetentionDays",    MON_TIER_DEFAULTS.telemetryRetentionDays),
@@ -10123,9 +10129,11 @@ function _monsetOverrideSummary(o) {
     intervalSeconds:           "probe",
     failureThreshold:          "threshold",
     probeTimeoutMs:            "probe-timeout",
-    cpuMemoryTimeoutMs:        "tel-timeout",
+    cpuMemoryTimeoutMs:        "cpu-mem-timeout",
+    temperatureTimeoutMs:      "temp-timeout",
     systemInfoTimeoutMs:       "sysinfo-timeout",
-    cpuMemoryIntervalSeconds:  "telemetry",
+    cpuMemoryIntervalSeconds:  "cpu-mem",
+    temperatureIntervalSeconds: "temp",
     systemInfoIntervalSeconds: "sysinfo",
     sampleRetentionDays:       "probe-retain",
     telemetryRetentionDays:    "telem-retain",
@@ -10202,13 +10210,15 @@ function _monsetOpenOverrideEditor(existing) {
       _monsetField("monset-ov-intervalSeconds",           "Probe interval",         "seconds",                        v.intervalSeconds,           1,    86400,  false) +
       _monsetField("monset-ov-failureThreshold",          "Failure threshold",      "consecutive failures",           v.failureThreshold,          1,    100,    false) +
       _monsetField("monset-ov-probeTimeoutMs",            "Probe timeout",          "ms (warning under 500)",         v.probeTimeoutMs,            100,  60000,  true)  +
-      _monsetField("monset-ov-cpuMemoryIntervalSeconds",  "Telemetry interval",     "seconds (CPU + memory + temp)",  v.cpuMemoryIntervalSeconds,  15,   86400,  false) +
-      _monsetField("monset-ov-cpuMemoryTimeoutMs",        "Telemetry timeout",      "ms (FortiOS REST + SNMP)",       v.cpuMemoryTimeoutMs,        1000, 120000, false) +
-      _monsetField("monset-ov-systemInfoIntervalSeconds", "System info interval",   "seconds (interfaces + storage)", v.systemInfoIntervalSeconds, 60,   86400,  false) +
-      _monsetField("monset-ov-systemInfoTimeoutMs",       "System info timeout",    "ms (interface/storage/LLDP)",    v.systemInfoTimeoutMs,       1000, 120000, false) +
-      _monsetField("monset-ov-sampleRetentionDays",       "Probe sample retention", "days (0 = forever)",             v.sampleRetentionDays,       0,    3650,   false) +
-      _monsetField("monset-ov-telemetryRetentionDays",    "Telemetry retention",    "days (0 = forever)",             v.telemetryRetentionDays,    0,    3650,   false) +
-      _monsetField("monset-ov-systemInfoRetentionDays",   "System info retention",  "days (0 = forever)",             v.systemInfoRetentionDays,   0,    3650,   false) +
+      _monsetField("monset-ov-cpuMemoryIntervalSeconds",   "CPU/memory interval",    "seconds",                        v.cpuMemoryIntervalSeconds,   15,   86400,  false) +
+      _monsetField("monset-ov-cpuMemoryTimeoutMs",         "CPU/memory timeout",     "ms (FortiOS REST + SNMP)",       v.cpuMemoryTimeoutMs,         1000, 120000, false) +
+      _monsetField("monset-ov-temperatureIntervalSeconds", "Temperature interval",   "seconds",                        v.temperatureIntervalSeconds, 15,   86400,  false) +
+      _monsetField("monset-ov-temperatureTimeoutMs",       "Temperature timeout",    "ms",                             v.temperatureTimeoutMs,       1000, 120000, false) +
+      _monsetField("monset-ov-systemInfoIntervalSeconds",  "System info interval",   "seconds (interfaces + storage)", v.systemInfoIntervalSeconds,  60,   86400,  false) +
+      _monsetField("monset-ov-systemInfoTimeoutMs",        "System info timeout",    "ms (interface/storage/LLDP)",    v.systemInfoTimeoutMs,        1000, 120000, false) +
+      _monsetField("monset-ov-sampleRetentionDays",        "Probe sample retention", "days (0 = forever)",             v.sampleRetentionDays,        0,    3650,   false) +
+      _monsetField("monset-ov-telemetryRetentionDays",     "Telemetry retention",    "days (CPU/mem + temp share this; 0 = forever)", v.telemetryRetentionDays, 0, 3650, false) +
+      _monsetField("monset-ov-systemInfoRetentionDays",    "System info retention",  "days (0 = forever)",             v.systemInfoRetentionDays,    0,    3650,   false) +
     '</div>' +
     '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
     '<div id="monset-ov-polling-block">' + _polarisPollingFourStreamHTML("monset-ov-", initialSourceKind, v, {
@@ -10324,8 +10334,10 @@ async function _monsetSaveOverride(existing) {
     failureThreshold:          readOptional("monset-ov-failureThreshold"),
     probeTimeoutMs:            readOptional("monset-ov-probeTimeoutMs"),
     cpuMemoryTimeoutMs:        readOptional("monset-ov-cpuMemoryTimeoutMs"),
+    temperatureTimeoutMs:      readOptional("monset-ov-temperatureTimeoutMs"),
     systemInfoTimeoutMs:       readOptional("monset-ov-systemInfoTimeoutMs"),
     cpuMemoryIntervalSeconds:  readOptional("monset-ov-cpuMemoryIntervalSeconds"),
+    temperatureIntervalSeconds: readOptional("monset-ov-temperatureIntervalSeconds"),
     systemInfoIntervalSeconds: readOptional("monset-ov-systemInfoIntervalSeconds"),
     sampleRetentionDays:       readOptional("monset-ov-sampleRetentionDays"),
     telemetryRetentionDays:    readOptional("monset-ov-telemetryRetentionDays"),
