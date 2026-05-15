@@ -2405,6 +2405,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
   // Collect subnet updates to batch
   const subnetUpdates: Array<{ id: string; data: any }> = [];
+  // First-claim audit trail: manual subnets (discoveredBy IS NULL) whose CIDR
+  // discovery just matched. After the batch update we emit one
+  // `subnet.claimed` Event per row so operators can see when an integration
+  // took over a manually-created subnet.
+  const claimedSubnets: Array<{
+    id: string;
+    cidr: string;
+    previousName: string;
+    newName: string;
+    fortigateDevice: string;
+  }> = [];
 
   for (const entry of result.subnets) {
     let cidr: string;
@@ -2418,15 +2429,34 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     // Check if a non-deprecated subnet with this CIDR already exists (in-memory)
     const existing = subnetByCidr.get(cidr);
     if (existing) {
-      subnetUpdates.push({
-        id: existing.id,
-        data: {
-          discoveredBy: integrationId,
+      const isFirstClaim = existing.discoveredBy == null;
+      const baseData: any = {
+        discoveredBy: integrationId,
+        fortigateDevice: entry.fortigateDevice,
+        lastDiscoveredAt: new Date(),
+        ...(entry.vlan != null ? { vlan: entry.vlan } : {}),
+      };
+      if (isFirstClaim) {
+        // Bring the manually-created row into parity with a freshly-discovered
+        // subnet so it stops looking like an orphan in tag/filter UI. Name +
+        // status are intentionally overwritten on first claim (the manual
+        // values were placeholders); operator-typed purpose is preserved.
+        const existingTags: string[] = Array.isArray(existing.tags) ? existing.tags : [];
+        baseData.name = `DHCP: ${entry.name} (${entry.fortigateDevice})`;
+        baseData.status = "available";
+        baseData.tags = Array.from(new Set([...existingTags, "dhcp-discovered", integrationType]));
+        if (!existing.purpose) {
+          baseData.purpose = `Discovered from ${integrationLabel} DHCP`;
+        }
+        claimedSubnets.push({
+          id: existing.id,
+          cidr,
+          previousName: existing.name,
+          newName: baseData.name,
           fortigateDevice: entry.fortigateDevice,
-          lastDiscoveredAt: new Date(),
-          ...(entry.vlan != null ? { vlan: entry.vlan } : {}),
-        },
-      });
+        });
+      }
+      subnetUpdates.push({ id: existing.id, data: baseData });
       updated.push(cidr);
       continue;
     }
@@ -2480,6 +2510,29 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     await batchSettled(subnetUpdates, (u) =>
       prisma.subnet.update({ where: { id: u.id }, data: u.data })
     );
+  }
+
+  // Emit one `subnet.claimed` Event per first-claim row (manual → discovered
+  // transition). Fires once per subnet; subsequent discovery passes see
+  // discoveredBy already set and skip the claim branch entirely.
+  for (const c of claimedSubnets) {
+    logEvent({
+      action: "subnet.claimed",
+      resourceType: "subnet",
+      resourceId: c.id,
+      resourceName: c.newName,
+      actor,
+      message: `Subnet "${c.previousName}" (${c.cidr}) claimed by "${integrationName}" — now tracked as "${c.newName}"`,
+      details: {
+        reason: "first-claim",
+        previousName: c.previousName,
+        previousDiscoveredBy: null,
+        integrationId,
+        integrationName,
+        fortigateDevice: c.fortigateDevice,
+        cidr: c.cidr,
+      },
+    });
   }
   } // end Phases 1 (full | skip-deprecation)
 

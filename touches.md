@@ -1738,6 +1738,7 @@ Listed alphabetically.
 - Subnet status = "deprecated" rejects new reservations
 - Full-subnet reservation (ipAddress=null) sets subnet status → "reserved"
 - Prefix length must be [8, 32] for IPv4
+- **First-claim parity (discovery side, lives in `src/api/routes/integrations.ts` syncDhcpSubnets Phase 1):** when a discovery cycle's CIDR matches a manual subnet (`existing.discoveredBy == null`), the row gets brought into parity with a freshly-discovered subnet — `name` rewritten to `DHCP: <scope> (<fortigate>)`, `status` reset to `available`, `tags` union-merged with `["dhcp-discovered", <integrationType>]`, `purpose` stamped only when blank. Subsequent passes see `discoveredBy` set and skip the claim branch (operator can rename/retag after claim and edits survive). One `subnet.claimed` Event per first-claim.
 
 **When changing this:**
 - Test allocateNextSubnet's findNextAvailableSubnet logic (concurrent allocations must not race)
