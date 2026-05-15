@@ -773,7 +773,7 @@ async function readApplicableCounts(snap: CapacitySnapshot): Promise<Record<Cade
     WHERE monitored = true
       AND NOT (
         "assetType" IN ('switch', 'access_point')
-        AND ("telemetryPolling" IS NULL OR "telemetryPolling" = 'rest_api')
+        AND ("cpuMemoryPolling" IS NULL OR "cpuMemoryPolling" = 'rest_api')
       )
   `);
   const systemInfoRow = await prisma.$queryRawUnsafe<{ count: bigint }[]>(`
