@@ -32,6 +32,45 @@ const UpdateRoleSchema = z.object({
   role: z.enum(["admin", "networkadmin", "assetsadmin", "user", "readonly"]),
 });
 
+// GET /api/v1/users/role-review-notifications — sidebar badge feed
+// Lists users whose `needsRoleReview` flag is currently set (i.e. completed
+// their first login and an admin hasn't dismissed the notification yet).
+// Mounted before "/" since Express matches in declaration order; "/" still
+// works because "/role-review-notifications" only matches its exact path.
+router.get("/role-review-notifications", async (_req, res, next) => {
+  try {
+    const rows = await prisma.user.findMany({
+      where: { needsRoleReview: true },
+      select: {
+        id: true, username: true, role: true, displayName: true,
+        authProvider: true, email: true, lastLogin: true, createdAt: true,
+      },
+      orderBy: { lastLogin: "asc" },
+    });
+    res.json({ users: rows, count: rows.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/v1/users/:id/role-review — dismiss the notification for one user
+router.delete("/:id/role-review", async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true, needsRoleReview: true },
+    });
+    if (!user) throw new AppError(404, "User not found");
+    if (user.needsRoleReview) {
+      await prisma.user.update({ where: { id }, data: { needsRoleReview: false } });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/v1/users
 router.get("/", async (_req, res, next) => {
   try {
@@ -130,7 +169,7 @@ router.put("/:id/role", async (req, res, next) => {
 
     await prisma.user.update({
       where: { id },
-      data: { role },
+      data: { role, needsRoleReview: false },
     });
     res.json({ ok: true, role });
   } catch (err) {

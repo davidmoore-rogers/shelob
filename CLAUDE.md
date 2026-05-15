@@ -743,6 +743,7 @@ User
   totpSecret      String?       -- Base32 TOTP secret (null = not enrolled)
   totpEnabledAt   DateTime?     -- Null = not enabled; set on first valid confirm code
   totpBackupCodes String[]      -- argon2id-hashed single-use recovery codes
+  needsRoleReview Boolean       -- Flipped true at the password step the first time the user logs in (Asset.lastLogin transitions null → set). Drives the admin-only "new user logged in" panel in the sidebar (#role-review-status, rendered above #query-status). Auto-cleared when an admin PUTs /users/:id/role (implicit review) or DELETEs /users/:id/role-review (explicit Dismiss). Dismiss is global — clearing the flag hides the row for every admin at once. SAML SSO sets it on auto-provision and on first-ever login of an existing account.
 
 Event                           -- Audit log, 7-day rolling retention
   id            UUID PK
@@ -944,8 +945,10 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 - `GET    /users/:id`
 - `PUT    /users/:id`
 - `DELETE /users/:id`
-- `PUT    /users/:id/role`
+- `PUT    /users/:id/role`                      — Update role; also auto-clears `needsRoleReview` since picking a role is an implicit review.
 - `DELETE /users/:id/totp`                      — Admin-initiated TOTP reset (for "lost device" recovery). Clears the secret and backup codes so the user can re-enroll on next login.
+- `GET    /users/role-review-notifications`     — Sidebar feed. Returns `{ users, count }` where `users` is every row with `needsRoleReview=true`, ordered by `lastLogin` asc, projected to `{ id, username, role, displayName, authProvider, email, lastLogin, createdAt }`. Polled every 30s by [public/js/app.js](public/js/app.js) for admins only.
+- `DELETE /users/:id/role-review`               — Dismiss the new-user notification for one user (global — hides the row for every admin).
 
 ### Integrations — `requireNetworkAdmin`
 - `GET    /integrations`

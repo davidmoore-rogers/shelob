@@ -196,6 +196,8 @@ const api = {
     updateRole:    (id, b)  => request("PUT", `/users/${id}/role`, b),
     delete:        (id)     => request("DELETE", `/users/${id}`),
     resetTotp:     (id)     => request("DELETE", `/users/${id}/totp`),
+    roleReviewNotifications: ()   => request("GET", "/users/role-review-notifications"),
+    dismissRoleReview:       (id) => request("DELETE", `/users/${id}/role-review`),
   },
   totp: {
     status:     ()     => request("GET",    "/auth/totp/status"),

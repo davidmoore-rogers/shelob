@@ -181,12 +181,14 @@ export async function findOrProvisionSamlUser(profile: Profile) {
   // Look up by Azure OID
   const existing = await prisma.user.findUnique({ where: { azureOid: oid } });
   if (existing) {
+    const isFirstLogin = existing.lastLogin === null;
     return prisma.user.update({
       where: { id: existing.id },
       data: {
         displayName: displayName || existing.displayName,
         email: email || existing.email,
         lastLogin: new Date(),
+        ...(isFirstLogin ? { needsRoleReview: true } : {}),
       },
     });
   }
@@ -216,6 +218,7 @@ export async function findOrProvisionSamlUser(profile: Profile) {
       displayName: displayName || null,
       email: email || null,
       lastLogin: new Date(),
+      needsRoleReview: true,
     },
   });
 }

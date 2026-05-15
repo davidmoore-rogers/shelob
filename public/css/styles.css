@@ -403,6 +403,20 @@ code {
   background: rgba(255,23,68,0.15);
 }
 
+/* ─── Role-review notification (admin-only "new user logged in" sidebar panel) ── */
+.role-review-status {
+  border-color: rgba(255,179,0,0.35);
+  background: rgba(255,179,0,0.07);
+  margin-bottom: 0.5rem;
+}
+.role-review-header {
+  color: var(--color-warning);
+}
+.role-review-icon {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
 /* ─── Capacity reason building blocks (shared by sidebar critical alert + inline pg-tuning rows on the card) ── */
 .pg-tuning-header {
   display: flex;

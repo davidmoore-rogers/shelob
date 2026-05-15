@@ -1053,6 +1053,11 @@ model User {
   totpEnabledAt   DateTime? @map("totp_enabled_at")
   totpBackupCodes String[]  @default([]) @map("totp_backup_codes")
 
+  // Flipped true the first time the user actually logs in (lastLogin transitions
+  // null → set). Drives the sidebar "new user — review role" notification for
+  // admins; cleared globally by Dismiss.
+  needsRoleReview Boolean   @default(false) @map("needs_role_review")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

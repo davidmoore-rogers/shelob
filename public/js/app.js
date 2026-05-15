@@ -141,6 +141,7 @@ function renderNav() {
       }).join("")}
     </ul>
     <div style="margin-top:auto">
+      <div id="role-review-status" class="query-status role-review-status" style="display:none"></div>
       <div id="query-status" class="query-status" style="display:none"></div>
       <div id="capacity-critical-alert" class="capacity-critical-alert" style="display:none"></div>
       ${(isAdmin() || canManageAssets()) ? `<div style="padding:0.5rem 0.5rem 0;border-top:1px solid var(--color-border-light)">
@@ -187,6 +188,29 @@ function renderNav() {
   // Expose for renderQueryStatus closure and for callers that need an immediate refresh
   window._getServerDiscoveries = function () { return _serverDiscoveries; };
   window._pollDiscoveries = pollDiscoveries;
+
+  // ─── New-user role-review notifications ────────────────────────────────
+  // Admin-only sidebar panel. Lists users who just completed their first
+  // login so an admin can decide whether to promote them off the default
+  // role. Dismiss is global — clearing the flag hides the entry for every
+  // admin at once.
+  var _roleReviewUsers = [];
+  async function pollRoleReviewNotifications() {
+    if (!isAdmin()) return;
+    try {
+      var result = await api.users.roleReviewNotifications();
+      _roleReviewUsers = (result && result.users) || [];
+    } catch (_) {
+      _roleReviewUsers = [];
+    }
+    renderRoleReviewStatus();
+  }
+  if (isAdmin()) {
+    pollRoleReviewNotifications();
+    setInterval(pollRoleReviewNotifications, 30000);
+  }
+  window._pollRoleReviewNotifications = pollRoleReviewNotifications;
+  window._getRoleReviewUsers = function () { return _roleReviewUsers; };
 
   // Inject global search bar + user badge into page header
   renderGlobalSearch();
@@ -889,6 +913,59 @@ function renderQueryStatus() {
       if (ok) abortAllQueries();
     });
   }
+}
+
+// ─── New-user role-review notifications ────────────────────────────────────
+// Renders the admin-only "new user — review role" panel in the sidebar.
+// Reads from the closure-scoped _roleReviewUsers array populated by
+// pollRoleReviewNotifications above. Each row has a per-user dismiss button
+// that hits DELETE /users/:id/role-review (global dismiss).
+
+function renderRoleReviewStatus() {
+  var container = document.getElementById("role-review-status");
+  if (!container) return;
+  var users = (window._getRoleReviewUsers && window._getRoleReviewUsers()) || [];
+  if (!users.length) {
+    container.style.display = "none";
+    container.innerHTML = "";
+    return;
+  }
+  container.style.display = "block";
+  var label = users.length === 1 ? "new user logged in" : "new users logged in";
+  container.innerHTML =
+    '<div class="query-status-header role-review-header">' +
+      '<span class="role-review-icon">&#x2728;</span>' +
+      '<span class="query-status-label">' + users.length + ' ' + label + '</span>' +
+    '</div>' +
+    '<ul class="query-status-list">' +
+      users.map(function (u) {
+        var who = u.displayName ? (u.displayName + ' (' + u.username + ')') : u.username;
+        var sub = 'Role: ' + (u.role || 'readonly') + (u.authProvider === 'azure' ? ' · SSO' : '');
+        return '<li><div style="min-width:0;flex:1">' +
+          '<span class="query-status-name" title="' + escapeHtml(who) + '">' + escapeHtml(who) + '</span>' +
+          '<span class="query-status-progress">' + escapeHtml(sub) + ' — may need role change</span>' +
+          '</div>' +
+          '<button class="query-abort-btn role-review-dismiss" data-user-id="' + escapeHtml(u.id) + '" title="Dismiss">&#x2715;</button>' +
+          '</li>';
+      }).join("") +
+    '</ul>';
+
+  container.querySelectorAll(".role-review-dismiss").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var uid = btn.getAttribute("data-user-id");
+      if (!uid) return;
+      btn.disabled = true;
+      try {
+        await api.users.dismissRoleReview(uid);
+      } catch (_) {
+        btn.disabled = false;
+        return;
+      }
+      if (typeof window._pollRoleReviewNotifications === "function") {
+        window._pollRoleReviewNotifications();
+      }
+    });
+  });
 }
 
 // ─── Tracked PDF Export ─────────────────────────────────────────────────────

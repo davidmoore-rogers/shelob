@@ -105,10 +105,19 @@ router.post("/login", async (req, res, next) => {
     clearLockout(username);
 
     // Re-hash on successful login if stored params are weaker than current target.
-    const updateData: { lastLogin: Date; passwordHash?: string } = { lastLogin: new Date() };
+    // First-login flip: stamp needsRoleReview here (password step) for BOTH
+    // TOTP-less and TOTP-enabled accounts. By the time the /login/totp step
+    // runs, this update has already bumped lastLogin, so first-login can't
+    // be detected there. A user who passes password but bails at TOTP still
+    // gets flagged — that's fine; an admin reviewing them just sees an
+    // account that has valid credentials but no completed-session activity.
+    const isFirstLogin = user.lastLogin === null;
+    const updateData: { lastLogin: Date; passwordHash?: string; needsRoleReview?: boolean } =
+      { lastLogin: new Date() };
     if (needsRehash) {
       updateData.passwordHash = await hashPassword(password);
     }
+    if (isFirstLogin) updateData.needsRoleReview = true;
     await prisma.user.update({ where: { id: user.id }, data: updateData });
 
     // If TOTP is enabled on this (local) account, don't issue the session
