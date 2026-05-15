@@ -43,7 +43,7 @@ fi
 cd "$APP_DIR"
 
 # ─── 1. Record current version ──────────────────────────────────────────────
-step "1/7  Recording current version..."
+step "1/8  Recording current version..."
 
 OLD_VERSION=$(node -e "console.log(require('./package.json').version)" 2>/dev/null || echo "unknown")
 OLD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -51,7 +51,7 @@ OLD_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 info "Current version: v${OLD_VERSION} (${OLD_COMMIT})"
 
 # ─── 2. Pre-update database backup ──────────────────────────────────────────
-step "2/7  Creating pre-update database backup..."
+step "2/8  Creating pre-update database backup..."
 
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="${BACKUP_DIR}/polaris-pre-update-${OLD_VERSION}-$(date +%Y%m%d-%H%M%S).sql.gz"
@@ -66,7 +66,7 @@ else
 fi
 
 # ─── 3. Pull latest code ────────────────────────────────────────────────────
-step "3/7  Pulling latest code..."
+step "3/8  Pulling latest code..."
 
 sudo -u "$APP_USER" git fetch --all --prune
 sudo -u "$APP_USER" git pull --ff-only
@@ -96,6 +96,12 @@ rollback() {
   cd "$APP_DIR"
   sudo -u "$APP_USER" git checkout "$OLD_COMMIT" -- . 2>/dev/null || sudo -u "$APP_USER" git reset --hard "$OLD_COMMIT"
   sudo -u "$APP_USER" npm ci --production=false 2>/dev/null
+  # Regenerate Prisma client + wipe stale dist so the rolled-back process
+  # comes up with a client matching the rolled-back schema. Same rationale
+  # as the forward-update path below; both are documented in
+  # cross-cutting/schema-migrations-and-prisma-client-lifecycle in touches.md.
+  sudo -u "$APP_USER" npx prisma generate 2>/dev/null
+  sudo -u "$APP_USER" rm -rf "$APP_DIR/dist" 2>/dev/null
   sudo -u "$APP_USER" npx tsc 2>/dev/null
 
   # Restore database if migration failed and we have a backup
@@ -117,7 +123,7 @@ rollback() {
 }
 
 # ─── 4. Install dependencies ────────────────────────────────────────────────
-step "4/7  Installing dependencies..."
+step "4/8  Installing dependencies..."
 
 # Ensure Node.js can bind to privileged ports (80, 443) without root
 setcap cap_net_bind_service=+ep "$(which node)" 2>/dev/null || true
@@ -132,15 +138,31 @@ if echo "$AUDIT_OUTPUT" | grep -qiE "critical|high"; then
   echo ""
 fi
 
-# ─── 5. Build TypeScript ────────────────────────────────────────────────────
-step "5/7  Building TypeScript..."
+# ─── 5. Generate Prisma client ──────────────────────────────────────────────
+# Explicit step — don't rely on `npm ci`'s postinstall having fired. A
+# partially-failed `npm ci` (transient mirror blip, future --ignore-scripts,
+# etc.) leaves the generated client stale; then step 7's `migrate deploy`
+# drops columns the running client still selects, and every Asset read/write
+# crashes with `column "<name>" does not exist`. See
+# cross-cutting/schema-migrations-and-prisma-client-lifecycle in touches.md.
+step "5/8  Generating Prisma client..."
 
+sudo -u "$APP_USER" npx prisma generate || rollback "prisma generate"
+
+# ─── 6. Build TypeScript ────────────────────────────────────────────────────
+# Clean dist/ first so stale compiled JS from a previous build (e.g.
+# generated-client files Prisma renamed between versions) can't shadow the
+# fresh tsc output. tsc itself is non-destructive: without this, a file
+# that exists in dist/ but no longer in src/ lingers forever.
+step "6/8  Building TypeScript..."
+
+sudo -u "$APP_USER" rm -rf "$APP_DIR/dist" || rollback "dist cleanup"
 sudo -u "$APP_USER" npx tsc || rollback "TypeScript build"
 
 info "Build successful — stopping service for migration"
 
-# ─── 6. Migrate & restart ───────────────────────────────────────────────────
-step "6/7  Running database migrations..."
+# ─── 7. Migrate & restart ───────────────────────────────────────────────────
+step "7/8  Running database migrations..."
 
 systemctl stop "$SERVICE_NAME"
 
@@ -150,8 +172,8 @@ info "Migrations complete — starting service"
 
 systemctl start "$SERVICE_NAME"
 
-# ─── 7. Verify ──────────────────────────────────────────────────────────────
-step "7/7  Verifying service health..."
+# ─── 8. Verify ──────────────────────────────────────────────────────────────
+step "8/8  Verifying service health..."
 
 sleep 3
 

@@ -92,6 +92,14 @@ function Invoke-Rollback {
     & git checkout $OldCommit -- . 2>$null
     if ($LASTEXITCODE -ne 0) { & git reset --hard $OldCommit 2>$null }
     & npm ci --production=false 2>$null
+    # Regenerate Prisma client + wipe stale dist so the rolled-back process
+    # comes up with a client matching the rolled-back schema. Same rationale
+    # as the forward-update path below; both are documented in
+    # cross-cutting/schema-migrations-and-prisma-client-lifecycle in touches.md.
+    & npx prisma generate 2>$null
+    if (Test-Path (Join-Path $AppDir "dist")) {
+        Remove-Item -Recurse -Force (Join-Path $AppDir "dist") -ErrorAction SilentlyContinue
+    }
     & npx tsc 2>$null
 
     # Restore database if migration failed
@@ -124,7 +132,7 @@ function Invoke-Rollback {
 }
 
 # ─── 1. Record current version ──────────────────────────────────────────────
-Write-Step "1/7  Recording current version..."
+Write-Step "1/8  Recording current version..."
 
 try { $OldVersion = (node -e "console.log(require('./package.json').version)") } catch {}
 try { $OldCommit = (git rev-parse --short HEAD) } catch {}
@@ -132,7 +140,7 @@ try { $OldCommit = (git rev-parse --short HEAD) } catch {}
 Write-Info "Current version: v${OldVersion} (${OldCommit})"
 
 # ─── 2. Pre-update database backup ──────────────────────────────────────────
-Write-Step "2/7  Creating pre-update database backup..."
+Write-Step "2/8  Creating pre-update database backup..."
 
 $backupDir = Join-Path $AppDir "backups"
 if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Path $backupDir -Force | Out-Null }
@@ -161,7 +169,7 @@ if (Test-Command "pg_dump") {
 }
 
 # ─── 3. Pull latest code ────────────────────────────────────────────────────
-Write-Step "3/7  Pulling latest code..."
+Write-Step "3/8  Pulling latest code..."
 
 & git fetch --all --prune
 & git pull --ff-only
@@ -187,7 +195,7 @@ if ($OldCommit -eq $NewCommit) {
 Write-Info "Updating: v${OldVersion} (${OldCommit}) -> v${NewVersion} (${NewCommit})"
 
 # ─── 4. Install dependencies ────────────────────────────────────────────────
-Write-Step "4/7  Installing dependencies..."
+Write-Step "4/8  Installing dependencies..."
 
 & npm ci --production=false
 if ($LASTEXITCODE -ne 0) { Invoke-Rollback "npm ci" }
@@ -200,16 +208,35 @@ if ($auditOutput -match "critical|high") {
     Write-Host ""
 }
 
-# ─── 5. Build TypeScript ────────────────────────────────────────────────────
-Write-Step "5/7  Building TypeScript..."
+# ─── 5. Generate Prisma client ──────────────────────────────────────────────
+# Explicit step — don't rely on `npm ci`'s postinstall having fired. A
+# partially-failed `npm ci` (transient mirror blip, future --ignore-scripts,
+# etc.) leaves the generated client stale; then step 7's `migrate deploy`
+# drops columns the running client still selects, and every Asset read/write
+# crashes with `column "<name>" does not exist`. See
+# cross-cutting/schema-migrations-and-prisma-client-lifecycle in touches.md.
+Write-Step "5/8  Generating Prisma client..."
 
+& npx prisma generate
+if ($LASTEXITCODE -ne 0) { Invoke-Rollback "prisma generate" }
+
+# ─── 6. Build TypeScript ────────────────────────────────────────────────────
+# Clean dist/ first so stale compiled JS from a previous build (e.g.
+# generated-client files Prisma renamed between versions) can't shadow the
+# fresh tsc output. tsc itself is non-destructive: without this, a file
+# that exists in dist/ but no longer in src/ lingers forever.
+Write-Step "6/8  Building TypeScript..."
+
+if (Test-Path (Join-Path $AppDir "dist")) {
+    Remove-Item -Recurse -Force (Join-Path $AppDir "dist") -ErrorAction Stop
+}
 & npx tsc
 if ($LASTEXITCODE -ne 0) { Invoke-Rollback "TypeScript build" }
 
 Write-Info "Build successful — stopping service for migration"
 
-# ─── 6. Migrate & restart ───────────────────────────────────────────────────
-Write-Step "6/7  Running database migrations..."
+# ─── 7. Migrate & restart ───────────────────────────────────────────────────
+Write-Step "7/8  Running database migrations..."
 
 & $nssmExe stop $ServiceName 2>$null
 Start-Sleep -Seconds 3
@@ -221,8 +248,8 @@ Write-Info "Migrations complete — starting service"
 
 & $nssmExe start $ServiceName 2>$null
 
-# ─── 7. Verify ──────────────────────────────────────────────────────────────
-Write-Step "7/7  Verifying service health..."
+# ─── 8. Verify ──────────────────────────────────────────────────────────────
+Write-Step "8/8  Verifying service health..."
 
 Start-Sleep -Seconds 4
 
