@@ -288,6 +288,10 @@ function _renderIpList(data) {
     } else if (r && r.status === "active" && r.sourceType === "vip") {
       dotClass = "ip-dot-active";
       statusLabel = "VIP";
+    } else if (r && r.status === "active" && r.sourceType === "dns_resolved") {
+      dotClass = "ip-dot-dhcp-lease";
+      statusLabel = "DNS Resolved";
+      statusTooltip = "Auto-discovered from asset inventory; no DHCP record exists yet.";
     } else if (r && r.status === "active") {
       dotClass = "ip-dot-active";
       statusLabel = "Active";

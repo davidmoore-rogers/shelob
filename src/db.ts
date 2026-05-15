@@ -32,6 +32,33 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { normalizeManufacturer } from "./utils/manufacturerNormalize.js";
 import { deriveAssetSources, type AssetSnapshot } from "./utils/assetSourceDerivation.js";
 
+// Lazy-resolved to break the import cycle (dnsResolvedReservationService imports
+// `prisma` from this file). The hooks below only invoke the service at runtime,
+// not at module init, so a top-of-file dynamic import on first call is safe.
+let _dnsResolvedSvcPromise: Promise<typeof import("./services/dnsResolvedReservationService.js")> | null = null;
+function getDnsResolvedSvc() {
+  if (!_dnsResolvedSvcPromise) {
+    _dnsResolvedSvcPromise = import("./services/dnsResolvedReservationService.js");
+  }
+  return _dnsResolvedSvcPromise;
+}
+function fireDnsResolvedReconcile(assetId: string | undefined): void {
+  if (!assetId) return;
+  // Best-effort, fire-and-forget. Failures are swallowed inside the service.
+  getDnsResolvedSvc()
+    .then((svc) => svc.reconcileDnsResolvedForAsset(assetId))
+    .catch(() => {});
+}
+async function fireDnsResolvedRelease(assetId: string | undefined): Promise<void> {
+  if (!assetId) return;
+  try {
+    const svc = await getDnsResolvedSvc();
+    await svc.releaseDnsResolvedForAsset(assetId);
+  } catch {
+    // Best-effort — never block the delete.
+  }
+}
+
 const g = globalThis as unknown as { prisma: any; _prismaBase: PrismaClient };
 
 // Resolve the pg connection-pool size. The driver-adapter (`@prisma/adapter-pg`)
@@ -239,6 +266,8 @@ function _buildClient(base: PrismaClient) {
           // create; on update we gate by touchesAssetSources() to skip the
           // re-derive on hot-path writes.
           shadowWriteAssetSources(base, result);
+          // dns_resolved reservation auto-reconcile (fire-and-forget).
+          fireDnsResolvedReconcile((result as any)?.id);
           return result;
         },
         async update({ args, query }: { args: any; query: (args: any) => Promise<any> }) {
@@ -254,13 +283,26 @@ function _buildClient(base: PrismaClient) {
           if (touchesAssetSources(d)) {
             shadowWriteAssetSources(base, result);
           }
+          // Only re-run the dns_resolved reconcile when the write could have
+          // changed eligibility: ipAddress / status / hostname / dnsName /
+          // macAddress. Skips the hot monitor-result path that writes only
+          // lastMonitorAt / monitorStatus / counters.
+          if (
+            d && (
+              "ipAddress" in d || "status" in d || "hostname" in d ||
+              "dnsName" in d || "macAddress" in d
+            )
+          ) {
+            fireDnsResolvedReconcile((result as any)?.id);
+          }
           return result;
         },
         async updateMany({ args, query }: { args: any; query: (args: any) => Promise<any> }) {
           normalizeManufacturerInData(args?.data);
           clampMonitoredForStatus(args?.data);
           // updateMany: skip shadow-write. Rare on identity fields, and the
-          // backfill job sweeps any drift on next startup.
+          // backfill job sweeps any drift on next startup. Same logic for the
+          // dns_resolved reconcile — the periodic job catches drift.
           return query(args);
         },
         async upsert({ args, query }: { args: any; query: (args: any) => Promise<any> }) {
@@ -276,7 +318,18 @@ function _buildClient(base: PrismaClient) {
           if (touchesAssetSources(args?.create) || updateTouches) {
             shadowWriteAssetSources(base, result);
           }
+          // Conservative: always re-run reconcile after upsert — we don't
+          // know which branch ran and the eligibility-relevant fields are
+          // likely to be present in at least one of create/update.
+          fireDnsResolvedReconcile((result as any)?.id);
           return result;
+        },
+        async delete({ args, query }: { args: any; query: (args: any) => Promise<any> }) {
+          // Release any owned dns_resolved reservations BEFORE the delete
+          // cascades so we still have the asset's hostname/MAC to find them.
+          const id = typeof args?.where?.id === "string" ? args.where.id : undefined;
+          await fireDnsResolvedRelease(id);
+          return query(args);
         },
       },
       mibFile: {

@@ -15,6 +15,7 @@ import {
   type PushReservationResult,
 } from "./reservationPushService.js";
 import { logEvent } from "../api/routes/events.js";
+import { releaseDnsResolvedAt } from "./dnsResolvedReservationService.js";
 
 export interface CreateReservationInput {
   subnetId: string;
@@ -144,12 +145,17 @@ export async function createReservation(input: CreateReservationInput) {
         `IP ${input.ipAddress} is not within subnet ${subnet.cidr}`
       );
 
-    // Check for existing active reservation on this IP
+    // Check for existing active reservation on this IP. dns_resolved rows are
+    // observational fallback markers; a manual create at the same IP is an
+    // explicit operator claim that should take over silently — exclude them
+    // from the collision check here and release them inline below before the
+    // transaction commits.
     const existing = await prisma.reservation.findFirst({
       where: {
         subnetId: input.subnetId,
         ipAddress: input.ipAddress,
         status: "active",
+        NOT: { sourceType: "dns_resolved" as any },
       },
     });
     if (existing)
@@ -191,7 +197,14 @@ export async function createReservation(input: CreateReservationInput) {
     }
   }
 
-  // 4. Create the reservation & mark subnet as reserved if full-subnet
+  // 4. Create the reservation & mark subnet as reserved if full-subnet.
+  // Release any dns_resolved fallback row at the same target FIRST — the
+  // manual create is the authoritative claim and the unique-on-active
+  // constraint won't let both coexist. Per-IP only; full-subnet reservations
+  // don't collide with the per-IP fallback rows.
+  if (input.ipAddress) {
+    await releaseDnsResolvedAt(input.subnetId, input.ipAddress);
+  }
   const macClean = input.macAddress ? normalizeMac(input.macAddress) : null;
   const reservation = await prisma.$transaction(async (tx) => {
     const res = await tx.reservation.create({

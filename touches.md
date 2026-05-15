@@ -386,11 +386,13 @@ build auto-prune + boot-time auto-build are layered on top.
 **What it is:** Prisma extension in src/db.ts that automatically normalizes manufacturer, clamps acquiredAt, checks monitoring status, derives asset sources, and records IP history on every Asset create/update/upsert (see "Asset write-time clamps" in CLAUDE.md).
 
 **Writers** (files that mutate or emit this state):
-- `src/db.ts:224-302` — Extended client wraps asset.create/update/updateMany/upsert with five hooks:
+- `src/db.ts:224-302` — Extended client wraps asset.create/update/updateMany/upsert/delete with six hooks:
   - normalizeManufacturerInData() runs `Asset.manufacturer` through normalizeManufacturer()
   - clampMonitoredForStatus() forces monitored=false + resets consecutiveFailures when status ∈ {decommissioned, disabled}
   - recordIpHistory() upserts AssetIpHistory on ipAddress change
   - shadowWriteAssetSources() derives and upserts AssetSource rows when identity fields change
+  - fireDnsResolvedReconcile() schedules a fire-and-forget per-asset reconcile of `dns_resolved` reservations (gated on writes that touch ipAddress / status / hostname / dnsName / macAddress)
+  - fireDnsResolvedRelease() (delete branch only) releases any owned `dns_resolved` rows before the row is removed
 - `src/utils/manufacturerNormalize.ts` — normalizeManufacturer() pure function (cached alias map, no DB access)
 - `src/utils/assetInvariants.ts` — clampAcquiredToLastSeen() logic (not hooked yet; job applies it at startup)
 - `src/utils/assetSourceDerivation.ts` — deriveAssetSources() pure function producing AssetSource rows from legacy tags
@@ -450,6 +452,40 @@ build auto-prune + boot-time auto-build are layered on top.
 - Check conflict bypass: create a manual reservation, add an integration that discovers the same IP; verify conflict is raised only for non-manual priors.
 - Lease-release cadence: toggle pushReservations off mid-deployment, release a dhcp_lease row; confirm unpush is skipped but the Polaris row is freed.
 - Verify read-back verify: FortiGate DHCP create succeeds but the verify read fails (transient device timeout); confirm the push is retried or fails cleanly.
+
+---
+
+## cross-cutting/dns-resolved-reservations
+
+**What it is:** Auto-created Reservation rows with `sourceType="dns_resolved"` + `createdBy="system:dns-resolved"` for every Asset whose primary `ipAddress` falls inside a non-deprecated Subnet and isn't already covered by an authoritative reservation. Closes the gap where an AD / Entra / Intune / manually-typed asset's IP is invisible in the Networks IP panel and could be handed out twice. Observational only — never pushes to FortiGates, never raises Conflict rows, silently defers to manual / dhcp_* / interface_ip / vip / fortinet rows.
+
+**Writers** (files that mutate or emit this state):
+- `src/services/dnsResolvedReservationService.ts` — `reconcileDnsResolvedForAsset(assetId)` is the single per-asset upsert/release path. Exports `reconcileDnsResolvedForAllAssets()` (sweep), `releaseDnsResolvedForAsset(assetId)` (asset-delete), `releaseDnsResolvedAt(subnetId, ipAddress)` (discovery hand-off).
+- `src/db.ts` — Prisma extension fires `fireDnsResolvedReconcile(result.id)` after every gated `asset.create` / `asset.update` / `asset.upsert`; fires `fireDnsResolvedRelease(args.where.id)` BEFORE `asset.delete` runs so the service can still read the row's hostname/MAC to identify owned reservation rows.
+- `src/jobs/reconcileDnsResolvedReservations.ts` — 30-min tick + 30s post-boot kick. Sweeps every asset with `ipAddress != null` in batches of 25 via Promise.all.
+- `src/api/routes/integrations.ts` (`syncDhcpSubnets`) — `activeResMap` construction EXCLUDES `sourceType="dns_resolved"` rows so discovery treats the IP as free; the five `prisma.reservation.create` callsites (fortiswitch / fortinap / vip / interface_ip / dhcp_*) each call `releaseDnsResolvedAt(subnetId, ip)` inline before creating.
+- `src/api/routes/integrations.ts` (`registerFortinetHost`) — findFirst excludes dns_resolved + same inline release before create.
+- `src/services/reservationService.ts` (`createReservation`) — manual create's existing-active-reservation check excludes dns_resolved; calls `releaseDnsResolvedAt` inline before the `$transaction`.
+
+**Readers** (files that consume it):
+- `public/js/ip-panel.js:282-347` — recognizes `r.sourceType === "dns_resolved"` to render a distinct "DNS Resolved" status pill and tooltip. The Reserve/Free/Edit button gating is unchanged — `createdBy === "system:dns-resolved"` doesn't match any user, so non-admin operators see view-only.
+- `src/api/routes/assets.ts:buildIpContexts` — `ipContext.reservation.sourceType` carries the value through to the assets list's View Lease deep-link target; no special handling needed (the deep link just opens the IP panel which renders the badge).
+
+**Invariants:**
+- Reservation `@@unique([subnetId, ipAddress, status])` constraint requires the inline release before any authoritative create at the same target. Never skip it.
+- `createdBy="system:dns-resolved"` is the stable system actor — the existing ownership middleware treats `system:*` as "no operator owns this", which is the intended UX (non-admins can't edit).
+- Eligible asset statuses: active / maintenance / storage / quarantined. decommissioned / disabled MUST release the existing row (don't keep stale claims).
+- IPv4 only (Netmask helpers are IPv4-only and the IP-panel UI is IPv4-shaped). IPv6 assets silently skip.
+- Never push to FortiGate. The service writes via raw `prisma.reservation.create` and bypasses `reservationService.createReservation` so the push path is never reachable.
+- Never raise Conflict rows. The defer-to-authoritative branch returns early without touching `prisma.conflict`.
+- Real-time hook is best-effort fire-and-forget — the periodic job is the safety net.
+
+**When changing this:**
+- Adding a new authoritative `sourceType`? Add a `releaseDnsResolvedAt(subnetId, ip)` call inline before every place that creates rows with the new value, and verify the activeResMap construction still excludes dns_resolved only.
+- Adding a new eligibility column (e.g. asset's site/zone)? Update `assetEligible()` AND the `findOwnedSystemRows` identity match (MAC + hostname) — if the identity key changes, stale rows orphan instead of releasing.
+- Switching ownership to a real FK (Reservation.assetId)? Drop the identity-match heuristic and join directly; the periodic job becomes trivially correct.
+- Performance check at 2000 assets: the periodic job's batched Promise.all should complete in a few seconds. If it grows, increase the batch size (25 → 50) before fanning out further — the bottleneck is the `findContainingSubnet` $queryRaw, not the Asset findMany.
+- IPv6 follow-up: `findContainingSubnet` already uses Postgres `inet`/`cidr` containment which supports v6; the gate is `detectIpVersion(ip) === "v4"` in `assetEligible()`. Removing it would also need a v6-aware containment check in `ipInCidr` callers.
 
 ---
 
@@ -1607,6 +1643,33 @@ Listed alphabetically.
 - Test cold-start grace window (rows pre-dating detectionStartedAt get full threshold window)
 - Check flagStaleReservations only fires on active dhcp_reservation rows (not discovered dhcp_lease)
 - Audit snooze idempotency: repeated snooze clicks should extend from "now" not from prior snooze
+
+---
+
+## services/dnsResolvedReservationService.ts
+
+**What it owns:** Auto-creation, update, and release of `sourceType="dns_resolved"` Reservation rows that mirror Assets whose primary `ipAddress` isn't covered by an authoritative reservation. Plays no part in DHCP push, conflict raising, or asset writes themselves — strictly a downstream observer of the Asset table.
+
+**Public API:** `reconcileDnsResolvedForAsset(assetId)`, `reconcileDnsResolvedForAllAssets()`, `releaseDnsResolvedForAsset(assetId)`, `releaseDnsResolvedAt(subnetId, ipAddress)`, `ReconcileResult` interface.
+
+**Used by:** `src/db.ts` Prisma extension (per-asset reconcile on create/update/upsert; release on delete); `src/jobs/reconcileDnsResolvedReservations.ts` (periodic sweep); `src/api/routes/integrations.ts` `syncDhcpSubnets` + `registerFortinetHost` (inline `releaseDnsResolvedAt` before each authoritative create); `src/services/reservationService.ts:createReservation` (same inline release for manual creates).
+
+**Invariants:**
+- `sourceType="dns_resolved"` + `createdBy="system:dns-resolved"` is the system-actor signature — both are required to identify a row as system-owned.
+- Identity match for "is this asset's existing row?" = `createdBy=SYSTEM_ACTOR AND sourceType=dns_resolved AND status=active AND (macAddress=asset.macAddress OR hostname=asset.hostname)`. Reservation has no `assetId` FK so this is the proxy.
+- Eligible asset statuses: `active | maintenance | storage | quarantined`. `decommissioned | disabled` always release-without-creating.
+- IPv4 only (gated by `detectIpVersion(ip) === "v4"`).
+- Defers silently to ANY non-released non-dns_resolved active reservation at the same `(subnetId, ipAddress)`. Never raises a Conflict.
+- Never pushes to FortiGate — writes go through `prisma.reservation.create` directly, not `reservationService.createReservation`.
+- All public functions are best-effort: they log at warn and never throw out of the public surface so a transient DB error can't break the asset write that called them.
+- Events emitted: `reservation.dns_resolved.created`, `reservation.dns_resolved.updated`, `reservation.dns_resolved.released` (info level).
+
+**When changing this:**
+- Adding a new authoritative `sourceType`? Add a `releaseDnsResolvedAt(subnetId, ip)` call in `integrations.ts` next to the new create, and (if it can be created from the manual UI) in `reservationService.createReservation`. The activeResMap exclusion already covers the discovery read path.
+- Adding a new column to the eligibility check? Update `assetEligible()` and ensure the periodic job's `findMany` scope still surfaces rows that need release-without-create. The job intentionally scans even ineligible-by-status assets so they can release stale rows.
+- Switching to a real `Reservation.assetId` FK? Replace `findOwnedSystemRows`'s identity-match SQL with a direct join, and the per-asset reconcile becomes trivially correct (no more "hostname or MAC" heuristic).
+- Verify the unique-on-active constraint: create an authoritative reservation at an IP that has a dns_resolved row; the release MUST run before the create (the order matters — Postgres can't have two active rows at the same `(subnetId, ipAddress)`).
+- Performance check at 2000 monitored assets: the periodic sweep should complete in seconds. If it slows, raise BATCH from 25; the inner work is one `findContainingSubnet` + one upsert per asset, both index-friendly.
 
 ---
 

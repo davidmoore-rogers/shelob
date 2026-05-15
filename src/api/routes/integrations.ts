@@ -22,6 +22,7 @@ import { getConfiguredResolver } from "../../services/dnsService.js";
 import { lookupOui, lookupOuiOverride } from "../../services/ouiService.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { recordSample, getBaselines, type Baseline } from "../../services/discoveryDurationService.js";
+import { releaseDnsResolvedAt } from "../../services/dnsResolvedReservationService.js";
 import { recordDiscovery } from "../../metrics.js";
 import { getAdMonitorProtocol, invalidateMonitorSettingsCache } from "../../services/monitoringService.js";
 import * as autoMonitor from "../../services/autoMonitorInterfacesService.js";
@@ -1723,8 +1724,16 @@ async function registerFortinetHost(integrationType: string, host: string, integ
   };
 
   if (matchingSubnet) {
+    // Exclude dns_resolved rows — they're fallback markers that defer to any
+    // authoritative source. The pre-create releaseDnsResolvedAt below flips
+    // the marker so the unique-on-active constraint stays satisfied.
     const existingRes = await prisma.reservation.findFirst({
-      where: { subnetId: matchingSubnet.id, ipAddress: host, status: "active" },
+      where: {
+        subnetId: matchingSubnet.id,
+        ipAddress: host,
+        status: "active",
+        NOT: { sourceType: "dns_resolved" as any },
+      },
     });
 
     if (existingRes) {
@@ -1761,6 +1770,7 @@ async function registerFortinetHost(integrationType: string, host: string, integ
         });
       }
     } else {
+      await releaseDnsResolvedAt(matchingSubnet.id, host);
       await prisma.reservation.create({
         data: { subnetId: matchingSubnet.id, ...proposedReservation },
       });
@@ -2339,9 +2349,18 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   }
 
   // Active reservations: key = "subnetId|ipAddress"
+  // dns_resolved rows are intentionally EXCLUDED — they're fallback markers
+  // for IPs the asset model knows about but discovery hasn't seen yet. When
+  // a real authoritative source (dhcp_reservation / dhcp_lease / vip /
+  // interface_ip / fortiswitch / ...) lands at the same IP it takes over;
+  // the inline `releaseDnsResolvedAt` call below each create flips the
+  // fallback row to released first so the unique-on-active constraint stays
+  // happy. The periodic dns_resolved reconcile job re-creates the marker on
+  // any IP that ends up bare again later.
   const reservationKey = (subnetId: string, ip: string) => `${subnetId}|${ip}`;
   const activeResMap = new Map<string, any>();
   for (const r of allReservationsRaw) {
+    if (r.sourceType === "dns_resolved") continue;
     if (r.ipAddress) activeResMap.set(reservationKey(r.subnetId, r.ipAddress), r);
     else activeResMap.set(`${r.subnetId}|__full__`, r);
   }
@@ -3233,6 +3252,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           }
         } else {
           try {
+            await releaseDnsResolvedAt(matchingSubnet.id, sw.ipAddress);
             const newRes = await prisma.reservation.create({
               data: {
                 subnetId: matchingSubnet.id,
@@ -3407,6 +3427,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           }
         } else {
           try {
+            await releaseDnsResolvedAt(matchingSubnet.id, resolvedIp);
             const newRes = await prisma.reservation.create({
               data: {
                 subnetId: matchingSubnet.id,
@@ -3497,6 +3518,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         }
 
         try {
+          await releaseDnsResolvedAt(matchingSubnet.id, ip);
           const newRes = await prisma.reservation.create({
             data: {
               subnetId: matchingSubnet.id,
@@ -3543,6 +3565,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     }
 
     try {
+      await releaseDnsResolvedAt(matchingSubnet.id, ifaceIp.ipAddress);
       const newRes = await prisma.reservation.create({
         data: {
           subnetId: matchingSubnet.id,
@@ -3709,6 +3732,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         ? entry.macAddress.toUpperCase().replace(/-/g, ":")
         : null;
       try {
+        await releaseDnsResolvedAt(matchingSubnet.id, entry.ipAddress);
         const newRes = await prisma.reservation.create({
           data: {
             subnetId: matchingSubnet.id,

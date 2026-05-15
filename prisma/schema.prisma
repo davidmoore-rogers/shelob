@@ -39,6 +39,7 @@ enum ReservationSourceType {
   fortinap
   fortimanager
   fortigate
+  dns_resolved
 }
 
 enum ConflictStatus {
