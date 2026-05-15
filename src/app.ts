@@ -395,30 +395,25 @@ app.use(async (req, res, next) => {
 
 // Legacy IPAM URL redirects. /blocks.html and /subnets.html were folded
 // into /ipam.html with tabs in the 2026-05 dashboard rework. We serve a
-// tiny HTML stub that does the redirect client-side so any existing
-// fragment (e.g. /subnets.html#ip=<sid>@<ip> from the assets-page deep
-// link) is preserved across the hop — server-side 302 would either drop
-// the original fragment (when the Location carries one) or fail to set
-// the tab (when it doesn't), and we can't see the fragment server-side.
-// Must precede express.static so the stubs win over the still-present
+// tiny HTML stub that loads an external script which does the redirect
+// client-side so any existing fragment (e.g. /subnets.html#ip=<sid>@<ip>
+// from the assets-page deep link) is preserved across the hop —
+// server-side 302 would either drop the original fragment (when the
+// Location carries one) or fail to set the tab (when it doesn't), and we
+// can't see the fragment server-side. The script lives in an external
+// file (public/js/legacy-ipam-redirect.js) because the strict CSP
+// scriptSrc: 'self' blocks inline <script> blocks — without the external
+// file the stub would render blank and never redirect. Must precede
+// express.static so the stubs win over the still-present
 // public/blocks.html and public/subnets.html files.
-function legacyIpamRedirect(targetTab: "blocks" | "networks") {
-  // Stub HTML reads location.hash, splices in tab=<tab> as the FIRST hash
-  // param, and forwards to /ipam.html. If the legacy hash already carries
-  // its own tab= it'll override; that's intentional so #tab=blocks deep
-  // links keep working unchanged.
+function legacyIpamRedirect() {
   return (_req: any, res: any) => {
     res.set("Cache-Control", "no-store");
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Polaris</title></head><body><script>(function(){
-      var h = (location.hash || "").replace(/^#/, "");
-      var prefix = "tab=${targetTab}";
-      var target = "/ipam.html#" + (h ? prefix + "&" + h : prefix);
-      location.replace(target);
-    })();</script></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Polaris</title></head><body><script src="/js/legacy-ipam-redirect.js"></script></body></html>`);
   };
 }
-app.get("/blocks.html", legacyIpamRedirect("blocks"));
-app.get("/subnets.html", legacyIpamRedirect("networks"));
+app.get("/blocks.html", legacyIpamRedirect());
+app.get("/subnets.html", legacyIpamRedirect());
 
 // Serve uploaded logos from the state directory. On legacy installs (no
 // POLARIS_STATE_DIR set) this resolves to <project>/public/uploads — the
