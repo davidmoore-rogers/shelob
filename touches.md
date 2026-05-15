@@ -25,7 +25,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ## Sections
 
-- [Cross-cutting concerns](#cross-cutting-concerns) (7)
+- [Cross-cutting concerns](#cross-cutting-concerns) (15)
 - [Per-service touches](#per-service-touches) — alphabetical, 39 services in `src/services/`
 
 ---
@@ -149,6 +149,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Verify fallthrough logic: resolve a method that's incompatible for an asset's source and confirm it doesn't get used (add a test to monitoringService).
 - Check every stream independently: one asset might have responseTimePolling=snmp, cpuMemoryPolling=rest_api, temperaturePolling=snmp, systemInfoPolling=icmp; all valid per source.
 - Audit UI disable-logic matches the matrix (if a source doesn't support REST API, the dropdown should not offer it).
+- **Renaming a per-stream column requires updating the raw-SQL readers listed above** — Prisma's typed queries get rewritten automatically by the generated client, but `prisma.$queryRawUnsafe` strings don't. Cross-reference `cross-cutting/schema-migrations-and-prisma-client-lifecycle` for the full rename checklist.
 
 ---
 
@@ -573,6 +574,50 @@ build auto-prune + boot-time auto-build are layered on top.
 - Adding a new code path that issues `LISTEN`, `NOTIFY`, `pg_dump`, `pg_restore`, or any session-scoped state-machine SQL: route it through `getDirectDatabaseUrl()` so it doesn't break PgBouncer installs.
 - Adding a new code path that reads `pg_stat_activity` for cluster-wide stats: route it through `getDirectStatsPool()` so the numbers are accurate.
 - Routine read/write through Prisma: leave it alone. The application URL is the right path.
+
+---
+
+## cross-cutting/schema-migrations-and-prisma-client-lifecycle
+
+**What it is:** The contract between `prisma/schema.prisma`, the generated Prisma client at `src/generated/prisma/` (gitignored), the compiled `dist/generated/prisma/`, and the in-app updater pipeline that holds them together. Polaris uses Prisma 7 with `provider = "prisma-client"` which emits TypeScript source — `prisma generate` writes to `src/generated/prisma/`, then `tsc` compiles to `dist/generated/prisma/`. The running process imports from `./generated/prisma/client.js` (see `src/db.ts:30`). The state the running process holds in memory must match the actual DB schema, or every Prisma query that selects the affected columns crashes with `column "<name>" does not exist`.
+
+**Lifecycle (steps must execute in this order):**
+1. **Schema edit** — `prisma/schema.prisma` is the source of truth for what the Prisma client knows about.
+2. **Migration written** — `prisma/migrations/<ts>_<name>/migration.sql` describes how to evolve the DB from the previous shape to the new one.
+3. **Generate** — `npx prisma generate` writes a fresh `src/generated/prisma/`. Triggered by the `postinstall` script in `package.json` after `npm install` / `npm ci`, AND by an explicit step in `applyUpdate` (since postinstall can be silently skipped — `npm ci --ignore-scripts`, partial install recovery, etc.).
+4. **Compile** — `npx tsc` produces `dist/`. `dist/` must be cleaned first (`rm -rf dist`) because tsc is non-destructive: stale `.js` files from a prior generation can shadow the regenerated client if Prisma changed its internal file layout (the `prisma-client` provider's auxiliary files do this between minor versions).
+5. **Migrate** — `npx prisma migrate deploy` applies pending SQL.
+6. **Restart** — the running process picks up the new client + the new schema together.
+
+**Writers** (files that drive each step):
+- `prisma/schema.prisma` — schema source of truth.
+- `prisma/migrations/*/migration.sql` — DB evolution.
+- `package.json:postinstall` — calls `prisma generate` after deps install.
+- `src/services/updateService.ts:applyUpdate` — orchestrates steps 3-6 in `cross-cutting/services/updateService.ts`'s seven-step pipeline.
+- `prisma.config.ts` — Prisma 7 config (datasource URL, generator output path).
+
+**Readers** (code that depends on the lifecycle's invariants holding):
+- **All Prisma typed queries** (`prisma.asset.update`, `findMany`, etc.) — generated client decides which columns appear in `SELECT` / `RETURNING` clauses. A stale client crashes on any query that touches a dropped column even if the data payload doesn't.
+- **Raw-SQL queries that hardcode column names** — NOT protected by the generated client; column renames must be propagated by hand. Known locations as of 2026-05-15:
+  - `src/services/capacityService.ts` — `telemetryEligibleSQL` (`cpuMemoryPolling`), `systemInfoEligibleSQL` (`interfacesPolling`).
+  - `src/services/capacityAdvisorService.ts:readApplicableCounts` — same two columns.
+- **`src/db.ts`** — Prisma client extension; its `Asset.update` / `findMany` / `create` / `updateMany` / `upsert` wrappers go through whatever client is generated. Failure modes here surface as the generic `column "<name>" does not exist` errors in the log.
+- **Operators reading the Maintenance tab** — `pg-tuning` and `capacity-advisor` routes consume the raw-SQL readers above; they 500 when those queries fail.
+
+**Invariants:**
+- The generated client and the DB schema must agree at every process start. Steps 3-6 are not optional; reordering them re-introduces the failure mode where the running client selects columns the DB no longer has.
+- `src/generated/` is gitignored; the build pipeline (postinstall + the updater's explicit step) regenerates it from `schema.prisma`. Never check generated files in.
+- A migration that DROPS a column requires every raw-SQL reader of that column to be updated in the same commit. The Prisma client gets rewritten automatically; raw SQL does not.
+- A migration that RENAMES a column has the same constraint plus the additional risk that the rename can silently succeed (no DROP) but every reader still queries the old name.
+- The updater's `rm -rf dist` between `prisma generate` and `tsc` is load-bearing — stale compiled JS from a previous Prisma-client version can shadow the fresh build.
+
+**When changing this:**
+- **Renaming or dropping any DB column:** grep the entire codebase for `prisma.$queryRawUnsafe` and raw-SQL strings containing the column name BEFORE writing the migration. Update those readers in the same commit as the migration.
+- **Adding a step to the updater pipeline:** keep the generate → clean-dist → tsc → migrate → restart ordering intact. If the new step needs DB access, decide whether it should run pre- or post-migrate based on what schema state it expects.
+- **Changing where the Prisma client is generated to:** update `tsconfig.json` includes, `package.json:postinstall` (if path changes), `.gitignore`, and re-verify `dist/` cleanup still wipes the right path.
+- **Recovering a prod box stuck on a stale client:** the recovery procedure is `rm -rf src/generated dist && npx prisma generate && npx tsc && systemctl restart polaris`. Document this in the operator-facing runbook when the failure mode recurs.
+
+**Related:** `cross-cutting/services/updateService.ts` invariants encode the same ordering rules at the pipeline-step level; this section is the broader contract.
 
 ---
 
@@ -1759,7 +1804,7 @@ Listed alphabetically.
 
 ## services/updateService.ts
 
-**What it owns:** In-app software update check, availability detection (Docker vs git checkout), update application pipeline (backup→pull→npm ci→tsc→migrate→restart), and progress tracking.
+**What it owns:** In-app software update check, availability detection (Docker vs git checkout), update application pipeline (backup→pull→npm ci→prisma generate→tsc→migrate→restart), and progress tracking.
 
 **Public API:** `initUpdateStatus`, `getUpdateStatus`, `isUpdateMechanismAvailable`, `clearUpdateStatus`, `checkForUpdates`, `applyUpdate`, `getRecentCommits`.
 
@@ -1773,7 +1818,8 @@ Listed alphabetically.
 - applyUpdate() runs background; only one apply in flight at a time (`_applying` flag).
 - Backup is optional (skippable via Setting "update.skip_backup"); pre-update backups registered in "backup_history" Setting.
 - Encryption: backup password → AES-256-GCM ciphertext wrapped in `[POLARIS\0][salt][iv][authTag][ct]` envelope.
-- Six-step pipeline: backup, git pull, npm ci, tsc, prisma migrate, restart (via NSSM on Windows, systemd exit(1) on Linux).
+- **Seven-step pipeline (order is load-bearing):** (1) backup, (2) git pull, (3) `npm ci --production=false`, (4) **explicit `npx prisma generate`**, (5) **clean `dist/` then `npx tsc`**, (6) `npx prisma migrate deploy`, (7) restart (NSSM on Windows, systemd exit(1) on Linux). Steps 4 + 5's `rm -rf dist` are defenses against the failure mode in `cross-cutting/schema-migrations-and-prisma-client-lifecycle` — never collapse them back into "trust npm ci postinstall."
+- Generate-then-build-then-migrate order matters: client must be generated against the NEW schema BEFORE tsc compiles consumers, and migrations apply LAST so the client and DB are in sync at restart. Reversing any of these breaks the next start of the process.
 
 **When changing this:**
 - Test update path on both git-backed and Docker installs; verify "disabled" message is clear.
@@ -1781,6 +1827,8 @@ Listed alphabetically.
 - Confirm npm ci timeout (5 min) doesn't kill slow installs; adjust if needed.
 - Test git pull fallback chain (origin/HEAD → origin/main → origin/master).
 - Verify restart doesn't kill in-flight requests; 1.5s delay before exit(1) should be enough.
+- **Do not reorder steps 3–6** without re-reading `cross-cutting/schema-migrations-and-prisma-client-lifecycle`. A reorder that puts migrate before generate-then-tsc reintroduces the failure mode where dropped columns crash the running client.
+- The `rm -rf dist` between steps 4 and 5 is non-negotiable when Prisma client file layout could have changed between versions. Without it, stale `dist/generated/prisma/*.js` files can shadow the regenerated client and the running process selects columns the schema no longer has.
 
 ---
 

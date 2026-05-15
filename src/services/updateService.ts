@@ -327,6 +327,7 @@ export async function applyUpdate(password?: string | null): Promise<void> {
     { name: "Backup database", status: "pending", message: "" },
     { name: "Pull latest code", status: "pending", message: "" },
     { name: "Install dependencies", status: "pending", message: "" },
+    { name: "Generate Prisma client", status: "pending", message: "" },
     { name: "Build TypeScript", status: "pending", message: "" },
     { name: "Run migrations", status: "pending", message: "" },
     { name: "Restart service", status: "pending", message: "" },
@@ -487,31 +488,61 @@ export async function applyUpdate(password?: string | null): Promise<void> {
       return;
     }
 
-    // ── Step 4: Build TypeScript ──
+    // ── Step 4: Generate Prisma client ──
+    // Explicit step — don't rely on `npm ci` postinstall having fired. A
+    // partially-failed `npm ci` (transient network blip, future `--ignore-scripts`,
+    // etc.) leaves the generated client stale, then step 6's `migrate deploy`
+    // drops columns the running client still selects → every Asset read/write
+    // crashes with `column "<name>" does not exist`.
     setStep(3, "running");
     try {
-      await execAsync("npx tsc", { cwd: APP_DIR, timeout: 120000 });
+      await execAsync("npx prisma generate", { cwd: APP_DIR, timeout: 60000 });
       setStep(3, "done");
     } catch (err: any) {
-      failUpdate(3, "TypeScript build failed: " + (err.stderr || err.message).slice(0, 500));
+      failUpdate(3, "Prisma generate failed: " + (err.stderr || err.message).slice(0, 500));
       return;
     }
 
-    // ── Step 5: Run migrations ──
+    // ── Step 5: Build TypeScript ──
+    // Clean `dist/` first so stale compiled JS from a previous build (e.g.
+    // generated-client files Prisma renamed between versions) can't shadow
+    // the fresh tsc output. tsc itself is non-destructive — without this,
+    // a file that exists in `dist/` but no longer in `src/` lingers forever.
     setStep(4, "running");
+    try {
+      const distDir = join(APP_DIR, "dist");
+      if (existsSync(distDir)) {
+        await execAsync(`rm -rf "${distDir}"`, { cwd: APP_DIR, timeout: 30000 }).catch(async () => {
+          // Windows fallback: rm isn't available in cmd.exe. Use Node's fs.rmSync
+          // via -e so we don't introduce a hard PowerShell dependency.
+          await execAsync(
+            `node -e "require('fs').rmSync('dist',{recursive:true,force:true})"`,
+            { cwd: APP_DIR, timeout: 30000 },
+          );
+        });
+      }
+      await execAsync("npx tsc", { cwd: APP_DIR, timeout: 120000 });
+      setStep(4, "done");
+    } catch (err: any) {
+      failUpdate(4, "TypeScript build failed: " + (err.stderr || err.message).slice(0, 500));
+      return;
+    }
+
+    // ── Step 6: Run migrations ──
+    setStep(5, "running");
     try {
       await execAsync("npx prisma migrate deploy", {
         cwd: APP_DIR,
         timeout: 120000,
       });
-      setStep(4, "done");
+      setStep(5, "done");
     } catch (err: any) {
-      failUpdate(4, "Migration failed: " + (err.stderr || err.message).slice(0, 500));
+      failUpdate(5, "Migration failed: " + (err.stderr || err.message).slice(0, 500));
       return;
     }
 
-    // ── Step 6: Restart service ──
-    setStep(5, "running", "Restarting...");
+    // ── Step 7: Restart service ──
+    setStep(6, "running", "Restarting...");
     _status.state = "restarting";
     _status.latestVersion = readCurrentVersion();
     saveStatus();
