@@ -3318,7 +3318,6 @@ var _mibFacets = { manufacturers: [], modelsByManufacturer: {} };
 var _manufacturerAliases = [];
 var _deviceIcons = [];
 var _mibFilter = { manufacturer: "", model: "", scope: "all" };
-var _mibProfileStatus = [];
 // Slice 6b — editable Manufacturer Profile (DB-backed) state.
 // _mfgProfiles is the summary list shown in the card; _mfgProfileTransforms
 // is the static transform registry (shipped alongside the summary). Per-
@@ -3329,6 +3328,26 @@ var _mfgProfileTransforms = [];
 var _mfgProfileDetail = {};         // profileId → full profile (lazy)
 var _mfgProfileExpanded = {};       // profileId → bool
 var _mfgProfileMetricEdit = {};     // composite key "id:metricKey" → bool (edit-in-progress)
+var _mfgProfileOverrideEdit = {};   // overrideId → bool (edit-in-progress on a per-model override row)
+// MIB symbol cache for the chained MIB → Symbol pickers. Lazily populated
+// by `_ensureMibSymbols(mibId)` when an operator selects a MIB; results
+// are kept across re-renders so the symbol dropdown is instant on second
+// open. Cleared when an admin uploads / deletes a MIB elsewhere.
+var _mfgMibSymbolsCache = {};       // mibId → { loading: bool, names: string[] }
+// Mid-edit MIB selections — when the operator changes a MIB dropdown, the
+// new value is parked here so the next re-render can show the symbol
+// picker driven by the freshly-selected MIB before the form is saved.
+// Cleared when the row exits edit mode (save / cancel).
+var _mfgEditMibSelections = {};     // key → mibId (key shape: "metric:{pid}:{mk}" | "override:{oid}" | "new:{pid}:{mk}")
+function _mfgEditMibId(profileId, metricKey) {
+  return _mfgEditMibSelections["metric:" + profileId + ":" + metricKey];
+}
+function _mfgOverrideEditMibId(overrideId) {
+  return _mfgEditMibSelections["override:" + overrideId];
+}
+function _mfgNewOverrideMibId(profileId, metricKey) {
+  return _mfgEditMibSelections["new:" + profileId + ":" + metricKey];
+}
 
 async function loadIdentificationTab() {
   var container = document.getElementById("tab-identification");
@@ -3342,11 +3361,9 @@ async function loadIdentificationTab() {
       var mibResults = await Promise.all([
         api.serverSettings.listMibs().catch(function () { return []; }),
         api.serverSettings.getMibFacets().catch(function () { return { manufacturers: [], modelsByManufacturer: {} }; }),
-        api.serverSettings.getMibProfileStatus().catch(function () { return []; }),
       ]);
       _mibsData = mibResults[0] || [];
       _mibFacets = mibResults[1] || { manufacturers: [], modelsByManufacturer: {} };
-      _mibProfileStatus = mibResults[2] || [];
       _tagsLoaded = true;
       renderIdentificationTab();
     } catch (err) {
@@ -3363,7 +3380,6 @@ async function loadIdentificationTab() {
       api.serverSettings.getOuiOverrides().catch(function () { return []; }),
       api.serverSettings.listMibs().catch(function () { return []; }),
       api.serverSettings.getMibFacets().catch(function () { return { manufacturers: [], modelsByManufacturer: {} }; }),
-      api.serverSettings.getMibProfileStatus().catch(function () { return []; }),
       api.serverSettings.listManufacturerAliases().catch(function () { return []; }),
       api.deviceIcons.list().catch(function () { return []; }),
       api.serverSettings.listManufacturerProfiles().catch(function () { return { profiles: [], transforms: [] }; }),
@@ -3378,10 +3394,9 @@ async function loadIdentificationTab() {
     _ouiOverrides = results[3] || [];
     _mibsData = results[4] || [];
     _mibFacets = results[5] || { manufacturers: [], modelsByManufacturer: {} };
-    _mibProfileStatus = results[6] || [];
-    _manufacturerAliases = results[7] || [];
-    _deviceIcons = results[8] || [];
-    var profilePayload = results[9] || {};
+    _manufacturerAliases = results[6] || [];
+    _deviceIcons = results[7] || [];
+    var profilePayload = results[8] || {};
     _mfgProfiles = profilePayload.profiles || [];
     _mfgProfileTransforms = profilePayload.transforms || [];
     _tagsLoaded = true;
@@ -3863,8 +3878,9 @@ function mibCardHTML() {
       'Files are validated as ASN.1/SMI on upload — anything else is rejected.' +
     '</p>';
 
-  // Vendor Profile Status pill
-  html += mibProfileStatusHTML();
+  // (Vendor Profile Status pill removed — the editable Manufacturer
+  // Profiles card is the canonical surface for per-manufacturer telemetry
+  // resolution status.)
 
   // Filter row
   html +=
@@ -4071,14 +4087,12 @@ async function uploadMibUI() {
     showToast("MIB uploaded: " + created.moduleName, "success");
     if (statusEl) statusEl.innerHTML = "";
     // Refresh list + facets + profile status
-    var [list, facets, status] = await Promise.all([
+    var [list, facets] = await Promise.all([
       api.serverSettings.listMibs(),
       api.serverSettings.getMibFacets(),
-      api.serverSettings.getMibProfileStatus(),
     ]);
     _mibsData = list || [];
     _mibFacets = facets || { manufacturers: [], modelsByManufacturer: {} };
-    _mibProfileStatus = status || [];
     renderIdentificationTab();
   } catch (err) {
     showToast(err.message, "error");
@@ -4094,9 +4108,6 @@ async function deleteMibUI(id, name) {
   try {
     await api.serverSettings.deleteMib(id);
     _mibsData = _mibsData.filter(function (m) { return m.id !== id; });
-    // Refresh profile status — deleting a MIB can drop a vendor profile
-    // back to "MIB needed" or remove a model override row.
-    _mibProfileStatus = await api.serverSettings.getMibProfileStatus().catch(function () { return _mibProfileStatus; });
     showToast("MIB deleted");
     renderIdentificationTab();
   } catch (err) {
@@ -4833,80 +4844,8 @@ async function deleteIconUI(id, label) {
   }
 }
 
-function mibProfileStatusHTML() {
-  if (!_mibProfileStatus || _mibProfileStatus.length === 0) return "";
-
-  var html = '<div style="background:var(--color-bg-secondary,rgba(0,0,0,0.04));border:1px solid var(--color-border);border-radius:6px;padding:0.75rem 1rem;margin-bottom:1rem">' +
-    '<div style="font-size:0.85rem;font-weight:600;margin-bottom:0.5rem">Vendor Profile Status</div>' +
-    '<div style="font-size:0.78rem;color:var(--color-text-secondary);margin-bottom:0.5rem">' +
-      'Each profile is universal &mdash; it applies to every asset whose <code>manufacturer</code> matches the regex. The columns below show whether the underlying MIBs have been uploaded so the probe can resolve the profile\'s symbolic OIDs. Model overrides layer on top of the universal coverage for one product only.' +
-    '</div>';
-
-  _mibProfileStatus.forEach(function (p) {
-    var statusBadge;
-    if (p.ready) {
-      statusBadge = '<span style="background:rgba(34,197,94,0.15);color:#16a34a;padding:1px 6px;border-radius:3px;font-size:0.72rem">READY</span>';
-    } else if (p.partial) {
-      statusBadge = '<span style="background:rgba(245,158,11,0.15);color:#d97706;padding:1px 6px;border-radius:3px;font-size:0.72rem">PARTIAL</span>';
-    } else {
-      statusBadge = '<span style="background:rgba(148,163,184,0.18);color:var(--color-text-secondary);padding:1px 6px;border-radius:3px;font-size:0.72rem">MIB NEEDED</span>';
-    }
-
-    html += '<div style="border-top:1px solid var(--color-border);padding-top:0.5rem;margin-top:0.5rem">' +
-      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:0.25rem">' +
-        '<span style="font-weight:500">' + escapeHtml(p.vendor) + '</span>' +
-        statusBadge +
-        '<span style="font-size:0.72rem;color:var(--color-text-tertiary);font-family:var(--font-mono)">match: /' + escapeHtml(p.matchPattern) + '/i</span>' +
-      '</div>';
-
-    if (p.symbols && p.symbols.length > 0) {
-      html += '<table style="font-size:0.78rem;margin-left:0.5rem"><tbody>';
-      p.symbols.forEach(function (s) {
-        var icon = s.resolved
-          ? '<span style="color:#16a34a">&#x2713;</span>'
-          : '<span style="color:#d97706">&#x26A0;</span>';
-        // Three states, not two: resolved-from-uploaded-MIB, resolved-from-
-        // built-in seed (oidRegistry preloads a handful of high-value symbols
-        // like fgSysCpuUsage so they work without an upload), and unresolved.
-        // The seed case used to fall through to "unresolved" because the
-        // fromModuleName is null for seed entries — but the resolved flag is
-        // true, so the row already had a green check and the "unresolved"
-        // banner alongside was a UI contradiction.
-        var fromText;
-        if (s.resolved && s.fromModuleName) {
-          fromText = '<span style="color:var(--color-text-secondary)">from <span class="mono">' + escapeHtml(s.fromModuleName) + '</span>' +
-            (s.fromScope && s.fromScope !== "seed" ? ' (' + escapeHtml(s.fromScope) + ')' : '') +
-            '</span>';
-        } else if (s.resolved) {
-          fromText = '<span style="color:var(--color-text-secondary)">from built-in seed</span>';
-        } else {
-          fromText = '<span style="color:#d97706">unresolved &mdash; upload the MIB defining <span class="mono">' + escapeHtml(s.symbol) + '</span></span>';
-        }
-        html += '<tr>' +
-          '<td style="padding:1px 8px 1px 0">' + icon + '</td>' +
-          '<td style="padding:1px 8px 1px 0;color:var(--color-text-secondary)">' + escapeHtml(s.metric) + '</td>' +
-          '<td class="mono" style="padding:1px 8px 1px 0">' + escapeHtml(s.symbol) + '</td>' +
-          '<td style="padding:1px 0">' + fromText + '</td>' +
-        '</tr>';
-      });
-      html += '</tbody></table>';
-    }
-
-    if (p.modelOverrides && p.modelOverrides.length > 0) {
-      var pieces = p.modelOverrides.map(function (o) {
-        return escapeHtml(o.model) + ' (' + o.mibCount + ' MIB' + (o.mibCount === 1 ? '' : 's') + ')';
-      }).join(', ');
-      html += '<div style="font-size:0.75rem;color:var(--color-text-secondary);margin-top:0.25rem;margin-left:0.5rem">' +
-        '<b>Model overrides:</b> ' + pieces +
-      '</div>';
-    }
-
-    html += '</div>';
-  });
-
-  html += '</div>';
-  return html;
-}
+// (mibProfileStatusHTML removed — superseded by the editable Manufacturer
+// Profiles card on the same Identification tab.)
 
 async function openAddTagModal() {
   // Collect existing categories (including empty tracked ones) for the dropdown
@@ -6009,8 +5948,8 @@ function renderProfileDetail(detail) {
   '</div>';
   html += '<table class="ip-table" style="margin-bottom:8px"><thead><tr>' +
     '<th style="width:12%">Metric</th>' +
+    '<th style="width:18%">MIB</th>' +
     '<th>Default symbol</th>' +
-    '<th style="width:14%">MIB</th>' +
     '<th style="width:9%">Type</th>' +
     '<th style="width:14%">Transform</th>' +
     '<th style="width:140px"></th>' +
@@ -6022,8 +5961,15 @@ function renderProfileDetail(detail) {
     html += '<tr data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '">' +
       '<td><b>' + escapeHtml(METRIC_KEY_LABELS[m.metricKey] || m.metricKey) + '</b></td>';
     if (editing) {
-      html += '<td><input type="text" class="mfg-edit-symbol" value="' + escapeHtml(m.defaultSymbol || "") + '" placeholder="MIB symbol (e.g. fgSysCpuUsage); blank = built-in seed" style="width:100%"></td>' +
-        '<td>' + renderMibSelect(m.defaultMibId, "mfg-edit-mib", detail.manufacturer) + '</td>' +
+      // Use the row's current MIB selection (if the operator has changed
+      // it during this edit session it lives on the <select>; we capture
+      // it from the existing DOM before the re-render via the change
+      // handler that also pre-warms `_mfgMibSymbolsCache`). For first
+      // render fall back to the persisted defaultMibId.
+      var editMibId = (typeof _mfgEditMibId === "function" && _mfgEditMibId(detail.id, m.metricKey)) || m.defaultMibId;
+      html +=
+        '<td>' + renderMibSelect(editMibId, "mfg-edit-mib", detail.manufacturer) + '</td>' +
+        '<td>' + renderSymbolPicker(m.defaultSymbol || "", editMibId, "mfg-edit-symbol") + '</td>' +
         '<td>' + renderTypeSelect(m.defaultType, "mfg-edit-type") + '</td>' +
         '<td>' + renderTransformSelect(m.defaultTransform, "mfg-edit-transform") + '</td>' +
         '<td><button class="btn btn-sm btn-primary mfg-metric-save">Save</button> ' +
@@ -6035,8 +5981,9 @@ function renderProfileDetail(detail) {
       var mibDisplay = m.defaultMibId
         ? '<span style="font-size:0.78rem">' + escapeHtml(_mfgLookupMibLabel(m.defaultMibId)) + '</span>'
         : '<span style="font-size:0.78rem;color:var(--color-text-tertiary);font-style:italic">seed</span>';
-      html += '<td>' + defaultDisplay + '</td>' +
+      html +=
         '<td>' + mibDisplay + '</td>' +
+        '<td>' + defaultDisplay + '</td>' +
         '<td><span style="font-size:0.78rem">' + escapeHtml(m.defaultType) + '</span></td>' +
         '<td><span style="font-size:0.78rem;color:var(--color-text-secondary)">' + (m.defaultTransform ? escapeHtml(transformLabel(m.defaultTransform)) : "—") + '</span></td>' +
         '<td><button class="btn btn-sm mfg-metric-edit">Edit</button></td>';
@@ -6046,20 +5993,21 @@ function renderProfileDetail(detail) {
     // Override rows hang under the metric row.
     if (m.overrides && m.overrides.length > 0) {
       m.overrides.forEach(function (o) {
-        html += renderOverrideRow(detail.id, m.metricKey, o);
+        html += renderOverrideRow(detail.id, m.metricKey, o, detail.manufacturer);
       });
     }
     // Add-override form — single inline row (Model · Symbol · MIB · Type ·
     // Transform · Add) sized so wrap is rare on the typical Identification
     // tab width. Each cell of the parent table gets its own field so the
     // columns line up vertically with the metric row above.
+    var newMibId = _mfgNewOverrideMibId(detail.id, m.metricKey) || null;
     html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '" style="background:var(--color-bg-primary)">' +
       '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.74rem">↳ add</td>' +
-      '<td style="white-space:nowrap"><div style="display:flex;gap:4px">' +
+      '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer) + '</td>' +
+      '<td><div style="display:flex;gap:4px">' +
         '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex"  style="flex:0 0 130px;font-size:0.78rem">' +
-        '<input type="text" class="mfg-new-override-symbol"  placeholder="Symbol"        style="flex:1;min-width:120px;font-size:0.78rem">' +
+        renderSymbolPicker("", newMibId, "mfg-new-override-symbol") +
       '</div></td>' +
-      '<td>' + renderMibSelect(null, "mfg-new-override-mib", detail.manufacturer) + '</td>' +
       '<td>' + renderTypeSelect("scalar", "mfg-new-override-type") + '</td>' +
       '<td>' + renderTransformSelect(null, "mfg-new-override-transform") + '</td>' +
       '<td><button class="btn btn-sm mfg-override-add">Add</button></td>' +
@@ -6072,19 +6020,37 @@ function renderProfileDetail(detail) {
   return html;
 }
 
-function renderOverrideRow(profileId, metricKey, o) {
+function renderOverrideRow(profileId, metricKey, o, manufacturer) {
+  var editing = !!_mfgProfileOverrideEdit[o.id];
+  var head = '<tr class="mfg-override-row" data-profile-id="' + escapeHtml(profileId) +
+    '" data-metric-key="' + escapeHtml(metricKey) +
+    '" data-override-id="' + escapeHtml(o.id) + '" style="background:var(--color-bg-primary)">' +
+    '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.78rem">↳ model</td>';
+  if (editing) {
+    var oMibId = _mfgOverrideEditMibId(o.id);
+    if (oMibId === undefined) oMibId = o.mibId; // first render: persisted value
+    return head +
+      '<td>' + renderMibSelect(oMibId, "mfg-edit-override-mib", manufacturer) + '</td>' +
+      '<td><div style="display:flex;gap:4px">' +
+        '<input type="text" class="mfg-edit-override-pattern" value="' + escapeHtml(o.modelPattern) + '" placeholder="Model regex" style="flex:0 0 130px;font-size:0.78rem">' +
+        renderSymbolPicker(o.symbol, oMibId, "mfg-edit-override-symbol") +
+      '</div></td>' +
+      '<td>' + renderTypeSelect(o.type, "mfg-edit-override-type") + '</td>' +
+      '<td>' + renderTransformSelect(o.transform, "mfg-edit-override-transform") + '</td>' +
+      '<td><button class="btn btn-sm btn-primary mfg-override-save">Save</button> ' +
+        '<button class="btn btn-sm mfg-override-cancel">Cancel</button></td>' +
+    '</tr>';
+  }
   var mibLabel = o.mibId
     ? escapeHtml(_mfgLookupMibLabel(o.mibId))
     : '<span style="color:var(--color-text-tertiary);font-style:italic">seed</span>';
-  return '<tr class="mfg-override-row" data-profile-id="' + escapeHtml(profileId) +
-    '" data-metric-key="' + escapeHtml(metricKey) +
-    '" data-override-id="' + escapeHtml(o.id) + '" style="background:var(--color-bg-primary)">' +
-    '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.78rem">↳ model</td>' +
-    '<td><code style="font-size:0.8rem">' + escapeHtml(o.modelPattern) + '</code> &rarr; <code style="font-size:0.8rem">' + escapeHtml(o.symbol) + '</code></td>' +
+  return head +
     '<td><span style="font-size:0.78rem">' + mibLabel + '</span></td>' +
+    '<td><code style="font-size:0.8rem">' + escapeHtml(o.modelPattern) + '</code> &rarr; <code style="font-size:0.8rem">' + escapeHtml(o.symbol) + '</code></td>' +
     '<td><span style="font-size:0.78rem">' + escapeHtml(o.type) + '</span></td>' +
     '<td><span style="font-size:0.78rem;color:var(--color-text-secondary)">' + (o.transform ? escapeHtml(transformLabel(o.transform)) : "—") + '</span></td>' +
-    '<td><button class="btn btn-sm btn-danger mfg-override-del">Del</button></td>' +
+    '<td><button class="btn btn-sm mfg-override-edit">Edit</button> ' +
+      '<button class="btn btn-sm btn-danger mfg-override-del">Del</button></td>' +
   '</tr>';
 }
 
@@ -6115,6 +6081,73 @@ function renderTransformSelect(current, cls) {
   });
   html += '</select>';
   return html;
+}
+
+// Symbol picker that depends on the MIB selection. When mibId is empty
+// (= "Built-in seed"), Polaris doesn't have a symbol list to draw from
+// — every seeded symbol lives in oidRegistry without an enumerable
+// directory. So we fall through to a free-text input the operator types
+// into. When mibId is set AND the structure has been fetched + cached,
+// we render a `<select>` populated with that MIB's readable symbol
+// names. While the structure is in flight we render a disabled select
+// with "Loading…" so the operator sees the chain react.
+function renderSymbolPicker(currentSymbol, mibId, cls) {
+  if (!mibId) {
+    return '<input type="text" class="' + cls + '" value="' + escapeHtml(currentSymbol || "") +
+      '" placeholder="Symbol (e.g. fgSysCpuUsage)" style="width:100%;font-size:0.78rem">';
+  }
+  var entry = _mfgMibSymbolsCache[mibId];
+  if (!entry || entry.loading) {
+    // Fire the fetch (idempotent) and render a placeholder. The change
+    // listener that triggered this re-render kicks off the load; once
+    // it completes the helper re-renders the tab and the dropdown
+    // populates.
+    _ensureMibSymbols(mibId);
+    return '<select class="' + cls + '" disabled style="width:100%;font-size:0.78rem">' +
+      '<option>Loading symbols…</option>' +
+    '</select>';
+  }
+  var html = '<select class="' + cls + '" style="width:100%;font-size:0.78rem">' +
+    '<option value="">— select —</option>';
+  entry.names.forEach(function (name) {
+    html += '<option value="' + escapeHtml(name) + '"' +
+      (currentSymbol === name ? " selected" : "") + '>' +
+      escapeHtml(name) +
+    '</option>';
+  });
+  // Preserve a current value that isn't in the list (operator-typed
+  // symbol from before the dropdown existed) so a re-render doesn't
+  // silently drop it.
+  if (currentSymbol && entry.names.indexOf(currentSymbol) === -1) {
+    html += '<option value="' + escapeHtml(currentSymbol) + '" selected>' +
+      escapeHtml(currentSymbol) + ' (custom)' +
+    '</option>';
+  }
+  html += '</select>';
+  return html;
+}
+
+// Lazy-fetch + cache one MIB's symbol list. Walks the structured parse
+// (tables + scalars) and concatenates every readable symbol's `name`.
+// Re-render happens once the fetch resolves so the disabled "Loading…"
+// state in the picker swaps to the populated dropdown.
+function _ensureMibSymbols(mibId) {
+  if (!mibId) return;
+  if (_mfgMibSymbolsCache[mibId] && !_mfgMibSymbolsCache[mibId].loading) return;
+  if (_mfgMibSymbolsCache[mibId] && _mfgMibSymbolsCache[mibId].loading) return; // already in flight
+  _mfgMibSymbolsCache[mibId] = { loading: true, names: [] };
+  api.serverSettings.getMibStructure(mibId).then(function (struct) {
+    var names = [];
+    (struct.symbols || []).forEach(function (s) { if (s.name) names.push(s.name); });
+    // De-dupe + sort for the dropdown so it's predictable.
+    names = Array.from(new Set(names)).sort(function (a, b) { return a.localeCompare(b); });
+    _mfgMibSymbolsCache[mibId] = { loading: false, names: names };
+    renderIdentificationTab();
+  }).catch(function (err) {
+    _mfgMibSymbolsCache[mibId] = { loading: false, names: [] };
+    showToast(err.message || "Failed to load MIB symbols", "error");
+    renderIdentificationTab();
+  });
 }
 
 // Dropdown of MIBs available to symbol resolution at this manufacturer's
@@ -6182,6 +6215,52 @@ function wireManufacturerProfileControls() {
 
     var delOverBtn = target.closest(".mfg-override-del");
     if (delOverBtn) return deleteOverride(delOverBtn.closest("tr"));
+
+    var editOverBtn = target.closest(".mfg-override-edit");
+    if (editOverBtn) return beginOverrideEdit(editOverBtn.closest("tr"));
+
+    var saveOverBtn = target.closest(".mfg-override-save");
+    if (saveOverBtn) return saveOverrideEdit(saveOverBtn.closest("tr"));
+
+    var cancelOverBtn = target.closest(".mfg-override-cancel");
+    if (cancelOverBtn) return cancelOverrideEdit(cancelOverBtn.closest("tr"));
+  });
+
+  // The chained MIB → Symbol pickers need a `change` listener separate
+  // from the click delegation above. When the operator changes any of
+  // the three MIB selects in this card, stash the new value into the
+  // edit-state map and re-render so the symbol picker swaps from text
+  // input (seed) to dropdown (MIB-driven), or to a different MIB's symbol
+  // list. _ensureMibSymbols pre-warms the cache so the dropdown is ready.
+  list.addEventListener("change", function (e) {
+    var target = e.target;
+    if (!(target instanceof Element)) return;
+
+    if (target.classList.contains("mfg-edit-mib")) {
+      var tr = target.closest("tr");
+      if (!tr) return;
+      var key = "metric:" + tr.getAttribute("data-profile-id") + ":" + tr.getAttribute("data-metric-key");
+      _mfgEditMibSelections[key] = target.value || "";
+      if (target.value) _ensureMibSymbols(target.value);
+      renderIdentificationTab();
+      return;
+    }
+    if (target.classList.contains("mfg-edit-override-mib")) {
+      var tr2 = target.closest("tr");
+      if (!tr2) return;
+      _mfgEditMibSelections["override:" + tr2.getAttribute("data-override-id")] = target.value || "";
+      if (target.value) _ensureMibSymbols(target.value);
+      renderIdentificationTab();
+      return;
+    }
+    if (target.classList.contains("mfg-new-override-mib")) {
+      var tr3 = target.closest("tr");
+      if (!tr3) return;
+      _mfgEditMibSelections["new:" + tr3.getAttribute("data-profile-id") + ":" + tr3.getAttribute("data-metric-key")] = target.value || "";
+      if (target.value) _ensureMibSymbols(target.value);
+      renderIdentificationTab();
+      return;
+    }
   });
 }
 
@@ -6260,7 +6339,10 @@ function beginMetricEdit(tr) {
 
 function cancelMetricEdit(tr) {
   if (!tr) return;
-  delete _mfgProfileMetricEdit[tr.getAttribute("data-profile-id") + ":" + tr.getAttribute("data-metric-key")];
+  var pid = tr.getAttribute("data-profile-id");
+  var mk  = tr.getAttribute("data-metric-key");
+  delete _mfgProfileMetricEdit[pid + ":" + mk];
+  delete _mfgEditMibSelections["metric:" + pid + ":" + mk];
   renderIdentificationTab();
 }
 
@@ -6281,6 +6363,7 @@ async function saveMetricEdit(tr) {
     });
     if (resp && resp.metric) updateMetricInDetail(profileId, resp.metric);
     delete _mfgProfileMetricEdit[profileId + ":" + metricKey];
+    delete _mfgEditMibSelections["metric:" + profileId + ":" + metricKey];
     showToast("Saved");
     renderIdentificationTab();
   } catch (err) {
@@ -6307,10 +6390,64 @@ async function addOverride(tr) {
       transform:    transform || null,
     });
     if (resp && resp.override) appendOverrideToDetail(profileId, metricKey, resp.override);
+    delete _mfgEditMibSelections["new:" + profileId + ":" + metricKey];
     showToast("Override added");
     renderIdentificationTab();
   } catch (err) {
     showToast(err.message || "Add override failed", "error");
+  }
+}
+
+function beginOverrideEdit(tr) {
+  if (!tr) return;
+  _mfgProfileOverrideEdit[tr.getAttribute("data-override-id")] = true;
+  renderIdentificationTab();
+}
+
+function cancelOverrideEdit(tr) {
+  if (!tr) return;
+  var oid = tr.getAttribute("data-override-id");
+  delete _mfgProfileOverrideEdit[oid];
+  delete _mfgEditMibSelections["override:" + oid];
+  renderIdentificationTab();
+}
+
+async function saveOverrideEdit(tr) {
+  if (!tr) return;
+  var profileId  = tr.getAttribute("data-profile-id");
+  var metricKey  = tr.getAttribute("data-metric-key");
+  var overrideId = tr.getAttribute("data-override-id");
+  var pattern    = (tr.querySelector(".mfg-edit-override-pattern")   || {}).value || "";
+  var symbol     = (tr.querySelector(".mfg-edit-override-symbol")    || {}).value || "";
+  var mibId      = (tr.querySelector(".mfg-edit-override-mib")       || {}).value || "";
+  var type       = (tr.querySelector(".mfg-edit-override-type")      || {}).value || "scalar";
+  var transform  = (tr.querySelector(".mfg-edit-override-transform") || {}).value || "";
+  if (!pattern.trim() || !symbol.trim()) { showToast("Pattern and symbol are required", "error"); return; }
+  try {
+    var resp = await api.serverSettings.updateProfileMetricOverride(profileId, metricKey, overrideId, {
+      modelPattern: pattern.trim(),
+      symbol:       symbol.trim(),
+      mibId:        mibId || null,
+      type:         type,
+      transform:    transform || null,
+    });
+    if (resp && resp.override) replaceOverrideInDetail(profileId, metricKey, resp.override);
+    delete _mfgProfileOverrideEdit[overrideId];
+    delete _mfgEditMibSelections["override:" + overrideId];
+    showToast("Saved");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Save failed", "error");
+  }
+}
+
+function replaceOverrideInDetail(profileId, metricKey, override) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d) return;
+  var m = d.metrics.find(function (mm) { return mm.metricKey === metricKey; });
+  if (!m || !m.overrides) return;
+  for (var i = 0; i < m.overrides.length; i++) {
+    if (m.overrides[i].id === override.id) { m.overrides[i] = override; return; }
   }
 }
 
