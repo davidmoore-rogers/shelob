@@ -45,6 +45,7 @@
           nodeColor: fortinetNodeColor(data.fortigate),
           iconUrl: data.fortigate.iconUrl || null,
           hasIcon: data.fortigate.iconUrl ? 1 : 0,
+          iconSize: 44, // ~70% of 64px fortigate node
         },
       });
     }
@@ -57,6 +58,7 @@
           nodeColor: fortinetNodeColor(s),
           iconUrl: s.iconUrl || null,
           hasIcon: s.iconUrl ? 1 : 0,
+          iconSize: 30, // ~70% of 44px default node
         },
       });
     });
@@ -69,6 +71,7 @@
           nodeColor: fortinetNodeColor(a),
           iconUrl: a.iconUrl || null,
           hasIcon: a.iconUrl ? 1 : 0,
+          iconSize: 24, // ~70% of 36px fortiap node
         },
       });
       // Wireless stations connected to this AP. Each station becomes a
@@ -121,6 +124,7 @@
           id: n.id, label: label, role: "remote-asset",
           assetId: n.id, assetType: n.assetType || null,
           iconUrl: n.iconUrl || null, hasIcon: n.iconUrl ? 1 : 0,
+          iconSize: 30, // ~70% of 44px remote-asset node
         },
       });
     });
@@ -231,14 +235,22 @@
       // bounding box fits cleanly inside the circle without its
       // corners clipping against the border (geometry: a square
       // inscribed in a circle has side = diameter / √2 ≈ 70.7%).
+      //
+      // Sizing uses explicit pixel `iconSize` (set per role on the
+      // element data) instead of "70%" because Cytoscape 3.30's
+      // percentage `background-width`/`background-height` are
+      // computed against the rendered (zoom-scaled) node bounds, so
+      // the icon visibly grows past the border ring as the operator
+      // zooms in. Pixel values are model-space and stay stable.
       {
         selector: 'node[hasIcon = 1]',
         style: {
           "background-image": "data(iconUrl)",
           "background-fit": "contain",
           "background-clip": "node",
-          "background-width": "70%",
-          "background-height": "70%",
+          "background-image-containment": "inside",
+          "background-width": "data(iconSize)",
+          "background-height": "data(iconSize)",
           "background-position-x": "50%",
           "background-position-y": "50%",
           "background-color": "#ffffff",

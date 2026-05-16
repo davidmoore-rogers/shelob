@@ -1171,7 +1171,7 @@ Listed alphabetically.
 - Upload validation: mimeType must be PNG/JPEG/WebP/SVG; raster size ≤256KB, SVG size ≤32KB; raster requires magic-byte prefix matching declared mimeType; SVG is reject-on-pattern (refused if it contains <script>, <foreignObject>, <iframe>, <object>, <embed>, <!DOCTYPE>, <!ENTITY>, <?xml-stylesheet>, on*= event handlers, javascript: URLs, any non-#fragment href/xlink:href/src, @import, or external url()).
 - Resolution is most-specific-wins: manufacturer-model → manufacturer-type → null (frontend leaves node as a plain status circle). Assets with no manufacturer resolve to null directly — no fallback to "any vendor".
 - `resolveIconUrl()` is synchronous (used in hot topology path); operates against pre-loaded cache from `loadIconResolutionCache()`. Both call sites share `buildResolutionCandidates()` so the priority order can't drift between sync and async paths.
-- Topology renderer overlays the icon at 68% of the node size centered (not full-bleed) so the node's role-colored background ring stays visible around the logo. See `public/js/topology-render.js` `node[hasIcon=1]` style.
+- Topology renderer overlays the icon at ~70% of the node size centered (not full-bleed) so the node's role-colored border ring stays visible around the logo. Sizing uses explicit pixel `iconSize` set per role on the element data (fortigate=44, fortiswitch/remote-asset=30, fortiap=24) rather than `"70%"` — Cytoscape 3.30 computes percentage `background-width` against the rendered (zoom-scaled) node bounds, so percentage sizing makes the icon grow past the border as the operator zooms in. See `public/js/topology-render.js` `node[hasIcon=1]` style + the per-element `iconSize` assignments in `buildTopologyElements`.
 - Bytes stored as Uint8Array in DeviceIcon.data column; `/api/v1/device-icons/:id/image` serves raw bytes with Content-Type + Cache-Control. SVG responses additionally carry X-Content-Type-Options: nosniff and a strict CSP (`default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox`) as defense-in-depth against validator bypass.
 
 **When changing this:**
@@ -1182,7 +1182,8 @@ Listed alphabetically.
 - Review map.ts topology rendering (resolveIconUrl call sites) if icon resolution priority changes — but priority is built once in `buildResolutionCandidates()`, so updates land in both sync and async paths together.
 - Ensure upload route multer fileSize limit (256KB) stays at or above the raster MAX_ICON_BYTES constant. SVG's tighter MAX_SVG_BYTES is enforced inside validateUpload after multer accepts.
 - Image-serve route: any new mimeType added to ALLOWED_MIME_TYPES that could execute (script-bearing text formats) needs the same CSP/nosniff treatment as SVG.
-- Topology renderer style for `node[hasIcon=1]` in `public/js/topology-render.js` deliberately does NOT override `background-color` so the role-colored status ring shows around the inset logo. If you make the icon full-bleed again, also restore the explicit white background fallback.
+- Topology renderer style for `node[hasIcon=1]` in `public/js/topology-render.js` fills the node interior with white (`background-color: #ffffff`) so vendor logos pop against any basemap, and carries the status signal via a 5px `border-color: data(nodeColor)` ring instead of the fill. If you change the icon to full-bleed, drop the white fill and restore `background-color: data(nodeColor)` so the status hue isn't lost.
+- Per-role icon pixel sizes (`iconSize` in element data) must stay coupled to the role's node width — change one without the other and the icon either bleeds past the ring (`iconSize` > 70% of width) or floats in a sea of white (`iconSize` < 60% of width). Today: fortigate 44/64, fortiswitch+remote-asset 30/44, fortiap 24/36.
 
 ---
 
