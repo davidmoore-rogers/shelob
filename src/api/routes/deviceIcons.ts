@@ -112,9 +112,25 @@ router.get("/:id/image", requireAuth, async (req, res, next) => {
   try {
     const img = await getIconImage(String(req.params.id));
     if (!img) throw new AppError(404, "Icon not found");
+    // SVGs uploaded from Illustrator / common design tools often carry
+    // `viewBox="0 0 192 192"` with NO `width`/`height` attribute. When
+    // such an SVG is loaded via `new Image()` (Cytoscape's bitmap
+    // pipeline path), the browser falls back to a tiny default natural
+    // size and Cytoscape ends up with a too-small bitmap to scale —
+    // the icon stops growing past a certain zoom and visually anchors
+    // upper-left inside the node. Injecting explicit width/height on
+    // serve gives the rasterizer a large source bitmap to work from
+    // (512x512 is comfortably above any topology zoom we render at)
+    // without modifying stored bytes — fixes every SVG already in the
+    // DB without a backfill. Raster formats (PNG/JPEG/WebP) have
+    // intrinsic pixel dimensions and don't need this.
+    let payload = img.data;
+    if (img.mimeType === "image/svg+xml") {
+      payload = ensureSvgIntrinsicSize(img.data);
+    }
     res.setHeader("Content-Type", img.mimeType);
     res.setHeader("Cache-Control", "private, max-age=3600");
-    res.setHeader("Content-Length", String(img.data.length));
+    res.setHeader("Content-Length", String(payload.length));
     // Defense-in-depth for SVG: the upload-time validator already rejects
     // <script>, event handlers, external refs, etc. — but the same bytes
     // are reachable via a direct GET on this URL, so we layer browser-side
@@ -128,10 +144,32 @@ router.get("/:id/image", requireAuth, async (req, res, next) => {
         "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
       );
     }
-    res.send(img.data);
+    res.send(payload);
   } catch (err) {
     next(err);
   }
 });
+
+// Inject `width="512" height="512"` into the opening <svg> tag when
+// neither attribute is present. Idempotent — if EITHER width or height
+// is already declared, the bytes pass through untouched (we trust the
+// operator's explicit dimensions). Non-SVG-looking bytes also pass
+// through; the upload validator already gates real SVG-ness.
+const SVG_INJECT_SIZE = 512;
+function ensureSvgIntrinsicSize(buf: Buffer): Buffer {
+  let text: string;
+  try {
+    text = buf.toString("utf8");
+  } catch {
+    return buf;
+  }
+  const match = text.match(/<svg\b([^>]*)>/i);
+  if (!match) return buf;
+  const attrs = match[1];
+  if (/\bwidth\s*=/i.test(attrs) || /\bheight\s*=/i.test(attrs)) return buf;
+  const injected = `<svg width="${SVG_INJECT_SIZE}" height="${SVG_INJECT_SIZE}"${attrs}>`;
+  const rewritten = text.replace(match[0], injected);
+  return Buffer.from(rewritten, "utf8");
+}
 
 export default router;
