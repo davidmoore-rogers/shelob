@@ -45,7 +45,6 @@
           nodeColor: fortinetNodeColor(data.fortigate),
           iconUrl: data.fortigate.iconUrl || null,
           hasIcon: data.fortigate.iconUrl ? 1 : 0,
-          iconSize: 44, // ~70% of 64px fortigate node
         },
       });
     }
@@ -58,7 +57,6 @@
           nodeColor: fortinetNodeColor(s),
           iconUrl: s.iconUrl || null,
           hasIcon: s.iconUrl ? 1 : 0,
-          iconSize: 30, // ~70% of 44px default node
         },
       });
     });
@@ -71,7 +69,6 @@
           nodeColor: fortinetNodeColor(a),
           iconUrl: a.iconUrl || null,
           hasIcon: a.iconUrl ? 1 : 0,
-          iconSize: 24, // ~70% of 36px fortiap node
         },
       });
       // Wireless stations connected to this AP. Each station becomes a
@@ -124,7 +121,6 @@
           id: n.id, label: label, role: "remote-asset",
           assetId: n.id, assetType: n.assetType || null,
           iconUrl: n.iconUrl || null, hasIcon: n.iconUrl ? 1 : 0,
-          iconSize: 30, // ~70% of 44px remote-asset node
         },
       });
     });
@@ -226,22 +222,25 @@
           "font-size":        "9px",
         },
       },
-      // Vendor logo overlay. Both signals stay visible: the THICK
-      // colored border carries the monitor health (green/amber/red/
-      // grey — the same role/nodeColor used on plain nodes), the
-      // logo identifies the vendor + model. White interior fill so
-      // the logo's colors pop against any basemap (dark or light),
-      // and the image is shrunk to ~70% of the node so a square logo
-      // bounding box fits cleanly inside the circle without its
-      // corners clipping against the border (geometry: a square
-      // inscribed in a circle has side = diameter / √2 ≈ 70.7%).
-      //
-      // Sizing uses explicit pixel `iconSize` (set per role on the
-      // element data) instead of "70%" because Cytoscape 3.30's
-      // percentage `background-width`/`background-height` are
-      // computed against the rendered (zoom-scaled) node bounds, so
-      // the icon visibly grows past the border ring as the operator
-      // zooms in. Pixel values are model-space and stay stable.
+      // Vendor logo overlay. Both signals stay visible: the colored
+      // border carries the monitor health (green/amber/red/grey —
+      // the same role/nodeColor used on plain nodes), the logo
+      // identifies the vendor + model. White interior fill so the
+      // logo's colors pop against any basemap (dark or light), and
+      // the image is sized to fit the node via `background-fit:
+      // contain` with no explicit width/height — pixel-valued
+      // `background-width` was tried and gets treated as render
+      // pixels (icon stops scaling with zoom AND ends up anchored
+      // upper-left because `background-position` interacts oddly
+      // with explicit-pixel `background-width`); percentage-valued
+      // `background-width` plus contain has its own zoom-dependent
+      // overflow quirk. Letting contain do the work alone is the
+      // most predictable recipe in Cytoscape 3.30. To create the
+      // ~70% inscribed-square inset operators wanted, the border
+      // is thickened proportionally per role (see role selectors
+      // for `node[hasIcon = 1]`) so the colored ring eats the
+      // outer ~15% on each side and the visible image lands at
+      // ~70% of the overall node diameter.
       {
         selector: 'node[hasIcon = 1]',
         style: {
@@ -249,17 +248,25 @@
           "background-fit": "contain",
           "background-clip": "node",
           "background-image-containment": "inside",
-          "background-width": "data(iconSize)",
-          "background-height": "data(iconSize)",
           "background-position-x": "50%",
           "background-position-y": "50%",
           "background-color": "#ffffff",
           "background-opacity": 1,
           "border-color": "data(nodeColor)",
-          "border-width": 5,
           "border-opacity": 1,
         },
       },
+      // Per-role border widths for icon-bearing nodes. The width
+      // numbers match ~15% of the role's node diameter so the ring
+      // takes up the outer 30% of the visible diameter and the
+      // image (which `background-fit: contain` scales to fill the
+      // node) appears inset at ~70% of the visual circle. Borders
+      // draw outward in Cytoscape so node coordinate space (used
+      // by edges + labels) is unchanged.
+      { selector: 'node[hasIcon = 1][role="fortigate"]',    style: { "border-width": 10 } },
+      { selector: 'node[hasIcon = 1][role="fortiswitch"]',  style: { "border-width": 7 } },
+      { selector: 'node[hasIcon = 1][role="fortiap"]',      style: { "border-width": 6 } },
+      { selector: 'node[hasIcon = 1][role="remote-asset"]', style: { "border-width": 7 } },
       {
         selector: "edge",
         style: {
