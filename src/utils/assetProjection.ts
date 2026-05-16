@@ -51,6 +51,7 @@
  */
 
 import { normalizeManufacturer } from "./manufacturerNormalize.js";
+import { isValidGeoCoord } from "./geo.js";
 
 export type AssetSourceKind =
   | "entra"
@@ -80,6 +81,7 @@ export interface ProjectedAsset {
   ipAddress: string | null;
   latitude: number | null;
   longitude: number | null;
+  snmpLocation: string | null;
 }
 
 export type ProjectionProvenance = Partial<Record<keyof ProjectedAsset, AssetSourceKind | string>>;
@@ -287,12 +289,69 @@ const IP_ADDRESS_RULES: FieldRule[] = [
   { sourceKind: "fortiap", pick: (o) => obsString(o, "mgmtIp") },
 ];
 
+// Coord resolution priority on the fortigate-firewall source. SNMP sysLocation
+// is pulled via the FortiOS REST API (`/api/v2/cmdb/system.snmp/sysinfo`) when
+// `fortigateMonitor.pullSnmpLocation` is on, then geocoded via Nominatim. When
+// the geocoder returns valid coords, that pair is authoritative — sysLocation
+// is configured on the FortiGate itself, the natural place network engineers
+// record device location.
+//
+//   1. SNMP-geocoded sysLocation (highest priority; only populated in the
+//      observed blob when the REST pull + geocode both succeeded)
+//   2. FMG metavars `Latitude` / `Longitude` (operator-managed fallback when
+//      SNMP is off or returns no usable location)
+//   3. CMDB `gui-device-latitude` / `gui-device-longitude` (FortiOS GUI
+//      values; pre-feature source)
+//
+// Each picker validates the (lat, lng) pair as a whole via isValidGeoCoord
+// so a half-valid tier (e.g. metavar lat set, metavar lng=0) falls through
+// to the next tier rather than mixing tiers. The rule order is the SAME
+// for latitude and longitude — when one resolves at tier N, the other will
+// too because the pair-validity check inside each picker has the same
+// outcome.
 const LATITUDE_RULES: FieldRule[] = [
-  { sourceKind: "fortigate-firewall", pick: (o) => obsNumber(o, "latitude") },
+  { sourceKind: "fortigate-firewall", pick: (o) => {
+    const lat = obsNumber(o, "snmpGeocodedLatitude");
+    const lng = obsNumber(o, "snmpGeocodedLongitude");
+    return isValidGeoCoord(lat, lng) ? lat : null;
+  }},
+  { sourceKind: "fortigate-firewall", pick: (o) => {
+    const lat = obsNumber(o, "metavarLatitude");
+    const lng = obsNumber(o, "metavarLongitude");
+    return isValidGeoCoord(lat, lng) ? lat : null;
+  }},
+  { sourceKind: "fortigate-firewall", pick: (o) => {
+    const lat = obsNumber(o, "latitude");
+    const lng = obsNumber(o, "longitude");
+    return isValidGeoCoord(lat, lng) ? lat : null;
+  }},
 ];
 
 const LONGITUDE_RULES: FieldRule[] = [
-  { sourceKind: "fortigate-firewall", pick: (o) => obsNumber(o, "longitude") },
+  { sourceKind: "fortigate-firewall", pick: (o) => {
+    const lat = obsNumber(o, "snmpGeocodedLatitude");
+    const lng = obsNumber(o, "snmpGeocodedLongitude");
+    return isValidGeoCoord(lat, lng) ? lng : null;
+  }},
+  { sourceKind: "fortigate-firewall", pick: (o) => {
+    const lat = obsNumber(o, "metavarLatitude");
+    const lng = obsNumber(o, "metavarLongitude");
+    return isValidGeoCoord(lat, lng) ? lng : null;
+  }},
+  { sourceKind: "fortigate-firewall", pick: (o) => {
+    const lat = obsNumber(o, "latitude");
+    const lng = obsNumber(o, "longitude");
+    return isValidGeoCoord(lat, lng) ? lng : null;
+  }},
+];
+
+// Raw SNMP sysLocation string. Only fortigate-firewall sources carry it
+// (discovery-time SNMP pull is FortiGate-specific). Surfaced on the asset
+// details General tab regardless of whether the geocoder produced usable
+// coords — operators see what the FortiGate is telling SNMP even when
+// the value couldn't be resolved to a lat/lng.
+const SNMP_LOCATION_RULES: FieldRule[] = [
+  { sourceKind: "fortigate-firewall", pick: (o) => obsString(o, "snmpLocation") },
 ];
 
 // Walk priority rules in order; return the first non-empty value plus its
@@ -329,6 +388,7 @@ export function projectAssetFromSources(
     ipAddress: null,
     latitude: null,
     longitude: null,
+    snmpLocation: null,
   };
   const provenance: ProjectionProvenance = {};
 
@@ -355,6 +415,7 @@ export function projectAssetFromSources(
   apply("ipAddress", IP_ADDRESS_RULES);
   apply("latitude", LATITUDE_RULES);
   apply("longitude", LONGITUDE_RULES);
+  apply("snmpLocation", SNMP_LOCATION_RULES);
 
   return { projected, provenance };
 }

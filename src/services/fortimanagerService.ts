@@ -508,6 +508,86 @@ export async function fmgProxyRest<T = unknown>(
   return (inner?.results ?? inner) as T;
 }
 
+// ─── Native FMG write helpers (no /sys/proxy/json) ─────────────────────────
+
+/**
+ * Set per-device FMG metavariables ("meta fields"). Used by the FortiGate
+ * coord write-back path when SNMP-geocoded coords need to land on the
+ * operator's existing `Latitude` / `Longitude` metavar convention.
+ *
+ * Native FMG endpoint (no `/sys/proxy/json` wrapper) — goes through the
+ * worker's native lane and doesn't share the proxy-lane concurrency=1
+ * constraint. The metavar schema is expected to already exist in FMG
+ * (operators define `Latitude` / `Longitude` once under Device Manager
+ * → Metadata Variables); the per-device set call won't auto-create new
+ * fields on stricter FMG versions, so an unknown metavar name surfaces as
+ * a non-zero FMG status code which this function throws on.
+ *
+ * Values are strings — FMG stores every metavar value as text.
+ */
+export async function setFmgDeviceMetaFields(
+  config: FortiManagerConfig,
+  deviceName: string,
+  fields: Record<string, string>,
+  integrationId?: string,
+): Promise<void> {
+  const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
+  const adom = config.adom || "root";
+  const payload: JsonRpcRequest = {
+    id: 1,
+    method: "update",
+    params: [{
+      url: `/dvmdb/adom/${adom}/device/${deviceName}`,
+      data: { "meta fields": fields },
+    }],
+  };
+  const res = await rpc(baseUrl, payload, config.apiUser, config.apiToken, config.verifySsl, undefined, integrationId);
+  const code = res.result?.[0]?.status?.code;
+  if (code !== 0) {
+    const msg = res.result?.[0]?.status?.message || "FortiManager rejected meta fields update";
+    throw new AppError(502, `FortiManager metavar write failed: ${msg}`);
+  }
+}
+
+/**
+ * Write a managed FortiGate's `gui-device-latitude` / `gui-device-longitude`
+ * via FMG's CMDB tree. Same path the discovery geo fetcher reads from.
+ *
+ * Native FMG `update` on `/pm/config/device/<deviceName>/global/system/global`
+ * — does NOT trigger an FMG install, so the change stays in FMG's CMDB until
+ * an operator clicks Install Device Configuration. UI text on the write-back
+ * toggle surfaces this caveat for operators.
+ *
+ * FortiOS stores these fields as strings; values are formatted via `.toFixed(6)`
+ * to match FMG's serialized form.
+ */
+export async function setFmgDeviceCmdbGuiCoords(
+  config: FortiManagerConfig,
+  deviceName: string,
+  latitude: number,
+  longitude: number,
+  integrationId?: string,
+): Promise<void> {
+  const baseUrl = `https://${config.host}:${config.port || 443}/jsonrpc`;
+  const payload: JsonRpcRequest = {
+    id: 1,
+    method: "update",
+    params: [{
+      url: `/pm/config/device/${deviceName}/global/system/global`,
+      data: {
+        "gui-device-latitude": latitude.toFixed(6),
+        "gui-device-longitude": longitude.toFixed(6),
+      },
+    }],
+  };
+  const res = await rpc(baseUrl, payload, config.apiUser, config.apiToken, config.verifySsl, undefined, integrationId);
+  const code = res.result?.[0]?.status?.code;
+  if (code !== 0) {
+    const msg = res.result?.[0]?.status?.message || "FortiManager rejected CMDB coord update";
+    throw new AppError(502, `FortiManager CMDB coord write failed: ${msg}`);
+  }
+}
+
 /**
  * Proxy an arbitrary REST call directly to a managed FortiGate, bypassing FMG.
  * Used by the manual API query tool when the user picks "Direct to FortiGate".
@@ -566,6 +646,17 @@ export interface DiscoveredDevice {
   mgmtIp: string;        // management IP from device list
   latitude?: number;     // decimal degrees, from config system global (Device Map)
   longitude?: number;    // decimal degrees
+  // FMG per-device metavariables `Latitude` / `Longitude`. Operator-managed
+  // convention; pre-existing FMG installs commonly use these to track site
+  // coords independently of the FortiGate's `gui-device-*` CMDB fields.
+  // Highest-priority lat/lng source — beats `latitude`/`longitude` above in
+  // syncDhcpSubnets Phase 11.5. Populated by the device-list query, which
+  // adds `option: ["get meta"]` so FMG includes `meta fields` per device.
+  // SNMP sysLocation (when enabled) is pulled separately in integrations.ts
+  // Phase 11.5 — kept out of the discovery service to avoid a cycle with
+  // monitoringService (which the SNMP helper uses for session infrastructure).
+  metavarLatitude?: number;
+  metavarLongitude?: number;
   // HA cluster awareness. `haMembers` lists every physical unit in the cluster
   // (including the current primary), each keyed on its own stable serial. The
   // top-level fields (`serial`, `hostname`, `mgmtIp`) reflect whichever member
@@ -832,6 +923,40 @@ export function extractHaFromFmgDevice(
 }
 
 /**
+ * Extract FMG per-device metavariables `Latitude` / `Longitude` from a raw
+ * `/dvmdb/adom/<adom>/device` record (requires `option: ["get meta"]` on the
+ * device list query). Operators using FMG's pre-existing convention for
+ * tracking site coords get those values surfaced as the highest-priority
+ * fallback after SNMP-geocoded coords in syncDhcpSubnets Phase 11.5.
+ *
+ * The metavar name lookup is case-insensitive (FMG stores keys as the
+ * operator typed them — `Latitude`, `latitude`, `LATITUDE` all map to the
+ * same value here). Returns undefined for missing / unparseable values; the
+ * coord resolver downstream validates the (lat, lng) pair via
+ * isValidGeoCoord before trusting either half.
+ */
+export function extractMetavarCoordsFromFmgDevice(
+  raw: any,
+): { latitude?: number; longitude?: number } {
+  const meta = raw?.["meta fields"];
+  if (!meta || typeof meta !== "object") return {};
+  const findKey = (target: string): unknown => {
+    for (const k of Object.keys(meta)) {
+      if (k.toLowerCase() === target) return (meta as Record<string, unknown>)[k];
+    }
+    return undefined;
+  };
+  const latRaw = findKey("latitude");
+  const lngRaw = findKey("longitude");
+  const lat = latRaw === undefined || latRaw === null || latRaw === "" ? NaN : Number(latRaw);
+  const lng = lngRaw === undefined || lngRaw === null || lngRaw === "" ? NaN : Number(lngRaw);
+  const out: { latitude?: number; longitude?: number } = {};
+  if (Number.isFinite(lat)) out.latitude = lat;
+  if (Number.isFinite(lng)) out.longitude = lng;
+  return out;
+}
+
+/**
  * Query FortiManager for DHCP servers across all managed FortiGate devices.
  * Returns discovered subnets, device metadata (for asset creation),
  * and interface IPs (for reservation creation).
@@ -872,7 +997,15 @@ export async function discoverDhcpSubnets(
     // returns whatever the user already has access to, so lat/lng show up
     // when they exist and are silently absent otherwise (the per-device
     // CMDB fallback picks them up from the FortiGate itself in that case).
-    params: [{ url: `/dvmdb/adom/${adom}/device` }],
+    //
+    // `option: ["get meta"]` asks FMG to include per-device metavariables
+    // ("meta fields") in the response. Operators using the existing
+    // `Latitude` / `Longitude` metavar convention get those values surfaced
+    // on `DiscoveredDevice.metavarLatitude / Longitude` for the coord
+    // resolution chain in syncDhcpSubnets Phase 11.5. The option is additive
+    // — FMG returns whatever metavars are defined and the API user can read;
+    // older FMG versions that don't recognize the option simply ignore it.
+    params: [{ url: `/dvmdb/adom/${adom}/device`, option: ["get meta"] }],
   };
 
   let devicesRes: JsonRpcResponse;
@@ -1078,6 +1211,7 @@ export async function discoverDhcpSubnets(
           // when FMG didn't surface one (older FMG releases, missing perms).
           const fmgHa = extractHaFromFmgDevice(rawDevice);
           const haFromFmg = fmgHa.haMembers.length > 0;
+          const mv = extractMetavarCoordsFromFmgDevice(rawDevice);
           const localDev: DiscoveredDevice = {
             name: deviceName,
             hostname: rawDevice.hostname || deviceName,
@@ -1086,6 +1220,8 @@ export async function discoverDhcpSubnets(
             mgmtIp:   directHost,
             latitude:  fmgCoordsOk ? fmgLat : fgResult.devices[0]?.latitude,
             longitude: fmgCoordsOk ? fmgLng : fgResult.devices[0]?.longitude,
+            ...(mv.latitude !== undefined ? { metavarLatitude: mv.latitude } : {}),
+            ...(mv.longitude !== undefined ? { metavarLongitude: mv.longitude } : {}),
             ...(haFromFmg
               ? { haMode: fmgHa.haMode, haMembers: fmgHa.haMembers }
               : (fgResult.devices[0]?.haMembers && fgResult.devices[0].haMembers.length > 0
@@ -1165,6 +1301,7 @@ export async function discoverDhcpSubnets(
     // has no per-device fortigateService call to fall back on, so this is
     // the only source. Standalone or missing → haMode: "standalone".
     const fmgHa = extractHaFromFmgDevice(rawDevice);
+    const mv = extractMetavarCoordsFromFmgDevice(rawDevice);
     const localDevice: DiscoveredDevice = {
       name: deviceName,
       hostname: rawDevice.hostname || deviceName,
@@ -1172,6 +1309,8 @@ export async function discoverDhcpSubnets(
       model: rawDevice.platform_str || "",
       mgmtIp: rawDevice.ip || "",
       ...(fmgCoordsOk ? { latitude: fmgLat, longitude: fmgLng } : {}),
+      ...(mv.latitude !== undefined ? { metavarLatitude: mv.latitude } : {}),
+      ...(mv.longitude !== undefined ? { metavarLongitude: mv.longitude } : {}),
       ...(fmgHa.haMembers.length > 0
         ? { haMode: fmgHa.haMode, haMembers: fmgHa.haMembers }
         : { haMode: "standalone" as const }),

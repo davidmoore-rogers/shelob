@@ -25,8 +25,8 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ## Sections
 
-- [Cross-cutting concerns](#cross-cutting-concerns) (15)
-- [Per-service touches](#per-service-touches) — alphabetical, 39 services in `src/services/`
+- [Cross-cutting concerns](#cross-cutting-concerns) (16)
+- [Per-service touches](#per-service-touches) — alphabetical, 42 services in `src/services/`
 
 ---
 
@@ -101,6 +101,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 - Priority rules in projectAssetFromSources() are immutable for production stability; tuned from shadow-drift logs and locked with operators.
 - Fortinet infrastructure (firewall/switch/AP) sources are derived from serial + manufacturer + assetType during backfill; discovery writes explicit "fortigate-firewall" / "fortiswitch" / "fortiap" source rows.
 - fortigate-endpoint source is stamped on endpoint-type assets discovered via DHCP; marked as infra if assetType is "firewall"/"switch"/"access_point".
+- `fortigate-firewall` observed blob owns the THREE coord tiers (`snmpGeocodedLatitude/Longitude`, `metavarLatitude/Longitude`, `latitude/longitude`) plus `snmpLocation`. Latitude/longitude projection rules walk the three tiers in that order on the SAME source kind, validating each (lat,lng) pair as a whole via `isValidGeoCoord` so a half-valid tier falls through instead of mixing values. `snmpLocation` is its own projected field (string).
 - HA-cluster firewalls (a-p / a-a) get one `fortigate-firewall` source row PER physical member, keyed on each member's own stable serial. The observed blob carries member-specific `serial` / `hostname` / `mgmtIp` plus cluster-wide `haMode` / `haRole` / `haPeerSerial`. The standby member's `mgmtIp` is null (cluster IP only reaches the active member). Phase 3 fan-out keys each member's Asset lookup on its OWN serial — never on `device.sn` which flips on failover.
 
 **When changing this:**
@@ -354,7 +355,9 @@ build auto-prune + boot-time auto-build are layered on top.
 - `src/api/routes/integrations.ts` — POST / PUT integration handlers parse both fortimanager and fortigate integration types, store config.pushReservations / pushQuarantine / monitorSettings / deviceInclude/Exclude in the same JSON shape
 - `src/services/reservationPushService.ts:65-90` — buildTransportForIntegration() dispatches to FMG proxy/direct or FortiGate direct transport based on integration.type
 - `src/services/assetQuarantineService.ts` — quarantineAsset() / releaseQuarantine() use buildTransportForIntegration() for both FMG and FortiGate
-- `public/js/integrations.js:335-875` — Integration modal tab bodies for General (useProxy, Filters), Monitoring, DHCP Push, Quarantine Push
+- `src/services/fortigateLocationService.ts` — fetchFortigateSysLocation() uses buildTransportForIntegration() + callFortiOs() for both FMG and FortiGate
+- `src/services/fortigateCoordPushService.ts` — FMG-mode pushes to metavars + CMDB natively (no proxy); standalone pushes CMDB via direct REST. Same source-of-truth dispatch pattern as the other push services.
+- `public/js/integrations.js:335-875` — Integration modal tab bodies for General (useProxy, Filters), Monitoring, DHCP Push, Quarantine Push. FortiGates Monitoring subtab now also carries the `pullSnmpLocation` / `pushGeocodedCoords` toggles.
 
 **Readers** (files that consume it):
 - `src/api/routes/integrations.ts` — Discovery sync paths read pushReservations toggle to decide whether to push DHCP changes
@@ -452,6 +455,53 @@ build auto-prune + boot-time auto-build are layered on top.
 - Check conflict bypass: create a manual reservation, add an integration that discovers the same IP; verify conflict is raised only for non-manual priors.
 - Lease-release cadence: toggle pushReservations off mid-deployment, release a dhcp_lease row; confirm unpush is skipped but the Polaris row is freed.
 - Verify read-back verify: FortiGate DHCP create succeeds but the verify read fails (transient device timeout); confirm the push is retried or fails cleanly.
+
+---
+
+## cross-cutting/fortigate-snmp-location-and-coord-writeback
+
+**What it is:** Discovery-time SNMP sysLocation pull (via REST `GET /api/v2/cmdb/system.snmp/sysinfo`) → Nominatim geocode → `Asset.snmpLocation` / `Asset.latitude` / `Asset.longitude` for FMG/standalone-FortiGate-discovered firewalls. Optional opt-in write-back closes the loop: when the geocoded coords don't match what's currently in the FortiGate's CMDB GUI fields, Polaris pushes the new values to FMG metavars (`Latitude` / `Longitude`) AND CMDB (`gui-device-*`) for FMG mode, or just CMDB for standalone. Gated by two per-integration toggles in `fortigateMonitor`: `pullSnmpLocation` (master enable) and `pushGeocodedCoords` (write-back, disabled when pull is off).
+
+**Writers** (files that mutate or emit this state):
+- `src/services/fortigateLocationService.ts` — fetchFortigateSysLocation() returns trimmed sysLocation string or null. REST-only, reuses callFortiOs + buildTransportForIntegration so it works in both FMG proxy and direct mode (and doesn't need network reachability to the FortiGate's mgmt IP when in proxy mode).
+- `src/services/geocoderService.ts` — geocode() with positive+negative `GeocodeCache` (90-day TTL) + 1 req/sec rate limiter (module-level chained Promise). Transport failures do NOT poison the cache; only successful responses write rows. Never throws.
+- `src/services/fortigateCoordPushService.ts` — pushCoordsToFortigate() dispatches BOTH metavars + CMDB writes (FMG mode) or CMDB only (standalone). Best-effort: per-target failures collected in the returned `{ok, targets[], error?}` shape, never thrown.
+- `src/services/fortimanagerService.ts:setFmgDeviceMetaFields` + `setFmgDeviceCmdbGuiCoords` — native FMG `update` helpers used by the push service. Both go through the worker's native lane (no proxy throttle).
+- `src/services/fortimanagerService.ts:extractMetavarCoordsFromFmgDevice` — parses `Latitude` / `Longitude` metavars from FMG `/dvmdb/adom/<adom>/device` records when the list query carries `option: ["get meta"]`. Surfaces as `DiscoveredDevice.metavarLatitude` / `metavarLongitude`.
+- `src/api/routes/integrations.ts:syncDhcpSubnets` Phase 3 — Once per device (NOT per HA member), gated on `pullSnmpLocation`: pulls sysLocation, geocodes it, stashes results into the per-device closure variables (`devSnmpLocation` / `devSnmpLocationFetchedAt` / `devGeocodedLat` / `devGeocodedLng`). Each per-member `memberDevice` build carries these forward into the observed blob via buildFortigateFirewallObservedBlob. `updateData.snmpLocation` / `updateData.snmpLocationFetchedAt` are stamped on every Asset update + create. Write-back call fires AFTER the per-member loop (so all member Asset writes have landed) — only when geocoding succeeded AND `coordsClose(geocoded, cmdb, 1e-5)` returns false. Emits `integration.coords.pushed` or `integration.coords.push_failed` Events.
+- `src/utils/assetProjection.ts:LATITUDE_RULES` / `LONGITUDE_RULES` / `SNMP_LOCATION_RULES` — three-tier coord priority on the `fortigate-firewall` source: snmpGeocoded → metavar → CMDB. Each picker validates the full (lat,lng) pair via `isValidGeoCoord` so a half-valid tier falls through to the next instead of mixing tiers. `snmpLocation` is a separate projected string field.
+- `prisma/schema.prisma` — Asset.snmpLocation / Asset.snmpLocationFetchedAt columns; GeocodeCache model.
+
+**Readers** (files that consume it):
+- `public/js/assets.js:2538` — Renders "SNMP Location" viewRow on asset details General tab when `a.snmpLocation` is set.
+- `public/js/integrations.js` — FortiGate Monitoring subtab renders the two toggles via `_fortigateAddMonitoredHTML`; `_readFortigateMonitorBlock` reads them on Save. `pushGeocodedCoords` is force-cleared client-side when `pullSnmpLocation` is off (matches the inline onchange UI handler that disables the push checkbox when pull flips off).
+- `src/api/routes/integrations.ts:FortiGateClassMonitorSchema` — Zod schema for the persisted shape (`pullSnmpLocation: boolean`, `pushGeocodedCoords: boolean`).
+- `src/api/routes/assets.ts` — Asset findUnique / findMany returns snmpLocation + snmpLocationFetchedAt naturally (no field whitelist filters them out).
+- `src/api/routes/map.ts` — Device Map endpoints read `Asset.latitude` / `Asset.longitude` (which projection resolves through the SNMP-first chain when pull is on) for pin placement. No special handling — just consumes the resolved values.
+
+**Invariants:**
+- SNMP location pull is ALWAYS via REST (`/api/v2/cmdb/system.snmp/sysinfo`), never via net-snmp. This sidesteps the SNMP credential resolver and works in FMG proxy mode where Polaris can't reach the FortiGate's mgmt IP directly.
+- The pull fires ONCE per FortiGate per discovery cycle — HA cluster members share sysLocation by physical co-location, so the result is reused across all members' observed blobs.
+- When geocoding fails (empty sysLocation, no Nominatim hit, transport error), the asset's lat/lng falls through to the metavar tier and then to CMDB. `Asset.snmpLocation` is still populated with the raw string whenever the REST pull returned one — operators see "what the FortiGate is telling SNMP" independent of geocode outcome.
+- `Asset.snmpLocationFetchedAt` is stamped whenever the REST pull was attempted, even when it returned empty string (lets the UI show "checked X minutes ago, no value reported").
+- `coordsClose` tolerance is 1e-5° (~1.1 m at the equator). Tighter than Nominatim's typical 6-7 decimal output for street addresses — catches actual operator edits without firing on Nominatim re-geocode jitter.
+- Write-back fires ONCE per FortiGate (not per HA member — coord write is cluster-wide).
+- FMG-mode write-back lands in FMG's CMDB but does NOT trigger an FMG install. The live FortiGate sees the change only when an operator runs Install Device Configuration in FMG. UI text on the toggle surfaces this caveat.
+- `pushGeocodedCoords` is force-cleared (client AND server side) when `pullSnmpLocation` is off — operators can't push what they aren't pulling.
+- GeocodeCache stores BOTH positive and negative results (null lat/lng = "Nominatim returned no match"). Transport failures (timeout / non-2xx / parse error) are NOT cached — only the upstream's response writes a row, so a transient Nominatim outage doesn't poison subsequent retries.
+- Geocoder rate limiter is process-global (module-level chained Promise), 1 req/sec. Cache hits bypass the gate entirely so steady-state cycles after the initial fleet pass are near-zero requests.
+- Both toggles default OFF on a fresh install AND on existing integrations. No behavior change unless an operator opts in.
+
+**When changing this:**
+- Verify existing-install no-op: leave both toggles off on a fleet with valid CMDB coords. Discover. Confirm zero REST sysLocation calls, zero Nominatim requests, Asset coords unchanged.
+- Test the SNMP-first override: set CMDB coords valid, set `sysLocation` to a different real address, enable `pullSnmpLocation` (push off). Discover. Verify Asset coords now come from geocoded sysLocation; CMDB unchanged on the FortiGate.
+- Test write-back parity: enable both toggles on an FMG integration. Confirm BOTH metavars (`Latitude` / `Longitude`) AND CMDB (`gui-device-latitude` / `gui-device-longitude`) get updated. Repeat for standalone — confirm CMDB only (no metavars on standalone). Verify the FMG-side change requires operator Install to reach the live FortiGate (Polaris does not trigger installs).
+- Test cache hit + negative cache: re-discover with same sysLocation → no Nominatim request. Set sysLocation to gibberish → row exists with null lat/lng → next discovery doesn't re-hit upstream.
+- Test rate limiter: kick off a discovery against ≥5 FortiGates with distinct unseen sysLocations. Confirm Nominatim requests are spaced ≥1 second apart.
+- Test HA cluster: SNMP pull fires ONCE per cluster; write-back also fires ONCE (not per member). Both members' AssetSource observed blobs carry the same `snmpLocation` / `snmpGeocodedLatitude` / `snmpGeocodedLongitude`.
+- Test the tolerance: set CMDB coords ~1m off from geocoded → match, no write-back. Set CMDB ~10m off → mismatch, write-back fires.
+- Test toggle gating: flip `pullSnmpLocation` off in the modal; verify `pushGeocodedCoords` checkbox auto-disables AND auto-clears. Re-enable pull; verify push stays unchecked until operator ticks it explicitly.
+- Run `npm run typecheck` and `npm test` — the assetProjection test suite covers the projection shape and will fail loudly if new projected fields aren't added to the all-null baseline expectation.
 
 ---
 
@@ -1275,6 +1325,52 @@ Listed alphabetically.
 
 ---
 
+## services/fortigateCoordPushService.ts
+
+**What it owns:** Write-back orchestrator for FortiGate `gui-device-latitude` / `gui-device-longitude` (and FMG `Latitude` / `Longitude` metavars when applicable) after `syncDhcpSubnets` resolves a geocoded sysLocation that diverges from the device's current CMDB values.
+
+**Public API:** `pushCoordsToFortigate(integration, deviceName, latitude, longitude): Promise<CoordPushResult>`.
+
+**Cross-service deps:** fortimanagerService (uses native FMG helpers `setFmgDeviceMetaFields` + `setFmgDeviceCmdbGuiCoords`), fortigateService (uses `fgRequest` for the standalone CMDB PUT).
+
+**Used by:** src/api/routes/integrations.ts:syncDhcpSubnets Phase 3 — fires once per FortiGate after the per-HA-member loop, gated on `pushGeocodedCoords` + geocode success + `coordsClose()` mismatch.
+
+**Invariants:**
+- FMG mode writes BOTH per-device metavars AND CMDB GUI coords. Standalone FortiGate writes only CMDB. Single source of truth for routing — never inline another transport choice in callers.
+- All FMG writes go through the native lane (no `/sys/proxy/json` wrapper) — they don't share the proxy-lane concurrency=1 constraint.
+- Best-effort: per-target failures are collected into the returned `{ok, targets[], error?}` shape but never thrown. Audit events (`integration.coords.pushed` / `integration.coords.push_failed`) live at the caller in integrations.ts, not here.
+- FMG-mode CMDB writes land in FMG's CMDB but do NOT trigger an FMG install — the live FortiGate sees the change only when an operator runs Install Device Configuration in FMG. UI text on the toggle surfaces this caveat.
+- Coords are formatted as `.toFixed(6)` strings before sending (FortiOS stores them as strings, not floats).
+
+**When changing this:**
+- Adding a new write target: add a new try/catch arm, push the target name onto the `targets` array on success, log + continue on failure (don't throw).
+- If extending to integration types beyond fortimanager / fortigate, mirror the type-dispatch pattern from reservationPushService — never inline a new transport builder.
+- Verify both modes when changing the FMG payload: re-discover with `pushGeocodedCoords` on; confirm metavars + CMDB both updated via `curl` directly against FMG's REST API.
+
+---
+
+## services/fortigateLocationService.ts
+
+**What it owns:** Discovery-time REST pull of FortiGate SNMP sysLocation (`GET /api/v2/cmdb/system.snmp/sysinfo`). REST instead of net-snmp so it reuses the existing FMG-proxy / standalone transport and doesn't need a separate SNMP credential.
+
+**Public API:** `fetchFortigateSysLocation({integration, deviceName}): Promise<string | null>`.
+
+**Cross-service deps:** reservationPushService (imports `callFortiOs` + `buildTransportForIntegration`).
+
+**Used by:** src/api/routes/integrations.ts:syncDhcpSubnets Phase 3 — gated on the integration's `fortigateMonitor.pullSnmpLocation` toggle. Fires ONCE per FortiGate per discovery cycle (NOT per HA member — cluster members share sysLocation by physical co-location).
+
+**Invariants:**
+- REST-only. Never bring back an SNMP path here — adding net-snmp would re-introduce a credential resolver + per-host gate that the REST approach deliberately sidesteps.
+- Returns trimmed, whitespace-collapsed string OR null. Empty FortiOS response → null. Transport failures → null (logged at warn).
+- Never throws. The discovery sync continues with no location update on failure.
+- Works in BOTH FMG proxy and direct modes — FMG forwards the call to the FortiGate in proxy mode, so Polaris doesn't need network reachability to the FortiGate's mgmt IP.
+
+**When changing this:**
+- Adding new SNMP system-info fields (sysContact, sysDescription): same endpoint already returns them. Extend the interface and surface as additional return fields rather than adding new endpoints.
+- Don't add retries here — the caller (syncDhcpSubnets) treats this as a single-shot, best-effort fetch; retry logic would burn discovery wall-clock for marginal value.
+
+---
+
 ## services/fmgWorker.ts
 
 **What it owns:** Per-integration FortiManager worker with two lanes — a proxy lane (strict concurrency=1 FIFO) for `/sys/proxy/json` calls and a native lane (unbounded) for every other FMG call. Module-level `Map<integrationId, FmgWorker>` lazy-created on first submit; never torn down.
@@ -1326,6 +1422,32 @@ Listed alphabetically.
 - Update docs/fmg-discovery.md if transport modes, roster filters, or per-class stamping change.
 - Test proxy-mode parallelism clamp + direct-mode device resolution end-to-end. Confirm warm-cache producer fills the worker pool from t=0 on a fleet with monitor-up firewalls.
 - New FMG-bound code paths MUST submit through `getFmgWorker(integrationId)` — bare `rpc()` without an integrationId loses cross-feature serialization and reintroduces the parallel-connection failure mode.
+
+---
+
+## services/geocoderService.ts
+
+**What it owns:** Address-string → lat/lng geocoder backed by OpenStreetMap Nominatim with a positive+negative `GeocodeCache` (90-day TTL) and a process-global 1 req/sec rate limiter.
+
+**Public API:** `geocode(query: string): Promise<{ latitude: number | null, longitude: number | null, cached: boolean }>`.
+
+**Cross-service deps:** None (uses prisma directly for cache reads/writes; `getAppVersion()` for the Nominatim User-Agent).
+
+**Used by:** src/api/routes/integrations.ts:syncDhcpSubnets Phase 3 — geocodes FortiGate SNMP sysLocation when `fortigateMonitor.pullSnmpLocation` is on.
+
+**Invariants:**
+- Normalization key: trim + collapse-whitespace + lowercase. Same on read and write so capitalization / spacing variants collide on one cache row.
+- Cache stores BOTH positive AND negative results. A null lat/lng row means "Nominatim returned no match" — the negative-cache signal that prevents gibberish strings from repeatedly hitting upstream.
+- Transport failures (timeout / non-2xx / parse error) do NOT write a cache row. Only the upstream's actual response (success OR empty array) writes — so a transient Nominatim outage doesn't poison subsequent retries.
+- Rate limiter is module-level chained Promise enforcing ≥1100 ms between outgoing requests (Nominatim's usage policy is 1 req/sec; 100 ms safety margin). Cache hits BYPASS the gate entirely.
+- User-Agent identifies Polaris per Nominatim's usage policy (`Polaris-IPAM/<version>`). Never use a generic / library-default UA.
+- Never throws. All failures return `{latitude: null, longitude: null, cached: false}` so callers in the discovery hot path don't need to wrap.
+
+**When changing this:**
+- Don't add per-request retries — Nominatim's policy is "be patient and don't hammer us"; one shot per cycle, fall through on failure, retry on next discovery.
+- TTL is 90 days. Lengthening it reduces upstream load further; shortening risks operators editing sysLocation and waiting too long to see the new pin location. Don't go below 7 days.
+- Adding a second provider (Google / Mapbox): introduce a `provider` parameter, store provider per cache row (already in schema), and run all writes through a single normalization so the cache stays consistent.
+- If extending to other domains (e.g. non-FortiGate asset location lookups), keep the rate limiter shared — Nominatim doesn't care which Polaris feature triggered the request, only the rate-per-process matters.
 
 ---
 

@@ -613,7 +613,7 @@ const INTEGRATIONS = [
       // all three. FortiGates pin two named WAN uplinks; FortiSwitches use a
       // wildcard to cover access ports 47–48 (the typical uplink pair) only
       // when up; FortiAPs grab every "physical" interface that's online.
-      fortigateMonitor:   { addAsMonitored: true, autoMonitorInterfaces: { mode: "names",    names: ["wan1", "wan2"] } },
+      fortigateMonitor:   { addAsMonitored: true, autoMonitorInterfaces: { mode: "names",    names: ["wan1", "wan2"] }, pullSnmpLocation: true, pushGeocodedCoords: true },
       fortiswitchMonitor: { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: { mode: "wildcard", patterns: ["port4[7-8]"], onlyUp: true } },
       fortiapMonitor:     { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: { mode: "type",     types: ["physical"], onlyUp: true } },
     },

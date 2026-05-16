@@ -36,6 +36,10 @@ import {
 } from "../../services/firewallTagService.js";
 import * as sightings from "../../services/assetSightingService.js";
 import { quarantineAsset, verifyAssetQuarantine } from "../../services/assetQuarantineService.js";
+import { fetchFortigateSysLocation } from "../../services/fortigateLocationService.js";
+import { geocode } from "../../services/geocoderService.js";
+import { pushCoordsToFortigate } from "../../services/fortigateCoordPushService.js";
+import { isValidGeoCoord, coordsClose } from "../../utils/geo.js";
 import {
   MAC_ROW_SELECT,
   shapeMacRows,
@@ -261,10 +265,29 @@ const FortinetClassMonitorSchema = z.object({
 // FortiGate-class equivalent. FortiGates always get a monitorType stamped
 // at discovery (the integration's native type), so this block only carries
 // the `addAsMonitored` flag — no credential/enabled toggle needed.
+//
+// `pullSnmpLocation` (off by default) opts the integration into pulling
+// SNMP sysLocation (OID 1.3.6.1.2.1.1.6.0) from each managed FortiGate
+// during discovery, surfacing it on `Asset.snmpLocation` and feeding the
+// geocoder fallback in syncDhcpSubnets Phase 11.5. Uses the resolved
+// integration-tier monitoring SNMP credential.
+//
+// `pushGeocodedCoords` (off by default; UI-disabled when `pullSnmpLocation`
+// is off) writes the geocoded lat/lng back to the FortiGate when the SNMP
+// fallback path landed coords. FMG mode writes to BOTH the per-device
+// metavars `Latitude` / `Longitude` AND the CMDB `gui-device-latitude` /
+// `gui-device-longitude` fields. Standalone FortiGate writes CMDB only.
 const FortiGateClassMonitorSchema = z.object({
   addAsMonitored:        z.boolean().optional().default(false),
   autoMonitorInterfaces: AutoMonitorInterfacesSchema,
-}).optional().default({ addAsMonitored: false, autoMonitorInterfaces: null });
+  pullSnmpLocation:      z.boolean().optional().default(false),
+  pushGeocodedCoords:    z.boolean().optional().default(false),
+}).optional().default({
+  addAsMonitored: false,
+  autoMonitorInterfaces: null,
+  pullSnmpLocation: false,
+  pushGeocodedCoords: false,
+});
 
 const FortiManagerConfigSchema = z.object({
   host:      z.string().optional().default(""),
@@ -1914,7 +1937,30 @@ async function batchSettled<T>(items: T[], fn: (item: T) => Promise<any>): Promi
 // captures the source perspective for the asset details modal without
 // changing the discovery hot path.
 function buildFortigateFirewallObservedBlob(
-  device: { name?: string; hostname?: string; serial?: string; model?: string; mgmtIp?: string; osVersion?: string; latitude?: number; longitude?: number },
+  device: {
+    name?: string;
+    hostname?: string;
+    serial?: string;
+    model?: string;
+    mgmtIp?: string;
+    osVersion?: string;
+    latitude?: number;
+    longitude?: number;
+    // FMG per-device metavariables `Latitude` / `Longitude` (FMG only;
+    // undefined on standalone-FortiGate-discovered firewalls). Operator-
+    // managed coord convention; consumed by assetProjection's tier-2 rule.
+    metavarLatitude?: number;
+    metavarLongitude?: number;
+    // Raw SNMP sysLocation pulled via REST during Phase 11.5 when
+    // `fortigateMonitor.pullSnmpLocation` is on. Stamped here so the asset
+    // details General tab can surface it via projection.
+    snmpLocation?: string | null;
+    // Nominatim-geocoded coords derived from `snmpLocation`. Stamped in
+    // Phase 11.5 after geocode succeeds. assetProjection's tier-1 rule
+    // picks these up as authoritative when the pair is valid.
+    snmpGeocodedLatitude?: number | null;
+    snmpGeocodedLongitude?: number | null;
+  },
   integrationType: "fortimanager" | "fortigate",
   syncedAt: Date,
   // HA member context. Omitted on standalone firewalls. When the discovered
@@ -1939,6 +1985,11 @@ function buildFortigateFirewallObservedBlob(
     mgmtIp: device.mgmtIp || null,
     latitude: Number.isFinite(device.latitude) ? device.latitude : null,
     longitude: Number.isFinite(device.longitude) ? device.longitude : null,
+    metavarLatitude: Number.isFinite(device.metavarLatitude) ? device.metavarLatitude : null,
+    metavarLongitude: Number.isFinite(device.metavarLongitude) ? device.metavarLongitude : null,
+    snmpLocation: typeof device.snmpLocation === "string" && device.snmpLocation ? device.snmpLocation : null,
+    snmpGeocodedLatitude: Number.isFinite(device.snmpGeocodedLatitude) ? device.snmpGeocodedLatitude : null,
+    snmpGeocodedLongitude: Number.isFinite(device.snmpGeocodedLongitude) ? device.snmpGeocodedLongitude : null,
     managedBy: integrationType,
     ...(ha
       ? {
@@ -2254,9 +2305,18 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   let switchMonitorCfg: ClassMonCfg = emptyClassCfg;
   let apMonitorCfg:     ClassMonCfg = emptyClassCfg;
   let fortigateAddAsMonitored = false;
+  // FortiGate-only: SNMP sysLocation read + geocoded-coords write-back toggles.
+  // Stashed here so the Phase 3 firewall fan-out can pull / push without
+  // re-reading the integration config per device. Both default to off.
+  let pullSnmpLocation = false;
+  let pushGeocodedCoords = false;
+  // Full integration config retained for handing to the location-pull + coord-
+  // push services (which need the FMG/FortiGate credentials inside it).
+  let integrationConfig: Record<string, unknown> | null = null;
   if (integrationType === "fortimanager" || integrationType === "fortigate") {
     const integ = await prisma.integration.findUnique({ where: { id: integrationId }, select: { config: true } });
     const cfg = (integ?.config as Record<string, unknown>) || {};
+    integrationConfig = cfg;
     const sw = (cfg.fortiswitchMonitor as Record<string, unknown> | undefined) || {};
     const ap = (cfg.fortiapMonitor     as Record<string, unknown> | undefined) || {};
     const fg = (cfg.fortigateMonitor   as Record<string, unknown> | undefined) || {};
@@ -2286,6 +2346,8 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       stampCredentialId: pickStamp(apSnmp, apSsh),
     };
     fortigateAddAsMonitored = fg.addAsMonitored === true;
+    pullSnmpLocation        = fg.pullSnmpLocation === true;
+    pushGeocodedCoords      = fg.pushGeocodedCoords === true;
   }
 
   // Sighting sets for the FortiSwitch / FortiAP decommission sweep below.
@@ -2775,6 +2837,47 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   for (const device of result.devices) {
     try {
       const fgHostname = device.hostname || device.name;
+      // ─── SNMP sysLocation pull (FortiGate-only, opt-in) ──────────────────
+      // Pulled ONCE per device (not per HA member — cluster members are
+      // physically co-located and share sysLocation). The result feeds the
+      // observed blob for every member's AssetSource row and drives the
+      // projection-tier-1 coord resolution.
+      let devSnmpLocation: string | null = null;
+      let devSnmpLocationFetchedAt: Date | null = null;
+      let devGeocodedLat: number | null = null;
+      let devGeocodedLng: number | null = null;
+      if (
+        pullSnmpLocation &&
+        (integrationType === "fortimanager" || integrationType === "fortigate") &&
+        integrationConfig
+      ) {
+        devSnmpLocationFetchedAt = new Date();
+        try {
+          devSnmpLocation = await fetchFortigateSysLocation({
+            integration: { id: integrationId, type: integrationType, config: integrationConfig },
+            deviceName: device.name,
+          });
+        } catch (err: any) {
+          syncLog("error", `${fgHostname}: SNMP location pull threw — ${err?.message || "Unknown error"}`);
+        }
+        if (devSnmpLocation) {
+          try {
+            const geo = await geocode(devSnmpLocation);
+            if (isValidGeoCoord(geo.latitude, geo.longitude)) {
+              devGeocodedLat = geo.latitude;
+              devGeocodedLng = geo.longitude;
+              if (verboseLogging) {
+                logger.info(
+                  { verbose: true, integrationId, deviceName: device.name, sysLocation: devSnmpLocation, lat: devGeocodedLat, lng: devGeocodedLng, cached: geo.cached },
+                  "discovery.snmp_location.geocoded",
+                );
+              }
+            }
+          } catch (err: any) {
+            syncLog("error", `${fgHostname}: Geocode of sysLocation "${devSnmpLocation}" failed — ${err?.message || "Unknown error"}`);
+          }
+        }
+      }
       // HA fan-out: when the cluster reports multiple members, write one
       // Asset row per physical member keyed on its own stable serial. Each
       // member's identity (serial + hostname) survives failover because we
@@ -2848,6 +2951,16 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           mgmtIp: member.isPrimary ? device.mgmtIp : "",
           latitude: device.latitude,
           longitude: device.longitude,
+          // FMG-only metavars + per-device SNMP pull. Undefined when the
+          // integration isn't FMG (standalone has no metavars) or the
+          // toggles weren't enabled. The observed-blob helper coerces
+          // missing/non-finite to null so the projection tier rules see a
+          // consistent shape.
+          metavarLatitude: device.metavarLatitude,
+          metavarLongitude: device.metavarLongitude,
+          snmpLocation: devSnmpLocation,
+          snmpGeocodedLatitude: devGeocodedLat,
+          snmpGeocodedLongitude: devGeocodedLng,
         };
       // Match by serial first; fall back to hostname/IP for assets that
       // pre-date a serial (e.g. the placeholder created by registerFortinetHost
@@ -2917,6 +3030,15 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         }
         if (fwProjected.latitude !== null) updateData.latitude = fwProjected.latitude;
         if (fwProjected.longitude !== null) updateData.longitude = fwProjected.longitude;
+        // SNMP sysLocation is projection-owned for display, but the
+        // fetched-at timestamp lives outside the projection (no source
+        // would naturally own it) — stamp it directly on Asset when we
+        // pulled this cycle. Empty sysLocation still bumps fetchedAt so
+        // the UI can show "checked X minutes ago, no value reported".
+        if (devSnmpLocationFetchedAt) {
+          updateData.snmpLocation = fwProjected.snmpLocation;
+          updateData.snmpLocationFetchedAt = devSnmpLocationFetchedAt;
+        }
         clampAcquiredToLastSeen(updateData, existingAsset);
         // Snapshot pre-write hostname so we can detect a rename below and
         // rotate the firewall:* tag on every dependent asset before Phase 13.5
@@ -3009,6 +3131,8 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           ...(fortigateAddAsMonitored && !isStandbyCreate ? { monitored: true } : {}),
           ...(fwCreateProjected.latitude !== null ? { latitude: fwCreateProjected.latitude } : {}),
           ...(fwCreateProjected.longitude !== null ? { longitude: fwCreateProjected.longitude } : {}),
+          ...(fwCreateProjected.snmpLocation !== null ? { snmpLocation: fwCreateProjected.snmpLocation } : {}),
+          ...(devSnmpLocationFetchedAt ? { snmpLocationFetchedAt: devSnmpLocationFetchedAt } : {}),
           fortinetTopology: memberTopology as any,
           notes: isStandbyCreate
             ? `Auto-discovered from ${integrationLabel} integration (HA standby member)`
@@ -3042,6 +3166,56 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       assetIdx.add(newAsset);
       assetNames.push(`${memberDevice.hostname || device.name}${haMembers ? ` (HA ${member.isPrimary ? "primary" : "secondary"})` : ""}`);
       } // end inner for-member loop
+
+      // ─── Geocoded-coords write-back (FortiGate-only, opt-in) ─────────────
+      // Fires once per FortiGate (not per HA member — coord write is a
+      // cluster-wide change). Only when the SNMP-geocode succeeded AND the
+      // current FortiGate CMDB coords don't already match within tolerance.
+      // Best-effort: failure is logged but doesn't unwind the Asset writes
+      // that already landed.
+      if (
+        pushGeocodedCoords &&
+        devGeocodedLat !== null &&
+        devGeocodedLng !== null &&
+        integrationConfig
+      ) {
+        const cmdbLat = device.latitude;
+        const cmdbLng = device.longitude;
+        const cmdbValid = isValidGeoCoord(cmdbLat, cmdbLng);
+        const matches = cmdbValid && coordsClose(devGeocodedLat, devGeocodedLng, cmdbLat!, cmdbLng!);
+        if (!matches) {
+          try {
+            const pushResult = await pushCoordsToFortigate(
+              { id: integrationId, type: integrationType, config: integrationConfig },
+              device.name,
+              devGeocodedLat,
+              devGeocodedLng,
+            );
+            if (pushResult.ok) {
+              logEvent({
+                action: "integration.coords.pushed",
+                resourceType: "integration",
+                resourceId: integrationId,
+                resourceName: integrationName,
+                actor,
+                message: `[${integrationName}] Pushed geocoded coords ${devGeocodedLat.toFixed(6)},${devGeocodedLng.toFixed(6)} to ${fgHostname} (targets: ${pushResult.targets.join(", ")})`,
+              });
+            } else {
+              logEvent({
+                action: "integration.coords.push_failed",
+                resourceType: "integration",
+                resourceId: integrationId,
+                resourceName: integrationName,
+                actor,
+                level: "warning",
+                message: `[${integrationName}] Failed to push geocoded coords to ${fgHostname}: ${pushResult.error}`,
+              });
+            }
+          } catch (err: any) {
+            syncLog("error", `Coord write-back to ${fgHostname} threw — ${err?.message || "Unknown error"}`);
+          }
+        }
+      }
     } catch (err: any) {
       syncLog("error", `Failed to create/update asset for device ${device.name}: ${err.message || "Unknown error"}`);
     }
@@ -5748,52 +5922,6 @@ async function syncActiveDirectoryDevices(
     }
   }
 
-  // ─── Forward-DNS pre-pass ─────────────────────────────────────────────────
-  // Fill ipAddress for new + IP-less existing assets via A/AAAA lookup. Hosts
-  // that already have an ipAddress (set by FortiGate DHCP/ARP, Entra, or an
-  // operator) are skipped — DNS can lag the real network state. Failures
-  // leave ipAddress null and retry next cycle so a temporarily-missing DNS
-  // record self-heals.
-  const dnsLookupResults = new Map<string, string>(); // guidKey → resolved IP
-  const hostsToLookup: Array<{ guidKey: string; lookupName: string }> = [];
-  for (const dev of result.devices) {
-    const guidKey = dev.objectGuid.toLowerCase();
-    if (!guidKey) continue;
-    const lookupName = (dev.dnsHostName || dev.cn || "").trim();
-    if (!lookupName) continue;
-    let existingAsset: any = adSourceByGuid.get(guidKey)?.asset ?? null;
-    if (!existingAsset && dev.objectSid) {
-      const sidAssetId = assetIdBySid.get(dev.objectSid.toUpperCase());
-      if (sidAssetId) existingAsset = assetById.get(sidAssetId) ?? null;
-    }
-    if (existingAsset?.ipAddress) continue;
-    hostsToLookup.push({ guidKey, lookupName });
-  }
-
-  if (hostsToLookup.length > 0) {
-    syncLog("info", `Forward DNS: resolving ${hostsToLookup.length} hostname(s) for AD-discovered assets without IP`);
-    let resolver: Awaited<ReturnType<typeof getConfiguredResolver>> | null = null;
-    try {
-      resolver = await getConfiguredResolver();
-    } catch (err: any) {
-      syncLog("warning", `Forward DNS: failed to build resolver — skipping IP backfill (${err.message || "unknown error"})`);
-    }
-    if (resolver) {
-      const r = resolver;
-      let resolved = 0;
-      await batchSettled(hostsToLookup, async (h) => {
-        try {
-          const records = await r.lookup(h.lookupName);
-          if (records.length > 0) {
-            dnsLookupResults.set(h.guidKey, records[0].address);
-            resolved++;
-          }
-        } catch { /* per-host failure: leave ipAddress null, retry next cycle */ }
-      });
-      syncLog("info", `Forward DNS: resolved ${resolved} of ${hostsToLookup.length} hostname(s)`);
-    }
-  }
-
   for (const dev of result.devices) {
     const guidKey = dev.objectGuid.toLowerCase();
     if (!guidKey) {
@@ -5884,16 +6012,6 @@ async function syncActiveDirectoryDevices(
       // acquiredAt: backfill with AD whenCreated only if older than current.
       if (whenCreated && (!existing.acquiredAt || whenCreated < new Date(existing.acquiredAt))) {
         updateData.acquiredAt = whenCreated;
-      }
-      // ipAddress: fill only when the existing asset has no IP. The pre-pass
-      // already skipped lookups for hosts with an IP, so a hit here means the
-      // asset genuinely needs the value. Never overwrites a non-empty IP.
-      if (!existing.ipAddress) {
-        const dnsIp = dnsLookupResults.get(guidKey);
-        if (dnsIp) {
-          updateData.ipAddress = dnsIp;
-          updateData.ipSource = "activedirectory-dns";
-        }
       }
       // assetType: only set if still default "other" (respect manual recategorization).
       if (existing.assetType === "other" && assetType !== "other") updateData.assetType = assetType;
@@ -6015,7 +6133,6 @@ async function syncActiveDirectoryDevices(
         { sourceKind: "ad", inferred: false, observed: adObserved },
       ]);
 
-      const dnsIp = dnsLookupResults.get(guidKey);
       const createData: Record<string, unknown> = {
         // Phase 4d: legacy `assetTag = ad:<objectGuid>` write retired —
         // upsertAdAssetSource below stamps the AssetSource ad row that
@@ -6033,7 +6150,6 @@ async function syncActiveDirectoryDevices(
         lastSeen: lastLogon,
         acquiredAt: whenCreated,
         tags,
-        ...(dnsIp ? { ipAddress: dnsIp, ipSource: "activedirectory-dns" } : {}),
         // Stamp the AD source link on realm-monitorable hosts so the
         // polling-method resolver picks AD's source default (ICMP) when the
         // operator later enables monitoring on this asset. We no longer

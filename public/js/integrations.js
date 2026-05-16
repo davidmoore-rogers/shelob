@@ -1051,16 +1051,32 @@ function _wireAutoMonitorCard(idPrefix, klass, integrationId) {
   showPanel(initialMode);
 }
 
-// FortiGate subtab variant — only "Add as Monitored" since FortiGates
-// always get the integration source link stamped at discovery, which
-// drives the polling-method resolver to REST API by default.
-function _fortigateAddMonitoredHTML(idPrefix, currentAddAsMonitored) {
+// FortiGate subtab variant — "Add as Monitored" + the SNMP-sysLocation
+// read/write-back toggles. FortiGates always get the integration source
+// link stamped at discovery, which drives the polling-method resolver to
+// REST API by default, so no per-class credential picker is needed here.
+function _fortigateAddMonitoredHTML(idPrefix, currentAddAsMonitored, currentPullSnmpLocation, currentPushGeocodedCoords) {
+  var pull = currentPullSnmpLocation === true;
+  var push = currentPushGeocodedCoords === true;
   return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Auto-monitoring</p>' +
     '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
       '<input type="checkbox" id="' + idPrefix + 'addAsMonitored" ' + (currentAddAsMonitored ? "checked" : "") + ' style="width:auto">' +
       '<label for="' + idPrefix + 'addAsMonitored" style="margin:0;font-weight:500">Add discovered FortiGates to Assets as Monitored</label>' +
     '</div>' +
     '<p class="hint" style="margin-bottom:1rem">When checked, newly-discovered FortiGates land in Assets with monitoring enabled (the integration\'s API token already provides the probe path). Existing FortiGates are unchanged — flip them individually from the asset modal.</p>' +
+    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Geographic location (SNMP)</p>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
+      '<input type="checkbox" id="' + idPrefix + 'pullSnmpLocation" ' + (pull ? "checked" : "") +
+      ' onchange="(function(cb){var p=document.getElementById(\'' + idPrefix + 'pushGeocodedCoords\');if(p){p.disabled=!cb.checked;if(!cb.checked)p.checked=false;var lbl=p.nextElementSibling;if(lbl)lbl.style.opacity=cb.checked?\'1\':\'0.5\';}})(this)"' +
+      ' style="width:auto">' +
+      '<label for="' + idPrefix + 'pullSnmpLocation" style="margin:0;font-weight:500">Pull SNMP sysLocation from each FortiGate</label>' +
+    '</div>' +
+    '<p class="hint" style="margin-bottom:0.75rem">Reads `sysLocation` from each FortiGate via the REST API (`/api/v2/cmdb/system.snmp/sysinfo` — no separate SNMP credential needed). Geocodes the value via OpenStreetMap Nominatim and uses the result for the asset\'s coordinates on the Device Map. Falls back to FMG metavars / CMDB coords if SNMP location is blank or doesn\'t geocode.</p>' +
+    '<div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0.4rem">' +
+      '<input type="checkbox" id="' + idPrefix + 'pushGeocodedCoords" ' + (push ? "checked" : "") + (pull ? "" : " disabled") + ' style="width:auto">' +
+      '<label for="' + idPrefix + 'pushGeocodedCoords" style="margin:0;font-weight:500' + (pull ? "" : ";opacity:0.5") + '">Write geocoded coordinates back to the FortiGate</label>' +
+    '</div>' +
+    '<p class="hint" style="margin-bottom:1rem">When the geocoded coords differ from the FortiGate\'s current GUI values, update them on the device — writes to both FortiManager metavars (Latitude / Longitude) and the FortiGate\'s CMDB `gui-device-latitude` / `gui-device-longitude`. Standalone FortiGate integrations write only the CMDB values. In FortiManager mode the change lands in FMG\'s CMDB but won\'t reach the live FortiGate until an operator runs Install Device Configuration in FMG.</p>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">';
 }
 
@@ -1114,7 +1130,7 @@ function monitorSettingsFormHTML(s, opts) {
   if (isFmgFgt) {
     var fwSwCfg = opts.fortiswitchMonitor || { enabled: false, snmpCredentialId: null, sshCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null };
     var fwApCfg = opts.fortiapMonitor     || { enabled: false, snmpCredentialId: null, sshCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: null };
-    var fwFgCfg = opts.fortigateMonitor   || { addAsMonitored: false, autoMonitorInterfaces: null };
+    var fwFgCfg = opts.fortigateMonitor   || { addAsMonitored: false, autoMonitorInterfaces: null, pullSnmpLocation: false, pushGeocodedCoords: false };
 
     // Stash auto-monitor selections for the lazy-loaded checklists.
     if (typeof window !== "undefined") {
@@ -1124,7 +1140,12 @@ function monitorSettingsFormHTML(s, opts) {
     }
 
     var fortigatePanel =
-      _fortigateAddMonitoredHTML("f-mon-fortigate-", fwFgCfg.addAsMonitored === true) +
+      _fortigateAddMonitoredHTML(
+        "f-mon-fortigate-",
+        fwFgCfg.addAsMonitored === true,
+        fwFgCfg.pullSnmpLocation === true,
+        fwFgCfg.pushGeocodedCoords === true,
+      ) +
       integrationMonitorOverrideHTML(opts.snmpCredentials, opts.monitorCredentialId, opts.sshCredentialId || null) +
       _autoMonitorInterfacesHTML("f-mon-fortigate-amon-", "FortiGate", fwFgCfg.autoMonitorInterfaces || null, "names", hasId);
 
@@ -1303,12 +1324,19 @@ function _readClassMonitorBlock(prefix) {
 // discovery, which the resolver picks REST API for) plus the
 // auto-monitor-interfaces selection.
 function _readFortigateMonitorBlock(prefix) {
-  var addMonEl = document.getElementById(prefix + "addAsMonitored");
+  var addMonEl   = document.getElementById(prefix + "addAsMonitored");
+  var pullEl     = document.getElementById(prefix + "pullSnmpLocation");
+  var pushEl     = document.getElementById(prefix + "pushGeocodedCoords");
   if (!addMonEl) return null;
   var ami = _readAutoMonitorInterfaces(prefix + "amon-");
   return {
     addAsMonitored: addMonEl.checked === true,
     autoMonitorInterfaces: ami === undefined ? null : ami,
+    pullSnmpLocation: pullEl ? pullEl.checked === true : false,
+    // Force pushGeocodedCoords false when pull is off — the operator can't
+    // push what they aren't pulling, and the checkbox is rendered disabled
+    // in that state.
+    pushGeocodedCoords: (pullEl && pullEl.checked && pushEl) ? pushEl.checked === true : false,
   };
 }
 

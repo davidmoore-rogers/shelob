@@ -2535,6 +2535,7 @@ async function openViewModal(id) {
       ((a.latitude != null && a.longitude != null)
         ? viewRow("Coordinates", a.latitude.toFixed(4) + ", " + a.longitude.toFixed(4), true)
         : "") +
+      (a.snmpLocation ? viewRow("SNMP Location", a.snmpLocation, true) : "") +
       viewRow("Department", a.department) +
       viewRow("Assigned To", a.assignedTo) +
       viewRow("OS / Firmware", a.osVersion || a.os) +

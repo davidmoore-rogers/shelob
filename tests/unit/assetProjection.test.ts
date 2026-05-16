@@ -30,6 +30,7 @@ describe("projectAssetFromSources — empty + edge cases", () => {
       ipAddress: null,
       latitude: null,
       longitude: null,
+      snmpLocation: null,
     });
     expect(provenance).toEqual({});
   });
@@ -306,6 +307,7 @@ describe("projectAssetFromSources — hybrid Windows laptop (full integration sc
       ipAddress: null, // no source carries endpoint IP
       latitude: null,
       longitude: null,
+      snmpLocation: null, // not a fortigate-firewall source
     });
     expect(provenance.hostname).toBe("ad");
     expect(provenance.os).toBe("ad");
