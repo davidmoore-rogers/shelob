@@ -234,3 +234,37 @@ export function pickVendorProfile(
   }
   return null;
 }
+
+/**
+ * Translate a hardcoded `MemoryQuery` into the editable Manufacturer Profile's
+ * `composition` JSON shape (see `manufacturerProfileService.MemoryComposition`).
+ * Used by the seed job to stamp the bytes-form memory shape onto fresh installs
+ * AND by the backfill job to retrofit existing installs that ran the seed
+ * before this column existed. Returns null when the vendor's memory shape
+ * doesn't map to a known composition (e.g. Cisco's `usedBytesSymbol +
+ * freeBytesSymbol` is `bytes_used_free`; a bare `pctSymbol` is `percent`;
+ * an empty `memory` block returns null and the seed falls back to whatever
+ * single-symbol baseline it used before this column existed).
+ */
+export function memoryQueryToComposition(mem: MemoryQuery | undefined): {
+  shape:        "percent" | "bytes_used_total" | "bytes_used_free";
+  usedSymbol?:  string;
+  totalSymbol?: string;
+  freeSymbol?:  string;
+  pctSymbol?:   string;
+} | null {
+  if (!mem) return null;
+  // Bytes form, used + total (FortiSwitch).
+  if (mem.usedBytesSymbol && mem.totalBytesSymbol) {
+    return { shape: "bytes_used_total", usedSymbol: mem.usedBytesSymbol, totalSymbol: mem.totalBytesSymbol };
+  }
+  // Bytes form, used + free (Cisco).
+  if (mem.usedBytesSymbol && mem.freeBytesSymbol) {
+    return { shape: "bytes_used_free", usedSymbol: mem.usedBytesSymbol, freeSymbol: mem.freeBytesSymbol };
+  }
+  // Single percent OID (Juniper, FortiGate/FortiAP, generic Fortinet).
+  if (mem.pctSymbol) {
+    return { shape: "percent", pctSymbol: mem.pctSymbol };
+  }
+  return null;
+}

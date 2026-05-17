@@ -29,6 +29,21 @@ export const METRIC_KEYS: MetricKey[] = [
   "cpu", "memory", "temperature", "interfaces", "lldp", "storage", "wirelessStations",
 ];
 
+// Multi-OID composition for the memory metric. Today consulted only when
+// metricKey="memory" — lets operators express bytes-form memory in the editable
+// profile, matching what the hardcoded VENDOR_TELEMETRY_PROFILES baseline can
+// already do via collectMemoryVendor. When present takes precedence over
+// defaultSymbol on the metric row (and over `symbol` on an override row).
+export type MemoryShape = "percent" | "bytes_used_total" | "bytes_used_free";
+
+export interface MemoryComposition {
+  shape:        MemoryShape;
+  usedSymbol?:  string | null;
+  totalSymbol?: string | null;
+  freeSymbol?:  string | null;
+  pctSymbol?:   string | null;
+}
+
 export interface MetricOverrideRow {
   id:           string;
   modelPattern: string;
@@ -37,6 +52,7 @@ export interface MetricOverrideRow {
   type:         "scalar" | "table";
   transform:    TransformKind | null;
   order:        number;
+  composition:  MemoryComposition | null;
 }
 
 export interface MetricRow {
@@ -46,6 +62,7 @@ export interface MetricRow {
   defaultMibId:     string | null;
   defaultType:      "scalar" | "table";
   defaultTransform: TransformKind | null;
+  composition:      MemoryComposition | null;
   overrides:        MetricOverrideRow[];
 }
 
@@ -109,6 +126,84 @@ function asTransform(value: unknown): TransformKind | null {
   throw new AppError(400, `Invalid transform: ${String(value)}`);
 }
 
+const MEMORY_SHAPES: MemoryShape[] = ["percent", "bytes_used_total", "bytes_used_free"];
+
+function trimOrNull(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const t = value.trim();
+  return t ? t : null;
+}
+
+/**
+ * Parse + validate a JSON `composition` blob coming from the API. Returns:
+ *   - `null` when the input is null/undefined/empty (clears the column)
+ *   - a normalized `MemoryComposition` when valid
+ *   - throws AppError(400) when malformed
+ *
+ * Per-shape required fields:
+ *   - "percent"            → pctSymbol required
+ *   - "bytes_used_total"   → usedSymbol + totalSymbol required
+ *   - "bytes_used_free"    → usedSymbol + freeSymbol required
+ *
+ * Unrelated fields are stripped on output so the stored shape stays tight
+ * regardless of what the client sent.
+ *
+ * Today scoped to `metricKey="memory"`. The function is metric-key-agnostic
+ * so future composition shapes for other metrics can reuse the same column;
+ * callers gate by metricKey themselves.
+ */
+export function parseMemoryComposition(value: unknown): MemoryComposition | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new AppError(400, "composition must be a JSON object");
+  }
+  const raw = value as Record<string, unknown>;
+  const shape = raw.shape;
+  if (typeof shape !== "string" || !(MEMORY_SHAPES as string[]).includes(shape)) {
+    throw new AppError(400, `composition.shape must be one of: ${MEMORY_SHAPES.join(", ")}`);
+  }
+  const used  = trimOrNull(raw.usedSymbol);
+  const total = trimOrNull(raw.totalSymbol);
+  const free  = trimOrNull(raw.freeSymbol);
+  const pct   = trimOrNull(raw.pctSymbol);
+  const out: MemoryComposition = { shape: shape as MemoryShape };
+  if (shape === "percent") {
+    if (!pct) throw new AppError(400, "composition.pctSymbol is required for shape \"percent\"");
+    out.pctSymbol = pct;
+  } else if (shape === "bytes_used_total") {
+    if (!used)  throw new AppError(400, "composition.usedSymbol is required for shape \"bytes_used_total\"");
+    if (!total) throw new AppError(400, "composition.totalSymbol is required for shape \"bytes_used_total\"");
+    out.usedSymbol  = used;
+    out.totalSymbol = total;
+  } else { // bytes_used_free
+    if (!used) throw new AppError(400, "composition.usedSymbol is required for shape \"bytes_used_free\"");
+    if (!free) throw new AppError(400, "composition.freeSymbol is required for shape \"bytes_used_free\"");
+    out.usedSymbol = used;
+    out.freeSymbol = free;
+  }
+  return out;
+}
+
+function shapeStoredComposition(raw: unknown): MemoryComposition | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.shape !== "string" || !(MEMORY_SHAPES as string[]).includes(r.shape)) return null;
+  // Trust stored DB shape (already validated on write). Reflect whichever
+  // symbol fields were stored — defensive `trimOrNull` handles legacy rows
+  // that may have empty strings.
+  const out: MemoryComposition = { shape: r.shape as MemoryShape };
+  const used  = trimOrNull(r.usedSymbol);
+  const total = trimOrNull(r.totalSymbol);
+  const free  = trimOrNull(r.freeSymbol);
+  const pct   = trimOrNull(r.pctSymbol);
+  if (used)  out.usedSymbol  = used;
+  if (total) out.totalSymbol = total;
+  if (free)  out.freeSymbol  = free;
+  if (pct)   out.pctSymbol   = pct;
+  return out;
+}
+
 function shapeProfile(row: any): ProfileFull {
   const metrics: MetricRow[] = (row.metrics || []).map((m: any) => ({
     id:               m.id,
@@ -117,6 +212,7 @@ function shapeProfile(row: any): ProfileFull {
     defaultMibId:     m.defaultMibId ?? null,
     defaultType:      asType(m.defaultType),
     defaultTransform: asTransform(m.defaultTransform),
+    composition:      shapeStoredComposition(m.composition),
     overrides: (m.overrides || []).map((o: any) => ({
       id:           o.id,
       modelPattern: o.modelPattern,
@@ -125,6 +221,7 @@ function shapeProfile(row: any): ProfileFull {
       type:         asType(o.type),
       transform:    asTransform(o.transform),
       order:        o.order,
+      composition:  shapeStoredComposition(o.composition),
     })),
   }));
   const widgets: CustomWidgetRow[] = (row.widgets || []).map((w: any) => ({
@@ -271,6 +368,10 @@ export async function updateMetricRow(
     defaultMibId?:     string | null;
     defaultType?:      string;
     defaultTransform?: string | null;
+    // Memory-only today. Validated by parseMemoryComposition; explicit null
+    // (or empty object) clears the stored composition so the row falls back
+    // to defaultSymbol. Undefined leaves the existing value alone.
+    composition?:      unknown;
   },
 ): Promise<MetricRow> {
   const mk = asMetricKey(metricKey);
@@ -279,6 +380,16 @@ export async function updateMetricRow(
   });
   if (!row) throw new AppError(404, "Metric row not found for this profile");
 
+  // composition is memory-only; reject on other metrics so a typo in the UI
+  // doesn't silently persist nonsense onto the wrong row.
+  let compositionUpdate: MemoryComposition | null | undefined = undefined;
+  if (input.composition !== undefined) {
+    if (mk !== "memory" && input.composition !== null) {
+      throw new AppError(400, "composition is only supported on the memory metric");
+    }
+    compositionUpdate = parseMemoryComposition(input.composition);
+  }
+
   const updated = await (prisma as any).manufacturerProfileMetric.update({
     where: { id: row.id },
     data: {
@@ -286,6 +397,7 @@ export async function updateMetricRow(
       defaultMibId:     input.defaultMibId === undefined     ? undefined : (input.defaultMibId ?? null),
       defaultType:      input.defaultType === undefined      ? undefined : asType(input.defaultType),
       defaultTransform: input.defaultTransform === undefined ? undefined : (asTransform(input.defaultTransform) ?? null),
+      composition:      compositionUpdate === undefined ? undefined : (compositionUpdate ?? null),
     },
     include: { overrides: { orderBy: { order: "asc" } } },
   });
@@ -298,6 +410,7 @@ export async function updateMetricRow(
     defaultMibId:     updated.defaultMibId ?? null,
     defaultType:      asType(updated.defaultType),
     defaultTransform: asTransform(updated.defaultTransform),
+    composition:      shapeStoredComposition(updated.composition),
     overrides: (updated.overrides || []).map((o: any) => ({
       id:           o.id,
       modelPattern: o.modelPattern,
@@ -306,6 +419,7 @@ export async function updateMetricRow(
       type:         asType(o.type),
       transform:    asTransform(o.transform),
       order:        o.order,
+      composition:  shapeStoredComposition(o.composition),
     })),
   };
 }
@@ -315,11 +429,12 @@ export async function createOverride(
   metricKey: string,
   input: {
     modelPattern: string;
-    symbol:       string;
+    symbol?:      string;
     mibId?:       string | null;
     type?:        string;
     transform?:   string | null;
     order?:       number;
+    composition?: unknown;
   },
 ): Promise<MetricOverrideRow> {
   const mk = asMetricKey(metricKey);
@@ -330,23 +445,38 @@ export async function createOverride(
   if (!input.modelPattern || !input.modelPattern.trim()) {
     throw new AppError(400, "modelPattern is required");
   }
-  if (!input.symbol || !input.symbol.trim()) {
-    throw new AppError(400, "symbol is required");
-  }
   try {
     new RegExp(input.modelPattern);
   } catch {
     throw new AppError(400, "modelPattern must be a valid regex");
   }
+  let composition: MemoryComposition | null = null;
+  if (input.composition !== undefined) {
+    if (mk !== "memory" && input.composition !== null) {
+      throw new AppError(400, "composition is only supported on the memory metric");
+    }
+    composition = parseMemoryComposition(input.composition);
+  }
+  // Either composition is supplied (bytes-form / explicit percent) or the
+  // legacy single-symbol path applies. Composition wins when both are sent.
+  const symbol = (input.symbol || "").trim();
+  if (!composition && !symbol) {
+    throw new AppError(400, "symbol or composition is required");
+  }
   const created = await (prisma as any).manufacturerProfileMetricOverride.create({
     data: {
       metricRowId:  row.id,
       modelPattern: input.modelPattern,
-      symbol:       input.symbol,
+      // `symbol` is non-null in the DB schema — store the composition's
+      // primary OID (or an empty string if the operator only supplied a
+      // composition with no scalar value) so the column stays satisfied
+      // without losing the bytes-form intent.
+      symbol:       symbol || (composition?.usedSymbol ?? composition?.pctSymbol ?? ""),
       mibId:        input.mibId ?? null,
       type:         asType(input.type ?? "scalar"),
       transform:    asTransform(input.transform ?? null),
       order:        Number.isFinite(input.order) ? Number(input.order) : 0,
+      composition:  composition ?? null,
     },
   });
   await touchProfile(profileId);
@@ -359,6 +489,7 @@ export async function createOverride(
     type:         asType(created.type),
     transform:    asTransform(created.transform),
     order:        created.order,
+    composition:  shapeStoredComposition(created.composition),
   };
 }
 
@@ -371,6 +502,7 @@ export async function updateOverride(
     type?:         string;
     transform?:    string | null;
     order?:        number;
+    composition?:  unknown;
   },
 ): Promise<MetricOverrideRow> {
   const existing = await (prisma as any).manufacturerProfileMetricOverride.findUnique({
@@ -384,8 +516,22 @@ export async function updateOverride(
       throw new AppError(400, "modelPattern must be a valid regex");
     }
   }
+  let compositionUpdate: MemoryComposition | null | undefined = undefined;
+  if (input.composition !== undefined) {
+    if (existing.metricRow.metricKey !== "memory" && input.composition !== null) {
+      throw new AppError(400, "composition is only supported on the memory metric");
+    }
+    compositionUpdate = parseMemoryComposition(input.composition);
+  }
+  // When composition is being set, allow `symbol` to remain whatever the
+  // composition's primary OID is; when neither is supplied keep existing.
+  // Reject only the "symbol cleared AND no composition present" case so the
+  // DB's non-null `symbol` column stays satisfied.
   if (input.symbol !== undefined && !input.symbol.trim()) {
-    throw new AppError(400, "symbol is required");
+    // Symbol blank — composition must already cover it.
+    const effectiveComposition =
+      compositionUpdate !== undefined ? compositionUpdate : shapeStoredComposition(existing.composition);
+    if (!effectiveComposition) throw new AppError(400, "symbol is required (or set a composition)");
   }
   const updated = await (prisma as any).manufacturerProfileMetricOverride.update({
     where: { id: overrideId },
@@ -396,6 +542,7 @@ export async function updateOverride(
       type:         input.type === undefined         ? undefined : asType(input.type),
       transform:    input.transform === undefined    ? undefined : (asTransform(input.transform) ?? null),
       order:        input.order === undefined        ? undefined : Number(input.order),
+      composition:  compositionUpdate === undefined  ? undefined : (compositionUpdate ?? null),
     },
   });
   await touchProfile(existing.metricRow.profileId);
@@ -408,6 +555,7 @@ export async function updateOverride(
     type:         asType(updated.type),
     transform:    asTransform(updated.transform),
     order:        updated.order,
+    composition:  shapeStoredComposition(updated.composition),
   };
 }
 

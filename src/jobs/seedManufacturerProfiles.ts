@@ -17,7 +17,7 @@
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 import { runInstrumentedJob } from "./_metrics.js";
-import { VENDOR_TELEMETRY_PROFILES, type VendorTelemetryProfile } from "../services/vendorTelemetryProfiles.js";
+import { VENDOR_TELEMETRY_PROFILES, type VendorTelemetryProfile, memoryQueryToComposition } from "../services/vendorTelemetryProfiles.js";
 import { refreshProfileCache } from "../services/manufacturerProfileService.js";
 import { normalizeManufacturer } from "../utils/manufacturerNormalize.js";
 
@@ -51,31 +51,46 @@ const SEED_MAP: SeedRow[] = [
 // richer than what the DB schema captures (mode="walk-avg", multi-symbol
 // memory queries with separate used/free/total) — for seeding we capture
 // the primary symbol; operators with bespoke needs replace it in the UI.
-function profileToMetricSeeds(p: VendorTelemetryProfile): Array<{ metricKey: string; symbol: string; type: "scalar" | "table" }> {
-  const out: Array<{ metricKey: string; symbol: string; type: "scalar" | "table" }> = [];
+interface MetricSeed {
+  metricKey:   string;
+  symbol:      string;
+  type:        "scalar" | "table";
+  // Multi-OID composition for memory (today). Captured from the hardcoded
+  // VENDOR_TELEMETRY_PROFILES bytes-form shape so the editable profile lines
+  // up with what the runtime baseline already does.
+  composition: ReturnType<typeof memoryQueryToComposition>;
+}
+
+function profileToMetricSeeds(p: VendorTelemetryProfile): MetricSeed[] {
+  const out: MetricSeed[] = [];
   if (p.cpu) {
     out.push({
-      metricKey: "cpu",
-      symbol:    p.cpu.symbol,
-      type:      p.cpu.mode === "walk-avg" ? "table" : "scalar",
+      metricKey:   "cpu",
+      symbol:      p.cpu.symbol,
+      type:        p.cpu.mode === "walk-avg" ? "table" : "scalar",
+      composition: null,
     });
   }
   if (p.memory) {
     const mem = p.memory;
+    // Primary symbol is what gets stored in the legacy single-symbol column;
+    // composition carries the richer bytes-form shape when applicable. Both
+    // are emitted — the resolver consults composition first.
     const memSymbol = mem.usedBytesSymbol || mem.totalBytesSymbol || mem.pctSymbol || mem.freeBytesSymbol;
     if (memSymbol) {
       out.push({
-        metricKey: "memory",
-        symbol:    memSymbol,
-        type:      mem.walkSubtree ? "table" : "scalar",
+        metricKey:   "memory",
+        symbol:      memSymbol,
+        type:        mem.walkSubtree ? "table" : "scalar",
+        composition: memoryQueryToComposition(mem),
       });
     }
   }
   if (p.disk) {
-    out.push({ metricKey: "storage", symbol: p.disk.usedBytesSymbol, type: "scalar" });
+    out.push({ metricKey: "storage", symbol: p.disk.usedBytesSymbol, type: "scalar", composition: null });
   }
   if (p.temperature) {
-    out.push({ metricKey: "temperature", symbol: p.temperature.symbol, type: "scalar" });
+    out.push({ metricKey: "temperature", symbol: p.temperature.symbol, type: "scalar", composition: null });
   }
   return out;
 }
@@ -138,6 +153,9 @@ export async function seedManufacturerProfiles(): Promise<{ profiles: number; ov
             metricKey:     mk,
             defaultSymbol: seed?.symbol ?? null,
             defaultType:   seed?.type ?? "scalar",
+            // Composition is memory-only today and only stamped when the
+            // vendor's hardcoded shape provides one. Null otherwise.
+            composition:   seed?.composition ?? null,
           },
         }),
       );
@@ -188,6 +206,10 @@ export async function seedManufacturerProfiles(): Promise<{ profiles: number; ov
             symbol:       s.symbol,
             type:         s.type,
             order:        0,
+            // Composition is memory-only today; carried into the override row
+            // so e.g. the FortiSwitch entry under Fortinet's Memory metric
+            // gets `{ shape: "bytes_used_total", usedSymbol, totalSymbol }`.
+            composition:  s.composition ?? null,
           },
         });
         createdOverrides += 1;

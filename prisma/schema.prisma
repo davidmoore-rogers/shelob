@@ -1552,6 +1552,14 @@ model ManufacturerProfileMetric {
   defaultMib       MibFile? @relation("ManufacturerProfileMetricDefaultMib", fields: [defaultMibId], references: [id], onDelete: SetNull)
   defaultType      String   @default("scalar") // "scalar" | "table"
   defaultTransform String?  // "celsius_to_fahrenheit" | "bytes_to_mb" | ... | null
+  // Multi-OID composition. Today consulted only when metricKey="memory" — lets
+  // operators express the bytes-form memory shape (Used+Total or Used+Free) in
+  // the editable profile, matching what the hardcoded VENDOR_TELEMETRY_PROFILES
+  // baseline can already do for FortiSwitch. When present, takes precedence
+  // over defaultSymbol. Shape: { shape: "percent" | "bytes_used_total" |
+  // "bytes_used_free", usedSymbol?, totalSymbol?, freeSymbol?, pctSymbol? }.
+  // Validated by manufacturerProfileService.parseMemoryComposition.
+  composition      Json?
 
   overrides ManufacturerProfileMetricOverride[]
 
@@ -1575,6 +1583,11 @@ model ManufacturerProfileMetricOverride {
   type         String   @default("scalar") // "scalar" | "table"
   transform    String?
   order        Int      @default(0)
+  // Multi-OID composition — mirrors the parent metric row's column. Same
+  // shape, same precedence rule: when present, takes precedence over `symbol`.
+  // Lets a per-model override carry its own memory Shape (e.g. parent metric
+  // = bytes_used_total, override for a specific model = percent, or vice versa).
+  composition  Json?
 
   @@index([metricRowId, order])
   @@index([mibId])

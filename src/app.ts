@@ -40,6 +40,7 @@ import "./jobs/decommissionStaleAssets.js";
 import "./jobs/monitorAssets.js";
 import "./jobs/normalizeManufacturers.js";
 import "./jobs/seedManufacturerProfiles.js";
+import "./jobs/backfillManufacturerProfileMemoryComposition.js";
 import "./jobs/migrateMonitorSettingsHierarchy.js";
 import "./jobs/renameMonitorClassKeys.js";
 import "./jobs/migrateRetentionTiers.js";

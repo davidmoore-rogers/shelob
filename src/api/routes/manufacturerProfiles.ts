@@ -64,12 +64,18 @@ router.post("/", requireAdmin, handle(async (req, res) => {
 }));
 
 // PUT /:id/metrics/:metricKey — set the metric row's default symbol/mibId/type/transform.
+// Body additionally accepts `composition` for the memory metric — see
+// `parseMemoryComposition` in manufacturerProfileService for the shape and
+// per-shape required fields. Passing `composition: null` clears it.
 router.put("/:id/metrics/:metricKey", requireAdmin, handle(async (req, res) => {
   const updated = await updateMetricRow(String(req.params.id), String(req.params.metricKey), req.body || {});
   send(res, { metric: updated });
 }));
 
 // POST /:id/metrics/:metricKey/overrides — add a per-model override.
+// Body additionally accepts `composition` for the memory metric (same shape
+// as the metric row's composition). When composition is supplied, the `symbol`
+// field is optional — the resolver consumes the composition directly.
 router.post("/:id/metrics/:metricKey/overrides", requireAdmin, handle(async (req, res) => {
   const created = await createOverride(String(req.params.id), String(req.params.metricKey), req.body || {});
   send(res, { override: created }, 201);
