@@ -199,6 +199,7 @@
         var bits = [];
         if (r.hostname) bits.push(escapeHtml(r.hostname));
         if (r.owner) bits.push(escapeHtml(r.owner));
+        if (r.macAddress) bits.push('<span class="mono">' + escapeHtml(r.macAddress) + '</span>');
         if (r.sourceType && r.sourceType !== "manual") bits.push(escapeHtml(r.sourceType.replace(/_/g, " ")));
         sub = bits.join(" · ");
       } else {
