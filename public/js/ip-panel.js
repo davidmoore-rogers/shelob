@@ -306,7 +306,19 @@ function _renderIpList(data) {
       statusLabel = "Available";
     }
 
-    var hostnameText = r ? escapeHtml(r.hostname || "-") : '<span style="color:var(--color-text-tertiary)">-</span>';
+    // Click-to-copy for hostname / MAC: render the value as a .copy-on-click
+    // span carrying the raw value in data-copy. The delegated handler at the
+    // bottom of _renderIpPanel reads data-copy on the closest ancestor and
+    // copies to clipboard via navigator.clipboard, with a toast confirm. Plain
+    // dashes ("-") stay non-clickable.
+    var hostnameText;
+    if (r && r.hostname) {
+      hostnameText = '<span class="copy-on-click" data-copy="' + escapeHtml(r.hostname) + '" title="Click to copy">' + escapeHtml(r.hostname) + '</span>';
+    } else if (r) {
+      hostnameText = "-";
+    } else {
+      hostnameText = '<span style="color:var(--color-text-tertiary)">-</span>';
+    }
     var vipBadge = "";
     if (r && r.vipInfo) {
       var vi = r.vipInfo;
@@ -316,7 +328,7 @@ function _renderIpList(data) {
     var hostname = hostnameText + vipBadge;
     var macRaw = (r && r.macAddress) || (r && r.notes ? (r.notes.match(/MAC:\s*([\w:]+)/) || [])[1] : null) || null;
     var macDisplay = macRaw
-      ? '<span class="mono" style="font-size:0.75rem">' + escapeHtml(macRaw) + '</span>'
+      ? '<span class="mono copy-on-click" data-copy="' + escapeHtml(macRaw) + '" style="font-size:0.75rem" title="Click to copy">' + escapeHtml(macRaw) + '</span>'
       : '<span style="color:var(--color-text-tertiary)">-</span>';
     var ownerDisplay = !r
       ? '<span style="color:var(--color-text-tertiary)">-</span>'
@@ -383,7 +395,7 @@ function _renderIpList(data) {
     html += '<tr' + rowClass + ' data-ip="' + escapeHtml(ip.address) + '">' +
       cbCell +
       '<td style="text-align:center"><span class="ip-status-dot ' + dotClass + '"></span></td>' +
-      '<td class="mono" style="font-size:0.8rem">' + escapeHtml(ip.address) + '</td>' +
+      '<td class="mono" style="font-size:0.8rem"><span class="copy-on-click" data-copy="' + escapeHtml(ip.address) + '" title="Click to copy">' + escapeHtml(ip.address) + '</span></td>' +
       '<td>' + hostname + '</td>' +
       '<td>' + macDisplay + '</td>' +
       '<td>' + owner + '</td>' +
@@ -485,6 +497,41 @@ function _renderIpList(data) {
       var aid = btn.getAttribute("data-aid");
       window.location.href = '/assets.html#view=asset:' + encodeURIComponent(aid);
     });
+  });
+
+  // Click-to-copy delegate for IP / hostname / MAC cells. Uses event delegation
+  // so newly-rendered pages don't need fresh wiring beyond this single listener
+  // (the body is re-rendered in full on every page change, so this re-binds
+  // alongside everything else above).
+  body.addEventListener("click", function (e) {
+    var target = e.target && e.target.closest ? e.target.closest(".copy-on-click") : null;
+    if (!target || !body.contains(target)) return;
+    var value = target.getAttribute("data-copy");
+    if (!value) return;
+    e.stopPropagation();
+    var notify = function (ok) {
+      if (typeof window.showToast === "function") {
+        window.showToast(ok ? ("Copied " + value) : "Copy failed", ok ? "success" : "error");
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(function () { notify(true); }, function () { notify(false); });
+    } else {
+      // Fallback for non-secure contexts / older browsers
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = value;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand && document.execCommand("copy");
+        document.body.removeChild(ta);
+        notify(!!ok);
+      } catch (_) {
+        notify(false);
+      }
+    }
   });
 
   // Scroll-to-row on focus IP. Cleared after one render so paginating away
