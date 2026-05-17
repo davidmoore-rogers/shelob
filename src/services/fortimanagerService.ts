@@ -1796,7 +1796,7 @@ export async function discoverDhcpSubnets(
           data: {
             target: [`/adom/${adom}/device/${deviceName}`],
             action: "get",
-            resource: "/api/v2/monitor/wifi/managed_ap?format=name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|base_mac|mac|status|state|version|firmware_version|lldp|mesh_uplink|parent_wtp_id",
+            resource: "/api/v2/monitor/wifi/managed_ap?format=name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|wtp_ip|connecting_ip|base_mac|mac|status|state|version|firmware_version|lldp|mesh_uplink|parent_wtp_id",
           },
         }],
       };
@@ -1816,7 +1816,7 @@ export async function discoverDhcpSubnets(
       } else if (Array.isArray(apResults)) {
         didApQuery = true;
         for (const ap of apResults) {
-          const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || "";
+          const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || ap.wtp_ip || ap.connecting_ip || "";
           const rawApMac = ap.base_mac || ap.mac || "";
           // LLDP-resolved wired uplink + mesh fields. The detected-device
           // fallback further down only fires for APs where peerSwitch is

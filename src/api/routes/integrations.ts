@@ -3521,6 +3521,15 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           ...(existingAsset.status === "decommissioned" ? { status: "active", statusChangedAt: new Date(now), statusChangedBy: integrationLabel } : {}),
           ...buildClassMonitorStamp(apMonitorCfg, existingAsset),
         };
+        // Mirror the resolved wired-uplink switch/port (from LLDP first, then
+        // the detected-device MAC table fallback) into `lastSeenSwitch` so the
+        // asset details panel shows where the AP is plugged in. Same
+        // "<switchId>/<portName>" format Phase 7.5 uses for endpoints. Phase
+        // 7.5 itself rarely fires on APs because switches usually see the
+        // AP's wired NIC MAC, not its baseMac which is what's indexed.
+        if (ap.peerSwitch && ap.peerPort) {
+          updateData.lastSeenSwitch = `${ap.peerSwitch}/${ap.peerPort}`;
+        }
         // Same correction as the FortiSwitch path — fix assetType if a prior
         // pathway created this asset as "other" before FortiAP discovery linked
         // up, and sweep the stale fortigate-endpoint source row.
@@ -3576,6 +3585,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             learnedLocation: apCreateProjected.learnedLocation,
             lastSeen: new Date(now),
             fortinetTopology: apTopology,
+            ...(ap.peerSwitch && ap.peerPort ? { lastSeenSwitch: `${ap.peerSwitch}/${ap.peerPort}` } : {}),
             ...buildClassMonitorStamp(apMonitorCfg),
             notes: `Auto-discovered from FortiGate ${ap.device} via ${integrationLabel}`,
             tags: ["fortiap", "auto-discovered"],

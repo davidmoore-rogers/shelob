@@ -641,14 +641,14 @@ export async function discoverDhcpSubnets(
   // Step 3e: Managed FortiAPs
   try {
     const apResults = await fgRequest<any[]>(config, "GET", "/api/v2/monitor/wifi/managed_ap", {
-      query: { ...queryBase, format: "name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|base_mac|mac|status|state|version|firmware_version|lldp|mesh_uplink|parent_wtp_id" },
+      query: { ...queryBase, format: "name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|wtp_ip|connecting_ip|base_mac|mac|status|state|version|firmware_version|lldp|mesh_uplink|parent_wtp_id" },
       signal,
     });
     didApQuery = true;
     let apCount = 0;
     if (Array.isArray(apResults)) {
       for (const ap of apResults) {
-        const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || "";
+        const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || ap.wtp_ip || ap.connecting_ip || "";
         const rawApMac = ap.base_mac || ap.mac || "";
         const lldpExt = extractApLldpAndMesh(ap);
         fortiAps.push({
