@@ -302,6 +302,12 @@ model MonitorClassOverride {
   customWidgetIntervalSeconds Int?
   // Custom-widget per-request timeout (ms). null = inherit.
   customWidgetTimeoutMs       Int?
+  // ─── Legacy retention columns (single-tier) ─────────────────────────────
+  // Phase 1 keeps these alongside the new detail/hourly/daily columns so the
+  // resolver + prune layer keep working unchanged until the tier-aware
+  // pruning lands. migrateRetentionTiers seeds the corresponding
+  // *DetailRetentionDays from these values on first boot. Dropped in a
+  // follow-up release once fleet-wide migration is confirmed.
   sampleRetentionDays       Int?
   // Single retention setting shared by AssetTelemetrySample (CPU/memory)
   // AND AssetTemperatureSample. The stream split only affects polling
@@ -309,6 +315,20 @@ model MonitorClassOverride {
   // table-level, so one knob covers both.
   telemetryRetentionDays    Int?
   systemInfoRetentionDays   Int?
+  // ─── Tiered retention columns (detail / hourly / daily) ─────────────────
+  // Three retention windows per stream — detail (raw samples), hourly
+  // (sampleRollup hourly aggregates), daily (sampleRollup daily aggregates).
+  // null = inherit from the tier below. Defaults at the manual/integration
+  // tier are 7 / 30 / 365 (Phase 1 introduces; phases 2+ start consuming).
+  sampleDetailRetentionDays    Int?
+  sampleHourlyRetentionDays    Int?
+  sampleDailyRetentionDays     Int?
+  telemetryDetailRetentionDays Int?
+  telemetryHourlyRetentionDays Int?
+  telemetryDailyRetentionDays  Int?
+  systemInfoDetailRetentionDays Int?
+  systemInfoHourlyRetentionDays Int?
+  systemInfoDailyRetentionDays  Int?
   // Per-stream polling-method overrides. null = inherit from the integration
   // tier (or the manual tier when integrationId is null). Accepted values:
   // "rest_api" | "snmp" | "winrm" | "ssh" | "icmp". The compatibility-aware
@@ -620,6 +640,21 @@ model Asset {
   storageSamples      AssetStorageSample[]
   temperatureSamples  AssetTemperatureSample[]
   ipsecTunnelSamples  AssetIpsecTunnelSample[]
+  // Tiered sample rollups (hourly + daily aggregates). Populated by the
+  // sampleRollup job from the source tables above. Cascade-delete with the
+  // asset so a removed device's history vanishes from every tier at once.
+  monitorSamplesHourly     AssetMonitorSampleHourly[]
+  monitorSamplesDaily      AssetMonitorSampleDaily[]
+  telemetrySamplesHourly   AssetTelemetrySampleHourly[]
+  telemetrySamplesDaily    AssetTelemetrySampleDaily[]
+  temperatureSamplesHourly AssetTemperatureSampleHourly[]
+  temperatureSamplesDaily  AssetTemperatureSampleDaily[]
+  interfaceSamplesHourly   AssetInterfaceSampleHourly[]
+  interfaceSamplesDaily    AssetInterfaceSampleDaily[]
+  storageSamplesHourly     AssetStorageSampleHourly[]
+  storageSamplesDaily      AssetStorageSampleDaily[]
+  ipsecTunnelSamplesHourly AssetIpsecTunnelSampleHourly[]
+  ipsecTunnelSamplesDaily  AssetIpsecTunnelSampleDaily[]
   lldpNeighbors       AssetLldpNeighbor[]      @relation("AssetLldpNeighbors")
   lldpNeighborMatches AssetLldpNeighbor[]      @relation("AssetLldpNeighborMatch")
   // Wireless stations connected to this asset (when it's a FortiAP) and
@@ -1029,6 +1064,325 @@ model AssetStorageSample {
   @@index([assetId, timestamp])
   @@index([assetId, mountPath, timestamp])
   @@map("asset_storage_samples")
+}
+
+// ─── Sample rollups (tiered retention: hourly + daily aggregates) ───────────
+//
+// Per-source aggregate tables populated by the sampleRollup job (custom
+// INSERT...ON CONFLICT). On Timescale-installed instances these become
+// hypertables with the same compression policy as the source tables; on
+// plain Postgres they stay as regular tables. The schema is uniform across
+// both — see the plan at ~/.claude/plans/changed-to-plan-mode-velvet-elephant.md.
+//
+// Common conventions:
+//   - Composite PK (id, bucketStart): id is a synthetic UUID for row identity;
+//     bucketStart is the Timescale partitioning column.
+//   - Composite UNIQUE on (bucketStart, assetId, [extraKey]): enforces one row
+//     per asset (and extraKey when present) per time bucket, so the rollup
+//     job's INSERT...ON CONFLICT (bucketStart, assetId[, extraKey]) DO UPDATE
+//     works without duplicates.
+//   - bucketStart timestamps are always UTC, aligned to the bucket boundary
+//     via time_bucket('1 hour', timestamp) / time_bucket('1 day', ...).
+//   - Gauge tables carry avg/min/max + sampleCount.
+//   - Counter tables carry first/last endpoints of each cumulative counter
+//     plus lastBucketSampleAt; rate is derived at query time as
+//     (last - first) / (lastBucketSampleAt - bucketStart in seconds).
+//     Negative deltas are dropped as counter resets (same convention as
+//     the detail-tier client-side rate calc in the chart renderers).
+//
+// Phase 1 only — these tables exist but no reader or writer consumes them
+// yet. The rollup job + tier-routing helper land in phases 2 and 4.
+
+model AssetMonitorSampleHourly {
+  id                String   @default(uuid())
+  assetId           String
+  asset             Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart       DateTime
+  sampleCount       Int
+  successCount      Int
+  failureCount      Int
+  // avgResponseTimeMs is computed over successful samples only; null when
+  // the bucket had zero successes. min/max likewise restricted to successes.
+  avgResponseTimeMs Float?
+  minResponseTimeMs Int?
+  maxResponseTimeMs Int?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId])
+  @@index([assetId, bucketStart])
+  @@map("asset_monitor_samples_hourly")
+}
+
+model AssetMonitorSampleDaily {
+  id                String   @default(uuid())
+  assetId           String
+  asset             Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart       DateTime
+  sampleCount       Int
+  successCount      Int
+  failureCount      Int
+  avgResponseTimeMs Float?
+  minResponseTimeMs Int?
+  maxResponseTimeMs Int?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId])
+  @@index([assetId, bucketStart])
+  @@map("asset_monitor_samples_daily")
+}
+
+model AssetTelemetrySampleHourly {
+  id                String   @default(uuid())
+  assetId           String
+  asset             Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart       DateTime
+  sampleCount       Int
+  avgCpuPct         Float?
+  minCpuPct         Float?
+  maxCpuPct         Float?
+  avgMemPct         Float?
+  minMemPct         Float?
+  maxMemPct         Float?
+  avgMemUsedBytes   BigInt?
+  maxMemUsedBytes   BigInt?
+  // last-seen total (memory size is effectively a constant per host;
+  // tracking last value rather than avg keeps the chart axis stable).
+  lastMemTotalBytes BigInt?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId])
+  @@index([assetId, bucketStart])
+  @@map("asset_telemetry_samples_hourly")
+}
+
+model AssetTelemetrySampleDaily {
+  id                String   @default(uuid())
+  assetId           String
+  asset             Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart       DateTime
+  sampleCount       Int
+  avgCpuPct         Float?
+  minCpuPct         Float?
+  maxCpuPct         Float?
+  avgMemPct         Float?
+  minMemPct         Float?
+  maxMemPct         Float?
+  avgMemUsedBytes   BigInt?
+  maxMemUsedBytes   BigInt?
+  lastMemTotalBytes BigInt?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId])
+  @@index([assetId, bucketStart])
+  @@map("asset_telemetry_samples_daily")
+}
+
+model AssetTemperatureSampleHourly {
+  id          String   @default(uuid())
+  assetId     String
+  asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart DateTime
+  sensorName  String
+  sampleCount Int
+  avgCelsius  Float?
+  minCelsius  Float?
+  maxCelsius  Float?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, sensorName])
+  @@index([assetId, bucketStart])
+  @@index([assetId, sensorName, bucketStart])
+  @@map("asset_temperature_samples_hourly")
+}
+
+model AssetTemperatureSampleDaily {
+  id          String   @default(uuid())
+  assetId     String
+  asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart DateTime
+  sensorName  String
+  sampleCount Int
+  avgCelsius  Float?
+  minCelsius  Float?
+  maxCelsius  Float?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, sensorName])
+  @@index([assetId, bucketStart])
+  @@index([assetId, sensorName, bucketStart])
+  @@map("asset_temperature_samples_daily")
+}
+
+model AssetInterfaceSampleHourly {
+  id                  String   @default(uuid())
+  assetId             String
+  asset               Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart         DateTime
+  ifName              String
+  sampleCount         Int
+  // Counter endpoints — rate computed at query time as
+  // (last - first) / (lastBucketSampleAt - bucketStart in seconds).
+  // Negative results dropped as counter resets.
+  firstInOctets       BigInt?
+  lastInOctets        BigInt?
+  firstOutOctets      BigInt?
+  lastOutOctets       BigInt?
+  firstInErrors       BigInt?
+  lastInErrors        BigInt?
+  firstOutErrors      BigInt?
+  lastOutErrors       BigInt?
+  maxSpeedBps         BigInt?
+  // last-seen descriptors (most-recent value within the bucket wins; these
+  // are stable enough across one bucket that avg doesn't add value).
+  lastAdminStatus     String?
+  lastOperStatus      String?
+  lastIpAddress       String?
+  lastMacAddress      String?
+  lastAlias           String?
+  lastDescription     String?
+  lastIfType          String?
+  lastIfParent        String?
+  lastVlanId          Int?
+  // Wall-clock of the actual last sample inside the bucket — used as the
+  // counter-rate denominator so rate is correct for partial buckets at the
+  // leading edge of the time series.
+  lastBucketSampleAt  DateTime
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, ifName])
+  @@index([assetId, bucketStart])
+  @@index([assetId, ifName, bucketStart])
+  @@map("asset_interface_samples_hourly")
+}
+
+model AssetInterfaceSampleDaily {
+  id                  String   @default(uuid())
+  assetId             String
+  asset               Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart         DateTime
+  ifName              String
+  sampleCount         Int
+  firstInOctets       BigInt?
+  lastInOctets        BigInt?
+  firstOutOctets      BigInt?
+  lastOutOctets       BigInt?
+  firstInErrors       BigInt?
+  lastInErrors        BigInt?
+  firstOutErrors      BigInt?
+  lastOutErrors       BigInt?
+  maxSpeedBps         BigInt?
+  lastAdminStatus     String?
+  lastOperStatus      String?
+  lastIpAddress       String?
+  lastMacAddress      String?
+  lastAlias           String?
+  lastDescription     String?
+  lastIfType          String?
+  lastIfParent        String?
+  lastVlanId          Int?
+  lastBucketSampleAt  DateTime
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, ifName])
+  @@index([assetId, bucketStart])
+  @@index([assetId, ifName, bucketStart])
+  @@map("asset_interface_samples_daily")
+}
+
+model AssetStorageSampleHourly {
+  id             String   @default(uuid())
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart    DateTime
+  mountPath      String
+  sampleCount    Int
+  avgUsedBytes   BigInt?
+  minUsedBytes   BigInt?
+  maxUsedBytes   BigInt?
+  lastTotalBytes BigInt?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, mountPath])
+  @@index([assetId, bucketStart])
+  @@index([assetId, mountPath, bucketStart])
+  @@map("asset_storage_samples_hourly")
+}
+
+model AssetStorageSampleDaily {
+  id             String   @default(uuid())
+  assetId        String
+  asset          Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart    DateTime
+  mountPath      String
+  sampleCount    Int
+  avgUsedBytes   BigInt?
+  minUsedBytes   BigInt?
+  maxUsedBytes   BigInt?
+  lastTotalBytes BigInt?
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, mountPath])
+  @@index([assetId, bucketStart])
+  @@index([assetId, mountPath, bucketStart])
+  @@map("asset_storage_samples_daily")
+}
+
+model AssetIpsecTunnelSampleHourly {
+  id                  String   @default(uuid())
+  assetId             String
+  asset               Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart         DateTime
+  tunnelName          String
+  sampleCount         Int
+  // Per-status sample counts across the bucket. Distinguishes a tunnel
+  // that flapped (mix of up/down) from one that was steady.
+  statusUpCount       Int      @default(0)
+  statusDownCount     Int      @default(0)
+  statusPartialCount  Int      @default(0)
+  statusDynamicCount  Int      @default(0)
+  // Counter endpoints for bytes (rate derived at query time, same shape
+  // as the interface rollup).
+  firstIncomingBytes  BigInt?
+  lastIncomingBytes   BigInt?
+  firstOutgoingBytes  BigInt?
+  lastOutgoingBytes   BigInt?
+  lastRemoteGateway   String?
+  lastParentInterface String?
+  lastProxyIdCount    Int?
+  lastBucketSampleAt  DateTime
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, tunnelName])
+  @@index([assetId, bucketStart])
+  @@index([assetId, tunnelName, bucketStart])
+  @@map("asset_ipsec_tunnel_samples_hourly")
+}
+
+model AssetIpsecTunnelSampleDaily {
+  id                  String   @default(uuid())
+  assetId             String
+  asset               Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  bucketStart         DateTime
+  tunnelName          String
+  sampleCount         Int
+  statusUpCount       Int      @default(0)
+  statusDownCount     Int      @default(0)
+  statusPartialCount  Int      @default(0)
+  statusDynamicCount  Int      @default(0)
+  firstIncomingBytes  BigInt?
+  lastIncomingBytes   BigInt?
+  firstOutgoingBytes  BigInt?
+  lastOutgoingBytes   BigInt?
+  lastRemoteGateway   String?
+  lastParentInterface String?
+  lastProxyIdCount    Int?
+  lastBucketSampleAt  DateTime
+
+  @@id([id, bucketStart])
+  @@unique([bucketStart, assetId, tunnelName])
+  @@index([assetId, bucketStart])
+  @@index([assetId, tunnelName, bucketStart])
+  @@map("asset_ipsec_tunnel_samples_daily")
 }
 
 model AssetIpHistory {
