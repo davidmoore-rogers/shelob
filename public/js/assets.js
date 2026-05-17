@@ -5574,6 +5574,19 @@ function _assetIntegrationLabelWithController(asset, joiner) {
   return label + " → " + controller;
 }
 
+// Stream name → Asset/resolver field prefix. Four of the five streams
+// (responseTime / temperature / interfaces / lldp) use their stream name as
+// the prefix directly; "telemetry" is the odd one out — its persisted
+// columns are `cpuMemoryPolling` / `cpuMemoryCredential` / `cpuMemoryMibId`
+// / `cpuMemoryCredentialId` / `cpuMemoryMibId` (the System-tab section is
+// "CPU & Memory" — "telemetry" is the UI/cadence-bucket label, not a column
+// prefix). Every lookup that does `stream + "Polling"` etc. routes through
+// this helper so the telemetry badge picks up class-override / per-asset
+// values instead of silently falling back to the source default.
+function _streamFieldPrefix(stream) {
+  return stream === "telemetry" ? "cpuMemory" : stream;
+}
+
 function _assetMonitorStreamSource(asset, stream) {
   if (!asset) return { polling: null, source: "—" };
   var integration = asset.discoveredByIntegration;
@@ -5588,7 +5601,7 @@ function _assetMonitorStreamSource(asset, stream) {
   // enough for the at-a-glance chart badge.
   var sourceKind = (integration && integration.type) || "manual";
   if (!_POLLING_COMPAT[sourceKind]) sourceKind = "manual";
-  var assetField = stream + "Polling";
+  var assetField = _streamFieldPrefix(stream) + "Polling";
   var resolved = asset[assetField] || _polarisSourceDefaultPolling(sourceKind, stream);
   if (!resolved) return { polling: null, source: sourceName };
 
@@ -5647,7 +5660,8 @@ function _streamTransportLabel(asset, resolvedPolling) {
 // authenticate.
 function _streamCredential(asset, stream, resolvedPolling, effectiveResolved) {
   if (!asset || resolvedPolling === "icmp" || resolvedPolling === "disabled") return null;
-  var perStream = asset[stream + "Credential"];
+  var prefix = _streamFieldPrefix(stream);
+  var perStream = asset[prefix + "Credential"];
   if (perStream && perStream.name) return perStream;
   if (asset.monitorCredential && asset.monitorCredential.name) return asset.monitorCredential;
   // Class-override per-stream credential — only available when the caller
@@ -5655,7 +5669,7 @@ function _streamCredential(asset, stream, resolvedPolling, effectiveResolved) {
   // credential up by id in the credential cache so the badge labels match
   // what the probe actually uses after the resolver fix.
   if (effectiveResolved) {
-    var credId = effectiveResolved[stream + "CredentialId"];
+    var credId = effectiveResolved[prefix + "CredentialId"];
     if (credId && _credentialCache && Array.isArray(_credentialCache.list)) {
       var found = _credentialCache.list.find(function (c) { return c.id === credId; });
       if (found && found.name) return found;
@@ -5750,7 +5764,7 @@ function _streamBadgeText(asset, stream, resolvedRaw, provenanceTier, intervalSe
   if (provenanceTier && _TIER_LABELS[provenanceTier]) {
     tier = _TIER_LABELS[provenanceTier];
   } else {
-    var assetField = stream + "Polling";
+    var assetField = _streamFieldPrefix(stream) + "Polling";
     if (asset[assetField]) tier = _TIER_LABELS.asset;
     else if (asset.discoveredByIntegration) tier = _TIER_LABELS.integration;
     else tier = _TIER_LABELS.manual;
@@ -5770,7 +5784,7 @@ function _streamSourceBadgeHTML(asset, stream) {
   var integration = asset.discoveredByIntegration;
   var sourceKind  = (integration && integration.type) || "manual";
   if (!_POLLING_COMPAT[sourceKind]) sourceKind = "manual";
-  var assetField  = stream + "Polling";
+  var assetField  = _streamFieldPrefix(stream) + "Polling";
   var resolvedRaw = asset[assetField] || _polarisSourceDefaultPolling(sourceKind, stream);
   if (!resolvedRaw) return "";
   // Coarse interval guess for the sync render: per-asset override only.
@@ -5812,7 +5826,8 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
   spans.forEach(function (span) {
     var stream = span.getAttribute("data-stream");
     if (!stream) return;
-    var resolved = eff.resolved[stream + "Polling"];
+    var prefix = _streamFieldPrefix(stream);
+    var resolved = eff.resolved[prefix + "Polling"];
     // Tier-3 leaves polling null when the operator picked "Inherit" at every
     // tier — fall back to the source default the resolver applies at probe
     // time. The sync render already does this; without the parallel fallback
@@ -5826,16 +5841,16 @@ async function _updateStreamSourceBadgesFromEffective(assetId, asset) {
       resolved = _polarisSourceDefaultPolling(sourceKind, stream);
       if (!resolved) return; // truly not delivered (e.g. AD/Entra telemetry)
     }
-    var prov = eff.provenance && eff.provenance[stream + "Polling"];
+    var prov = eff.provenance && eff.provenance[prefix + "Polling"];
     var intervalField = _streamIntervalEffectiveField(stream);
     var intervalSeconds = intervalField ? eff.resolved[intervalField] : null;
     // Per-stream MIB id + provenance — only response-time / telemetry /
     // interfaces / lldp carry a *MibId column. The same provenance tier
     // (asset|class|integration|manual) feeds the tooltip so operators can
     // see at a glance which tier supplied the MIB choice.
-    var mibId = eff.resolved[stream + "MibId"];
+    var mibId = eff.resolved[prefix + "MibId"];
     var mibLabel = _resolveStreamMibLabel(mibId, eff.mibLookup);
-    var mibProv = eff.provenance && eff.provenance[stream + "MibId"];
+    var mibProv = eff.provenance && eff.provenance[prefix + "MibId"];
     span.textContent = _streamBadgeText(asset, stream, resolved, prov, intervalSeconds, eff.resolved, mibLabel);
     // Tooltip carries the MIB provenance so the operator doesn't have to
     // open the edit modal to confirm where the MIB pin came from.
