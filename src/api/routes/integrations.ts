@@ -2999,11 +2999,17 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         );
 
         const updateData: Record<string, unknown> = {
-          // learnedLocation for firewalls is the firewall's own hostname
-          // (operator-readable site label). Projection deliberately leaves
-          // this null for firewall sources (the hostname's already on
-          // Asset.hostname). Keep the legacy "set when null" rule.
-          learnedLocation: existingAsset.learnedLocation || (memberDevice.hostname || fgHostname),
+          // learnedLocation for firewalls: prefer the SNMP sysLocation
+          // string (a real address — operator-meaningful site label) when
+          // pullSnmpLocation is on AND the pull returned a value; otherwise
+          // fall back to the legacy "use the firewall's own hostname"
+          // convention. SNMP wins even when learnedLocation is already set
+          // from a prior cycle, because the prior value was usually just
+          // the hostname — a strict improvement to overwrite it with the
+          // address. Projection leaves learnedLocation null for firewall
+          // sources by design (the hostname's already on Asset.hostname),
+          // so this assignment is the only writer for firewall learnedLocation.
+          learnedLocation: devSnmpLocation || existingAsset.learnedLocation || (memberDevice.hostname || fgHostname),
           lastSeen: new Date(now),
           fortinetTopology: memberTopology,
           discoveredByIntegrationId: integrationId,
@@ -3113,10 +3119,12 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           statusChangedAt: new Date(now),
           statusChangedBy: integrationLabel,
           department: "Network Security",
-          // learnedLocation for firewalls = the firewall's own hostname
-          // (site label). Projection leaves this null for firewall
-          // sources by design — set explicitly here.
-          learnedLocation: memberDevice.hostname || fgHostname,
+          // learnedLocation for firewalls: prefer SNMP sysLocation when
+          // available (a real address beats the hostname as a site label);
+          // fall back to the hostname when SNMP wasn't pulled / returned
+          // empty. Projection leaves this null for firewall sources by
+          // design — set explicitly here.
+          learnedLocation: devSnmpLocation || memberDevice.hostname || fgHostname,
           osVersion: fwCreateProjected.osVersion,
           lastSeen: new Date(now),
           // Stamp the discovering integration. The polling-method resolver
