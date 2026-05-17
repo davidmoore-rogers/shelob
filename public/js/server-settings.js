@@ -5996,9 +5996,12 @@ function renderProfileDetail(detail) {
       var defaultDisplay = m.defaultSymbol
         ? '<code style="font-size:0.85rem">' + escapeHtml(m.defaultSymbol) + '</code>'
         : '<span style="color:var(--color-text-tertiary);font-style:italic">(built-in seed)</span>';
+      var seedMib = m.defaultSymbol ? SEED_SYMBOL_MIB[m.defaultSymbol] : null;
       var mibDisplay = m.defaultMibId
         ? '<span style="font-size:0.78rem">' + escapeHtml(_mfgLookupMibLabel(m.defaultMibId)) + '</span>'
-        : '<span style="font-size:0.78rem;color:var(--color-text-tertiary);font-style:italic">seed</span>';
+        : (seedMib
+            ? '<span style="font-size:0.78rem;color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMib) + '</span>'
+            : '<span style="font-size:0.78rem;color:var(--color-text-tertiary);font-style:italic">seed</span>');
       html +=
         '<td>' + mibDisplay + '</td>' +
         '<td>' + defaultDisplay + '</td>' +
@@ -6021,7 +6024,7 @@ function renderProfileDetail(detail) {
     var newMibId = _mfgNewOverrideMibId(detail.id, m.metricKey) || null;
     html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '" style="background:var(--color-bg-primary)">' +
       '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.74rem">↳ add</td>' +
-      '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer) + '</td>' +
+      '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer, true) + '</td>' +
       '<td><div style="display:flex;gap:4px">' +
         '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex"  style="flex:0 0 130px;font-size:0.78rem">' +
         renderSymbolPicker("", newMibId, "mfg-new-override-symbol") +
@@ -6059,9 +6062,12 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
         '<button class="btn btn-sm mfg-override-cancel">Cancel</button></td>' +
     '</tr>';
   }
+  var seedMibO = o.symbol ? SEED_SYMBOL_MIB[o.symbol] : null;
   var mibLabel = o.mibId
     ? escapeHtml(_mfgLookupMibLabel(o.mibId))
-    : '<span style="color:var(--color-text-tertiary);font-style:italic">seed</span>';
+    : (seedMibO
+        ? '<span style="color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMibO) + '</span>'
+        : '<span style="color:var(--color-text-tertiary);font-style:italic">seed</span>');
   return head +
     '<td><span style="font-size:0.78rem">' + mibLabel + '</span></td>' +
     '<td><code style="font-size:0.8rem">' + escapeHtml(o.modelPattern) + '</code> &rarr; <code style="font-size:0.8rem">' + escapeHtml(o.symbol) + '</code></td>' +
@@ -6071,6 +6077,31 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
       '<button class="btn btn-sm btn-danger mfg-override-del">Del</button></td>' +
   '</tr>';
 }
+
+// Built-in seed symbols → originating MIB module name. The values mirror
+// the seeded OIDs in `src/services/oidRegistry.ts`'s BUILT_IN_OIDS table:
+// each entry is a hardcoded OID Polaris ships so the probe works without
+// the MIB being uploaded, but the MIB name is still the operator-meaningful
+// label for "where does this symbol come from."
+var SEED_SYMBOL_MIB = {
+  cpmCPUTotal5secRev:        "CISCO-PROCESS-MIB",
+  ciscoMemoryPoolUsed:       "CISCO-MEMORY-POOL-MIB",
+  ciscoMemoryPoolFree:       "CISCO-MEMORY-POOL-MIB",
+  jnxOperatingCPU:           "JUNIPER-MIB",
+  jnxOperatingBuffer:        "JUNIPER-MIB",
+  hpSwitchCpuStat:           "STATISTICS-MIB",
+  fgSysCpuUsage:             "FORTINET-FORTIGATE-MIB",
+  fgSysMemUsage:             "FORTINET-FORTIGATE-MIB",
+  fsSysCpuUsage:             "FORTINET-FORTISWITCH-MIB",
+  fsSysMemUsage:             "FORTINET-FORTISWITCH-MIB",
+  fsSysMemCapacity:          "FORTINET-FORTISWITCH-MIB",
+  fsSysDiskUsage:            "FORTINET-FORTISWITCH-MIB",
+  fsSysDiskCapacity:         "FORTINET-FORTISWITCH-MIB",
+  fapCpuUsage:               "FORTINET-FORTIAP-MIB",
+  fapMemoryUsage:            "FORTINET-FORTIAP-MIB",
+  fapTemperature:            "FORTINET-FORTIAP-MIB",
+  rlCpuUtilDuringLastMinute: "RADLAN-MIB",
+};
 
 // Map a MibFile.id back to its module name (or a short fallback) for the
 // MIB column. Reads the same `_mibsData` cache the dropdown is populated
@@ -6172,15 +6203,22 @@ function _ensureMibSymbols(mibId) {
 // scope: built-in seed (value="") + every uploaded MIB whose `manufacturer`
 // matches (case-insensitive). Filter mirrors the resolver's vendor-scope
 // pass — operators see exactly the MIBs Polaris would consult for this
-// vendor. Empty when the manufacturer has no uploaded MIBs; the seed entry
-// always renders so the dropdown is never empty.
-function renderMibSelect(currentMibId, cls, manufacturer) {
+// vendor. `omitSeed=true` hides the "Built-in seed" placeholder so the
+// add-row dropdown shows only real uploaded MIBs (an empty-on-submit value
+// still round-trips to mibId=null on the server side).
+function renderMibSelect(currentMibId, cls, manufacturer, omitSeed) {
   var mfg = (manufacturer || "").toLowerCase();
   var scoped = (_mibsData || []).filter(function (m) {
     return (m.manufacturer || "").toLowerCase() === mfg;
   });
-  var html = '<select class="' + cls + '" style="font-size:0.78rem">' +
-    '<option value=""' + (!currentMibId ? " selected" : "") + '>Built-in seed</option>';
+  var html = '<select class="' + cls + '" style="font-size:0.78rem">';
+  if (omitSeed) {
+    if (!currentMibId) {
+      html += '<option value="" selected disabled>— select MIB —</option>';
+    }
+  } else {
+    html += '<option value=""' + (!currentMibId ? " selected" : "") + '>Built-in seed</option>';
+  }
   scoped.forEach(function (m) {
     var label = m.moduleName || m.filename || m.id;
     if (m.model) label += " (" + m.model + ")";
