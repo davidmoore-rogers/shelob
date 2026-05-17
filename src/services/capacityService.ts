@@ -41,6 +41,7 @@ import pg from "pg";
 import { prisma } from "../db.js";
 import { getMonitorSettings, type MonitorSettings } from "./monitoringService.js";
 import { isTimescaleAvailable, isHypertable, ALL_HYPERTABLE_CANDIDATES } from "./timescaleService.js";
+import { getSampleRetention, type RetentionStream, type RetentionTier, type SampleRetention } from "./sampleRetentionService.js";
 import { isPgbossInstalled, getBootTimeMode, getQueueMode } from "./queueService.js";
 import { getDeploymentContext } from "../utils/deploymentContext.js";
 import { BACKUP_DIR, STATE_DIR } from "../utils/paths.js";
@@ -230,6 +231,18 @@ export interface CapacitySnapshot {
       pgbossPoolSize: number | null;
       maxConnections: number;
     };
+    /**
+     * Last successful run timestamp for each rollup tier, stamped by the
+     * `sampleRollup.<tier>` job via `Setting("sampleRollup.<tier>.lastSuccess")`.
+     * Null when no successful run has landed yet (fresh install before the
+     * first tick fires). Drives the `sample_rollup_lagging` watch reason
+     * which catches a stuck rollup before the detail tier outgrows its
+     * window with no aggregates produced.
+     */
+    rollupLastSuccess: {
+      hourly: string | null;
+      daily:  string | null;
+    };
   };
   workload: {
     monitoredAssetCount: number;
@@ -254,8 +267,8 @@ export interface CapacitySnapshot {
   };
 }
 
-// Tables we project. Each maps to which retention setting governs it AND
-// which asset-count bucket populates it.
+// Tables we project. Each maps to which (stream, tier) governs its retention
+// AND which asset-count bucket populates it.
 //
 //   "all"        — every monitored asset (response-time probe fires for all,
 //                  including managed switches/APs via the controller path)
@@ -267,32 +280,78 @@ export interface CapacitySnapshot {
 //   "systemInfo" — same exclusion for interface/storage/IPsec/LLDP tables.
 //                  WinRM and SSH *do* support system-info in principle so they
 //                  are not excluded here (only the REST API + switch/AP combo).
+//
+// Detail tier rows are the raw per-cadence samples (rate driven by the
+// monitor cadence settings). Hourly tier is a fixed 24 buckets/day per
+// (asset, extra-key) cell; daily tier is 1 bucket/day per (asset, extra-key).
 const SAMPLE_TABLES: Array<{
   name: string;
-  retention: keyof MonitorSettings;
+  stream: RetentionStream;
+  tier:   RetentionTier;
   countKey: "all" | "telemetry" | "systemInfo";
 }> = [
-  { name: "asset_monitor_samples",       retention: "sampleRetentionDays",     countKey: "all"        },
-  { name: "asset_telemetry_samples",     retention: "telemetryRetentionDays",  countKey: "telemetry"  },
-  { name: "asset_temperature_samples",   retention: "telemetryRetentionDays",  countKey: "telemetry"  },
-  { name: "asset_interface_samples",     retention: "systemInfoRetentionDays", countKey: "systemInfo" },
-  { name: "asset_storage_samples",       retention: "systemInfoRetentionDays", countKey: "systemInfo" },
-  { name: "asset_ipsec_tunnel_samples",  retention: "systemInfoRetentionDays", countKey: "systemInfo" },
+  // Source (detail) tables
+  { name: "asset_monitor_samples",       stream: "sample",     tier: "detail", countKey: "all"        },
+  { name: "asset_telemetry_samples",     stream: "telemetry",  tier: "detail", countKey: "telemetry"  },
+  { name: "asset_temperature_samples",   stream: "telemetry",  tier: "detail", countKey: "telemetry"  },
+  { name: "asset_interface_samples",     stream: "systemInfo", tier: "detail", countKey: "systemInfo" },
+  { name: "asset_storage_samples",       stream: "systemInfo", tier: "detail", countKey: "systemInfo" },
+  { name: "asset_ipsec_tunnel_samples",  stream: "systemInfo", tier: "detail", countKey: "systemInfo" },
+  // Hourly rollups
+  { name: "asset_monitor_samples_hourly",       stream: "sample",     tier: "hourly", countKey: "all"        },
+  { name: "asset_telemetry_samples_hourly",     stream: "telemetry",  tier: "hourly", countKey: "telemetry"  },
+  { name: "asset_temperature_samples_hourly",   stream: "telemetry",  tier: "hourly", countKey: "telemetry"  },
+  { name: "asset_interface_samples_hourly",     stream: "systemInfo", tier: "hourly", countKey: "systemInfo" },
+  { name: "asset_storage_samples_hourly",       stream: "systemInfo", tier: "hourly", countKey: "systemInfo" },
+  { name: "asset_ipsec_tunnel_samples_hourly",  stream: "systemInfo", tier: "hourly", countKey: "systemInfo" },
+  // Daily rollups
+  { name: "asset_monitor_samples_daily",        stream: "sample",     tier: "daily",  countKey: "all"        },
+  { name: "asset_telemetry_samples_daily",      stream: "telemetry",  tier: "daily",  countKey: "telemetry"  },
+  { name: "asset_temperature_samples_daily",    stream: "telemetry",  tier: "daily",  countKey: "telemetry"  },
+  { name: "asset_interface_samples_daily",      stream: "systemInfo", tier: "daily",  countKey: "systemInfo" },
+  { name: "asset_storage_samples_daily",        stream: "systemInfo", tier: "daily",  countKey: "systemInfo" },
+  { name: "asset_ipsec_tunnel_samples_daily",   stream: "systemInfo", tier: "daily",  countKey: "systemInfo" },
 ];
+
+// Cadence intervals consumed by the rows-per-asset-per-day calc. Source
+// tables drive their rate from the monitor cadence settings; rollup tables
+// are tier-fixed (24 buckets/day for hourly, 1 for daily) and ignore
+// the cadence input.
+interface CadenceIntervals { sample: number; telemetry: number; systemInfo: number }
 
 // Default rows-per-asset-per-day when we have no samples yet to learn from.
 // Numbers are deliberately conservative so a fresh install with monitoring
-// just turned on still gets a sensible projection.
-const DEFAULT_ROWS_PER_ASSET_PER_DAY: Record<string, (m: MonitorSettings) => number> = {
-  asset_monitor_samples:       (m) => 86400 / m.intervalSeconds,
-  asset_telemetry_samples:     (m) => 86400 / m.telemetryIntervalSeconds,
-  asset_temperature_samples:   (m) => (86400 / m.telemetryIntervalSeconds) * 4,   // ~4 sensors
-  asset_interface_samples:     (m) => (86400 / m.systemInfoIntervalSeconds) * 20, // ~20 ifaces
-  asset_storage_samples:       (m) => (86400 / m.systemInfoIntervalSeconds) * 3,  // ~3 mounts
-  asset_ipsec_tunnel_samples:  (m) => (86400 / m.systemInfoIntervalSeconds) * 1,  // ~1 tunnel
+// just turned on still gets a sensible projection. Multipliers for tables
+// with an extra-key dimension (sensorName / ifName / mountPath / tunnelName)
+// match the prior single-tier defaults.
+const DEFAULT_ROWS_PER_ASSET_PER_DAY: Record<string, (c: CadenceIntervals) => number> = {
+  // Source tables — rate × extra-key multiplier
+  asset_monitor_samples:       (c) => 86400 / c.sample,
+  asset_telemetry_samples:     (c) => 86400 / c.telemetry,
+  asset_temperature_samples:   (c) => (86400 / c.telemetry)  * 4,   // ~4 sensors
+  asset_interface_samples:     (c) => (86400 / c.systemInfo) * 20,  // ~20 ifaces
+  asset_storage_samples:       (c) => (86400 / c.systemInfo) * 3,   // ~3 mounts
+  asset_ipsec_tunnel_samples:  (c) => (86400 / c.systemInfo) * 1,   // ~1 tunnel
+  // Hourly rollups — 24 buckets/day × extra-key multiplier
+  asset_monitor_samples_hourly:       () => 24,
+  asset_telemetry_samples_hourly:     () => 24,
+  asset_temperature_samples_hourly:   () => 24 * 4,
+  asset_interface_samples_hourly:     () => 24 * 20,
+  asset_storage_samples_hourly:       () => 24 * 3,
+  asset_ipsec_tunnel_samples_hourly:  () => 24,
+  // Daily rollups — 1 bucket/day × extra-key multiplier
+  asset_monitor_samples_daily:        () => 1,
+  asset_telemetry_samples_daily:      () => 1,
+  asset_temperature_samples_daily:    () => 4,
+  asset_interface_samples_daily:      () => 20,
+  asset_storage_samples_daily:        () => 3,
+  asset_ipsec_tunnel_samples_daily:   () => 1,
 };
 
 // Defaults used only when a table has zero rows (so avg bytes/row is unknown).
+// Rollup rows are slightly larger than source rows on the gauge tables
+// (extra avg/min/max columns) and substantially larger on the counter tables
+// (first/last endpoints + last-seen descriptor columns).
 const DEFAULT_BYTES_PER_ROW: Record<string, number> = {
   asset_monitor_samples:       310,
   asset_telemetry_samples:     325,
@@ -300,6 +359,19 @@ const DEFAULT_BYTES_PER_ROW: Record<string, number> = {
   asset_interface_samples:     395,
   asset_storage_samples:       310,
   asset_ipsec_tunnel_samples:  390,
+  // Hourly + daily rollup defaults share the same shape per source.
+  asset_monitor_samples_hourly:      280,
+  asset_monitor_samples_daily:       280,
+  asset_telemetry_samples_hourly:    340,
+  asset_telemetry_samples_daily:     340,
+  asset_temperature_samples_hourly:  240,
+  asset_temperature_samples_daily:   240,
+  asset_interface_samples_hourly:    420,
+  asset_interface_samples_daily:     420,
+  asset_storage_samples_hourly:      280,
+  asset_storage_samples_daily:       280,
+  asset_ipsec_tunnel_samples_hourly: 360,
+  asset_ipsec_tunnel_samples_daily:  360,
 };
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -497,8 +569,9 @@ function projectSteadyStateSize(args: {
    *  Same exclusion as telemetryEligibleCount; WinRM/SSH are kept in. */
   systemInfoEligibleCount: number;
   monitor: MonitorSettings;
+  retention: SampleRetention;
 }): number {
-  const { currentDbBytes, sampleTables, monitoredCount, telemetryEligibleCount, systemInfoEligibleCount, monitor } = args;
+  const { currentDbBytes, sampleTables, monitoredCount, telemetryEligibleCount, systemInfoEligibleCount, monitor, retention } = args;
 
   // Subtract current sample-table bytes so we don't double-count when adding
   // the projected sample-table bytes back in.
@@ -509,6 +582,14 @@ function projectSteadyStateSize(args: {
     return currentDbBytes;
   }
 
+  // Cadence intervals drive the source-table row rate. Rollup tables ignore
+  // these (they're tier-fixed at 24 buckets/day hourly, 1 daily).
+  const intervals: CadenceIntervals = {
+    sample:     monitor.intervalSeconds,
+    telemetry:  monitor.telemetryIntervalSeconds,
+    systemInfo: monitor.systemInfoIntervalSeconds,
+  };
+
   let projectedSampleBytes = 0;
   for (const def of SAMPLE_TABLES) {
     const t = sampleTables.find((s) => s.name === def.name);
@@ -518,8 +599,12 @@ function projectSteadyStateSize(args: {
       def.countKey === "telemetry"  ? telemetryEligibleCount  :
       def.countKey === "systemInfo" ? systemInfoEligibleCount :
       monitoredCount;
-    const rowsPerAssetPerDay = DEFAULT_ROWS_PER_ASSET_PER_DAY[def.name](monitor);
-    const retentionDays = monitor[def.retention] as number;
+    const rowsPerAssetPerDay = DEFAULT_ROWS_PER_ASSET_PER_DAY[def.name](intervals);
+    // Use the "default" class retention for projection — most assets fall
+    // into that bucket. Per-class projection is more accurate but the
+    // rows-per-asset-per-day defaults don't break down by class either,
+    // so we'd be mixing precision levels.
+    const retentionDays = retention[def.stream][def.tier].default;
     projectedSampleBytes += count * rowsPerAssetPerDay * retentionDays * t.avgBytesPerRow;
   }
 
@@ -762,6 +847,57 @@ function computeReasons(
       message: `Sample tables are ${formatBytes(sampleTableBytes)} without TimescaleDB compression (~10× shrink available).`,
       suggestion,
     });
+  }
+
+  // ── Watch: sample rollup job lagging ────────────────────────────────────
+  // The rollup writer (hourly every 30 min, daily at 02:30 UTC) stamps a
+  // Setting on success. If either tier's lastSuccess is stale beyond a
+  // reasonable window we fire one rolled-up reason naming the laggard. The
+  // user-visible symptom of a stuck rollup is that long-range chart
+  // queries that should hit the rollup tier either return empty (no
+  // aggregates yet) or fall through to scanning the detail table and slow
+  // way down — operators see "the 30-day chart got slow" without
+  // realizing the upstream tick is wedged.
+  const HOURLY_STALE_MS = 6 * 60 * 60 * 1000;       // 6 hours
+  const DAILY_STALE_MS  = 36 * 60 * 60 * 1000;      // 36 hours
+  const nowMs = Date.now();
+  const hourlyAt = snap.database.rollupLastSuccess.hourly
+    ? new Date(snap.database.rollupLastSuccess.hourly).getTime()
+    : null;
+  const dailyAt = snap.database.rollupLastSuccess.daily
+    ? new Date(snap.database.rollupLastSuccess.daily).getTime()
+    : null;
+  // Only fire on installs where sample rows actually exist — a fresh
+  // install with no monitored assets has no aggregates to produce, so a
+  // missing lastSuccess is expected, not a problem.
+  const anySampleRows = snap.database.sampleTables.some((t) => t.rows > 0);
+  if (anySampleRows) {
+    const hourlyStale = hourlyAt == null || (nowMs - hourlyAt) > HOURLY_STALE_MS;
+    const dailyStale  = dailyAt  == null || (nowMs - dailyAt)  > DAILY_STALE_MS;
+    if (hourlyStale || dailyStale) {
+      const parts: string[] = [];
+      if (hourlyStale) {
+        parts.push(hourlyAt == null
+          ? "hourly tier has never produced a successful run"
+          : `last hourly run ${Math.round((nowMs - hourlyAt) / 3600_000)}h ago`);
+      }
+      if (dailyStale) {
+        parts.push(dailyAt == null
+          ? "daily tier has never produced a successful run"
+          : `last daily run ${Math.round((nowMs - dailyAt) / 3600_000)}h ago`);
+      }
+      reasons.push({
+        severity: "watch",
+        code: "sample_rollup_lagging",
+        family: "sample_rollup",
+        message: `Sample rollup job is lagging — ${parts.join("; ")}.`,
+        suggestion:
+          "Check journalctl for `sampleRollup.hourly` / `sampleRollup.daily` errors and " +
+          "for the `polaris_job_total{job=\"sampleRollup.*\",outcome=\"failure\"}` counter. " +
+          "Long-range chart queries depend on these aggregates; without them they fall " +
+          "back to scanning the detail table at every load.",
+      });
+    }
   }
 
   // ── Watch: pool / workers / max_connections undersized (rollup from advisor) ─
@@ -1043,6 +1179,7 @@ export async function getCapacitySnapshot(opts: {
 
   const [
     monitor,
+    sampleRetention,
     monitoredCount,
     telemetryEligibleRow,
     systemInfoEligibleRow,
@@ -1053,6 +1190,7 @@ export async function getCapacitySnapshot(opts: {
     connRow,
   ] = await Promise.all([
     getMonitorSettings(),
+    getSampleRetention(),
     prisma.asset.count({ where: { monitored: true } }),
     prisma.$queryRawUnsafe<{ count: bigint }[]>(telemetryEligibleSQL),
     prisma.$queryRawUnsafe<{ count: bigint }[]>(systemInfoEligibleSQL),
@@ -1068,6 +1206,18 @@ export async function getCapacitySnapshot(opts: {
     getSampleTableStats(),
     readPgStatActivity(),
   ]);
+  // Pull the rollup-job lastSuccess markers separately so the failure mode of
+  // a missing Setting row stays simple to reason about (parallel fetch on the
+  // Promise.all above would force us to handle settled-rejected for one row
+  // among many). These reads are cheap and unindexed-PK-fast.
+  const [rollupHourlyRow, rollupDailyRow] = await Promise.all([
+    prisma.setting.findUnique({ where: { key: "sampleRollup.hourly.lastSuccess" } }),
+    prisma.setting.findUnique({ where: { key: "sampleRollup.daily.lastSuccess" } }),
+  ]);
+  const rollupLastSuccess = {
+    hourly: ((rollupHourlyRow?.value as Record<string, unknown> | null)?.at as string | null) ?? null,
+    daily:  ((rollupDailyRow ?.value as Record<string, unknown> | null)?.at as string | null) ?? null,
+  };
   const telemetryEligibleCount  = Number(telemetryEligibleRow[0]?.count  ?? monitoredCount);
   const systemInfoEligibleCount = Number(systemInfoEligibleRow[0]?.count ?? monitoredCount);
 
@@ -1093,10 +1243,15 @@ export async function getCapacitySnapshot(opts: {
     telemetrySec:    monitor.telemetryIntervalSeconds,
     systemInfoSec:   monitor.systemInfoIntervalSeconds,
   };
+  // Summarize the new tiered retention as the legacy single-number shape
+  // the snapshot consumers still expect. Use the default-class detail tier
+  // since that's the operator-facing "this is the recent-data window" value.
+  // The full per-tier per-class shape is available via the global
+  // Setting("sampleRetention") fetched by the Maintenance card directly.
   const retention = {
-    monitorDays:    monitor.sampleRetentionDays,
-    telemetryDays:  monitor.telemetryRetentionDays,
-    systemInfoDays: monitor.systemInfoRetentionDays,
+    monitorDays:    sampleRetention.sample.detail.default,
+    telemetryDays:  sampleRetention.telemetry.detail.default,
+    systemInfoDays: sampleRetention.systemInfo.detail.default,
   };
 
   const steadyStateSizeBytes = projectSteadyStateSize({
@@ -1106,6 +1261,7 @@ export async function getCapacitySnapshot(opts: {
     telemetryEligibleCount,
     systemInfoEligibleCount,
     monitor,
+    retention: sampleRetention,
   });
 
   const snap: CapacitySnapshot = {
@@ -1140,6 +1296,7 @@ export async function getCapacitySnapshot(opts: {
         pgbossPoolSize,
         maxConnections,
       },
+      rollupLastSuccess,
     },
     workload: {
       monitoredAssetCount: monitoredCount,

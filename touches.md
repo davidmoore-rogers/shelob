@@ -746,6 +746,53 @@ build auto-prune + boot-time auto-build are layered on top.
 
 ---
 
+## cross-cutting/tiered-sample-retention
+
+**What it is:** Two-axis storage policy for the six monitor sample tables. **Tier axis**: detail (raw samples) → hourly aggregates → daily aggregates. **Retention axis**: each tier has its own days-to-keep, per device class (default / switch / accessPoint), per stream (sample / telemetry / systemInfo). Chart history requests at long ranges read from the rollup tiers (cheap), short ranges read from detail (raw). Phase rollout 0–6 retired the per-tier monitor-settings retention fields in favor of a single global `Setting("sampleRetention")` edited from Server Settings → Maintenance.
+
+**Schema:**
+- Six source tables (`asset_*_samples`) — unchanged shape, partitioned by `timestamp`.
+- Twelve rollup tables (`asset_*_samples_hourly` + `asset_*_samples_daily`) — partitioned by `bucketStart`. Gauge tables carry avg/min/max; counter tables carry first/last endpoints + `lastBucketSampleAt` so rate = `(last - first) / (lastBucketSampleAt - bucketStart in seconds)`, dropping negative deltas as counter resets.
+- All 18 tables can be Timescale hypertables (`timescaleService.ALL_HYPERTABLE_CANDIDATES`); plain Postgres works just as well, just without chunk-drop pruning.
+
+**Writers:**
+- `src/services/sampleWriteBuffer.ts:enqueue*` — six detail tables via batched createMany every 2 s. Append-only, no upsert.
+- `src/services/sampleRollupService.ts:rollupHourly() / rollupDaily()` — INSERT...ON CONFLICT DO UPDATE per (table, tier). Driven by `src/jobs/runSampleRollup.ts` (hourly tick every 30 min, daily tick at 02:30 UTC). Sources for daily reads from `*_hourly`, not detail, so the daily tick stays bounded on big fleets.
+- `src/services/monitoringService.ts:pruneMonitorSamples / pruneTelemetrySamples / pruneSystemInfoSamples` — fire from `src/jobs/monitorAssets.ts` heavy-loop daily prune; each helper calls `pruneOneTable` once per (table × tier × class) with retention from `getSampleRetention()`.
+
+**Readers:**
+- `src/services/sampleHistoryService.ts:read*History` — six tier-aware readers, one per source. Detail tier returns raw rows; rollup tiers translate aggregate columns back to source field names so existing chart renderers consume both shapes with no per-tier branching except for counter-rate pre-computation.
+- `src/api/routes/assets.ts` — six `/assets/:id/*-history` endpoints dispatch to the right reader via `pickSampleTierForAsset(assetId, stream, since)` from `sampleQueryRouter`.
+- `src/services/capacityService.ts:projectSteadyStateSize` — enumerates all 18 tables and multiplies retention × rows/asset/day × bytes/row per (stream, tier, default class) for the steady-state footprint projection.
+
+**Settings store:**
+- `Setting("sampleRetention")` — flat `{stream: {tier: {class: days}}}` shape, 27 numbers total. Defaults 7/30/365. Backed by `src/services/sampleRetentionService.ts` with a 5 s in-process cache (chart endpoints read on every request).
+- Edited from `public/js/server-settings.js:renderSampleRetentionCard()` (Server Settings → Maintenance tab) via `GET / PUT /server-settings/sample-retention`.
+
+**Lifecycle / migrations:**
+- `src/jobs/renameMonitorClassKeys.ts` (phase 0) — renames legacy `fortiswitch` / `fortiap` keys to `switch` / `accessPoint`.
+- `src/jobs/migrateRetentionTiers.ts` (phase 1) — seeded per-tier columns on MonitorClassOverride (now unused).
+- `src/jobs/consolidateSampleRetention.ts` (phase 5) — pulled legacy single-tier values into the new `Setting("sampleRetention")`.
+- Each migration is idempotent via its own marker Setting; safe to re-run by deleting the marker and restarting.
+
+**Invariants:**
+- **Same tier shape everywhere.** Detail / hourly / daily aggregates must produce the same field names per source so the chart renderers can hold a single shape per source. Adding a new aggregate column to a rollup table requires a matching update in both `sampleRollupService` (SQL) and `sampleHistoryService` (reader translation).
+- **Counter rate convention.** First/last + lastBucketSampleAt is the contract. Negative deltas drop as resets — matches detail-tier client-side diff in `_derivePerIntervalSeries` / `_deriveIpsecThroughput`.
+- **Retention is global.** Cadence / polling method / credentials / MIB hints / timeouts stay in the per-tier monitor-settings hierarchy (`MonitorClassOverride`, `Integration.config.monitorSettings`, `Setting("manualMonitorSettings")`); only retention is global. Don't re-introduce per-integration retention.
+- **Rollup writes are upsert.** Don't try to push rollup writes through `sampleWriteBuffer` — the buffer's append-only contract intentionally has no upsert path.
+
+**Observability:**
+- `polaris_sample_rollup_duration_seconds{tier,table}` (histogram) — per-INSERT wall-clock from sampleRollupService.
+- `polaris_job_duration_seconds{job}` + `polaris_job_total{job, outcome}` — `sampleRollup.hourly` and `sampleRollup.daily` job-level wrappers via `runInstrumentedJob`.
+- `Setting("sampleRollup.<tier>.lastSuccess")` — stamped on every successful tick. `capacityService` reads both into `database.rollupLastSuccess` and fires the `sample_rollup_lagging` watch reason when hourly is >6 h stale or daily is >36 h stale AND any sample table has rows.
+
+**When changing this:**
+- New rollup column → schema update + sampleRollupService SQL builder for both hourly and daily tiers + sampleHistoryService reader translation. Run `npx prisma migrate diff --from-schema /tmp/old.prisma --to-schema prisma/schema.prisma --script` and commit the resulting `migration.sql`.
+- New monitor stream → add to `RetentionStream` enum in `sampleRetentionService.ts`, add a tier to the Setting JSON shape, extend the Maintenance UI card's stream list, add the per-stream prune helper.
+- Retention default change → update `DEFAULT_DETAIL_DAYS` / `DEFAULT_HOURLY_DAYS` / `DEFAULT_DAILY_DAYS` in `sampleRetentionService.ts` AND the matching defaults in `consolidateSampleRetention.ts` (which seeds from those constants).
+
+---
+
 ## cross-cutting/csp-inline-script-policy
 
 **What it is:** Helmet's Content-Security-Policy in `src/app.ts` sets `scriptSrc: ["'self'"]` — every `<script>...</script>` block with inline content is BLOCKED by the browser. Only external `<script src="...">` tags and inline `on*=` handler attributes (allowed via `scriptSrcAttr: ["'unsafe-inline'"]`) are permitted. This is the most dangerous XSS vector closed by the strict CSP, and it must stay closed.
@@ -1833,6 +1880,7 @@ Listed alphabetically.
 - **Snapshot-on-flush.** `flushTable` splices the current array up front so concurrent enqueues during the awaited `createMany` land in a fresh array. On retry-exhausted failure the snapshot is re-prepended for the next tick.
 - **Per-table flush guard.** `flushing[key]` prevents re-entry on the same table — a 2 s tick that fires while a slow flush is still mid-write becomes a no-op for that table, no concurrent writer per table.
 - **Trade-off documented:** up to 2 s of sample rows lost on hard crash. Acceptable because samples are an append-only time series and the next cadence tick re-supplies; UI state (Asset row, status pill) is still synchronous.
+- **Detail tier only.** This buffer covers the six SOURCE tables. The twelve `*_hourly` / `*_daily` rollup tables use INSERT...ON CONFLICT DO UPDATE from `sampleRollupService.ts` instead — rollup writes are inherently upsert (idempotent re-runs over the same window must rewrite buckets in place) and the append-only buffer contract has no upsert path.
 
 **When changing this:**
 - New sample table → add a `BufferKey`, an `enqueueXxx` helper, a `TABLE_LABEL` entry, and a `switch` arm in `writeBatch`. Touch the test file too — same shape.

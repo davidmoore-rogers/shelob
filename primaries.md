@@ -317,6 +317,47 @@ Per-pattern sections:
 
 ---
 
+## Tiered time-series rollups (hourly + daily aggregates over detail samples)
+
+**What it is:** Long-range chart queries that would otherwise scan millions of detail rows are served from hourly + daily aggregate tables. Detail keeps recent (7 days default), hourly keeps medium (30 days), daily keeps long (1 year). The same query API returns same-shape responses on every tier — only sample count and granularity differ. SolarWinds-style storage policy adapted to Polaris's monitor sample tables.
+
+**Canonical implementation:** [src/services/sampleRollupService.ts](src/services/sampleRollupService.ts) (writer) + [src/services/sampleHistoryService.ts](src/services/sampleHistoryService.ts) (reader) + [src/services/sampleQueryRouter.ts](src/services/sampleQueryRouter.ts) (tier picker) + [src/jobs/runSampleRollup.ts](src/jobs/runSampleRollup.ts) (periodic driver). Retention policy backed by [src/services/sampleRetentionService.ts](src/services/sampleRetentionService.ts) and `Setting("sampleRetention")`, edited from the Maintenance card.
+
+**Key conventions:**
+- **Upsert writes, not append-only.** Rollup buckets MUST be rewritten in place on re-runs (handles late-arriving samples after a flush window crosses an hour rollover). The detail-tier `sampleWriteBuffer` pattern is the WRONG canonical here — rollup writes need INSERT...ON CONFLICT DO UPDATE semantics, which the append-only buffer intentionally rejects.
+- **One SQL statement per (table, tier).** Each rollup is a single `INSERT INTO <table>_<tier> SELECT date_trunc('<unit>', timestamp) ... GROUP BY ... ON CONFLICT (bucketStart, assetId[, extraKey]) DO UPDATE SET ...`. Portable across Timescale and plain Postgres via `date_trunc` (not `time_bucket` which is Timescale-only).
+- **Daily reads from hourly, NOT detail.** At scale (2000+ assets) a daily tick that re-scanned detail would be untenable. Layering daily on hourly keeps the daily tick bounded.
+- **Aggregation shape:** Gauge tables (monitor, telemetry, temperature, storage) carry `sampleCount + avg/min/max` per bucket. Counter tables (interface, ipsec) carry `first/last` counter endpoints + `lastBucketSampleAt` so the read layer derives rate as `(last - first) / (lastBucketSampleAt - bucketStart in seconds)`, dropping negative deltas as counter resets. IPsec additionally counts per-status sample occurrences within each bucket.
+- **Per-tier composite uniqueness.** `@@unique([bucketStart, assetId, <extraKey>?])` enforces one row per (asset, bucket, extra-key) so the rollup's ON CONFLICT clause has a target. Composite PK `(id, bucketStart)` separately so Timescale's "all PK columns must include the partitioning column" rule is satisfied without breaking the upsert semantics.
+- **Tier-routed reads use the same shape across tiers.** The reader translates rollup aggregate columns back to the source-table field names so chart renderers don't branch on tier — they get smoother values with smaller `sampleCount` per point. Counter charts get an explicit branch via `bucketSeconds > 0` because their semantic genuinely changes (cumulative counter vs pre-computed rate). The response carries `tier` + `bucketSeconds` discriminator fields the frontend uses for a "Hourly avg" / "Daily avg" stats-line badge.
+- **Two ticking loops, independent guards.** Hourly tick every 30 min, daily tick at 02:30 UTC. Each has its own `running` boolean so a slow tier can't block the other. Lookback windows (2 h hourly, 2 d daily) cover late-arriving samples without redoing the whole table.
+- **Stamp lastSuccess per tick.** `Setting("sampleRollup.<tier>.lastSuccess")` updated on every successful run; capacityService consumes for a `sample_rollup_lagging` watch reason that catches stuck rollups before long-range charts silently fall back to detail-table scans.
+- **Instrument writer + reader paths separately.** `polaris_sample_rollup_duration_seconds{tier,table}` (histogram, per INSERT) + the existing `polaris_job_duration_seconds{job="sampleRollup.<tier>"}` / `polaris_job_total{job, outcome}` from `runInstrumentedJob`. The HTTP histogram already times reads.
+
+**When adding a new aggregate column:**
+- Add the column to BOTH `*_hourly` and `*_daily` schema definitions.
+- Update both branches of the SQL builder in `sampleRollupService.ts` (hourly aggregation from detail; daily aggregation from hourly with weighted averages and first/last propagation).
+- Update the matching reader translation in `sampleHistoryService.ts` so the rollup row maps back to the chart-consumable shape.
+- Update `capacityService.DEFAULT_BYTES_PER_ROW` for the new rollup row size.
+- Tests mirror the same shape; commit the Prisma migration generated from `migrate diff`.
+
+**When adding a new sample stream:**
+- New `RetentionStream` enum value in `sampleRetentionService.ts` + matching default tier in `defaultSampleRetention()`.
+- New source + hourly + daily schema models. Add all three to `timescaleService.ROLLUP_TABLES` (and `SAMPLE_TABLES` for the source).
+- New SQL builders in `sampleRollupService.ts` (a hourly and a daily entry).
+- New reader in `sampleHistoryService.ts` matching the source's shape.
+- New prune helper in `monitoringService.ts` that calls `pruneOneTable` per (table × tier).
+- Capacity SAMPLE_TABLES enumeration in `capacityService.ts` gets three new entries (detail / hourly / daily).
+- Maintenance UI card gets a new stream row in `SAMPLE_RETENTION_STREAMS`.
+- Update `touches.md`'s cross-cutting/tiered-sample-retention section's Writers list to name the new caller.
+
+**When changing retention defaults:**
+- Update `DEFAULT_DETAIL_DAYS` / `DEFAULT_HOURLY_DAYS` / `DEFAULT_DAILY_DAYS` in `sampleRetentionService.ts`.
+- The migration job `consolidateSampleRetention.ts` reads these constants for fresh-install seeding; no separate update.
+- Existing installs are unaffected — their stored `Setting("sampleRetention")` keeps whatever the operator set.
+
+---
+
 ## Per-integration verbose debug logging
 
 **What it is:** Operator flips one checkbox on an integration's edit modal and gets step-by-step structured logs of that integration's discovery + sync + monitor-worker activity. Off by default; logs emit at pino info level (tagged `verbose: true`) so journalctl shows them immediately — no `LOG_LEVEL=debug` restart dance. Reused across discovery, sync, and per-job worker pickup/finish so an operator never has to wonder "which knob lights this up."
