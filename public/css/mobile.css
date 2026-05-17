@@ -973,7 +973,7 @@ button, .list-item, .chip { touch-action: manipulation; }
 }
 .kv-row:last-child { border-bottom: none; }
 .kv-row .k { color: var(--md-on-surface-variant); flex: 0 0 auto; }
-.kv-row .v { color: var(--md-on-surface); text-align: right; min-width: 0; word-break: break-word; }
+.kv-row .v { color: var(--md-on-surface); text-align: right; min-width: 0; letter-spacing: 0; overflow-wrap: anywhere; }
 
 /* Segmented button (used for chart range chips). MD3 spec: pill outer,
    internal divider, secondary-container fill on the active segment. */
