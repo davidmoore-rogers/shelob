@@ -849,6 +849,27 @@ export interface DiscoveryResult {
   switchInventoriedDevices?: string[];
   // Same as above, for the FortiAP managed_ap query.
   apInventoriedDevices?: string[];
+  // Devices whose firewall/vip query returned successfully (incl. empty
+  // results). Used by syncDhcpSubnets Phase 5b to release stale VIP
+  // reservations: a VIP row whose vipInfo.device is in this set but whose
+  // IP isn't reported in result.vips this cycle means the operator
+  // deleted the VIP on the FortiGate. VIPs whose source FortiGate's
+  // query FAILED are left alone — we didn't get a fresh answer.
+  vipInventoriedDevices?: string[];
+  // Devices whose CMDB DHCP-server query returned successfully. Used by
+  // Phase 5b to release stale dhcp_reservation rows — a CMDB entry
+  // missing from a successful query means an operator deleted the
+  // reservation on the FortiGate (the gate is the authoritative source
+  // for static DHCP reservations). Polaris-pushed manual reservations
+  // that have flipped to sourceType="dhcp_reservation" follow the same
+  // rule once their target entry disappears.
+  dhcpReservationsInventoriedDevices?: string[];
+  // Devices whose live DHCP-monitor query returned successfully. Not
+  // currently consumed by Phase 5b — dhcp_lease rows age out via the
+  // expireReservations job and the stale-reservation alert system, so
+  // a single missed monitor scrape shouldn't wipe history. Surfaced for
+  // future use / observability.
+  dhcpLeasesInventoriedDevices?: string[];
 }
 
 export type DiscoveryProgressCallback = (
@@ -1023,7 +1044,7 @@ export async function discoverDhcpSubnets(
     } else {
       log("discover.devices", "info", `No managed devices found in ADOM "${adom}"`);
     }
-    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [], vipInventoriedDevices: [], dhcpReservationsInventoriedDevices: [], dhcpLeasesInventoriedDevices: [] };
   }
 
   // Capture the full roster of configured devices (pre-filter, any conn_status).
@@ -1043,7 +1064,7 @@ export async function discoverDhcpSubnets(
     log("discover.devices", "info", `Found ${devicesData.length} managed device(s) in ADOM "${adom}"`);
   }
   if (devicesData.length === 0) {
-    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames, fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+    return { subnets: [], devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames, fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [], vipInventoriedDevices: [], dhcpReservationsInventoriedDevices: [], dhcpLeasesInventoriedDevices: [] };
   }
 
   const discovered: DiscoveredSubnet[] = [];
@@ -1080,11 +1101,24 @@ export async function discoverDhcpSubnets(
     // with it.
     didSwitchQuery: boolean;
     didApQuery: boolean;
+    // Whether each per-device authoritative-source query returned a usable
+    // response. Phase 5b in syncDhcpSubnets uses these to scope the
+    // stale-row sweep — we never release rows for a device whose source
+    // query failed this cycle.
+    didVipQuery: boolean;
+    didDhcpReservationsQuery: boolean;
+    didDhcpLeasesQuery: boolean;
   };
   // Top-level aggregates used by syncDhcpSubnets to decommission stale
   // switches/APs only when their controller was reachable.
   const switchInventoriedDevices = new Set<string>();
   const apInventoriedDevices = new Set<string>();
+  // Top-level aggregates used by syncDhcpSubnets Phase 5b to release stale
+  // VIP / dhcp_reservation rows only when their source device's query
+  // succeeded this cycle.
+  const vipInventoriedDevices = new Set<string>();
+  const dhcpReservationsInventoriedDevices = new Set<string>();
+  const dhcpLeasesInventoriedDevices = new Set<string>();
 
   const mgmtIfaceName = config.mgmtInterface || "mgmt";
   const useProxy = config.useProxy !== false; // default true
@@ -1254,6 +1288,9 @@ export async function discoverDhcpSubnets(
             // decommission sweep behaves identically across transport modes.
             didSwitchQuery: !!fgResult.switchInventoriedDevices && fgResult.switchInventoriedDevices.length > 0,
             didApQuery:     !!fgResult.apInventoriedDevices     && fgResult.apInventoriedDevices.length     > 0,
+            didVipQuery:                 !!fgResult.vipInventoriedDevices                 && fgResult.vipInventoriedDevices.length                 > 0,
+            didDhcpReservationsQuery:    !!fgResult.dhcpReservationsInventoriedDevices    && fgResult.dhcpReservationsInventoriedDevices.length    > 0,
+            didDhcpLeasesQuery:          !!fgResult.dhcpLeasesInventoriedDevices          && fgResult.dhcpLeasesInventoriedDevices.length          > 0,
           };
         } catch (err: any) {
           // Cache-miss fallback: only retry when the IP came from the warm
@@ -1339,6 +1376,12 @@ export async function discoverDhcpSubnets(
     // longer reports this device" (do decommission).
     let didSwitchQuery = false;
     let didApQuery = false;
+    // Same pattern for the authoritative-source queries Phase 5b consumes —
+    // a failed VIP or DHCP CMDB query must NOT cause Polaris to wipe rows
+    // we haven't actually heard the gate disclaim.
+    let didVipQuery = false;
+    let didDhcpReservationsQuery = false;
+    let didDhcpLeasesQuery = false;
 
     if (localDevice.mgmtIp && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(localDevice.mgmtIp)) {
       localInterfaceIps.push({ device: deviceName, interfaceName: mgmtIfaceName, ipAddress: localDevice.mgmtIp, role: "management" });
@@ -1382,9 +1425,14 @@ export async function discoverDhcpSubnets(
         if (dhcpStatus && dhcpStatus.code !== undefined && dhcpStatus.code !== 0) {
           log("discover.dhcp", "error", `${deviceName}: DHCP server query returned status ${dhcpStatus.code}: ${dhcpStatus.message || "(no message)"}`, deviceName);
         } else {
+          // Empty-result success — the gate has no DHCP servers configured.
+          // Treat as "queried successfully" so Phase 5b can release stale
+          // dhcp_reservation rows that survived after operator config wipes.
+          didDhcpReservationsQuery = true;
           log("discover.dhcp", "info", `${deviceName}: No DHCP servers configured`, deviceName);
         }
       } else {
+        didDhcpReservationsQuery = true;
         let deviceSubnetCount = 0;
         let deviceReservationCount = 0;
         for (const server of dhcpData) {
@@ -1441,6 +1489,7 @@ export async function discoverDhcpSubnets(
         }],
       };
       const leaseRes = await rpc(baseUrl, leasePayload, apiUser, apiToken, verifySsl, signal, integrationId);
+      didDhcpLeasesQuery = true;
       const leaseData = leaseRes.result?.[0]?.data;
       const monitorStatus = Array.isArray(leaseData) ? leaseData[0]?.status?.code : undefined;
       const rawResults = Array.isArray(leaseData)
@@ -1522,12 +1571,16 @@ export async function discoverDhcpSubnets(
       const ifacePayload: JsonRpcRequest = {
         id: 3,
         method: "get",
-        params: [{ url: `/pm/config/device/${deviceName}/vdom/root/system/interface`, fields: ["name", "ip", "vlanid", "switch-controller-mgmt-vlan"] }],
+        // secondary-ip is a child mkey table on system/interface — each row
+        // carries its own `ip` (in "x.x.x.x y.y.y.y" form). Asking for the
+        // parent field returns the whole nested array as embedded JSON.
+        params: [{ url: `/pm/config/device/${deviceName}/vdom/root/system/interface`, fields: ["name", "ip", "vlanid", "switch-controller-mgmt-vlan", "secondary-ip"] }],
       };
       const ifaceRes = await rpc(baseUrl, ifacePayload, apiUser, apiToken, verifySsl, signal, integrationId);
       const ifaceData = ifaceRes.result?.[0]?.data;
       const ifaceVlanMap = new Map<string, number>();
       let ifaceIpCount = 0;
+      let secondaryIpCount = 0;
       if (Array.isArray(ifaceData)) {
         for (const iface of ifaceData) {
           const ifaceName = iface.name || "";
@@ -1544,13 +1597,29 @@ export async function discoverDhcpSubnets(
             localInterfaceIps.push({ device: deviceName, interfaceName: ifaceName, ipAddress: ipArr[0], role: "interface" });
             ifaceIpCount++;
           }
+          // Secondary IPs: nested table on the interface. Each row has its own
+          // `ip` in either "x.x.x.x y.y.y.y" (IP + mask) string form or as a
+          // [ip, mask] array. Strip to the dotted-quad and push as
+          // role="secondary" so Phase 4 can label the reservation appropriately.
+          const secondaries = iface["secondary-ip"];
+          if (Array.isArray(secondaries)) {
+            for (const sec of secondaries) {
+              const rawSec = Array.isArray(sec?.ip)
+                ? (sec.ip[0] || "")
+                : (typeof sec?.ip === "string" ? sec.ip.split(" ")[0] : "");
+              if (rawSec && rawSec !== "0.0.0.0" && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(rawSec)) {
+                localInterfaceIps.push({ device: deviceName, interfaceName: ifaceName, ipAddress: rawSec, role: "secondary" });
+                secondaryIpCount++;
+              }
+            }
+          }
         }
       }
       for (const sub of localSubnets) {
         const vid = ifaceVlanMap.get(sub.name);
         if (vid) sub.vlan = vid;
       }
-      log("discover.interfaces", "info", `${deviceName}: Resolved ${ifaceIpCount} interface IP(s)`, deviceName);
+      log("discover.interfaces", "info", `${deviceName}: Resolved ${ifaceIpCount} interface IP(s)${secondaryIpCount > 0 ? ` + ${secondaryIpCount} secondary IP(s)` : ""}`, deviceName);
     } catch (err: any) {
       log("discover.interfaces", "error", `${deviceName}: Failed to query interfaces — ${err.message || "Unknown error"}`, deviceName);
     }
@@ -1964,6 +2033,7 @@ export async function discoverDhcpSubnets(
         params: [{ url: `/pm/config/device/${deviceName}/vdom/root/firewall/vip`, fields: ["name", "extip", "mappedip", "extintf"] }],
       };
       const vipRes = await rpc(baseUrl, vipPayload, apiUser, apiToken, verifySsl, signal, integrationId);
+      didVipQuery = true;
       const vipData = vipRes.result?.[0]?.data;
       let vipCount = 0;
       if (Array.isArray(vipData)) {
@@ -2004,7 +2074,7 @@ export async function discoverDhcpSubnets(
       }
     }
 
-    return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, switchMacTable: localSwitchMacTable, arpTable: localArpTable, cmdbSwitchSerials: localCmdbSwitchSerials, cmdbApSerials: localCmdbApSerials, didSwitchQuery, didApQuery };
+    return { device: localDevice, subnets: localSubnets, interfaceIps: localInterfaceIps, dhcpEntries: localDhcpEntries, deviceInventory: localInventory, didInventory, fortiSwitches: localSwitches, fortiAps: localAps, vips: localVips, switchMacTable: localSwitchMacTable, arpTable: localArpTable, cmdbSwitchSerials: localCmdbSwitchSerials, cmdbApSerials: localCmdbApSerials, didSwitchQuery, didApQuery, didVipQuery, didDhcpReservationsQuery, didDhcpLeasesQuery };
   }
 
   // Process up to `concurrency` FortiGates in parallel.
@@ -2074,6 +2144,9 @@ export async function discoverDhcpSubnets(
       cmdbApSerials.push(...chunk.cmdbApSerials);
       if (chunk.didSwitchQuery) switchInventoriedDevices.add(chunk.device.name);
       if (chunk.didApQuery)     apInventoriedDevices.add(chunk.device.name);
+      if (chunk.didVipQuery)                 vipInventoriedDevices.add(chunk.device.name);
+      if (chunk.didDhcpReservationsQuery)    dhcpReservationsInventoriedDevices.add(chunk.device.name);
+      if (chunk.didDhcpLeasesQuery)          dhcpLeasesInventoriedDevices.add(chunk.device.name);
 
       if (onDeviceComplete) {
         try {
@@ -2094,6 +2167,9 @@ export async function discoverDhcpSubnets(
             cmdbApSerials: chunk.cmdbApSerials,
             switchInventoriedDevices: chunk.didSwitchQuery ? [chunk.device.name] : [],
             apInventoriedDevices:     chunk.didApQuery     ? [chunk.device.name] : [],
+            vipInventoriedDevices:                 chunk.didVipQuery                 ? [chunk.device.name] : [],
+            dhcpReservationsInventoriedDevices:    chunk.didDhcpReservationsQuery    ? [chunk.device.name] : [],
+            dhcpLeasesInventoriedDevices:          chunk.didDhcpLeasesQuery          ? [chunk.device.name] : [],
           });
         } catch (err: any) {
           log("discover.device", "error", `${chunk.device.name}: Per-device sync failed — ${err.message || "Unknown error"}`, chunk.device.name);
@@ -2237,6 +2313,9 @@ export async function discoverDhcpSubnets(
     cmdbApSerials,
     switchInventoriedDevices: [...switchInventoriedDevices],
     apInventoriedDevices:     [...apInventoriedDevices],
+    vipInventoriedDevices:                 [...vipInventoriedDevices],
+    dhcpReservationsInventoriedDevices:    [...dhcpReservationsInventoriedDevices],
+    dhcpLeasesInventoriedDevices:          [...dhcpLeasesInventoriedDevices],
   };
 }
 

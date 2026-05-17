@@ -234,6 +234,13 @@ export async function discoverDhcpSubnets(
   // not licensed) counts as success because the controller is reachable.
   let didSwitchQuery = false;
   let didApQuery = false;
+  // Same pattern for the authoritative-source queries — Phase 5b in
+  // syncDhcpSubnets uses these to scope its stale-row sweep. A failed
+  // VIP or DHCP CMDB query must NOT cause Polaris to release rows we
+  // haven't actually heard the gate disclaim.
+  let didVipQuery = false;
+  let didDhcpReservationsQuery = false;
+  let didDhcpLeasesQuery = false;
 
   // Step 2: Resolve the FortiGate's management interface IP from its own config.
   // We don't know its mgmt IP from /sys/status; fall back to the host we connected to.
@@ -343,6 +350,12 @@ export async function discoverDhcpSubnets(
       // Step 3: DHCP server configuration
       try {
         const dhcpData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system.dhcp/server", { query: queryBase, signal });
+    // CMDB query succeeded — used by syncDhcpSubnets Phase 5b to scope
+    // the stale dhcp_reservation sweep. Empty-result success (no DHCP
+    // servers configured) still counts: that's the gate saying it has
+    // no reservations, which is exactly when previously-known ones
+    // should be released.
+    didDhcpReservationsQuery = true;
     if (!Array.isArray(dhcpData)) {
       log("discover.dhcp", "info", `${deviceHostname}: No DHCP servers configured`, deviceHostname);
     } else {
@@ -407,6 +420,7 @@ export async function discoverDhcpSubnets(
       query: { ...queryBase, format: "ip|mac|hostname|interface|reserved|expire_time|access_point|ssid|vci" },
       signal,
     });
+    didDhcpLeasesQuery = true;
 
     const flatLeases: any[] = [];
     if (Array.isArray(leases)) {
@@ -486,6 +500,7 @@ export async function discoverDhcpSubnets(
             const ifaceData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/system/interface", { query: queryBase, signal });
     const ifaceVlanMap = new Map<string, number>();
     let ifaceIpCount = 0;
+    let secondaryIpCount = 0;
     if (Array.isArray(ifaceData)) {
       const parseVid = (v: unknown): number => {
         const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
@@ -512,6 +527,27 @@ export async function discoverDhcpSubnets(
           });
           ifaceIpCount++;
         }
+        // Secondary IPs: nested mkey table on the interface. Each row carries
+        // its own `ip` in either "x.x.x.x y.y.y.y" string form or as a [ip,
+        // mask] array. Push one DiscoveredInterfaceIp per entry with
+        // role="secondary" so Phase 4 labels the reservation appropriately.
+        const secondaries = iface["secondary-ip"];
+        if (Array.isArray(secondaries)) {
+          for (const sec of secondaries) {
+            const rawSec = Array.isArray(sec?.ip)
+              ? (sec.ip[0] || "")
+              : (typeof sec?.ip === "string" ? sec.ip.split(" ")[0] : "");
+            if (rawSec && rawSec !== "0.0.0.0" && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(rawSec)) {
+              interfaceIps.push({
+                device: deviceName,
+                interfaceName: ifaceName,
+                ipAddress: rawSec,
+                role: "secondary",
+              });
+              secondaryIpCount++;
+            }
+          }
+        }
       }
     }
 
@@ -519,7 +555,7 @@ export async function discoverDhcpSubnets(
       const vid = ifaceVlanMap.get(sub.name);
       if (vid) sub.vlan = vid;
     }
-    log("discover.interfaces", "info", `${deviceHostname}: Resolved ${ifaceIpCount} interface IP(s)`, deviceHostname);
+    log("discover.interfaces", "info", `${deviceHostname}: Resolved ${ifaceIpCount} interface IP(s)${secondaryIpCount > 0 ? ` + ${secondaryIpCount} secondary IP(s)` : ""}`, deviceHostname);
   } catch (err: any) {
     log("discover.interfaces", "error", `${deviceHostname}: Failed to query interfaces — ${err.message || "Unknown error"}`, deviceHostname);
   }
@@ -778,6 +814,7 @@ export async function discoverDhcpSubnets(
       // Step 3f: Firewall VIPs
       try {
         const vipData = await fgRequest<any[]>(config, "GET", "/api/v2/cmdb/firewall/vip", { query: queryBase, signal });
+    didVipQuery = true;
     let vipCount = 0;
     if (Array.isArray(vipData)) {
       for (const vip of vipData) {
@@ -924,6 +961,9 @@ export async function discoverDhcpSubnets(
     cmdbApSerials: [],
     switchInventoriedDevices: didSwitchQuery ? [deviceName] : [],
     apInventoriedDevices:     didApQuery     ? [deviceName] : [],
+    vipInventoriedDevices:                 didVipQuery                 ? [deviceName] : [],
+    dhcpReservationsInventoriedDevices:    didDhcpReservationsQuery    ? [deviceName] : [],
+    dhcpLeasesInventoriedDevices:          didDhcpLeasesQuery          ? [deviceName] : [],
   };
 }
 

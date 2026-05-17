@@ -686,7 +686,7 @@ router.post("/", async (req, res, next) => {
           // Windows Server stamps subnets with config.host as their fortigateDevice,
           // so the "known roster" is just the DHCP server host itself.
           const wsHost = (input.config as any).host as string;
-          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+          discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [], vipInventoriedDevices: [], dhcpReservationsInventoriedDevices: [], dhcpLeasesInventoriedDevices: [] };
         } else if (input.type === "fortigate") {
           discoveryResult = await fortigate.discoverDhcpSubnets(input.config as any, ac.signal);
         } else {
@@ -1542,7 +1542,7 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
       } else if (integration.type === "windowsserver") {
         const subnets = await windowsServer.discoverDhcpScopes(config as any, ac.signal);
         const wsHost = (config as any).host as string;
-        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [] };
+        discoveryResult = { subnets, devices: [], interfaceIps: [], dhcpEntries: [], deviceInventory: [], inventoryDevices: [], knownDeviceNames: wsHost ? [wsHost] : [], fortiSwitches: [], fortiAps: [], vips: [], switchMacTable: [], arpTable: [], cmdbSwitchSerials: [], cmdbApSerials: [], switchInventoriedDevices: [], apInventoriedDevices: [], vipInventoriedDevices: [], dhcpReservationsInventoriedDevices: [], dhcpLeasesInventoriedDevices: [] };
         // Windows Server is a single host — no per-device iteration, sync the full result normally
         const r = await syncDhcpSubnets(integrationId, integrationName, integration.type, discoveryResult, actor);
         syncTotals.created.push(...r.created);
@@ -3637,6 +3637,25 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   phaseMark("3c");
   // ══════════════════════════════════════════════════════════════════════════════
 
+  // Built unconditionally so Phase 5 (in-place VIP→DHCP conversion) and Phase
+  // 5b (stale VIP/DHCP-reservation sweep) have the data even when this cycle
+  // returned zero VIPs from every gate. `vipQueriedDevices` is the set of
+  // FortiGate names whose `firewall/vip` query succeeded this run — only
+  // VIPs whose `vipInfo.device` is in this set are sweep-eligible, so a
+  // transient query failure won't wipe operator-edited rows.
+  const currentVipKeys = new Set<string>();
+  const vipQueriedDevices = new Set<string>(result.vipInventoriedDevices ?? []);
+  if (result.vips) {
+    for (const vip of result.vips) {
+      const matchExt = findSubnetForIp(vip.extip);
+      if (matchExt) currentVipKeys.add(reservationKey(matchExt.id, vip.extip));
+      for (const ip of vip.mappedips) {
+        const matchMap = findSubnetForIp(ip);
+        if (matchMap) currentVipKeys.add(reservationKey(matchMap.id, ip));
+      }
+    }
+  }
+
   if (result.vips && result.vips.length > 0) {
     for (const vip of result.vips) {
       const ipsToReserve: Array<{ ip: string; role: "external" | "mapped" }> = [
@@ -3730,6 +3749,12 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
   phaseMark("4");
   // ══════════════════════════════════════════════════════════════════════════════
 
+  const interfaceRoleLabel = (role: string): string => {
+    if (role === "management") return "Management interface";
+    if (role === "secondary")  return "Secondary IP";
+    return "Interface";
+  };
+
   for (const ifaceIp of result.interfaceIps) {
     if (!ifaceIp.ipAddress) continue;
 
@@ -3737,10 +3762,11 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     if (!matchingSubnet) continue;
 
     const key = reservationKey(matchingSubnet.id, ifaceIp.ipAddress);
+    const noteText = `${interfaceRoleLabel(ifaceIp.role)} (${ifaceIp.interfaceName}) on ${ifaceIp.device}`;
     const existingRes = activeResMap.get(key);
     if (existingRes) {
       if (existingRes.sourceType === "manual") {
-        const proposed = { hostname: ifaceIp.device, owner: "network-team", projectRef: projectRefLabel, notes: `${ifaceIp.role === "management" ? "Management interface" : "Interface"} (${ifaceIp.interfaceName}) on ${ifaceIp.device}`, sourceType: "interface_ip" };
+        const proposed = { hostname: ifaceIp.device, owner: "network-team", projectRef: projectRefLabel, notes: noteText, sourceType: "interface_ip" };
         await upsertConflict(existingRes.id, integrationId, proposed, existingRes);
       }
       continue;
@@ -3755,7 +3781,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           hostname: ifaceIp.device,
           owner: "network-team",
           projectRef: projectRefLabel,
-          notes: `${ifaceIp.role === "management" ? "Management interface" : "Interface"} (${ifaceIp.interfaceName}) on ${ifaceIp.device}`,
+          notes: noteText,
           status: "active",
           sourceType: "interface_ip",
         },
@@ -3841,13 +3867,75 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
             await upsertConflict(existingRes.id, integrationId, { hostname: proposedHostname, owner: proposedOwner, projectRef: projectRefLabel, notes: proposedNotes, sourceType: proposedSourceType }, existingRes);
           }
         } else if (existingRes.sourceType === "vip") {
+          const vipStillExists = currentVipKeys.has(key);
+          const macNormalized = entry.macAddress ? entry.macAddress.toUpperCase().replace(/-/g, ":") : null;
+
+          if (!vipStillExists && vipQueriedDevices.has(((existingRes.vipInfo as any)?.device) || "")) {
+            // VIP succession: the FortiGate no longer reports this VIP (we
+            // queried successfully, the entry isn't there), and a DHCP
+            // lease/reservation has landed at the same IP. Convert the row
+            // in place — preserves the reservation id and any operator
+            // edits while the sourceType honestly reflects the gate's
+            // current state. Operator-typed owner / notes / hostname
+            // survive; only the canonical VIP-discovery placeholders are
+            // overwritten by the DHCP-discovery equivalents.
+            const isCanonicalVipOwner = existingRes.owner === "fortimanager-vip";
+            const isCanonicalVipNotes =
+              !existingRes.notes ||
+              (typeof existingRes.notes === "string" && existingRes.notes.startsWith("Firewall VIP "));
+            const updateData: Record<string, unknown> = {
+              sourceType: proposedSourceType,
+              vipInfo: null,
+            };
+            if (isCanonicalVipOwner) updateData.owner = proposedOwner;
+            if (isCanonicalVipNotes) updateData.notes = proposedNotes;
+            if (macNormalized && !existingRes.macAddress) updateData.macAddress = macNormalized;
+            if (entry.seenLeased && isDhcpReservation) {
+              updateData.lastSeenLeased = new Date();
+              updateData.staleNotifiedAt = null;
+              updateData.staleSnoozedUntil = null;
+            }
+            await prisma.reservation.update({ where: { id: existingRes.id }, data: updateData });
+            // Auto-reject any pending VIP-merge conflicts on this row —
+            // they were raised against the prior VIP state which is now
+            // gone. The DHCP source is unambiguous; no operator review
+            // needed.
+            await prisma.conflict.updateMany({
+              where: { reservationId: existingRes.id, status: "pending" },
+              data: { status: "rejected", resolvedBy: "auto", resolvedAt: new Date() },
+            });
+            const priorVipInfo = existingRes.vipInfo as any;
+            existingRes.sourceType = proposedSourceType;
+            existingRes.vipInfo = null;
+            if (isCanonicalVipOwner) existingRes.owner = proposedOwner;
+            if (isCanonicalVipNotes) existingRes.notes = proposedNotes;
+            if (macNormalized && !existingRes.macAddress) existingRes.macAddress = macNormalized;
+            logEvent({
+              action: "reservation.vip.replaced",
+              resourceType: "reservation",
+              resourceId: existingRes.id,
+              resourceName: `${entry.ipAddress}`,
+              actor,
+              message: `VIP "${priorVipInfo?.name || "(unknown)"}" no longer on ${priorVipInfo?.device || "(unknown)"} — converted to ${proposedSourceType.replace("_", " ")} at ${entry.ipAddress}`,
+              details: {
+                integrationId,
+                integrationName,
+                reservationId: existingRes.id,
+                ipAddress: entry.ipAddress,
+                priorVipInfo,
+                newSourceType: proposedSourceType,
+                fortigateDevice: entry.device,
+              },
+            });
+            continue;
+          }
+
           // VIP + DHCP collision (DHCP arriving second): the FortiGate has a
           // VIP external IP that also shows up as a DHCP lease/reservation.
           // Silent fill of macAddress (technical observation; no operator
           // decision needed), then raise a merge conflict for the metadata
           // fold-in review. upsertConflict's 30-day guard prevents re-raise
           // once the operator resolves.
-          const macNormalized = entry.macAddress ? entry.macAddress.toUpperCase().replace(/-/g, ":") : null;
           if (macNormalized && !existingRes.macAddress) {
             await prisma.reservation.update({
               where: { id: existingRes.id },
@@ -3944,6 +4032,149 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         syncLog("error", `Failed to create DHCP ${isDhcpReservation ? "reservation" : "lease"} for ${entry.ipAddress}: ${err.message || "Unknown error"}`);
       }
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // Phase 5b — Release stale authoritative-source rows (VIPs + dhcp_reservations)
+  phaseMark("5b");
+  //
+  // The FortiGate is the authoritative source for its own VIPs and CMDB DHCP
+  // reservations. When a row that was previously discovered no longer appears
+  // in the gate's response — and that gate's query succeeded this cycle —
+  // an operator deleted it on the gate, so Polaris should reflect that.
+  //
+  // Two distinct sweeps share one walk over activeResMap:
+  //   • VIP sweep — gated on vipQueriedDevices. Phase 5 already converted
+  //     any VIP that was replaced by a fresh dhcp_* entry in this cycle
+  //     (its sourceType is no longer "vip"), so anything still tagged vip
+  //     here truly disappeared with no replacement.
+  //   • dhcp_reservation sweep — gated on dhcpReservationsInventoriedDevices.
+  //     Covers Polaris-pushed manual reservations that flipped to
+  //     dhcp_reservation on first sight AND fresh-from-CMDB rows. Leases
+  //     and fortiswitch/fortinap source types are intentionally NOT swept
+  //     here — leases age out via expireReservations + the stale-reservation
+  //     job, and fortiswitch/fortinap reservations are device-presence
+  //     indicators (Phase 2b handles their decommission separately).
+  //
+  // dhcp_reservation membership test: an entry is "still on the gate" if any
+  // entry in result.dhcpEntries is at this (subnetId, ip) AND the entry's
+  // device is one whose CMDB query succeeded. dhcp_lease entries also satisfy
+  // membership because a static reservation that's currently leased shows up
+  // as either (the discovery merger keeps CMDB rows on overlap; the monitor
+  // pass annotates them).
+  // ══════════════════════════════════════════════════════════════════════════════
+  const dhcpReservationDevices = new Set<string>(result.dhcpReservationsInventoriedDevices ?? []);
+  const stillOnGateKeys = new Set<string>();
+  if (Array.isArray(result.dhcpEntries)) {
+    for (const e of result.dhcpEntries) {
+      if (!e.ipAddress || !dhcpReservationDevices.has(e.device)) continue;
+      const s = findSubnetForIp(e.ipAddress);
+      if (s) stillOnGateKeys.add(reservationKey(s.id, e.ipAddress));
+    }
+  }
+  // Subnet index by id — used to scope dhcp_reservation cleanup to subnets
+  // this integration discovered (and to read fortigateDevice in O(1)).
+  const subnetById = new Map<string, any>();
+  for (const s of allSubnets) subnetById.set(s.id, s);
+
+  let releasedStaleVips = 0;
+  let releasedStaleDhcpReservations = 0;
+  for (const [key, row] of activeResMap.entries()) {
+    if (!row || row.status !== "active") continue;
+    if (row.sourceType === "vip") {
+      const dev = ((row.vipInfo as any)?.device) || "";
+      if (!vipQueriedDevices.has(dev)) continue;
+      if (currentVipKeys.has(key)) continue;
+      const priorVipInfo = row.vipInfo as any;
+      try {
+        // `vipInfo: null` clears the JSON column. Routed through a
+        // Record<string, unknown> bag so Prisma's narrow nullable-Json
+        // input type doesn't reject — matches the in-place convert path
+        // above.
+        const vipReleaseData: Record<string, unknown> = { status: "released", vipInfo: null };
+        await prisma.reservation.update({
+          where: { id: row.id },
+          data: vipReleaseData,
+        });
+        await prisma.conflict.updateMany({
+          where: { reservationId: row.id, status: "pending" },
+          data: { status: "rejected", resolvedBy: "auto", resolvedAt: new Date() },
+        });
+        activeResMap.delete(key);
+        releasedStaleVips++;
+        logEvent({
+          action: "reservation.vip.released",
+          resourceType: "reservation",
+          resourceId: row.id,
+          resourceName: row.ipAddress || "",
+          actor,
+          message: `VIP "${priorVipInfo?.name || "(unknown)"}" no longer on ${priorVipInfo?.device || "(unknown)"} — reservation released`,
+          details: {
+            integrationId,
+            integrationName,
+            reservationId: row.id,
+            ipAddress: row.ipAddress,
+            priorVipInfo,
+            fortigateDevice: dev,
+          },
+        });
+      } catch (err: any) {
+        syncLog("error", `Failed to release stale VIP reservation ${row.ipAddress}: ${err.message || "Unknown error"}`);
+      }
+      continue;
+    }
+    if (row.sourceType === "dhcp_reservation") {
+      // Scope: only this integration's own discovered rows. A subnet
+      // discovered by a different integration is out of scope even if
+      // the FortiGate name happens to coincide.
+      if (!row.subnetId) continue;
+      const subnet = subnetById.get(row.subnetId);
+      if (!subnet || subnet.discoveredBy !== integrationId) continue;
+      if (!subnet.fortigateDevice || !dhcpReservationDevices.has(subnet.fortigateDevice)) continue;
+      if (stillOnGateKeys.has(key)) continue;
+      try {
+        await prisma.reservation.update({
+          where: { id: row.id },
+          data: {
+            status: "released",
+            // Clear push pointers — the device-side entry is gone (operator
+            // deleted on the gate), and any future re-reservation at this
+            // IP should make its own push from scratch.
+            pushedToId: null,
+            pushedScopeId: null,
+            pushedEntryId: null,
+            pushStatus: null,
+          },
+        });
+        await prisma.conflict.updateMany({
+          where: { reservationId: row.id, status: "pending" },
+          data: { status: "rejected", resolvedBy: "auto", resolvedAt: new Date() },
+        });
+        activeResMap.delete(key);
+        releasedStaleDhcpReservations++;
+        logEvent({
+          action: "reservation.dhcp_reservation.released",
+          resourceType: "reservation",
+          resourceId: row.id,
+          resourceName: row.ipAddress || "",
+          actor,
+          message: `DHCP reservation for ${row.ipAddress} no longer on ${subnet.fortigateDevice} — reservation released`,
+          details: {
+            integrationId,
+            integrationName,
+            reservationId: row.id,
+            ipAddress: row.ipAddress,
+            fortigateDevice: subnet.fortigateDevice,
+            wasPushedByPolaris: !!row.pushedToId,
+          },
+        });
+      } catch (err: any) {
+        syncLog("error", `Failed to release stale DHCP reservation ${row.ipAddress}: ${err.message || "Unknown error"}`);
+      }
+    }
+  }
+  if (releasedStaleVips > 0 || releasedStaleDhcpReservations > 0) {
+    syncLog("info", `Stale-row sweep: released ${releasedStaleVips} VIP reservation(s), ${releasedStaleDhcpReservations} DHCP reservation(s)`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════════

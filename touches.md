@@ -433,6 +433,7 @@ build auto-prune + boot-time auto-build are layered on top.
 - `src/services/reservationService.ts:245` — On successful push, set sourceType = "dhcp_reservation", pushedToId, pushedScopeId, pushedEntryId, pushedAt
 - `src/services/reservationService.ts:340-390` — releaseReservation() unpushes using pushedScopeId/pushedEntryId, then lease-releases (dhcp_lease rows) if integration has pushReservations=true
 - `src/api/routes/integrations.ts:2559,2733,2783,2847,2919` — upsertConflict() bypass when existingRes.sourceType === "manual" (don't conflict-flag pre-existing manual reservations)
+- `src/api/routes/integrations.ts:syncDhcpSubnets` Phase 5b — Releases active `dhcp_reservation` rows (including ex-Polaris-pushed-manual rows that flipped to `dhcp_reservation` on first sight) whose CMDB query succeeded this cycle but whose `(subnetId, ip)` isn't in `result.dhcpEntries`. Clears `pushedToId`/`pushedScopeId`/`pushedEntryId`/`pushStatus`. Gated to `subnet.discoveredBy === integrationId` so other integrations' rows are never touched. Auto-rejects pending conflicts on the released row. Writes `reservation.dhcp_reservation.released` Event.
 - `public/js/assets.js` — Quarantine/release UI buttons (quarantine push separate from reservation push)
 
 **Readers** (files that consume it):
@@ -446,7 +447,7 @@ build auto-prune + boot-time auto-build are layered on top.
 - pushedScopeId + pushedEntryId are resolved AT PUSH TIME and pinned; used at unpush without re-querying the FortiGate.
 - sourceType flip to "dhcp_reservation" is ONLY set on successful push; if push fails, no Polaris row is created (fail-on-failure semantics).
 - Lease release happens ONLY for dhcp_lease sourceType rows where the originating integration's pushReservations=true.
-- pushStatus ∈ {"synced", "drift"}; "synced" = verified on device, "drift" = was synced, missing on re-discovery.
+- pushStatus ∈ {"synced", "drift"}; "synced" = verified on device. "drift" is reserved by the schema but is no longer the path for "missing on re-discovery" — Phase 5b now RELEASES rather than drift-flags such rows (the gate is authoritative for DHCP reservations; an operator-deleted entry should disappear from Polaris, not linger with a drift indicator).
 - upsertConflict() bypass (sourceType==="manual" check) prevents false conflicts when discovery touches a manual reservation (operator created it before this integration, now discovery found it too).
 
 **When changing this:**
@@ -455,6 +456,7 @@ build auto-prune + boot-time auto-build are layered on top.
 - Check conflict bypass: create a manual reservation, add an integration that discovers the same IP; verify conflict is raised only for non-manual priors.
 - Lease-release cadence: toggle pushReservations off mid-deployment, release a dhcp_lease row; confirm unpush is skipped but the Polaris row is freed.
 - Verify read-back verify: FortiGate DHCP create succeeds but the verify read fails (transient device timeout); confirm the push is retried or fails cleanly.
+- Test gate-deleted-on-device release: push a manual reservation (sourceType flips to dhcp_reservation on first discovery), then delete the reserved-address entry on the FortiGate, then re-run discovery. Confirm Phase 5b releases the Polaris row, clears the push pointers, and emits `reservation.dhcp_reservation.released`. Verify a parallel run with the same FortiGate's CMDB query FAILING (network blip) leaves the row alone.
 
 ---
 
