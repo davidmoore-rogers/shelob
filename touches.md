@@ -601,7 +601,7 @@ build auto-prune + boot-time auto-build are layered on top.
 - Override resolution: if any source="override" row exists for an asset, those are the effective parents (computed rows ignored). Empty override set = explicit "no parents" pin (asset opts out entirely).
 - Unmonitored parents are transparent — the suppression walk skips them and continues to their grandparents. A monitored ancestor must say "down" before suppression can fire.
 - recomputeDependencyTree only touches source="computed" rows for in-scope assets; out-of-scope rows and source="override" rows are never deleted.
-- Layer assignment is BFS shortest-path from any FortiGate (layer 1). Cycles, disconnected subgraphs, or chains through unmonitored intermediates may leave dependencyLayer = null.
+- Layer assignment is **physical-first** BFS from any FortiGate (layer 1). Interface + LLDP edges form the primary adjacency; controller edges are a fallback for assets the physical pass didn't reach. Controller-fallback uses simple-path detection: a 3+ node chain of unattached switches sharing one controller, with exactly two endpoints and no branching, chains correctly off the alpha-hostname endpoint. MCLAG pairs (2-node groups) and any branching/cycled component still attach as siblings to preserve co-layer behavior. Cycles, disconnected subgraphs, or chains through unmonitored intermediates may leave dependencyLayer = null. Kept-edge `detectedVia` prefers interface > lldp > controller so the audit trail reflects physical cabling when both signals exist on a pair.
 - Reconciler runs in BFS layer order so parent's effective state is settled before children evaluate (otherwise multi-tier suppression could oscillate).
 
 **When changing this:**

@@ -80,7 +80,7 @@ describe("buildDependencyEdgesFromInputs", () => {
     expect(edges).toContainEqual({ childAssetId: "sw2", parentAssetId: "sw1", detectedVia: "interface" });
   });
 
-  it("controller signal beats interface and lldp on the same pair", () => {
+  it("emits one edge per signal kind for the same pair (collapsing happens in assignLayers' prune step)", () => {
     const assets = [fg("fg1", "FG-EDGE-01"), sw("sw1", "FS-CORE-01", "FG-EDGE-01")];
     const edges = buildDependencyEdgesFromInputs(
       assets,
@@ -88,8 +88,8 @@ describe("buildDependencyEdgesFromInputs", () => {
       [{ assetId: "sw1", matchedAssetId: "fg1" }],
     );
     const swToFg = edges.filter(e => e.childAssetId === "sw1" && e.parentAssetId === "fg1");
-    expect(swToFg).toHaveLength(1);
-    expect(swToFg[0].detectedVia).toBe("controller");
+    const kinds = swToFg.map(e => e.detectedVia).sort();
+    expect(kinds).toEqual(["controller", "interface", "lldp"]);
   });
 
   it("ignores self-loops and references to unknown assets", () => {
@@ -180,6 +180,59 @@ describe("assignLayers", () => {
     expect(layers.get("sw1")).toBe(2);
     const sw1Parents = keptEdges.filter(e => e.childAssetId === "sw1").map(e => e.parentAssetId).sort();
     expect(sw1Parents).toEqual(["fg1", "fg2"]);
+  });
+
+  it("chains a 3-switch daisy where every switch reports controllerFortigate=FG and only siblings are LLDP-connected", () => {
+    // The bug-fix case: all three switches are FortiLink-managed by the
+    // same FG (so every one has a controller edge to FG), but the chain
+    // head 148F-1 has no detectable physical edge back to the FG. Only
+    // sibling LLDP edges (148F-1↔148F-2, 148F-2↔148F-3) exist. The chain
+    // should still resolve via the controller-fallback simple-path
+    // detection so 148F-2 attaches under 148F-1 and 148F-3 under 148F-2.
+    const assets = [
+      fg("fg",   "CKYSMA-91G-1"),
+      sw("sw1",  "CKYSMA-148F-1", "CKYSMA-91G-1"),
+      sw("sw2",  "CKYSMA-148F-2", "CKYSMA-91G-1"),
+      sw("sw3",  "CKYSMA-148F-3", "CKYSMA-91G-1"),
+    ];
+    const candidate = buildDependencyEdgesFromInputs(
+      assets,
+      [],
+      [
+        { assetId: "sw1", matchedAssetId: "sw2" },
+        { assetId: "sw2", matchedAssetId: "sw1" },
+        { assetId: "sw2", matchedAssetId: "sw3" },
+        { assetId: "sw3", matchedAssetId: "sw2" },
+      ],
+    );
+    const { layers, keptEdges } = assignLayers(assets, candidate);
+    expect(layers.get("fg")).toBe(1);
+    expect(layers.get("sw1")).toBe(2);
+    expect(layers.get("sw2")).toBe(3);
+    expect(layers.get("sw3")).toBe(4);
+    const parentOf = (id: string) =>
+      keptEdges.find(e => e.childAssetId === id)?.parentAssetId;
+    expect(parentOf("sw1")).toBe("fg");
+    expect(parentOf("sw2")).toBe("sw1");
+    expect(parentOf("sw3")).toBe("sw2");
+  });
+
+  it("prefers physical-uplink edges over controller edges when both reach the FG", () => {
+    // The clean case: 148F-1 has both a controller edge (FortiLink mgmt)
+    // and an LLDP edge to the FG. Physical-first BFS lands 148F-1 at L2
+    // via the LLDP edge directly, and the kept edge for the (sw1, fg)
+    // pair carries detectedVia="lldp" rather than "controller" so the
+    // audit trail reflects the cable, not just the management contract.
+    const assets = [fg("fg", "FG"), sw("sw1", "SW", "FG")];
+    const candidate = buildDependencyEdgesFromInputs(
+      assets,
+      [],
+      [{ assetId: "sw1", matchedAssetId: "fg" }, { assetId: "fg", matchedAssetId: "sw1" }],
+    );
+    const { layers, keptEdges } = assignLayers(assets, candidate);
+    expect(layers.get("sw1")).toBe(2);
+    const swEdge = keptEdges.find(e => e.childAssetId === "sw1" && e.parentAssetId === "fg");
+    expect(swEdge?.detectedVia).toBe("lldp");
   });
 
   it("orphans (no path from any FG) end up unresolved", () => {

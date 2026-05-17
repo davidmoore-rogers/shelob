@@ -96,22 +96,20 @@ export function buildDependencyEdgesFromInputs(
   const byId = new Map<string, DepAsset>();
   for (const a of assets) byId.set(a.id, a);
 
-  // Use a Set to dedupe — same edge may surface via multiple signals; we
-  // track the strongest source per pair (controller > interface > lldp).
-  const edgeStrength = new Map<string, { edge: DependencyEdge; strength: number }>();
-  const STRENGTH: Record<DependencyDetectedVia, number> = {
-    controller: 3,
-    interface:  2,
-    lldp:       1,
-    manual:     0,
-  };
+  // Emit one edge per (child, parent, detectedVia) tuple. Same pair surfaced
+  // via multiple signals (e.g. a FortiSwitch reachable via both its FortiLink
+  // controller relationship AND a direct interface aggregate to the
+  // FortiGate) keeps every signal in the candidate set so `assignLayers` can
+  // split adjacency by kind. The final per-pair audit-trail row is picked
+  // by `assignLayers`'s prune step, preferring the most-physical signal
+  // (interface > lldp > controller) so the dependency row reflects "physical
+  // cabling, not just logical management" when both are known.
+  const edges = new Map<string, DependencyEdge>();
   function add(child: string, parent: string, detectedVia: DependencyDetectedVia) {
     if (child === parent) return;
-    const key = `${child}|${parent}`;
-    const s = STRENGTH[detectedVia];
-    const existing = edgeStrength.get(key);
-    if (!existing || s > existing.strength) {
-      edgeStrength.set(key, { edge: { childAssetId: child, parentAssetId: parent, detectedVia }, strength: s });
+    const key = `${child}|${parent}|${detectedVia}`;
+    if (!edges.has(key)) {
+      edges.set(key, { childAssetId: child, parentAssetId: parent, detectedVia });
     }
   }
 
@@ -158,7 +156,20 @@ export function buildDependencyEdgesFromInputs(
     add(b.id, a.id, "lldp");
   }
 
-  return [...edgeStrength.values()].map(v => v.edge);
+  return [...edges.values()];
+}
+
+/** Rank the physical-ness of a detectedVia signal. Higher is more
+ *  "physical-cabling" and wins the prune-step tiebreak when multiple signals
+ *  describe the same (child, parent) pair. interface > lldp > controller
+ *  reflects that operator-facing audit trails should show the strongest
+ *  evidence of a real cable, with controller (logical FortiLink management)
+ *  as the weakest fallback. */
+function physicalRank(detectedVia: DependencyDetectedVia): number {
+  if (detectedVia === "interface") return 3;
+  if (detectedVia === "lldp")      return 2;
+  if (detectedVia === "controller") return 1;
+  return 0;
 }
 
 /**
@@ -181,47 +192,170 @@ export function assignLayers(
     if (a.assetType === "firewall") layers.set(a.id, 1);
   }
 
-  // Build undirected adjacency from the candidate edge set.
-  const adjacency = new Map<string, Set<string>>();
-  function link(a: string, b: string) {
-    if (!adjacency.has(a)) adjacency.set(a, new Set());
-    adjacency.get(a)!.add(b);
+  // Split adjacency by signal kind. Physical adjacency (interface + LLDP)
+  // expresses CABLED connectivity; controller adjacency expresses LOGICAL
+  // FortiLink management — every managed FortiSwitch points back at the
+  // controller FortiGate via `controllerFortigate` regardless of whether
+  // it's directly cabled to it or daisy-chained behind another switch.
+  // The physical-first BFS below uses physical adjacency exclusively, so
+  // a chain like FG → 148F-1 (LLDP) → 148F-2 (LLDP) → 148F-3 layers
+  // correctly instead of collapsing to three same-layer siblings.
+  const physicalAdj = new Map<string, Set<string>>();
+  const controllerAdj = new Map<string, Set<string>>();
+  function link(adj: Map<string, Set<string>>, a: string, b: string) {
+    if (!adj.has(a)) adj.set(a, new Set());
+    adj.get(a)!.add(b);
   }
   for (const e of edges) {
-    link(e.childAssetId,  e.parentAssetId);
-    link(e.parentAssetId, e.childAssetId);
+    const isPhysical = e.detectedVia === "interface" || e.detectedVia === "lldp";
+    const target = isPhysical ? physicalAdj : controllerAdj;
+    link(target, e.childAssetId, e.parentAssetId);
+    link(target, e.parentAssetId, e.childAssetId);
   }
 
-  // BFS outward from layer 1, stable in id order so multiple FGs at layer 1
-  // explore deterministically (matters for the hostname-tie test cases).
-  const queue: string[] = [...layers.keys()].sort();
-  let head = 0;
-  while (head < queue.length) {
-    const cur = queue[head++];
-    const curLayer = layers.get(cur)!;
-    const neighbors = adjacency.get(cur);
-    if (!neighbors) continue;
-    for (const n of neighbors) {
-      if (!layers.has(n)) {
-        layers.set(n, curLayer + 1);
-        queue.push(n);
+  // Pass 1: BFS outward from layer 1 using physical adjacency only.
+  // Stable in id order so multiple FGs at layer 1 explore deterministically
+  // (matters for the hostname-tie test cases).
+  function physicalBfs(seed: string[]) {
+    const queue: string[] = [...seed];
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      const curLayer = layers.get(cur)!;
+      const neighbors = physicalAdj.get(cur);
+      if (!neighbors) continue;
+      for (const n of neighbors) {
+        if (!layers.has(n)) {
+          layers.set(n, curLayer + 1);
+          queue.push(n);
+        }
+      }
+    }
+  }
+  physicalBfs([...layers.keys()].sort());
+
+  // Pass 2: controller fallback. Assets the physical pass didn't reach
+  // attach via their controller relationship — but with chain-detection so
+  // a 3+ switch daisy chain doesn't collapse to "all siblings off the
+  // FortiGate" just because every switch in the chain reports
+  // `controllerFortigate = <FG>`.
+  //
+  // Algorithm: group unattached assets by their attachment point in
+  // `layers` (the controller asset whose layer is known). For each group,
+  // examine the physical-adjacency subgraph induced by the group. When the
+  // subgraph is a SIMPLE PATH of ≥3 nodes (n nodes, n-1 edges, exactly 2
+  // endpoints), we have unambiguous chain evidence — attach the
+  // alphabetical endpoint as the chain head and let the physical-BFS in
+  // step 3 walk through. Otherwise (1 or 2 nodes, branching, or cycles —
+  // including the MCLAG pair case where two switches share a controller
+  // and are directly cabled to each other), attach every member as a
+  // direct sibling at `controller.layer + 1`. This preserves the existing
+  // "MCLAG siblings don't become parents of each other" behavior while
+  // fixing the daisy-chain misreport that motivated this change.
+  let progress = true;
+  while (progress) {
+    progress = false;
+
+    // Bucket unattached assets by their currently-attachable controller.
+    // An asset is attachable when at least one of its controller-edge
+    // neighbors is already in `layers`. Use the closest controller-edge
+    // parent (min layer) so multi-controller assets attach near the root.
+    const buckets = new Map<string, string[]>();
+    const attachableParent = new Map<string, string>();
+    for (const a of assets) {
+      if (layers.has(a.id)) continue;
+      const ctlNeighbors = controllerAdj.get(a.id);
+      if (!ctlNeighbors) continue;
+      let bestParent: string | null = null;
+      let bestLayer = Infinity;
+      for (const n of ctlNeighbors) {
+        const nLayer = layers.get(n);
+        if (nLayer != null && nLayer < bestLayer) {
+          bestLayer = nLayer;
+          bestParent = n;
+        }
+      }
+      if (bestParent != null) {
+        attachableParent.set(a.id, bestParent);
+        const list = buckets.get(bestParent) ?? [];
+        list.push(a.id);
+        buckets.set(bestParent, list);
+      }
+    }
+
+    // Process each bucket. Stable controller order so ties resolve
+    // deterministically across runs.
+    for (const [parentId, memberIds] of [...buckets.entries()].sort()) {
+      const parentLayer = layers.get(parentId)!;
+      const memberSet = new Set(memberIds);
+
+      // Physical-adjacency subgraph induced by this bucket.
+      type NodeStats = { id: string; neighborsInBucket: string[] };
+      const stats: NodeStats[] = memberIds.map(id => ({
+        id,
+        neighborsInBucket: [...(physicalAdj.get(id) ?? new Set())].filter(n => memberSet.has(n)),
+      }));
+      const totalEdges = stats.reduce((sum, s) => sum + s.neighborsInBucket.length, 0) / 2;
+      const endpoints = stats.filter(s => s.neighborsInBucket.length === 1).map(s => s.id);
+      const branching = stats.some(s => s.neighborsInBucket.length > 2);
+
+      const isSimpleChain =
+        memberIds.length >= 3 &&
+        totalEdges === memberIds.length - 1 &&
+        endpoints.length === 2 &&
+        !branching;
+
+      if (isSimpleChain) {
+        // Attach the alphabetically-first endpoint as the chain head and
+        // let physical BFS in the next loop iteration walk through. Hostname
+        // is the right tiebreaker — operators name daisy chains 1-2-3 by
+        // convention, and the head ends up alphabetically first.
+        const headById = new Map<string, DepAsset>();
+        for (const a of assets) headById.set(a.id, a);
+        const sortedEndpoints = [...endpoints].sort((a, b) => {
+          const ha = (headById.get(a)?.hostname ?? a).toLowerCase();
+          const hb = (headById.get(b)?.hostname ?? b).toLowerCase();
+          return ha < hb ? -1 : ha > hb ? 1 : 0;
+        });
+        const head = sortedEndpoints[0];
+        layers.set(head, parentLayer + 1);
+        progress = true;
+        // BFS through the chain.
+        physicalBfs([head]);
+      } else {
+        // Sibling attachment — every member at controller.layer + 1.
+        // Covers single-node buckets, MCLAG pairs, branching/cycled
+        // components, and the existing-flat-tree behavior for
+        // environments without physical-uplink signals.
+        for (const id of memberIds) {
+          layers.set(id, parentLayer + 1);
+          progress = true;
+        }
+        // After siblings land, physical-BFS through them in case any of
+        // them physically chain further downstream (e.g. an MCLAG pair
+        // each cabling out to its own access switch).
+        physicalBfs(memberIds);
       }
     }
   }
 
   // Prune: keep only edges where parent is exactly one layer above child.
-  const keptEdges: DependencyEdge[] = [];
-  const seen = new Set<string>();
+  // Within each (child, parent) pair, prefer the most-physical detectedVia
+  // for the audit-trail row that lands in AssetDependencyParent. interface
+  // beats lldp beats controller.
+  const bestPerPair = new Map<string, DependencyEdge>();
   for (const e of edges) {
     const childLayer  = layers.get(e.childAssetId);
     const parentLayer = layers.get(e.parentAssetId);
     if (childLayer == null || parentLayer == null) continue;
     if (parentLayer + 1 !== childLayer) continue;
     const key = `${e.childAssetId}|${e.parentAssetId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    keptEdges.push(e);
+    const existing = bestPerPair.get(key);
+    if (!existing || physicalRank(e.detectedVia) > physicalRank(existing.detectedVia)) {
+      bestPerPair.set(key, e);
+    }
   }
+  const keptEdges: DependencyEdge[] = [...bestPerPair.values()];
 
   const unresolved = assets
     .filter(a => !layers.has(a.id))
