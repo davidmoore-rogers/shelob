@@ -246,12 +246,24 @@
   }
 
   // ─── Reserve sheet ─────────────────────────────────────────────────────
-  function openReserveSheet(subnetId, st, user, prefilledIp) {
+  // prefill: either a string (IP) for back-compat, or an object
+  //   { ip?, mac?, hostname?, notes? }.
+  // opts (optional):
+  //   { existingLeaseId, onSuccess }
+  //   existingLeaseId: when set, the lease reservation is released before
+  //     the new manual reservation is created — this is the "promote DHCP
+  //     lease to manual reservation (and push to gate)" flow invoked from
+  //     the Reservations tab.
+  //   onSuccess: callback fired after a successful create. When omitted,
+  //     the subnet-detail page reloads its IP list (legacy behavior).
+  function openReserveSheet(subnetId, st, user, prefill, opts) {
     closeReserveSheet();
 
     var s = st.subnet;
     var pushEligible = !!s.pushEligible;
-    var defaultIp = prefilledIp || pickNextFreeIp(st) || "";
+    var pf = (prefill && typeof prefill === "object") ? prefill : { ip: prefill || "" };
+    var defaultIp = pf.ip || pickNextFreeIp(st) || "";
+    opts = opts || {};
 
     var scrim = document.createElement("div");
     scrim.className = "scrim";
@@ -273,24 +285,24 @@
       + '    <div class="support">Inside ' + escapeHtml(s.cidr) + '</div>'
       + '  </div>'
       + '  <div class="tf-outlined"><span class="lbl">Hostname</span>'
-      + '    <input class="field" id="r-hostname" maxlength="100">'
+      + '    <input class="field" id="r-hostname" maxlength="100" value="' + escapeHtml(pf.hostname || "") + '">'
       + '  </div>'
       + (pushEligible
         ? '  <div class="tf-outlined"><span class="lbl">MAC address *</span>'
-          + '    <input class="field mono" id="r-mac" placeholder="aa:bb:cc:dd:ee:ff" required>'
+          + '    <input class="field mono" id="r-mac" placeholder="aa:bb:cc:dd:ee:ff" required value="' + escapeHtml(pf.mac || "") + '">'
           + '    <div class="support" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">'
           + '      <span>Will be pushed to ' + escapeHtml(s.fortigateDevice || "FortiGate") + ' as a DHCP reservation.</span>'
           + '      <button type="button" class="btn btn-text" id="r-mac-gen" title="Generate a locally-administered MAC (02:xx:xx:xx:xx:xx) — placeholder when the device’s real MAC isn’t known yet" style="font-size:13px;padding:4px 10px;flex-shrink:0;">Generate</button>'
           + '    </div>'
           + '  </div>'
         : '  <div class="tf-outlined"><span class="lbl">MAC address</span>'
-          + '    <input class="field mono" id="r-mac" placeholder="optional">'
+          + '    <input class="field mono" id="r-mac" placeholder="optional" value="' + escapeHtml(pf.mac || "") + '">'
           + '    <div class="support" style="display:flex;justify-content:flex-end;">'
           + '      <button type="button" class="btn btn-text" id="r-mac-gen" title="Generate a locally-administered MAC (02:xx:xx:xx:xx:xx) — placeholder when the device’s real MAC isn’t known yet" style="font-size:13px;padding:4px 10px;">Generate</button>'
           + '    </div>'
           + '  </div>')
       + '  <div class="tf-outlined"><span class="lbl">Notes</span>'
-      + '    <input class="field" id="r-notes" maxlength="500" placeholder="' + (pushEligible ? "Saved to the FortiGate reservation comment" : "") + '">'
+      + '    <input class="field" id="r-notes" maxlength="500" placeholder="' + (pushEligible ? "Saved to the FortiGate reservation comment" : "") + '" value="' + escapeHtml(pf.notes || "") + '">'
       + (pushEligible ? '    <div class="support">Saved to the FortiGate reservation comment.</div>' : '')
       + '  </div>'
       + '  <details style="margin-bottom:16px;">'
@@ -316,7 +328,7 @@
     document.getElementById("reserve-cancel").addEventListener("click", closeReserveSheet);
     document.getElementById("reserve-form").addEventListener("submit", function (e) {
       e.preventDefault();
-      onSubmit(subnetId, st, user);
+      onSubmit(subnetId, st, user, opts);
     });
     var genBtn = document.getElementById("r-mac-gen");
     var macInput = document.getElementById("r-mac");
@@ -369,8 +381,9 @@
     if (el) el.classList.add("hidden");
   }
 
-  function onSubmit(subnetId, st, user) {
+  function onSubmit(subnetId, st, user, opts) {
     clearReserveError();
+    opts = opts || {};
     var ip       = (document.getElementById("r-ip").value || "").trim();
     var hostname = (document.getElementById("r-hostname").value || "").trim();
     var mac      = (document.getElementById("r-mac") ? document.getElementById("r-mac").value || "" : "").trim();
@@ -390,11 +403,22 @@
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner" style="width:18px;height:18px;border-width:2px;"></span>';
 
-    api.reservations.create(body).then(function (r) {
+    // When promoting a DHCP lease, release the lease row first so the
+    // new manual reservation doesn't collide with the
+    // @@unique([subnetId, ipAddress, status]) constraint. If the create
+    // fails after the lease is gone, the operator can retry — the IP is
+    // free at that point.
+    var pre = opts.existingLeaseId
+      ? api.reservations.release(opts.existingLeaseId).catch(function () { /* tolerate already-gone */ })
+      : Promise.resolve();
+
+    pre.then(function () {
+      return api.reservations.create(body);
+    }).then(function () {
       closeReserveSheet();
       PolarisTabs.showSnackbar("Reserved " + ip);
-      // Refresh the IP list so the row flips to reserved.
-      reloadList(subnetId, st, user);
+      if (typeof opts.onSuccess === "function") opts.onSuccess();
+      else reloadList(subnetId, st, user);
     }).catch(function (err) {
       btn.disabled = false;
       btn.innerHTML = "Reserve";
@@ -422,6 +446,24 @@
       parentTab: null,
       renderTopbar: renderTopbar,
       render: render,
+    },
+  };
+
+  // ─── Cross-tab reserve-sheet entry point ───────────────────────────────
+  // Used by the Reservations tab to promote a DHCP lease into a Polaris-
+  // pushed manual reservation without navigating to the subnet detail page.
+  // Loads a minimal subnet shell (so we know pushEligible + fortigateDevice
+  // for the form's required-MAC + comment-field hints) then opens the same
+  // reserve sheet the subnet detail page uses.
+  window.PolarisReserveSheet = {
+    open: function (subnetId, user, prefill, opts) {
+      if (!subnetId) return;
+      api.subnets.ips(subnetId, { page: 1, pageSize: 1 }).then(function (resp) {
+        var st = { subnet: resp.subnet, ips: resp.ips || [], page: 1, totalIps: resp.totalIps || 0, ipv6: !!resp.ipv6, loading: false };
+        openReserveSheet(subnetId, st, user, prefill, opts);
+      }).catch(function (err) {
+        PolarisTabs.showSnackbar(err && err.message ? err.message : "Could not load network", { error: true });
+      });
     },
   };
 })();
