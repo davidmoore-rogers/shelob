@@ -2543,8 +2543,7 @@ async function openViewModal(id) {
       viewRow("Type", ASSET_TYPE_LABELS[a.assetType] || a.assetType) +
       viewRow("Status", a.status ? a.status.charAt(0).toUpperCase() + a.status.slice(1) : "-") +
       disabledInHTML(a.tags) +
-      viewRow("Location", a.location) +
-      viewRow("Learned Location", a.learnedLocation) +
+      viewRow("Location", a.location || a.learnedLocation) +
       ((a.latitude != null && a.longitude != null)
         ? viewRow("Coordinates", a.latitude.toFixed(4) + ", " + a.longitude.toFixed(4), true)
         : "") +
