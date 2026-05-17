@@ -91,15 +91,23 @@ var _uploadedMibsCache = null;
 // Build <option> HTML for a MIB <select>. selectedId: null/"" = Automatic,
 // "std:..." = standard built-in, UUID = uploaded MIB from the MIB database.
 // Derive per-stream auto MIB names from the source kind (integration / class override tiers).
-// Only telemetry varies by vendor; the other three streams always use standard MIBs.
+// CPU/memory + temperature both vary by vendor; the other three streams always use standard MIBs.
 var _SOURCE_TELEMETRY_MIB = {
+  fortimanager: "FORTINET-FORTIGATE-MIB",
+  fortigate:    "FORTINET-FORTIGATE-MIB",
+};
+// Temperature: ENTITY-SENSOR-MIB is the standard fallback; Fortinet exposes its
+// own sensor table under FORTINET-FORTIGATE-MIB (fgHwSensorTable) which the
+// collector tries before falling back to ENTITY-SENSOR-MIB.
+var _SOURCE_TEMPERATURE_MIB = {
   fortimanager: "FORTINET-FORTIGATE-MIB",
   fortigate:    "FORTINET-FORTIGATE-MIB",
 };
 function _autoMibNamesForSource(sourceKind) {
   return {
     responseTime: "SNMPv2-MIB",
-    telemetry:    _SOURCE_TELEMETRY_MIB[sourceKind] || "HOST-RESOURCES-MIB",
+    telemetry:    _SOURCE_TELEMETRY_MIB[sourceKind]   || "HOST-RESOURCES-MIB",
+    temperature:  _SOURCE_TEMPERATURE_MIB[sourceKind] || "ENTITY-SENSOR-MIB",
     interfaces:   "IF-MIB",
     lldp:         "LLDP-MIB",
   };
@@ -171,7 +179,9 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
 
   var streams = [
     { key: "responseTime",  label: "Response time",  pollField: "responseTimePolling",  credField: "responseTimeCredentialId",  mibField: "responseTimeMibId"  },
-    { key: "telemetry",     label: "Telemetry",      pollField: "cpuMemoryPolling",     credField: "cpuMemoryCredentialId",     mibField: "cpuMemoryMibId"     },
+    { key: "telemetry",     label: "CPU/Memory",     pollField: "cpuMemoryPolling",     credField: "cpuMemoryCredentialId",     mibField: "cpuMemoryMibId"     },
+    { key: "temperature",   label: "Temperature",    pollField: "temperaturePolling",   credField: "temperatureCredentialId",   mibField: "temperatureMibId",
+      note: "Stored — runtime still bundles with CPU/Memory until the dispatcher split lands." },
     { key: "interfaces",    label: "Interfaces",     pollField: "interfacesPolling",    credField: "interfacesCredentialId",    mibField: "interfacesMibId"    },
     { key: "lldp",          label: "LLDP neighbors", pollField: "lldpPolling",          credField: "lldpCredentialId",          mibField: "lldpMibId"          },
   ];
@@ -208,7 +218,10 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
       '</div>';
     }
 
-    rows += '<label style="margin:0">' + escapeHtml(s.label) + '</label>' +
+    var labelHtml = '<label style="margin:0">' + escapeHtml(s.label) +
+      (s.note ? '<div style="font-size:0.72rem;font-weight:normal;color:var(--color-text-tertiary);margin-top:2px">' + escapeHtml(s.note) + '</div>' : '') +
+      '</label>';
+    rows += labelHtml +
       _polarisPollingDropdownHTML(idPrefix + s.pollField, source, s.key, current[s.pollField]) +
       credSubRow +
       mibSubRow;
@@ -224,6 +237,7 @@ function _polarisReadPollingFourStream(idPrefix) {
   return {
     responseTimePolling: _polarisReadPollingDropdown(idPrefix + "responseTimePolling"),
     cpuMemoryPolling:    _polarisReadPollingDropdown(idPrefix + "cpuMemoryPolling"),
+    temperaturePolling:  _polarisReadPollingDropdown(idPrefix + "temperaturePolling"),
     interfacesPolling:   _polarisReadPollingDropdown(idPrefix + "interfacesPolling"),
     lldpPolling:         _polarisReadPollingDropdown(idPrefix + "lldpPolling"),
   };
@@ -240,6 +254,7 @@ function _polarisReadMibFourStream(idPrefix) {
   return {
     responseTimeMibId: mibVal("responseTime"),
     cpuMemoryMibId:    mibVal("telemetry"),
+    temperatureMibId:  mibVal("temperature"),
     interfacesMibId:   mibVal("interfaces"),
     lldpMibId:         mibVal("lldp"),
   };
@@ -255,6 +270,7 @@ function _polarisReadCredFourStream(idPrefix) {
   return {
     responseTimeCredentialId: credVal("responseTime"),
     cpuMemoryCredentialId:    credVal("telemetry"),
+    temperatureCredentialId:  credVal("temperature"),
     interfacesCredentialId:   credVal("interfaces"),
     lldpCredentialId:         credVal("lldp"),
   };
@@ -1220,6 +1236,7 @@ function _syncCredentialPickerVisibility() {
   var streamDefs = [
     { pollId: "f-mon-tier-responseTimePolling", mibWrapId: "f-mon-tier-responseTime-mib-wrap" },
     { pollId: "f-mon-tier-cpuMemoryPolling",    mibWrapId: "f-mon-tier-telemetry-mib-wrap"    },
+    { pollId: "f-mon-tier-temperaturePolling",  mibWrapId: "f-mon-tier-temperature-mib-wrap"  },
     { pollId: "f-mon-tier-interfacesPolling",   mibWrapId: "f-mon-tier-interfaces-mib-wrap"   },
     { pollId: "f-mon-tier-lldpPolling",         mibWrapId: "f-mon-tier-lldp-mib-wrap"         },
   ];
@@ -1250,7 +1267,7 @@ function _syncCredentialPickerVisibility() {
 // method. Also runs once on initial mount so a freshly-opened modal lands in
 // the correct state.
 function _wireCredentialPickerVisibility() {
-  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-cpuMemoryPolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
+  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-cpuMemoryPolling", "f-mon-tier-temperaturePolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
   var any = false;
   for (var i = 0; i < ids.length; i++) {
     var el = document.getElementById(ids[i]);
@@ -1294,9 +1311,9 @@ function _readIntegrationCadenceForm() {
     systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
   };
   // Slice 2 split telemetry into cpuMemory + temperature streams server-side
-  // (TierSettingsSchema requires both). The integration edit modal hasn't
-  // grown a separate temperature input yet — until it does, mirror the
-  // cpuMemory values so existing forms continue to save without a 400.
+  // (TierSettingsSchema requires both). The Temperature inputs are now in
+  // the form, but when the operator leaves them blank we mirror the cpuMemory
+  // values so the save still satisfies the required-both shape.
   if (out.temperatureIntervalSeconds === undefined) {
     out.temperatureIntervalSeconds = out.cpuMemoryIntervalSeconds;
   }

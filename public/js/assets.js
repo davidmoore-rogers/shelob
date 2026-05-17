@@ -1688,6 +1688,11 @@ function getAssetFormData() {
       var telRaw = telTimeoutEl.value === "" ? null : parseInt(telTimeoutEl.value, 10);
       data.cpuMemoryTimeoutMs = (Number.isFinite(telRaw) && telRaw >= 1000 && telRaw <= 120000) ? telRaw : null;
     }
+    var tempTimeoutEl = document.getElementById("f-temperatureTimeoutMs");
+    if (tempTimeoutEl) {
+      var tempRaw = tempTimeoutEl.value === "" ? null : parseInt(tempTimeoutEl.value, 10);
+      data.temperatureTimeoutMs = (Number.isFinite(tempRaw) && tempRaw >= 1000 && tempRaw <= 120000) ? tempRaw : null;
+    }
     var sysTimeoutEl = document.getElementById("f-systemInfoTimeoutMs");
     if (sysTimeoutEl) {
       var sysRaw = sysTimeoutEl.value === "" ? null : parseInt(sysTimeoutEl.value, 10);
@@ -1699,25 +1704,30 @@ function getAssetFormData() {
     if (document.getElementById("f-responseTimePolling")) {
       data.responseTimePolling = polling.responseTimePolling;
       data.cpuMemoryPolling    = polling.cpuMemoryPolling;
+      data.temperaturePolling  = polling.temperaturePolling;
       data.interfacesPolling   = polling.interfacesPolling;
       data.lldpPolling         = polling.lldpPolling;
     }
     // Per-stream credential overrides. Empty string → null (source default).
-    var rtCredEl  = document.getElementById("f-responseTimeCredential");
-    var telCredEl = document.getElementById("f-cpuMemoryCredential");
-    var ifCredEl  = document.getElementById("f-interfacesCredential");
-    var lldpCredEl= document.getElementById("f-lldpCredential");
+    var rtCredEl   = document.getElementById("f-responseTimeCredential");
+    var telCredEl  = document.getElementById("f-cpuMemoryCredential");
+    var tempCredEl = document.getElementById("f-temperatureCredential");
+    var ifCredEl   = document.getElementById("f-interfacesCredential");
+    var lldpCredEl = document.getElementById("f-lldpCredential");
     data.responseTimeCredentialId = rtCredEl   ? (rtCredEl.value   || null) : undefined;
     data.cpuMemoryCredentialId    = telCredEl  ? (telCredEl.value  || null) : undefined;
+    data.temperatureCredentialId  = tempCredEl ? (tempCredEl.value || null) : undefined;
     data.interfacesCredentialId   = ifCredEl   ? (ifCredEl.value   || null) : undefined;
     data.lldpCredentialId         = lldpCredEl ? (lldpCredEl.value || null) : undefined;
     // Per-stream MIB overrides. Empty string → null (Automatic).
     var rtMibEl   = document.getElementById("f-responseTimeMib");
     var telMibEl  = document.getElementById("f-telemetryMib");
+    var tempMibEl = document.getElementById("f-temperatureMib");
     var ifMibEl   = document.getElementById("f-interfacesMib");
     var lldpMibEl = document.getElementById("f-lldpMib");
     data.responseTimeMibId = rtMibEl   ? (rtMibEl.value   || null) : undefined;
     data.cpuMemoryMibId    = telMibEl  ? (telMibEl.value  || null) : undefined;
+    data.temperatureMibId  = tempMibEl ? (tempMibEl.value || null) : undefined;
     data.interfacesMibId   = ifMibEl   ? (ifMibEl.value   || null) : undefined;
     data.lldpMibId         = lldpMibEl ? (lldpMibEl.value || null) : undefined;
   }
@@ -1729,8 +1739,9 @@ function getAssetFormData() {
 function assetMonitoringFormHTML(asset, managedAgent) {
   var interval = asset && asset.monitorIntervalSec != null ? asset.monitorIntervalSec : "";
   var probeTimeout = asset && asset.probeTimeoutMs != null ? asset.probeTimeoutMs : "";
-  var telemetryTimeout  = asset && asset.cpuMemoryTimeoutMs  != null ? asset.cpuMemoryTimeoutMs  : "";
-  var systemInfoTimeout = asset && asset.systemInfoTimeoutMs != null ? asset.systemInfoTimeoutMs : "";
+  var telemetryTimeout   = asset && asset.cpuMemoryTimeoutMs   != null ? asset.cpuMemoryTimeoutMs   : "";
+  var temperatureTimeout = asset && asset.temperatureTimeoutMs != null ? asset.temperatureTimeoutMs : "";
+  var systemInfoTimeout  = asset && asset.systemInfoTimeoutMs  != null ? asset.systemInfoTimeoutMs  : "";
   var monitored = asset && asset.monitored ? " checked" : "";
   // Asset id is needed to fetch effective settings + populate the Asset
   // Overrides button — empty on the create flow.
@@ -1747,22 +1758,25 @@ function assetMonitoringFormHTML(asset, managedAgent) {
   var pollingCurrent = {
     responseTimePolling: asset && asset.responseTimePolling,
     cpuMemoryPolling:    asset && asset.cpuMemoryPolling,
+    temperaturePolling:  asset && asset.temperaturePolling,
     interfacesPolling:   asset && asset.interfacesPolling,
     lldpPolling:         asset && asset.lldpPolling,
   };
   // Per-stream credential IDs (null = use source default at runtime).
   var rtCredId   = (asset && asset.responseTimeCredentialId)  || "";
   var telCredId  = (asset && asset.cpuMemoryCredentialId)     || "";
+  var tempCredId = (asset && asset.temperatureCredentialId)   || "";
   var ifCredId   = (asset && asset.interfacesCredentialId)    || "";
   var lldpCredId = (asset && asset.lldpCredentialId)          || "";
 
   // Per-stream MIB IDs (null = Automatic).
   var rtMibId   = (asset && asset.responseTimeMibId)  || "";
   var telMibId  = (asset && asset.cpuMemoryMibId)     || "";
+  var tempMibId = (asset && asset.temperatureMibId)   || "";
   var ifMibId   = (asset && asset.interfacesMibId)    || "";
   var lldpMibId = (asset && asset.lldpMibId)          || "";
 
-  // Auto MIB names for the "Automatic" option label — vendor-aware for telemetry.
+  // Auto MIB names for the "Automatic" option label — vendor-aware for CPU/memory.
   var _mfr = ((asset && asset.manufacturer) || "").toLowerCase();
   var _autoTelMib = "HOST-RESOURCES-MIB";
   if (/fortinet/.test(_mfr))          _autoTelMib = "FORTINET-FORTIGATE-MIB";
@@ -1771,9 +1785,14 @@ function assetMonitoringFormHTML(asset, managedAgent) {
   else if (/mikrotik/.test(_mfr))     _autoTelMib = "MIKROTIK-MIB";
   else if (/hp|aruba|hewlett/.test(_mfr)) _autoTelMib = "HP-ICF-OID-MIB";
   else if (/dell/.test(_mfr))         _autoTelMib = "DELL-MIB";
+  // Temperature MIB default — ENTITY-SENSOR-MIB across the board; Fortinet's
+  // fgHwSensorTable lives in FORTINET-FORTIGATE-MIB (the collector tries it
+  // before falling back to ENTITY-SENSOR-MIB).
+  var _autoTempMib = /fortinet/.test(_mfr) ? "FORTINET-FORTIGATE-MIB" : "ENTITY-SENSOR-MIB";
   var _autoMibNames = {
     responseTime: "SNMPv2-MIB",
     telemetry:    _autoTelMib,
+    temperature:  _autoTempMib,
     interfaces:   "IF-MIB",
     lldp:         "LLDP-MIB",
   };
@@ -1785,12 +1804,15 @@ function assetMonitoringFormHTML(asset, managedAgent) {
   // "icmp" and "disabled" never need a credential; "agent" doesn't either —
   // the Polaris Agent's own per-asset bearer (issued at install time) is
   // implicit and never picked from the credential store.
-  function streamRow(label, streamName, pollingId, credSelectId, mibSelectId, currentPoll, currentCredId, currentMibId, autoMibName) {
+  function streamRow(label, streamName, pollingId, credSelectId, mibSelectId, currentPoll, currentCredId, currentMibId, autoMibName, note) {
     var needsCred = currentPoll && currentPoll !== "icmp" && currentPoll !== "disabled" && currentPoll !== "agent";
     var isSnmp    = currentPoll === "snmp";
     var credDisplay = needsCred ? "flex" : "none";
     var mibDisplay  = isSnmp   ? "flex" : "none";
-    return '<label style="margin:0">' + label + '</label>' +
+    var noteHtml    = note
+      ? '<div style="font-size:0.72rem;font-weight:normal;color:var(--color-text-tertiary);margin-top:2px">' + escapeHtml(note) + '</div>'
+      : '';
+    return '<label style="margin:0">' + escapeHtml(label) + noteHtml + '</label>' +
       _polarisPollingDropdownHTML(pollingId, assetSourceKind, streamName, currentPoll) +
       '<div id="' + pollingId + '-cred-wrap" style="display:' + credDisplay + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
         '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">Credential</label>' +
@@ -1809,7 +1831,8 @@ function assetMonitoringFormHTML(asset, managedAgent) {
       '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.5rem 0 0.5rem 0">Polling Methods</p>' +
       '<div style="display:grid;grid-template-columns:200px 1fr;gap:0.5rem 1rem;align-items:center;margin-bottom:0.75rem">' +
         streamRow("Response time",  "responseTime", "f-responseTimePolling", "f-responseTimeCredential", "f-responseTimeMib", pollingCurrent.responseTimePolling, rtCredId,   rtMibId,   _autoMibNames.responseTime) +
-        streamRow("Telemetry",      "telemetry",    "f-cpuMemoryPolling",    "f-cpuMemoryCredential",    "f-telemetryMib",    pollingCurrent.cpuMemoryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
+        streamRow("CPU/Memory",     "telemetry",    "f-cpuMemoryPolling",    "f-cpuMemoryCredential",    "f-telemetryMib",    pollingCurrent.cpuMemoryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
+        streamRow("Temperature",    "temperature",  "f-temperaturePolling",  "f-temperatureCredential",  "f-temperatureMib",  pollingCurrent.temperaturePolling,  tempCredId, tempMibId, _autoMibNames.temperature, "Stored — runtime still bundles with CPU/Memory until the dispatcher split lands.") +
         streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   "f-interfacesMib",   pollingCurrent.interfacesPolling,   ifCredId,   ifMibId,   _autoMibNames.interfaces) +
         streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         "f-lldpMib",         pollingCurrent.lldpPolling,         lldpCredId, lldpMibId, _autoMibNames.lldp) +
       '</div>' +
@@ -1913,9 +1936,14 @@ function assetMonitoringFormHTML(asset, managedAgent) {
       '<p class="hint">Range 100..60000 ms; default is 5000 ms. Inherits from the resolved tier when blank.</p>' +
     '</div>' +
     '<div class="form-group">' +
-      '<label>Telemetry Timeout Override (ms) <span class="tier-badge" id="f-cpuMemoryTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
+      '<label>CPU/Memory Timeout Override (ms) <span class="tier-badge" id="f-cpuMemoryTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
       '<input type="number" id="f-cpuMemoryTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(telemetryTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
-      '<p class="hint">Per-request timeout for the telemetry collector (FortiOS REST + SNMP, CPU + memory + temperature). Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
+      '<p class="hint">Per-request timeout for the CPU/memory collector (FortiOS REST + SNMP). Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
+    '</div>' +
+    '<div class="form-group">' +
+      '<label>Temperature Timeout Override (ms) <span class="tier-badge" id="f-temperatureTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
+      '<input type="number" id="f-temperatureTimeoutMs" min="1000" max="120000" value="' + escapeHtml(String(temperatureTimeout)) + '" placeholder="leave blank to inherit" style="max-width:240px">' +
+      '<p class="hint">Per-request timeout for the temperature collector (FortiOS sensor-info / SNMP ENTITY-SENSOR-MIB). Range 1000..120000 ms; default 10000 ms. Inherits when blank.</p>' +
     '</div>' +
     '<div class="form-group">' +
       '<label>System Info Timeout Override (ms) <span class="tier-badge" id="f-systemInfoTimeoutMs-tier" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:var(--color-text-tertiary)"></span></label>' +
@@ -1968,6 +1996,7 @@ async function _wireMonitorEditTab(asset) {
   var streamDefs = [
     { pollId: "f-responseTimePolling", credId: "f-responseTimeCredential", mibId: "f-responseTimeMib" },
     { pollId: "f-cpuMemoryPolling",    credId: "f-cpuMemoryCredential",    mibId: "f-telemetryMib"    },
+    { pollId: "f-temperaturePolling",  credId: "f-temperatureCredential",  mibId: "f-temperatureMib"  },
     { pollId: "f-interfacesPolling",   credId: "f-interfacesCredential",   mibId: "f-interfacesMib"   },
     { pollId: "f-lldpPolling",         credId: "f-lldpCredential",         mibId: "f-lldpMib"         },
   ];
@@ -2077,10 +2106,11 @@ async function _populateAssetMonitorTierBadges(asset) {
     }
     span.textContent = "(" + label + ": " + eff.resolved[fieldKey] + (suffix || "") + ")";
   }
-  setBadge("f-monitorInterval-tier",      "intervalSeconds",     " s");
-  setBadge("f-probeTimeoutMs-tier",       "probeTimeoutMs",      " ms");
-  setBadge("f-cpuMemoryTimeoutMs-tier",   "cpuMemoryTimeoutMs",  " ms");
-  setBadge("f-systemInfoTimeoutMs-tier",  "systemInfoTimeoutMs", " ms");
+  setBadge("f-monitorInterval-tier",       "intervalSeconds",       " s");
+  setBadge("f-probeTimeoutMs-tier",        "probeTimeoutMs",        " ms");
+  setBadge("f-cpuMemoryTimeoutMs-tier",    "cpuMemoryTimeoutMs",    " ms");
+  setBadge("f-temperatureTimeoutMs-tier",  "temperatureTimeoutMs",  " ms");
+  setBadge("f-systemInfoTimeoutMs-tier",   "systemInfoTimeoutMs",   " ms");
 
   // Update each polling dropdown's "Inherit" option to show the actual resolved
   // method and which tier it comes from, instead of the hardcoded source default.
@@ -2108,6 +2138,7 @@ async function _populateAssetMonitorTierBadges(asset) {
   }
   updatePollingInheritLabel("f-responseTimePolling", "responseTimePolling");
   updatePollingInheritLabel("f-cpuMemoryPolling",    "cpuMemoryPolling");
+  updatePollingInheritLabel("f-temperaturePolling",  "temperaturePolling");
   updatePollingInheritLabel("f-interfacesPolling",   "interfacesPolling");
   updatePollingInheritLabel("f-lldpPolling",         "lldpPolling");
 }
@@ -2175,12 +2206,14 @@ async function _openAssetOverridesSlideover(scope) {
       '<tbody>' +
       others.map(function (a) {
         var bits = [];
-        if (a.monitorIntervalSec    != null) bits.push("interval=" + a.monitorIntervalSec + "s");
-        if (a.cpuMemoryIntervalSec  != null) bits.push("telemetry=" + a.cpuMemoryIntervalSec + "s");
-        if (a.systemInfoIntervalSec != null) bits.push("sysinfo=" + a.systemInfoIntervalSec + "s");
-        if (a.probeTimeoutMs        != null) bits.push("probe-timeout=" + a.probeTimeoutMs + "ms");
-        if (a.cpuMemoryTimeoutMs    != null) bits.push("tel-timeout=" + a.cpuMemoryTimeoutMs + "ms");
-        if (a.systemInfoTimeoutMs   != null) bits.push("sysinfo-timeout=" + a.systemInfoTimeoutMs + "ms");
+        if (a.monitorIntervalSec     != null) bits.push("interval=" + a.monitorIntervalSec + "s");
+        if (a.cpuMemoryIntervalSec   != null) bits.push("cpu-mem=" + a.cpuMemoryIntervalSec + "s");
+        if (a.temperatureIntervalSec != null) bits.push("temp=" + a.temperatureIntervalSec + "s");
+        if (a.systemInfoIntervalSec  != null) bits.push("sysinfo=" + a.systemInfoIntervalSec + "s");
+        if (a.probeTimeoutMs         != null) bits.push("probe-timeout=" + a.probeTimeoutMs + "ms");
+        if (a.cpuMemoryTimeoutMs     != null) bits.push("cpu-mem-timeout=" + a.cpuMemoryTimeoutMs + "ms");
+        if (a.temperatureTimeoutMs   != null) bits.push("temp-timeout=" + a.temperatureTimeoutMs + "ms");
+        if (a.systemInfoTimeoutMs    != null) bits.push("sysinfo-timeout=" + a.systemInfoTimeoutMs + "ms");
         return '<tr style="cursor:pointer" data-asset-link="' + escapeHtml(a.id) + '">' +
           '<td style="padding:6px 8px"><a href="#" onclick="return false">' + escapeHtml(a.hostname || "(no hostname)") + '</a></td>' +
           '<td style="padding:6px 8px;font-family:var(--font-mono)">' + escapeHtml(a.ipAddress || "-") + '</td>' +
@@ -10248,7 +10281,8 @@ function _monsetOverrideSummary(o) {
     temperatureIntervalSeconds: "temp",
     systemInfoIntervalSeconds: "sysinfo",
     responseTimePolling:       "rt-poll",
-    cpuMemoryPolling:          "tel-poll",
+    cpuMemoryPolling:          "cpu-mem-poll",
+    temperaturePolling:        "temp-poll",
     interfacesPolling:         "if-poll",
     lldpPolling:               "lldp-poll",
   };
@@ -10346,7 +10380,7 @@ function _monsetOpenOverrideEditor(existing) {
 
   // Wire per-stream polling dropdowns to show/hide credential + MIB sub-rows.
   function _refreshOvStreamSubRows() {
-    ["responseTime", "telemetry", "interfaces", "lldp"].forEach(function (stream) {
+    ["responseTime", "telemetry", "temperature", "interfaces", "lldp"].forEach(function (stream) {
       var pollEl    = document.getElementById("monset-ov-" + stream + "Polling");
       var credWrap  = document.getElementById("monset-ov-" + stream + "-cred-wrap");
       var mibWrap   = document.getElementById("monset-ov-" + stream + "-mib-wrap");
@@ -10358,7 +10392,7 @@ function _monsetOpenOverrideEditor(existing) {
     });
   }
   _refreshOvStreamSubRows();
-  ["responseTime", "telemetry", "interfaces", "lldp"].forEach(function (stream) {
+  ["responseTime", "telemetry", "temperature", "interfaces", "lldp"].forEach(function (stream) {
     var pollEl = document.getElementById("monset-ov-" + stream + "Polling");
     if (pollEl) pollEl.addEventListener("change", _refreshOvStreamSubRows);
   });
@@ -10398,7 +10432,7 @@ function _monsetOpenOverrideEditor(existing) {
           _polarisReadMibFourStream("monset-ov-")
         );
         var allowed = _POLLING_COMPAT[kind] || _POLLING_COMPAT.manual;
-        ["responseTimePolling", "cpuMemoryPolling", "interfacesPolling", "lldpPolling"].forEach(function (k) {
+        ["responseTimePolling", "cpuMemoryPolling", "temperaturePolling", "interfacesPolling", "lldpPolling"].forEach(function (k) {
           if (currentValues[k] && allowed.indexOf(currentValues[k]) === -1) currentValues[k] = null;
         });
         var block = document.getElementById("monset-ov-polling-block");
@@ -10412,7 +10446,7 @@ function _monsetOpenOverrideEditor(existing) {
           });
           _populateUploadedMibsInDropdowns();
           _refreshOvStreamSubRows();
-          ["responseTime", "telemetry", "interfaces", "lldp"].forEach(function (stream) {
+          ["responseTime", "telemetry", "temperature", "interfaces", "lldp"].forEach(function (stream) {
             var pollEl = document.getElementById("monset-ov-" + stream + "Polling");
             if (pollEl) pollEl.addEventListener("change", _refreshOvStreamSubRows);
           });
