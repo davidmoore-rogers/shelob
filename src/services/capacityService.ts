@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { prisma } from "../db.js";
 import { getMonitorSettings, type MonitorSettings } from "./monitoringService.js";
-import { isTimescaleAvailable, isHypertable, SAMPLE_TABLES as TIMESCALE_SAMPLE_TABLES } from "./timescaleService.js";
+import { isTimescaleAvailable, isHypertable, ALL_HYPERTABLE_CANDIDATES } from "./timescaleService.js";
 import { isPgbossInstalled, getBootTimeMode, getQueueMode } from "./queueService.js";
 import { getDeploymentContext } from "../utils/deploymentContext.js";
 import { BACKUP_DIR, STATE_DIR } from "../utils/paths.js";
@@ -1126,7 +1126,7 @@ export async function getCapacitySnapshot(opts: {
       dataDirectory,
       timescale: {
         extensionInstalled: isTimescaleAvailable(),
-        hypertableTables: TIMESCALE_SAMPLE_TABLES.filter((t) => isHypertable(t)),
+        hypertableTables: ALL_HYPERTABLE_CANDIDATES.filter((t) => isHypertable(t)),
       },
       queue: {
         pgbossInstalled: isPgbossInstalled(),

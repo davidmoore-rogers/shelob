@@ -21,7 +21,7 @@
 import { prisma } from "../db.js";
 import { logger } from "../utils/logger.js";
 
-/** Sample tables we project / prune / hypertable. Exported so callers stay in sync. */
+/** Source sample tables we project / prune / hypertable. Partitioned by `timestamp`. */
 export const SAMPLE_TABLES = [
   "asset_monitor_samples",
   "asset_telemetry_samples",
@@ -31,7 +31,36 @@ export const SAMPLE_TABLES = [
   "asset_ipsec_tunnel_samples",
 ] as const;
 
+/**
+ * Hourly + daily rollup tables produced by sampleRollupService. Partitioned
+ * by `bucketStart` (not `timestamp`). Same Timescale treatment as the source
+ * tables: hypertable conversion + per-table compression with the
+ * `TIMESCALE_COMPRESS_AFTER_DAYS` window.
+ */
+export const ROLLUP_TABLES = [
+  "asset_monitor_samples_hourly",
+  "asset_monitor_samples_daily",
+  "asset_telemetry_samples_hourly",
+  "asset_telemetry_samples_daily",
+  "asset_temperature_samples_hourly",
+  "asset_temperature_samples_daily",
+  "asset_interface_samples_hourly",
+  "asset_interface_samples_daily",
+  "asset_storage_samples_hourly",
+  "asset_storage_samples_daily",
+  "asset_ipsec_tunnel_samples_hourly",
+  "asset_ipsec_tunnel_samples_daily",
+] as const;
+
+/** Every table we manage as a hypertable — source + rollup. */
+export const ALL_HYPERTABLE_CANDIDATES = [
+  ...SAMPLE_TABLES,
+  ...ROLLUP_TABLES,
+] as const;
+
 export type SampleTableName = typeof SAMPLE_TABLES[number];
+export type RollupTableName = typeof ROLLUP_TABLES[number];
+export type ManagedHypertableName = typeof ALL_HYPERTABLE_CANDIDATES[number];
 
 interface DetectionState {
   extensionInstalled: boolean;
@@ -67,7 +96,7 @@ export async function detectTimescale(): Promise<DetectionState> {
           `SELECT hypertable_name FROM timescaledb_information.hypertables`,
         );
         for (const r of rows) {
-          if ((SAMPLE_TABLES as readonly string[]).includes(r.hypertable_name)) {
+          if ((ALL_HYPERTABLE_CANDIDATES as readonly string[]).includes(r.hypertable_name)) {
             hypertables.add(r.hypertable_name);
           }
         }
@@ -145,10 +174,10 @@ function resolveCompressAfterDays(): number {
 }
 
 /**
- * Convert the six monitoring sample tables to hypertables (idempotent) and
- * apply / refresh the compression policy. Runs once at boot, AFTER
- * `detectTimescale()` has populated the cache. No-op when the extension is
- * not installed.
+ * Convert the source sample tables AND the rollup tables to hypertables
+ * (idempotent) and apply / refresh per-table compression. Runs once at boot,
+ * AFTER `detectTimescale()` has populated the cache. No-op when the
+ * extension is not installed.
  *
  * Per-table flow:
  *   1. If not yet a hypertable, `create_hypertable(..., migrate_data => TRUE)`
@@ -162,6 +191,11 @@ function resolveCompressAfterDays(): number {
  *      `TIMESCALE_COMPRESS_AFTER_DAYS` window — so changing the env var
  *      between boots actually takes effect.
  *
+ * Source tables partition by `timestamp`; rollup tables partition by
+ * `bucketStart`. The compression `orderby` clause uses the same column so
+ * compressed chunks stay time-ordered for the prune layer's `drop_chunks`
+ * fast path.
+ *
  * Errors on any single table are logged and swallowed; the loop continues
  * on the next table. The prune layer falls back to plain-table deleteMany
  * for any table that didn't make it through.
@@ -170,15 +204,20 @@ export async function migrateToHypertables(): Promise<void> {
   if (!isTimescaleAvailable()) return;
   const compressAfterDays = resolveCompressAfterDays();
 
-  for (const table of SAMPLE_TABLES) {
+  const targets: Array<{ table: string; partitionColumn: "timestamp" | "bucketStart" }> = [
+    ...SAMPLE_TABLES.map((t) => ({ table: t, partitionColumn: "timestamp" as const })),
+    ...ROLLUP_TABLES.map((t) => ({ table: t, partitionColumn: "bucketStart" as const })),
+  ];
+
+  for (const { table, partitionColumn } of targets) {
     try {
       const wasHypertable = isHypertable(table);
       const start = Date.now();
 
       if (!wasHypertable) {
-        logger.info({ table }, "Converting sample table to hypertable");
+        logger.info({ table, partitionColumn }, "Converting sample table to hypertable");
         await prisma.$executeRawUnsafe(
-          `SELECT create_hypertable($1::regclass, by_range('timestamp'), if_not_exists => TRUE, migrate_data => TRUE)`,
+          `SELECT create_hypertable($1::regclass, by_range('${partitionColumn}'), if_not_exists => TRUE, migrate_data => TRUE)`,
           table,
         );
       }
@@ -187,10 +226,10 @@ export async function migrateToHypertables(): Promise<void> {
       // — re-running with the same values is a no-op. compress_segmentby
       // pins compressed rows by assetId so per-asset queries inside a
       // compressed chunk decompress only the relevant segment, not the whole
-      // chunk. Quoted column names because both `assetId` (camelCase) and
-      // `timestamp` (reserved word) need quoting on Postgres.
+      // chunk. The orderby column matches the partition column so compressed
+      // chunks stay time-ordered for drop_chunks pruning.
       await prisma.$executeRawUnsafe(
-        `ALTER TABLE "${table}" SET (timescaledb.compress = on, timescaledb.compress_segmentby = '"assetId"', timescaledb.compress_orderby = '"timestamp" DESC')`,
+        `ALTER TABLE "${table}" SET (timescaledb.compress = on, timescaledb.compress_segmentby = '"assetId"', timescaledb.compress_orderby = '"${partitionColumn}" DESC')`,
       );
 
       // Compression policy. Always remove + re-add so the operator's current
@@ -210,12 +249,12 @@ export async function migrateToHypertables(): Promise<void> {
 
       const action = wasHypertable ? "Refreshed compression on" : "Converted to hypertable:";
       logger.info(
-        { table, durationMs: Date.now() - start, compressAfterDays },
+        { table, partitionColumn, durationMs: Date.now() - start, compressAfterDays },
         `${action} ${table}`,
       );
     } catch (err) {
       logger.error(
-        { err, table },
+        { err, table, partitionColumn },
         "Hypertable migration failed for this table; falling back to plain-table prune path",
       );
     }
