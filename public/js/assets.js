@@ -3252,6 +3252,15 @@ function assetSystemViewHTML(a) {
   var telemetryBadgeFull  = telemetryBadge  + (telemetryBadge  && telUpdatedAt     ? " " : "") + telUpdatedAt;
   var interfacesBadgeFull = interfacesBadge + (interfacesBadge && sysInfoUpdatedAt ? " " : "") + sysInfoUpdatedAt;
   var lldpBadgeFull       = lldpBadge       + (lldpBadge       && sysInfoUpdatedAt ? " " : "") + sysInfoUpdatedAt;
+  // Temperatures uses its own table-specific timestamp (si.lastTemperatureAt)
+  // which can diverge from lastTelemetryAt when the CPU/memory pull succeeds
+  // but the sensor pull fails. The header's updated stamp lives in an id'd
+  // slot so _renderTemperatures can rewrite it from si data once loaded and
+  // flip it amber + "last successful update X ago" when the temp data is
+  // stale relative to the resolved cadence. Initial value mirrors telemetry
+  // so the placeholder isn't blank during the first paint.
+  var temperatureBadgeFull = telemetryBadge + (telemetryBadge ? " " : "") +
+    '<span id="asset-system-temps-updated">' + telUpdatedAt + '</span>';
   // FortiOS REST API never exposes storage — hide Storage for any asset on the
   // REST API interfaces stream (firewalls as well as managed switches/APs).
   var isRestApiInterfaces = (function () {
@@ -3284,7 +3293,7 @@ function assetSystemViewHTML(a) {
     '<div id="asset-system-chart" style="background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:6px;padding:0.5rem;min-height:200px;display:flex;align-items:center;justify-content:center;color:var(--color-text-secondary);font-size:0.85rem">' +
       'Loading samples…' +
     '</div>' +
-    sectionHeader("Temperatures", telemetryBadgeFull, false) +
+    sectionHeader("Temperatures", temperatureBadgeFull, false) +
     '<div id="asset-system-temps"><span class="empty-state">Loading…</span></div>' +
     sectionHeader("Interfaces", interfacesBadgeFull, false) +
     '<div id="asset-system-interfaces"><span class="empty-state">Loading…</span></div>' +
@@ -3465,6 +3474,29 @@ function _resolveStaleStreamSec(assetId, asset, streamKey) {
   var settings = _monitorSettingsCache || {};
   if (typeof settings[effField] === "number" && settings[effField] > 0) return settings[effField];
   return defaultSec;
+}
+
+// Rewrites the Temperatures section header's updated stamp using the
+// table-specific timestamp (si.lastTemperatureAt). Falls back to
+// lastTelemetryAt when the temp table has never produced a row (typically
+// "no sensors reported"). When the temp data is older than 3× the resolved
+// telemetry cadence the stamp turns amber and the label flips to
+// "last successful update X ago" so the row-set freshness is unambiguous
+// and the previously-separate stale banner can be omitted.
+function _updateTemperatureUpdatedStamp(asset, si) {
+  var slot = document.getElementById("asset-system-temps-updated");
+  if (!slot) return;
+  var tempLastAt = (si && (si.lastTemperatureAt || si.lastTelemetryAt)) ||
+    (asset && asset.lastTelemetryAt) || null;
+  if (!tempLastAt) { slot.innerHTML = ""; return; }
+  var resolvedSec = _resolveStaleStreamSec(asset && asset.id, asset, "telemetry");
+  var ageMs = Date.now() - new Date(tempLastAt).getTime();
+  var isStale = ageMs > resolvedSec * 3 * 1000;
+  var color = isStale ? "var(--color-warning)" : "var(--color-text-tertiary)";
+  var label = isStale ? "last successful update " : "updated ";
+  slot.innerHTML = '<span style="font-size:0.72rem;color:' + color + '" title="' +
+    escapeHtml(new Date(tempLastAt).toLocaleString()) + '">' +
+    (isStale ? "&#9888; " : "") + label + timeAgo(tempLastAt) + '</span>';
 }
 
 function _staleBannerInnerHTML(lastAt, resolvedSec) {
@@ -3996,6 +4028,7 @@ function _renderStorageTable(container, si, asset) {
 // many sensors on one chart was unreadable; one sensor per modal is clearer.
 function _renderTemperatures(container, si, asset) {
   if (!container) return;
+  _updateTemperatureUpdatedStamp(asset, si);
   var latest = (si && si.temperatures) || [];
   if (latest.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
@@ -4030,8 +4063,14 @@ function _renderTemperatures(container, si, asset) {
       '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
-  var tempStaleBanner = _staleBannerHTML(asset && asset.id, asset, "telemetry", si && (si.lastTemperatureAt || si.lastTelemetryAt));
-  container.innerHTML = tempStaleBanner +
+  // Stale-state surfaces in the section header's updated stamp instead of a
+  // separate banner — the conflict between "header says 22s ago" and "banner
+  // says 15h ago" was operators reading the telemetry-pass timestamp vs the
+  // sensor-row timestamp. The two diverge whenever CPU/mem succeeds but the
+  // sensor pull fails; one stamp using the table-specific timestamp is
+  // unambiguous.
+  _updateTemperatureUpdatedStamp(asset, si);
+  container.innerHTML =
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
