@@ -180,8 +180,7 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
   var streams = [
     { key: "responseTime",  label: "Response time",  pollField: "responseTimePolling",  credField: "responseTimeCredentialId",  mibField: "responseTimeMibId"  },
     { key: "telemetry",     label: "CPU/Memory",     pollField: "cpuMemoryPolling",     credField: "cpuMemoryCredentialId",     mibField: "cpuMemoryMibId"     },
-    { key: "temperature",   label: "Temperature",    pollField: "temperaturePolling",   credField: "temperatureCredentialId",   mibField: "temperatureMibId",
-      note: "Stored — runtime still bundles with CPU/Memory until the dispatcher split lands." },
+    { key: "temperature",   label: "Temperature",    pollField: "temperaturePolling",   credField: "temperatureCredentialId",   mibField: "temperatureMibId"  },
     { key: "interfaces",    label: "Interfaces",     pollField: "interfacesPolling",    credField: "interfacesCredentialId",    mibField: "interfacesMibId"    },
     { key: "lldp",          label: "LLDP neighbors", pollField: "lldpPolling",          credField: "lldpCredentialId",          mibField: "lldpMibId"          },
   ];

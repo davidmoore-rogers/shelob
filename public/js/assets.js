@@ -1832,7 +1832,7 @@ function assetMonitoringFormHTML(asset, managedAgent) {
       '<div style="display:grid;grid-template-columns:200px 1fr;gap:0.5rem 1rem;align-items:center;margin-bottom:0.75rem">' +
         streamRow("Response time",  "responseTime", "f-responseTimePolling", "f-responseTimeCredential", "f-responseTimeMib", pollingCurrent.responseTimePolling, rtCredId,   rtMibId,   _autoMibNames.responseTime) +
         streamRow("CPU/Memory",     "telemetry",    "f-cpuMemoryPolling",    "f-cpuMemoryCredential",    "f-telemetryMib",    pollingCurrent.cpuMemoryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
-        streamRow("Temperature",    "temperature",  "f-temperaturePolling",  "f-temperatureCredential",  "f-temperatureMib",  pollingCurrent.temperaturePolling,  tempCredId, tempMibId, _autoMibNames.temperature, "Stored — runtime still bundles with CPU/Memory until the dispatcher split lands.") +
+        streamRow("Temperature",    "temperature",  "f-temperaturePolling",  "f-temperatureCredential",  "f-temperatureMib",  pollingCurrent.temperaturePolling,  tempCredId, tempMibId, _autoMibNames.temperature) +
         streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   "f-interfacesMib",   pollingCurrent.interfacesPolling,   ifCredId,   ifMibId,   _autoMibNames.interfaces) +
         streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         "f-lldpMib",         pollingCurrent.lldpPolling,         lldpCredId, lldpMibId, _autoMibNames.lldp) +
       '</div>' +
@@ -2759,7 +2759,10 @@ async function openViewModal(id) {
           var r = await api.assets.probeNow(a.id);
           // Build a per-stream summary so the toast names exactly which streams
           // refreshed and which failed (and why). The probe-now endpoint returns:
-          //   { success, responseTimeMs, error?, telemetry: {supported,collected,error?}, systemInfo: {…} }
+          //   { success, responseTimeMs, error?,
+          //     telemetry: {supported,collected,error?},
+          //     temperature: {supported,collected,error?},
+          //     systemInfo: {…} }
           var parts = [];
           var failures = [];
           if (r.success) parts.push("probe " + r.responseTimeMs + " ms");
@@ -2768,6 +2771,13 @@ async function openViewModal(id) {
           var tel = r.telemetry || {};
           if (tel.collected) parts.push("telemetry");
           else if (tel.supported && tel.error) failures.push("telemetry: " + tel.error);
+
+          // Temperature dispatches on its own polling method. supported-but-
+          // empty (sensor-less device) is not a failure — collected===false
+          // with no error means "device exposes no sensors", so skip it.
+          var tmp = r.temperature || {};
+          if (tmp.collected) parts.push("temperature");
+          else if (tmp.supported && tmp.error) failures.push("temperature: " + tmp.error);
 
           var si = r.systemInfo || {};
           if (si.collected) parts.push("interfaces");
@@ -3278,14 +3288,15 @@ function assetSystemViewHTML(a) {
       { value: "30d", label: "30d" },
       { value: "custom", label: "Custom…", id: "btn-asset-system-custom" },
     ], "assetSystem", "1h");
-  // CPU/Memory + Temperatures share the Telemetry stream — the same toggle
-  // controls both, so they get the same source badge. Interfaces and Storage
-  // share the Interfaces stream. LLDP is its own stream (it can independently
-  // be REST API or SNMP per integration / class / asset) so it gets its own
-  // badge — sharing the Interfaces badge masked a real polling method
-  // difference and stripped the cadence (which the async refresh of the
-  // shared span resolved against the wrong stream).
+  // CPU/Memory and Temperatures dispatch on their own streams now — operators
+  // can run CPU/mem over REST while temperature scrapes over SNMP (the
+  // branch-class FortiGate workaround). Each section gets its own badge so
+  // the per-stream polling method, credential, MIB, and cadence are visible
+  // at a glance. Interfaces and Storage share the Interfaces stream. LLDP is
+  // its own stream (per-integration/class/asset REST or SNMP) so it also
+  // gets its own badge.
   var telemetryBadge   = _streamSourceBadgeHTML(a, "telemetry");
+  var temperatureBadge = _streamSourceBadgeHTML(a, "temperature");
   var interfacesBadge  = _streamSourceBadgeHTML(a, "interfaces");
   var lldpBadge        = _streamSourceBadgeHTML(a, "lldp");
   var telUpdatedAt = a.lastTelemetryAt
@@ -3304,7 +3315,7 @@ function assetSystemViewHTML(a) {
   // flip it amber + "last successful update X ago" when the temp data is
   // stale relative to the resolved cadence. Initial value mirrors telemetry
   // so the placeholder isn't blank during the first paint.
-  var temperatureBadgeFull = telemetryBadge + (telemetryBadge ? " " : "") +
+  var temperatureBadgeFull = temperatureBadge + (temperatureBadge ? " " : "") +
     '<span id="asset-system-temps-updated">' + telUpdatedAt + '</span>';
   // FortiOS REST API never exposes storage — hide Storage for any asset on the
   // REST API interfaces stream (firewalls as well as managed switches/APs).
@@ -4080,20 +4091,24 @@ function _renderTemperatures(container, si, asset) {
   var latest = (si && si.temperatures) || [];
   if (latest.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
-      var tempPolling = _assetMonitorStreamSource(asset, "telemetry").polling || "REST API";
+      var tempPolling = _assetMonitorStreamSource(asset, "temperature").polling || "REST API";
       container.innerHTML = _notAvailableViaPollingHTML("Temperature", tempPolling);
     } else {
       var isFortinetRestFirewall = asset && asset.assetType === "firewall" && (function () {
-        var tp = asset.cpuMemoryPolling;
+        // Check the temperature stream specifically — the dispatcher uses
+        // temperaturePolling, not cpuMemoryPolling, so a firewall whose
+        // CPU/memory is on REST but whose temperature has already been
+        // flipped to SNMP shouldn't show the "switch to SNMP" nag.
+        var tp = asset.temperaturePolling;
         if (tp === "rest_api") return true;
         if (tp) return false;
         var sk = (asset.discoveredByIntegration && asset.discoveredByIntegration.type) || "manual";
         return sk === "fortimanager" || sk === "fortigate";
       }());
       if (isFortinetRestFirewall) {
-        var fgTempPolling = _assetMonitorStreamSource(asset, "telemetry").polling || "REST API";
+        var fgTempPolling = _assetMonitorStreamSource(asset, "temperature").polling || "REST API";
         var fgTempDesc = "Lower-end FortiGate models (60F/61F/91G class) do not support the sensor-info endpoint via REST API. " +
-          "Upgrade FortiOS or switch the telemetry stream to <strong>SNMP</strong> to enable collection on affected models.";
+          "Upgrade FortiOS or switch the <strong>Temperature</strong> polling method to <strong>SNMP</strong> on the integration's Monitoring tab to enable collection on affected models.";
         container.innerHTML = _notAvailableViaPollingHTML("Temperature", fgTempPolling, fgTempDesc);
       } else {
         container.innerHTML = '<p class="empty-state">No temperature sensors reported by this device.</p>';

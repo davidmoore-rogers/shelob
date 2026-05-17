@@ -23,6 +23,7 @@ import { shapeMacRows, MAC_ROW_SELECT, reconcileMacAddresses } from "../../utils
 import {
   probeAsset, recordProbeResult,
   collectTelemetry, recordTelemetryResult,
+  collectTemperatures, recordTemperatureResult,
   collectSystemInfo, recordSystemInfoResult,
   snmpWalkRaw,
   resolveMonitorSettingsWithProvenance,
@@ -709,8 +710,9 @@ router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
           success: false,
           responseTimeMs: 0,
           error: reason,
-          telemetry:  { supported: true, collected: false, error: reason },
-          systemInfo: { supported: true, collected: false, error: reason },
+          telemetry:   { supported: true, collected: false, error: reason },
+          temperature: { supported: true, collected: false, error: reason },
+          systemInfo:  { supported: true, collected: false, error: reason },
         });
         return;
       }
@@ -721,23 +723,33 @@ router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
     const probe = await probeAsset(id);
     await recordProbeResult(id, probe);
 
-    let telemetry: { supported: boolean; collected: boolean; error?: string };
-    try {
-      const tr = await collectTelemetry(id);
-      await recordTelemetryResult(id, tr);
-      telemetry = { supported: tr.supported, collected: !!tr.data, error: tr.error };
-    } catch (err: any) {
-      telemetry = { supported: true, collected: false, error: err?.message || "Telemetry collection failed" };
-    }
-
-    let systemInfo: { supported: boolean; collected: boolean; error?: string };
-    try {
-      const sr = await collectSystemInfo(id);
-      await recordSystemInfoResult(id, sr);
-      systemInfo = { supported: sr.supported, collected: !!sr.data, error: sr.error };
-    } catch (err: any) {
-      systemInfo = { supported: true, collected: false, error: err?.message || "System info collection failed" };
-    }
+    // Telemetry (CPU/mem) and temperature dispatch independently — different
+    // polling methods, credentials, MIBs, timeouts — so run them in parallel.
+    // System-info is its own collector but also kicked off concurrently
+    // because none of the three depend on each other's results. Each catch
+    // returns a properly-typed CollectionResult so the union below has `data`
+    // on every branch (TS narrowing was complaining otherwise).
+    type TelResult  = Awaited<ReturnType<typeof collectTelemetry>>;
+    type TempResult = Awaited<ReturnType<typeof collectTemperatures>>;
+    type SysResult  = Awaited<ReturnType<typeof collectSystemInfo>>;
+    const tr_p:    Promise<TelResult>  = collectTelemetry(id).catch((err: any): TelResult  => ({ supported: true, error: err?.message || "Telemetry collection failed" }));
+    const tempR_p: Promise<TempResult> = collectTemperatures(id).catch((err: any): TempResult => ({ supported: true, error: err?.message || "Temperature collection failed" }));
+    const sr_p:    Promise<SysResult>  = collectSystemInfo(id).catch((err: any): SysResult  => ({ supported: true, error: err?.message || "System info collection failed" }));
+    const [tr, tempR, sr] = [await tr_p, await tempR_p, await sr_p];
+    await Promise.all([
+      recordTelemetryResult(id, tr),
+      recordTemperatureResult(id, tempR),
+      recordSystemInfoResult(id, sr),
+    ]);
+    const telemetry   = { supported: tr.supported,    collected: !!tr.data,                                       error: tr.error };
+    // Temperature is "collected" when the device actually returned sensor
+    // rows. An empty array (sensor-less device) is supported-but-empty —
+    // surfaced as n/a rather than failure so the toast doesn't nag on devices
+    // that simply don't publish temperature.
+    const tempData    = Array.isArray(tempR.data) ? tempR.data : null;
+    const temperature = { supported: tempR.supported, collected: !!tempData && tempData.length > 0,               error: tempR.error };
+    const tempNoData  = !!(tempR.supported && tempData && tempData.length === 0);
+    const systemInfo  = { supported: sr.supported,    collected: !!sr.data,                                       error: sr.error };
 
     // Audit the manual refresh. The periodic monitorAssets job only writes
     // events on up/down transitions; this endpoint is operator-initiated, so
@@ -751,8 +763,12 @@ router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
     const streamSummary: string[] = [];
     streamSummary.push(`probe ${ok ? probe.responseTimeMs + " ms" : "failed: " + (probe.error || "unknown")}`);
     streamSummary.push(`telemetry ${telemetry.collected ? "ok" : (telemetry.supported ? "failed: " + (telemetry.error || "no data") : "n/a")}`);
+    streamSummary.push(`temperature ${temperature.collected ? "ok" : (tempNoData ? "n/a (no sensors)" : (temperature.supported ? "failed: " + (temperature.error || "no data") : "n/a"))}`);
     streamSummary.push(`interfaces ${systemInfo.collected ? "ok" : (systemInfo.supported ? "failed: " + (systemInfo.error || "no data") : "n/a")}`);
-    const anyFail = !ok || (telemetry.supported && !telemetry.collected) || (systemInfo.supported && !systemInfo.collected);
+    const anyFail = !ok ||
+      (telemetry.supported   && !telemetry.collected) ||
+      (temperature.supported && !temperature.collected && !tempNoData) ||
+      (systemInfo.supported  && !systemInfo.collected);
     logEvent({
       action: "asset.refresh",
       resourceType: "asset",
@@ -761,10 +777,10 @@ router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
       actor: req.session?.username,
       level: anyFail ? "warning" : "info",
       message: `Refresh: ${label} — ${streamSummary.join("; ")}`,
-      details: { probe, telemetry, systemInfo },
+      details: { probe, telemetry, temperature, systemInfo },
     });
 
-    res.json({ ...probe, telemetry, systemInfo });
+    res.json({ ...probe, telemetry, temperature, systemInfo });
   } catch (err) { next(err); }
 });
 
