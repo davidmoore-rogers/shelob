@@ -30,7 +30,7 @@ import {
 import { getCredential } from "../../services/credentialService.js";
 import { resolveConnectionPath } from "../../services/connectionPathService.js";
 import { propagateAfterStatusChange } from "../../services/dependencyTreeService.js";
-import { pickSampleTier } from "../../services/sampleQueryRouter.js";
+import { pickSampleTierForAsset } from "../../services/sampleQueryRouter.js";
 import {
   readMonitorHistory,
   readTelemetryHistory,
@@ -638,7 +638,7 @@ router.get("/:id/monitor-history", async (req, res, next) => {
       since = new Date(+until - windowMs);
       rangeLabel = range;
     }
-    const pick = pickSampleTier(since);
+    const pick = await pickSampleTierForAsset(id, "sample", since);
     const result = await readMonitorHistory(id, since, until, pick.tier);
     res.json({
       range: rangeLabel,
@@ -873,7 +873,7 @@ router.get("/:id/telemetry-history", async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const { since, until, rangeLabel } = resolveRange(req);
-    const pick = pickSampleTier(since);
+    const pick = await pickSampleTierForAsset(id, "telemetry", since);
     const result = await readTelemetryHistory(id, since, until, pick.tier);
     res.json({
       range: rangeLabel,
@@ -1198,7 +1198,7 @@ router.get("/:id/interface-history", async (req, res, next) => {
     const ifName = req.query.ifName ? String(req.query.ifName) : null;
     if (!ifName) throw new AppError(400, "ifName query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const pick = pickSampleTier(since);
+    const pick = await pickSampleTierForAsset(id, "systemInfo", since);
 
     // Samples come from the tier-aware reader. LLDP neighbors and the
     // operator-typed comment override are stream-independent — both fetch
@@ -1324,7 +1324,7 @@ router.get("/:id/temperature-history", async (req, res, next) => {
     const id = req.params.id as string;
     const sensorName = req.query.sensorName ? String(req.query.sensorName) : null;
     const { since, until, rangeLabel } = resolveRange(req);
-    const pick = pickSampleTier(since);
+    const pick = await pickSampleTierForAsset(id, "telemetry", since);
     const result = await readTemperatureHistory(id, since, until, pick.tier, sensorName);
     res.json({
       range: rangeLabel,
@@ -1346,7 +1346,7 @@ router.get("/:id/ipsec-history", async (req, res, next) => {
     const tunnelName = req.query.tunnelName ? String(req.query.tunnelName) : null;
     if (!tunnelName) throw new AppError(400, "tunnelName query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const pick = pickSampleTier(since);
+    const pick = await pickSampleTierForAsset(id, "systemInfo", since);
     const result = await readIpsecHistory(id, since, until, pick.tier, tunnelName);
     res.json({
       range: rangeLabel,
@@ -1367,7 +1367,7 @@ router.get("/:id/storage-history", async (req, res, next) => {
     const mountPath = req.query.mountPath ? String(req.query.mountPath) : null;
     if (!mountPath) throw new AppError(400, "mountPath query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const pick = pickSampleTier(since);
+    const pick = await pickSampleTierForAsset(id, "systemInfo", since);
     const result = await readStorageHistory(id, since, until, pick.tier, mountPath);
     res.json({
       range: rangeLabel,

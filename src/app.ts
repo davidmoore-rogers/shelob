@@ -43,6 +43,7 @@ import "./jobs/seedManufacturerProfiles.js";
 import "./jobs/migrateMonitorSettingsHierarchy.js";
 import "./jobs/renameMonitorClassKeys.js";
 import "./jobs/migrateRetentionTiers.js";
+import "./jobs/consolidateSampleRetention.js";
 import "./jobs/migrateMonitorStatusRename.js";
 import "./jobs/backfillAssetSources.js";
 import "./jobs/flagStaleReservations.js";

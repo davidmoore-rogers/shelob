@@ -39,9 +39,10 @@ export interface TierPick {
 const SECONDS_PER_DAY = 86400;
 
 /**
- * Tier defaults matching the SolarWinds-style tiering. Phase 5 will phase
- * these out of the endpoint code in favor of operator-tunable values from
- * the resolved tier-3 settings.
+ * Tier defaults matching the SolarWinds-style tiering. Used as a fallback
+ * when the asset-aware resolver isn't applicable (e.g. tests, fixture
+ * data). Production endpoints route through `pickSampleTierForAsset`
+ * which consults `Setting("sampleRetention")` per asset class.
  */
 export const DEFAULT_TIER_RETENTION: TierRetention = {
   detailDays: 7,
@@ -69,4 +70,32 @@ export function pickSampleTier(
   if (sinceMs >= detailCutoffMs) return { tier: "detail", bucketSeconds: 0 };
   if (sinceMs >= hourlyCutoffMs) return { tier: "hourly", bucketSeconds: 3600 };
   return { tier: "daily", bucketSeconds: SECONDS_PER_DAY };
+}
+
+/**
+ * Asset-aware tier picker. Looks up the asset's assetType, resolves the
+ * matching retention class from the global Setting("sampleRetention"),
+ * and applies pickSampleTier. One extra small DB read per chart request
+ * (PK lookup on Asset + cache-friendly retention read).
+ *
+ * The `prismaClient` / `getRetention` arguments default to the production
+ * Prisma + sampleRetentionService bindings; injected for test paths.
+ */
+import { prisma } from "../db.js";
+import { getSampleRetention, pickClassForAssetType, type RetentionStream } from "./sampleRetentionService.js";
+
+export async function pickSampleTierForAsset(
+  assetId: string,
+  stream: RetentionStream,
+  since: Date,
+): Promise<TierPick> {
+  const [asset, retention] = await Promise.all([
+    prisma.asset.findUnique({ where: { id: assetId }, select: { assetType: true } }),
+    getSampleRetention(),
+  ]);
+  const klass = pickClassForAssetType(asset?.assetType);
+  return pickSampleTier(since, {
+    detailDays: retention[stream].detail[klass],
+    hourlyDays: retention[stream].hourly[klass],
+  });
 }

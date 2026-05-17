@@ -51,6 +51,7 @@ import { AppError } from "../../utils/errors.js";
 import { hasActiveDiscoveries } from "./integrations.js";
 import { logger } from "../../utils/logger.js";
 import { getCapacitySnapshot, recordCapacityTransition } from "../../services/capacityService.js";
+import { getSampleRetention, updateSampleRetention } from "../../services/sampleRetentionService.js";
 import {
   getBootTimeMode,
   getQueueMode,
@@ -1065,6 +1066,40 @@ router.post("/queue-mode", async (req, res, next) => {
       active: getBootTimeMode(),
       restartRequired: getBootTimeMode() !== requested,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Sample retention (tiered: detail / hourly / daily, per stream + class) ─
+//
+// Phase 5 pulled sample retention out of the per-tier monitor-settings
+// hierarchy into a single global setting edited from the Maintenance card.
+// One Setting("sampleRetention") row carries 3 streams × 3 tiers × 3 classes
+// of retention days. See sampleRetentionService for the shape.
+
+router.get("/sample-retention", async (_req, res, next) => {
+  try {
+    res.json({ retention: await getSampleRetention() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put("/sample-retention", async (req, res, next) => {
+  try {
+    const body = (req.body && typeof req.body === "object") ? req.body : {};
+    const updated = await updateSampleRetention(body);
+    await logEvent({
+      level: "info",
+      action: "sample_retention.updated",
+      resourceType: "setting",
+      resourceName: "sampleRetention",
+      actor: req.session?.username,
+      message: "Sample retention updated",
+      details: { retention: updated as any },
+    });
+    res.json({ retention: updated });
   } catch (err) {
     next(err);
   }

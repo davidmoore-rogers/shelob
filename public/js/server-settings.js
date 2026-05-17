@@ -1474,6 +1474,170 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
   '</div>';
 }
 
+// ─── Sample Retention card (Maintenance tab) ───────────────────────────────
+//
+// Edit the global Setting("sampleRetention") shape. One card with a compact
+// 3-stream × 3-tier × 3-class grid (27 inputs total). Values are days; 0
+// disables retention for that cell ("keep forever").
+//
+// Layout per stream: a small header row with the three class columns
+// (Default / Switches / Access points) followed by three rows for the
+// three tiers (Detail / Hourly / Daily). Stream sections stack vertically.
+// Inputs are tight (3.5rem) so the whole card fits in a single screen.
+
+var SAMPLE_RETENTION_STREAMS = [
+  { key: "sample",     label: "Response time",
+    hint: "Per-probe response-time samples (asset_monitor_samples)." },
+  { key: "telemetry",  label: "CPU, memory & temperature",
+    hint: "Telemetry + temperature samples ride the same retention." },
+  { key: "systemInfo", label: "Interfaces, storage & IPsec",
+    hint: "System-info scrape: interface counters, storage usage, IPsec tunnel state, LLDP neighbors." },
+];
+var SAMPLE_RETENTION_TIERS   = [
+  { key: "detail", label: "Detail"      },
+  { key: "hourly", label: "Hourly avg"  },
+  { key: "daily",  label: "Daily avg"   },
+];
+var SAMPLE_RETENTION_CLASSES = [
+  { key: "default",     label: "Default"        },
+  { key: "switch",      label: "Switches"       },
+  { key: "accessPoint", label: "Access points"  },
+];
+var SAMPLE_RETENTION_DEFAULTS = {
+  detail: 7,
+  hourly: 30,
+  daily:  365,
+};
+
+function _retentionInputHtml(stream, tier, klass, value) {
+  var id = "ret-" + stream + "-" + tier + "-" + klass;
+  var safeValue = (typeof value === "number" && Number.isFinite(value) && value >= 0) ? value : 0;
+  return '<input type="number" min="0" max="3650" step="1" id="' + id + '" data-stream="' + escapeHtml(stream) +
+    '" data-tier="' + escapeHtml(tier) + '" data-class="' + escapeHtml(klass) +
+    '" value="' + safeValue + '" style="width:4rem;text-align:center;padding:2px 4px;font-size:0.85rem">';
+}
+
+function renderSampleRetentionCard(retention) {
+  // Fall through to defaults if the snapshot fetch failed; operator can
+  // still edit and Save to seed the Setting on first use.
+  var r = retention || {
+    sample:     { detail: { default: 7, switch: 7, accessPoint: 7 }, hourly: { default: 30, switch: 30, accessPoint: 30 }, daily: { default: 365, switch: 365, accessPoint: 365 } },
+    telemetry:  { detail: { default: 7, switch: 7, accessPoint: 7 }, hourly: { default: 30, switch: 30, accessPoint: 30 }, daily: { default: 365, switch: 365, accessPoint: 365 } },
+    systemInfo: { detail: { default: 7, switch: 7, accessPoint: 7 }, hourly: { default: 30, switch: 30, accessPoint: 30 }, daily: { default: 365, switch: 365, accessPoint: 365 } },
+  };
+
+  var sections = "";
+  SAMPLE_RETENTION_STREAMS.forEach(function (stream) {
+    var streamRet = r[stream.key] || {};
+    // Per-tier rows
+    var tierRows = "";
+    SAMPLE_RETENTION_TIERS.forEach(function (tier) {
+      var tierRet = streamRet[tier.key] || {};
+      var cells = SAMPLE_RETENTION_CLASSES.map(function (klass) {
+        return '<td style="padding:3px 6px;text-align:center">' +
+          _retentionInputHtml(stream.key, tier.key, klass.key, tierRet[klass.key]) +
+        '</td>';
+      }).join("");
+      tierRows +=
+        '<tr>' +
+          '<td style="padding:3px 8px 3px 0;font-size:0.82rem">' + escapeHtml(tier.label) + '</td>' +
+          cells +
+          '<td style="padding:3px 0 3px 6px;font-size:0.78rem;color:var(--color-text-tertiary)">days</td>' +
+        '</tr>';
+    });
+    var headerCells = SAMPLE_RETENTION_CLASSES.map(function (klass) {
+      return '<th style="padding:3px 6px;font-size:0.74rem;color:var(--color-text-secondary);font-weight:600;text-transform:uppercase;letter-spacing:0.04em">' +
+        escapeHtml(klass.label) +
+      '</th>';
+    }).join("");
+    sections +=
+      '<div style="margin-bottom:1.25rem">' +
+        '<h5 style="margin:0 0 0.15rem 0;font-size:0.9rem">' + escapeHtml(stream.label) + '</h5>' +
+        '<p style="margin:0 0 0.4rem 0;font-size:0.76rem;color:var(--color-text-tertiary)">' + escapeHtml(stream.hint) + '</p>' +
+        '<table style="border-collapse:collapse">' +
+          '<thead><tr>' +
+            '<th></th>' +
+            headerCells +
+            '<th></th>' +
+          '</tr></thead>' +
+          '<tbody>' + tierRows + '</tbody>' +
+        '</table>' +
+      '</div>';
+  });
+
+  return '<div class="settings-card" id="sample-retention-card">' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem">' +
+      '<h4 style="margin:0">Sample Retention</h4>' +
+      '<div style="display:flex;gap:6px">' +
+        '<button class="btn btn-secondary btn-sm" id="btn-sample-retention-defaults">Restore defaults</button>' +
+        '<button class="btn btn-primary"   id="btn-sample-retention-save">Save</button>' +
+      '</div>' +
+    '</div>' +
+    '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:0.85rem">' +
+      'How long Polaris keeps each tier of monitor sample data. Older samples roll up into hourly buckets, then daily buckets, then drop. Set 0 to keep forever for that cell. Switches and access points get their own retention because infra classes generate the dominant share of sample volume on large fleets.' +
+    '</p>' +
+    sections +
+    '<p class="hint" style="margin-top:0.5rem;font-size:0.78rem">Defaults: 7 days detail / 30 days hourly / 365 days daily. Takes effect on the next nightly prune (heavy-loop tick) and on the next chart request.</p>' +
+  '</div>';
+}
+
+function _wireSampleRetentionCard() {
+  var card = document.getElementById("sample-retention-card");
+  if (!card) return;
+  var saveBtn = document.getElementById("btn-sample-retention-save");
+  var defBtn  = document.getElementById("btn-sample-retention-defaults");
+  if (defBtn) {
+    defBtn.addEventListener("click", function () {
+      // Restore the default values into the inputs without saving. The
+      // operator clicks Save to actually persist.
+      SAMPLE_RETENTION_STREAMS.forEach(function (stream) {
+        SAMPLE_RETENTION_TIERS.forEach(function (tier) {
+          SAMPLE_RETENTION_CLASSES.forEach(function (klass) {
+            var el = document.getElementById("ret-" + stream.key + "-" + tier.key + "-" + klass.key);
+            if (el) el.value = String(SAMPLE_RETENTION_DEFAULTS[tier.key]);
+          });
+        });
+      });
+    });
+  }
+  if (saveBtn) {
+    saveBtn.addEventListener("click", async function () {
+      var payload = { sample: {}, telemetry: {}, systemInfo: {} };
+      var hasError = false;
+      SAMPLE_RETENTION_STREAMS.forEach(function (stream) {
+        SAMPLE_RETENTION_TIERS.forEach(function (tier) {
+          payload[stream.key][tier.key] = {};
+          SAMPLE_RETENTION_CLASSES.forEach(function (klass) {
+            var el = document.getElementById("ret-" + stream.key + "-" + tier.key + "-" + klass.key);
+            if (!el) return;
+            var n = parseInt(el.value, 10);
+            if (!Number.isFinite(n) || n < 0 || n > 3650) {
+              hasError = true;
+              el.style.borderColor = "var(--color-status-error, #e57373)";
+              return;
+            }
+            el.style.borderColor = "";
+            payload[stream.key][tier.key][klass.key] = n;
+          });
+        });
+      });
+      if (hasError) {
+        showToast("Retention values must be 0–3650 days", "error");
+        return;
+      }
+      saveBtn.disabled = true;
+      try {
+        await api.serverSettings.setSampleRetention(payload);
+        showToast("Sample retention saved", "success");
+      } catch (err) {
+        showToast("Save failed: " + (err && err.message ? err.message : String(err)), "error");
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+}
+
 async function loadDatabaseInfo() {
   var container = document.getElementById("tab-maintenance");
   container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading maintenance information...</p></div>';
@@ -1487,6 +1651,7 @@ async function loadDatabaseInfo() {
       api.serverSettings.getDatabase(),
       api.serverSettings.getCapacityAdvisor(),
       loadTzOverride(),
+      api.serverSettings.getSampleRetention(),
     ]);
     if (results[0].status === "rejected") throw results[0].reason;
     var db = results[0].value;
@@ -1497,10 +1662,13 @@ async function loadDatabaseInfo() {
     var capacity = advisorResp && advisorResp.capacity ? advisorResp.capacity : null;
     var pgTuning = advisorResp && advisorResp.pgTuning ? advisorResp.pgTuning : null;
     var dbConnectionMode = advisorResp && advisorResp.dbConnectionMode ? advisorResp.dbConnectionMode : "direct";
+    var retentionResp = results[3].status === "fulfilled" && results[3].value ? results[3].value : null;
+    var retention = retentionResp && retentionResp.retention ? retentionResp.retention : null;
     _dbLoaded = true;
 
     container.innerHTML =
       renderCapacityAdvisorCard(advisor, pgTuning && pgTuning.pgConfigFile, dbConnectionMode) +
+      renderSampleRetentionCard(retention) +
       renderCapacityCard(capacity, db, pgTuning) +
       // ── Outbound API Calls card ──
       '<div class="settings-card" id="api-call-chart-card">' +
@@ -1648,6 +1816,7 @@ async function loadDatabaseInfo() {
     initUpdateControls();
     initCapacityActions();
     initCapacityAdvisorActions();
+    _wireSampleRetentionCard();
     initApiCallChart();
     initAgentBuildCard();
   } catch (err) {

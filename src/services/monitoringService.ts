@@ -60,6 +60,7 @@ import {
   startSampleWriteTimer,
 } from "../metrics.js";
 import { dropChunks } from "./timescaleService.js";
+import { getSampleRetention, type ClassRetention } from "./sampleRetentionService.js";
 import {
   enqueueMonitorSample,
   enqueueTelemetrySample,
@@ -5706,23 +5707,31 @@ async function getSwitchAndAccessPointAssetIds(): Promise<{ switchIds: string[];
 
 type SamplePruneFn = (where: Record<string, unknown>) => Promise<{ count: number }>;
 
+/**
+ * Prune one sample / rollup table by class. Caller picks the time column
+ * to filter on (`timestamp` for detail tables, `bucketStart` for hourly
+ * + daily rollups) so the same body handles every tier. Per-class
+ * retention values come from the global Setting("sampleRetention").
+ *
+ * Phase 1 (hypertable fast path). When this table is a Timescale hypertable,
+ * drop whole chunks older than the LONGEST configured retention. drop_chunks
+ * is chunk-granular and constant-time per chunk — no seq-scan, no row lock
+ * contention with normal writes — so we use it to peel off everything
+ * beyond every class's retention window in O(1). Per-class trimming inside
+ * the retention window then runs as a deleteMany on the residue.
+ *
+ * No-op on plain Postgres (`dropChunks` returns immediately).
+ */
 async function pruneOneTable(
   fn: SamplePruneFn,
-  retentionDays: { default: number; switch: number; accessPoint: number },
+  retentionDays: ClassRetention,
   classIds: { switchIds: string[]; accessPointIds: string[] },
+  timeColumn: "timestamp" | "bucketStart",
   hypertableName?: string,
 ): Promise<number> {
   const nowMs = Date.now();
   const taggedClassIds = [...classIds.switchIds, ...classIds.accessPointIds];
 
-  // Phase 1 (hypertable fast path). When this table is a Timescale hypertable,
-  // drop whole chunks older than the LONGEST configured retention. drop_chunks
-  // is chunk-granular and constant-time per chunk — no seq-scan, no row lock
-  // contention with normal writes — so we use it to peel off everything
-  // beyond every class's retention window in O(1). Per-class trimming inside
-  // the retention window then runs as a deleteMany on the residue.
-  //
-  // No-op when the table is plain Postgres (`dropChunks` returns immediately).
   if (hypertableName) {
     const longest = Math.max(retentionDays.default, retentionDays.switch, retentionDays.accessPoint);
     if (longest > 0) {
@@ -5731,114 +5740,112 @@ async function pruneOneTable(
   }
 
   let total = 0;
-  // Phase 2 (per-class deleteMany). On hypertables this only touches chunks
-  // already inside the retention window — no point hitting the dropped-chunk
-  // bytes again. On plain tables this is the only deletion path.
   if (retentionDays.default > 0) {
     const cutoff = new Date(nowMs - retentionDays.default * 24 * 3600 * 1000);
-    const where: Record<string, unknown> = { timestamp: { lt: cutoff } };
+    const where: Record<string, unknown> = { [timeColumn]: { lt: cutoff } };
     if (taggedClassIds.length > 0) where.assetId = { notIn: taggedClassIds };
     const { count } = await fn(where);
     total += count;
   }
   if (retentionDays.switch > 0 && classIds.switchIds.length > 0) {
     const cutoff = new Date(nowMs - retentionDays.switch * 24 * 3600 * 1000);
-    const { count } = await fn({ assetId: { in: classIds.switchIds }, timestamp: { lt: cutoff } });
+    const { count } = await fn({ assetId: { in: classIds.switchIds }, [timeColumn]: { lt: cutoff } });
     total += count;
   }
   if (retentionDays.accessPoint > 0 && classIds.accessPointIds.length > 0) {
     const cutoff = new Date(nowMs - retentionDays.accessPoint * 24 * 3600 * 1000);
-    const { count } = await fn({ assetId: { in: classIds.accessPointIds }, timestamp: { lt: cutoff } });
+    const { count } = await fn({ assetId: { in: classIds.accessPointIds }, [timeColumn]: { lt: cutoff } });
     total += count;
   }
   return total;
 }
 
 /**
- * Trim AssetMonitorSample rows older than the configured retention window.
- * 0 (or negative) disables retention for that class.
+ * Trim every tier (detail / hourly / daily) for the monitor sample stream.
+ * Each tier reads its own retention values from the global setting. 0 (or
+ * negative) disables retention for that class within the tier.
  */
 export async function pruneMonitorSamples(): Promise<number> {
-  const settings = await getMonitorSettings();
+  const retention = await getSampleRetention();
   const ids = await getSwitchAndAccessPointAssetIds();
-  return pruneOneTable(
-    (where) => prisma.assetMonitorSample.deleteMany({ where: where as any }),
-    {
-      default:     settings.sampleRetentionDays,
-      switch:      settings.switch.sampleRetentionDays,
-      accessPoint: settings.accessPoint.sampleRetentionDays,
-    },
-    ids,
-    "asset_monitor_samples",
-  );
+  const r = retention.sample;
+  const [detail, hourly, daily] = await Promise.all([
+    pruneOneTable((w) => prisma.assetMonitorSample.deleteMany({         where: w as any }), r.detail, ids, "timestamp",   "asset_monitor_samples"),
+    pruneOneTable((w) => prisma.assetMonitorSampleHourly.deleteMany({   where: w as any }), r.hourly, ids, "bucketStart", "asset_monitor_samples_hourly"),
+    pruneOneTable((w) => prisma.assetMonitorSampleDaily.deleteMany({    where: w as any }), r.daily,  ids, "bucketStart", "asset_monitor_samples_daily"),
+  ]);
+  return detail + hourly + daily;
 }
 
 /**
- * Trim AssetTelemetrySample + AssetTemperatureSample rows older than the
- * telemetry retention window. Temperatures share telemetry's retention because
- * they're collected on the same cadence and we never want one to outlive the
- * other when stitching them onto the same chart.
+ * Trim every tier of AssetTelemetrySample + AssetTemperatureSample. Both
+ * source tables share the telemetry retention since they ride the same
+ * cadence — keeping CPU/memory and temperature lifetimes locked together
+ * means a telemetry chart never has half its panels go blank during the
+ * retention boundary window.
  */
 export async function pruneTelemetrySamples(): Promise<number> {
-  const settings = await getMonitorSettings();
+  const retention = await getSampleRetention();
   const ids = await getSwitchAndAccessPointAssetIds();
-  const r = {
-    default:     settings.telemetryRetentionDays,
-    switch:      settings.switch.telemetryRetentionDays,
-    accessPoint: settings.accessPoint.telemetryRetentionDays,
-  };
-  const [tel, temps] = await Promise.all([
-    pruneOneTable((where) => prisma.assetTelemetrySample.deleteMany({   where: where as any }), r, ids, "asset_telemetry_samples"),
-    pruneOneTable((where) => prisma.assetTemperatureSample.deleteMany({ where: where as any }), r, ids, "asset_temperature_samples"),
+  const r = retention.telemetry;
+  const [tDetail, tHourly, tDaily, tempDetail, tempHourly, tempDaily] = await Promise.all([
+    pruneOneTable((w) => prisma.assetTelemetrySample.deleteMany({          where: w as any }), r.detail, ids, "timestamp",   "asset_telemetry_samples"),
+    pruneOneTable((w) => prisma.assetTelemetrySampleHourly.deleteMany({    where: w as any }), r.hourly, ids, "bucketStart", "asset_telemetry_samples_hourly"),
+    pruneOneTable((w) => prisma.assetTelemetrySampleDaily.deleteMany({     where: w as any }), r.daily,  ids, "bucketStart", "asset_telemetry_samples_daily"),
+    pruneOneTable((w) => prisma.assetTemperatureSample.deleteMany({        where: w as any }), r.detail, ids, "timestamp",   "asset_temperature_samples"),
+    pruneOneTable((w) => prisma.assetTemperatureSampleHourly.deleteMany({  where: w as any }), r.hourly, ids, "bucketStart", "asset_temperature_samples_hourly"),
+    pruneOneTable((w) => prisma.assetTemperatureSampleDaily.deleteMany({   where: w as any }), r.daily,  ids, "bucketStart", "asset_temperature_samples_daily"),
   ]);
-  return tel + temps;
+  return tDetail + tHourly + tDaily + tempDetail + tempHourly + tempDaily;
 }
 
 /**
- * Trim AssetInterfaceSample + AssetStorageSample + AssetIpsecTunnelSample +
- * AssetLldpNeighbor rows older than the system info retention window. Returns
- * total rows removed. LLDP shares system-info retention because it's collected
- * on the same cadence; the per-scrape full-replace already drops neighbors
- * that have gone away, so this only catches rows for assets that have stopped
- * scraping entirely (monitor disabled, asset unreachable, etc.). LLDP rows
- * use `lastSeen` rather than `timestamp` so they're pruned by their own helper.
+ * Trim every tier of AssetInterfaceSample + AssetStorageSample +
+ * AssetIpsecTunnelSample, plus the AssetLldpNeighbor table that rides the
+ * system-info cadence. LLDP rows use `lastSeen` rather than `timestamp` so
+ * they're pruned by their own helper and only consume the DETAIL retention
+ * tier (no rollups for LLDP — it's current-state, not time-series).
  */
 export async function pruneSystemInfoSamples(): Promise<number> {
-  const settings = await getMonitorSettings();
+  const retention = await getSampleRetention();
   const ids = await getSwitchAndAccessPointAssetIds();
-  const r = {
-    default:     settings.systemInfoRetentionDays,
-    switch:      settings.switch.systemInfoRetentionDays,
-    accessPoint: settings.accessPoint.systemInfoRetentionDays,
-  };
-  const [ifaces, storage, ipsec, lldp] = await Promise.all([
-    pruneOneTable((where) => prisma.assetInterfaceSample.deleteMany({    where: where as any }), r, ids, "asset_interface_samples"),
-    pruneOneTable((where) => prisma.assetStorageSample.deleteMany({      where: where as any }), r, ids, "asset_storage_samples"),
-    pruneOneTable((where) => prisma.assetIpsecTunnelSample.deleteMany({  where: where as any }), r, ids, "asset_ipsec_tunnel_samples"),
-    pruneLldpNeighbors(r, ids),
+  const r = retention.systemInfo;
+  const [iDetail, iHourly, iDaily, sDetail, sHourly, sDaily, ipDetail, ipHourly, ipDaily, lldp] = await Promise.all([
+    pruneOneTable((w) => prisma.assetInterfaceSample.deleteMany({         where: w as any }), r.detail, ids, "timestamp",   "asset_interface_samples"),
+    pruneOneTable((w) => prisma.assetInterfaceSampleHourly.deleteMany({   where: w as any }), r.hourly, ids, "bucketStart", "asset_interface_samples_hourly"),
+    pruneOneTable((w) => prisma.assetInterfaceSampleDaily.deleteMany({    where: w as any }), r.daily,  ids, "bucketStart", "asset_interface_samples_daily"),
+    pruneOneTable((w) => prisma.assetStorageSample.deleteMany({           where: w as any }), r.detail, ids, "timestamp",   "asset_storage_samples"),
+    pruneOneTable((w) => prisma.assetStorageSampleHourly.deleteMany({     where: w as any }), r.hourly, ids, "bucketStart", "asset_storage_samples_hourly"),
+    pruneOneTable((w) => prisma.assetStorageSampleDaily.deleteMany({      where: w as any }), r.daily,  ids, "bucketStart", "asset_storage_samples_daily"),
+    pruneOneTable((w) => prisma.assetIpsecTunnelSample.deleteMany({       where: w as any }), r.detail, ids, "timestamp",   "asset_ipsec_tunnel_samples"),
+    pruneOneTable((w) => prisma.assetIpsecTunnelSampleHourly.deleteMany({ where: w as any }), r.hourly, ids, "bucketStart", "asset_ipsec_tunnel_samples_hourly"),
+    pruneOneTable((w) => prisma.assetIpsecTunnelSampleDaily.deleteMany({  where: w as any }), r.daily,  ids, "bucketStart", "asset_ipsec_tunnel_samples_daily"),
+    pruneLldpNeighbors(r.detail, ids),
   ]);
-  return ifaces + storage + ipsec + lldp;
+  return iDetail + iHourly + iDaily + sDetail + sHourly + sDaily + ipDetail + ipHourly + ipDaily + lldp;
 }
 
 async function pruneLldpNeighbors(
-  retention: { default: number; switch: number; accessPoint: number },
+  retention: ClassRetention,
   ids: { switchIds: string[]; accessPointIds: string[] },
 ): Promise<number> {
   const now = Date.now();
   const cutoff = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000);
   const [d, sw, ap] = await Promise.all([
-    prisma.assetLldpNeighbor.deleteMany({
-      where: {
-        lastSeen: { lt: cutoff(retention.default) },
-        assetId:  { notIn: [...ids.switchIds, ...ids.accessPointIds] },
-      },
-    }),
-    ids.switchIds.length === 0
+    retention.default <= 0
+      ? Promise.resolve({ count: 0 })
+      : prisma.assetLldpNeighbor.deleteMany({
+          where: {
+            lastSeen: { lt: cutoff(retention.default) },
+            assetId:  { notIn: [...ids.switchIds, ...ids.accessPointIds] },
+          },
+        }),
+    (retention.switch <= 0 || ids.switchIds.length === 0)
       ? Promise.resolve({ count: 0 })
       : prisma.assetLldpNeighbor.deleteMany({
           where: { assetId: { in: ids.switchIds }, lastSeen: { lt: cutoff(retention.switch) } },
         }),
-    ids.accessPointIds.length === 0
+    (retention.accessPoint <= 0 || ids.accessPointIds.length === 0)
       ? Promise.resolve({ count: 0 })
       : prisma.assetLldpNeighbor.deleteMany({
           where: { assetId: { in: ids.accessPointIds }, lastSeen: { lt: cutoff(retention.accessPoint) } },
