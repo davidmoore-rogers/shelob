@@ -40,6 +40,7 @@ import {
 } from "./fortimanagerService.js";
 import { logEvent } from "../api/routes/events.js";
 import { logger } from "../utils/logger.js";
+import { parseFortiapTelemetrySnapshot } from "../utils/fortiapMonitorRow.js";
 import { resolveOidSync, ensureRegistryLoaded } from "./oidRegistry.js";
 import {
   pickVendorProfile,
@@ -1379,6 +1380,14 @@ interface FortinetControllerEntry {
   connected: boolean;
   /** Raw status string the controller reported, surfaced in failure errors. */
   status: string;
+  /**
+   * For `kind="aps"` rows only: telemetry snapshot parsed off the same
+   * managed_ap row. Lets the AP telemetry + temperature collectors reuse
+   * the controller-cache fetch instead of issuing their own /wifi/managed_ap
+   * call. Undefined on switches and on AP rows where FortiOS didn't return
+   * the relevant fields.
+   */
+  apTelemetry?: import("../utils/fortiapMonitorRow.js").FortiapTelemetrySnapshot;
 }
 
 interface FortinetControllerFetchResult {
@@ -1580,7 +1589,16 @@ async function fetchFortinetControllerInventory(
           // Managed APs report `status: "online" | "offline" | "discovered" | ...`
           // — only "online"/"connected" count as up.
           : (status === "online" || status === "connected");
-        inventory.set(serial.toUpperCase(), { connected, status });
+        const entry: FortinetControllerEntry = { connected, status };
+        if (kind === "aps") {
+          // Parse the AP-row telemetry snapshot once at fetch time so the
+          // cache absorbs both probe + telemetry + temperature consumers.
+          const snap = parseFortiapTelemetrySnapshot(r);
+          if (snap.cpuPct !== undefined || snap.memTotalMb !== undefined || snap.sensorTemperatures) {
+            entry.apTelemetry = snap;
+          }
+        }
+        inventory.set(serial.toUpperCase(), entry);
       }
 
       const fetchDurationMs = Math.max(0, Math.round(performance.now() - fetchStartedAt));
@@ -1665,6 +1683,105 @@ async function probeFortinetController(
     // upstream duration; fall back to local elapsed time so the operator
     // still sees how long the failure took.
     return finish(start, false, err?.message || "Controller query failed");
+  }
+}
+
+/**
+ * REST-based CPU/memory collector for managed FortiAPs. The AP itself
+ * isn't directly REST-able (no FortiOS REST server on the AP), so we
+ * piggyback on the parent FortiGate's /api/v2/monitor/wifi/managed_ap
+ * response — it carries `cpu_usage`, `mem_free`, and `mem_total` per
+ * AP row. fetchFortinetControllerInventory has already parsed the
+ * snapshot into entry.apTelemetry on the controller-cache hit path,
+ * so all we do here is fetch (cache or upstream) and project the
+ * snapshot into the TelemetrySample shape.
+ *
+ * Memory: FortiAP reports `mem_free` / `mem_total` in MB. We convert
+ * to bytes for the AssetTelemetrySample columns and compute memUsedBytes
+ * = (total − free) × 1024 × 1024. memPct is left null since the bytes
+ * form is more useful for charts (a 256-MB AP at 90% looks the same as
+ * a 1-GB AP at 90% otherwise).
+ */
+async function collectTelemetryFortiapRest(
+  asset: { id: string; serialNumber: string | null; fortinetTopology: unknown },
+  integration: { id: string; type: string; config: Record<string, unknown> },
+  timeoutMs: number,
+): Promise<CollectionResult<TelemetrySample>> {
+  const serial = (asset.serialNumber || "").trim();
+  if (!serial) return { supported: true, error: "FortiAP has no serial number recorded" };
+
+  const topology = (asset.fortinetTopology ?? {}) as Record<string, unknown>;
+  let deviceName = typeof topology.controllerFortigate === "string" ? topology.controllerFortigate.trim() : "";
+  if (!deviceName && integration.type === "fortigate") {
+    deviceName = String((integration.config as Record<string, unknown>).host || "");
+  }
+  if (!deviceName) return { supported: true, error: "FortiAP has no controller FortiGate recorded" };
+
+  try {
+    const { inventory } = await fetchFortinetControllerInventory(integration, deviceName, "aps", timeoutMs);
+    const entry = inventory.get(serial.toUpperCase());
+    if (!entry) return { supported: true, error: `FortiAP not present in ${deviceName}'s managed-AP table` };
+    const snap = entry.apTelemetry;
+    if (!snap) {
+      // Controller returned the AP row but with no cpu/mem fields — older
+      // FortiOS or feature-licensed install. Caller surfaces this as a
+      // collected-with-no-data condition rather than an outright failure.
+      return { supported: true, data: { cpuPct: null, memPct: null, memUsedBytes: null, memTotalBytes: null } };
+    }
+    const memTotalBytes = snap.memTotalMb !== undefined ? snap.memTotalMb * 1024 * 1024 : null;
+    const memFreeBytes  = snap.memFreeMb  !== undefined ? snap.memFreeMb  * 1024 * 1024 : null;
+    const memUsedBytes  = (memTotalBytes !== null && memFreeBytes !== null) ? memTotalBytes - memFreeBytes : null;
+    return {
+      supported: true,
+      data: {
+        cpuPct:        snap.cpuPct ?? null,
+        memPct:        null,
+        memUsedBytes,
+        memTotalBytes,
+      },
+    };
+  } catch (err: any) {
+    return { supported: true, error: err?.message || "FortiAP controller query failed" };
+  }
+}
+
+/**
+ * REST-based temperature collector for managed FortiAPs. Same controller-
+ * cache as collectTelemetryFortiapRest — `sensors_temperatures` is parsed
+ * off the same managed_ap row into entry.apTelemetry.sensorTemperatures.
+ */
+async function collectTemperaturesFortiapRest(
+  asset: { id: string; serialNumber: string | null; fortinetTopology: unknown },
+  integration: { id: string; type: string; config: Record<string, unknown> },
+  timeoutMs: number,
+): Promise<CollectionResult<TemperatureSample[]>> {
+  const serial = (asset.serialNumber || "").trim();
+  if (!serial) return { supported: true, error: "FortiAP has no serial number recorded" };
+
+  const topology = (asset.fortinetTopology ?? {}) as Record<string, unknown>;
+  let deviceName = typeof topology.controllerFortigate === "string" ? topology.controllerFortigate.trim() : "";
+  if (!deviceName && integration.type === "fortigate") {
+    deviceName = String((integration.config as Record<string, unknown>).host || "");
+  }
+  if (!deviceName) return { supported: true, error: "FortiAP has no controller FortiGate recorded" };
+
+  try {
+    const { inventory } = await fetchFortinetControllerInventory(integration, deviceName, "aps", timeoutMs);
+    const entry = inventory.get(serial.toUpperCase());
+    if (!entry) return { supported: true, error: `FortiAP not present in ${deviceName}'s managed-AP table` };
+    const sensors = entry.apTelemetry?.sensorTemperatures;
+    if (!sensors || sensors.length === 0) {
+      // No sensor fields on the row — FortiAP model that doesn't publish
+      // temperatures (older indoor models). Return an empty data array so
+      // the System tab shows "no sensors" rather than an error.
+      return { supported: true, data: [] };
+    }
+    return {
+      supported: true,
+      data: sensors.map((s) => ({ sensorName: s.name, celsius: s.celsius })),
+    };
+  } catch (err: any) {
+    return { supported: true, error: err?.message || "FortiAP controller query failed" };
   }
 }
 
@@ -2191,7 +2308,6 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
 
   const integration   = asset.discoveredByIntegration ?? null;
   const isFortinetSrc = integration?.type === "fortimanager" || integration?.type === "fortigate";
-  const isManagedSwitchOrAp = asset.assetType === "switch" || asset.assetType === "access_point";
 
   try {
     if (polling === "rest_api") {
@@ -2199,16 +2315,19 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
       // credentials don't yet have a telemetry shape — `{ supported: false }`
       // until that lands.
       if (!isFortinetSrc || !integration) return { supported: false };
-      // Managed FortiSwitches / FortiAPs in FortiLink mode aren't directly
-      // REST-able — they don't speak FortiOS REST and the integration's API
-      // token isn't valid against them. The probe path redirects to the
-      // parent FortiGate's controller-status table, but there's no
-      // controller-side endpoint that exposes CPU / memory / per-interface
-      // counters for the managed device. Operators who want telemetry on
-      // these assets enable direct SNMP polling on the integration's
-      // FortiSwitches / FortiAPs subtab; that switches the resolved
-      // telemetryPolling to "snmp" and dispatches below.
-      if (isManagedSwitchOrAp) return { supported: false };
+      // Managed FortiSwitches aren't directly REST-able — they don't speak
+      // FortiOS REST and the integration's API token isn't valid against
+      // them. The probe path redirects to the parent FortiGate's
+      // controller-status table, but there's no controller-side endpoint
+      // that exposes CPU / memory for a managed switch. Operators who want
+      // switch telemetry flip to SNMP. **Managed FortiAPs are different**:
+      // /api/v2/monitor/wifi/managed_ap returns cpu_usage + mem_free +
+      // mem_total + sensors_temperatures per AP, so the controller-cache
+      // doubles as a telemetry source. See collectTelemetryFortiapRest.
+      if (asset.assetType === "switch") return { supported: false };
+      if (asset.assetType === "access_point") {
+        return await collectTelemetryFortiapRest(asset, integration as any, telemetryTimeout);
+      }
       const data = await collectTelemetryFortinet(targetIp, integration as any, telemetryTimeout);
       return { supported: true, data };
     }
@@ -2291,15 +2410,18 @@ export async function collectTemperatures(assetId: string): Promise<CollectionRe
 
   const integration         = asset.discoveredByIntegration ?? null;
   const isFortinetSrc       = integration?.type === "fortimanager" || integration?.type === "fortigate";
-  const isManagedSwitchOrAp = asset.assetType === "switch" || asset.assetType === "access_point";
 
   try {
     if (polling === "rest_api") {
       // Temperature over REST API is FortiOS-specific (sensor-info endpoint).
-      // Managed FortiSwitches/FortiAPs aren't directly REST-able — same guard
-      // as collectTelemetry.
+      // Managed FortiSwitches aren't directly REST-able. Managed FortiAPs
+      // expose temperatures via /api/v2/monitor/wifi/managed_ap → handled
+      // by collectTemperaturesFortiapRest (controller cache).
       if (!isFortinetSrc || !integration) return { supported: false };
-      if (isManagedSwitchOrAp)            return { supported: false };
+      if (asset.assetType === "switch")   return { supported: false };
+      if (asset.assetType === "access_point") {
+        return await collectTemperaturesFortiapRest(asset, integration as any, timeoutMs);
+      }
       const fg = buildFortinetConfig(targetIp, integration as any);
       if ("error" in fg) throw new Error(fg.error);
       const data = await collectTemperaturesFortinet(fg, timeoutMs);
@@ -5757,12 +5879,17 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // icmp / winrm / ssh don't deliver telemetry yet (collectTelemetry returns
     // {supported:false} for those methods regardless of assetType).
     const isManagedSwitchOrAp = a.assetType === "switch" || a.assetType === "access_point";
+    // Managed FortiSwitches still have no REST telemetry path (the
+    // controller-status table reports up/down only). Managed FortiAPs DO
+    // have REST telemetry via collectTelemetryFortiapRest piggybacking on
+    // /api/v2/monitor/wifi/managed_ap, so the rest_api gate excludes
+    // switches only — APs are enqueued and dispatched.
     const canTelemetry =
       eff.cpuMemoryPolling !== null &&
       eff.cpuMemoryPolling !== "icmp"  &&
       eff.cpuMemoryPolling !== "winrm" &&
       eff.cpuMemoryPolling !== "ssh"   &&
-      !(eff.cpuMemoryPolling === "rest_api" && isManagedSwitchOrAp);
+      !(eff.cpuMemoryPolling === "rest_api" && a.assetType === "switch");
     // systemInfo is supported for winrm/ssh paths; only exclude the REST API
     // + managed-switch/AP combination that has no direct endpoint.
     const canSystemInfo =

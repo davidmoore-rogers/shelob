@@ -2084,6 +2084,11 @@ function buildFortiapObservedBlob(
     peerSource?: "lldp" | "detected-device";
     meshUplink?: "ethernet" | "mesh";
     parentApSerial?: string;
+    apUplinkInterface?: string;
+    cpuPct?: number;
+    memFreeMb?: number;
+    memTotalMb?: number;
+    sensorTemperatures?: Array<{ name: string; celsius: number }>;
   },
   syncedAt: Date,
 ): Record<string, unknown> {
@@ -2101,6 +2106,10 @@ function buildFortiapObservedBlob(
     parentSwitch: ap.peerSwitch || null,
     parentPort: ap.peerPort || null,
     parentVlan: typeof ap.peerVlan === "number" ? ap.peerVlan : null,
+    // AP's own local port (lan1, lan2, wbh0 …) from wan_status.interface
+    // or, when wan_status is empty, the LLDP entry's local_port. lan*
+    // are physical Ethernet, wbh* are virtual wireless bridge.
+    uplinkInterface: ap.apUplinkInterface ?? null,
     // Provenance for the parentSwitch/parentPort pair: "lldp" (authoritative,
     // from the AP's own LLDP table) or "detected-device" (FortiSwitch MAC
     // table fallback).
@@ -2108,6 +2117,14 @@ function buildFortiapObservedBlob(
     // Mesh topology — populated for wireless-mesh leaves.
     meshUplink: ap.meshUplink ?? null,
     parentApSerial: ap.parentApSerial ?? null,
+    // Live telemetry snapshot at the moment of discovery. Not authoritative
+    // for charts (the telemetry cadence re-queries the same endpoint), but
+    // surfaced on the Sources tab so operators can see fresh values
+    // immediately after a discovery run.
+    cpuPct: typeof ap.cpuPct === "number" ? ap.cpuPct : null,
+    memFreeMb: typeof ap.memFreeMb === "number" ? ap.memFreeMb : null,
+    memTotalMb: typeof ap.memTotalMb === "number" ? ap.memTotalMb : null,
+    sensorTemperatures: ap.sensorTemperatures ?? null,
   };
 }
 
@@ -3480,6 +3497,10 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         parentSwitch: ap.peerSwitch || null,
         parentPort: ap.peerPort || null,
         parentVlan: ap.peerVlan ?? null,
+        // AP-local uplink port (lan1, lan2, wbh0 …) — preferred from
+        // wan_status.interface, falls back to LLDP local_port. Mirrors
+        // the FortiSwitch fortinetTopology.uplinkInterface convention.
+        uplinkInterface: ap.apUplinkInterface ?? null,
         // peerSource records HOW the (parentSwitch, parentPort) pair was
         // resolved — "lldp" (the AP's own LLDP table; authoritative) or
         // "detected-device" (FortiSwitch MAC table fallback). Topology

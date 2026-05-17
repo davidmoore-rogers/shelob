@@ -6,7 +6,7 @@
 
 import { Netmask } from "netmask";
 import { AppError } from "../utils/errors.js";
-import { extractApLldpAndMesh } from "../utils/fortiapLldp.js";
+import { parseFortiapMonitorRow, FORTIAP_MONITOR_FORMAT } from "../utils/fortiapMonitorRow.js";
 import { getFmgWorker } from "./fmgWorker.js";
 import {
   discoverDhcpSubnets as discoverViaFortigate,
@@ -758,6 +758,23 @@ export interface DiscoveredFortiAP {
   // resolved switch instead of its actual mesh parent.
   meshUplink?: "ethernet" | "mesh";
   parentApSerial?: string;
+  // AP's own local port that uplinks to the FortiSwitch (or the FortiGate
+  // when no managed switch sits between them). Captured from
+  // `wan_status[].interface` first — authoritative — falling back to the
+  // matching LLDP entry's `local_port`. `lan*` are physical Ethernet
+  // ports, `wbh*` are virtual wireless bridge interfaces. Drives the
+  // FortiAP-side label on the topology edge.
+  apUplinkInterface?: string;
+  // Live telemetry snapshot pulled from /api/v2/monitor/wifi/managed_ap
+  // during discovery. None of these write to AssetTelemetrySample from
+  // discovery — they ride along in the AssetSource observed blob so the
+  // Sources tab can show "as of last discovery" values, and the
+  // monitoring path (runTelemetryFor) re-queries the same endpoint on
+  // its own cadence to populate sample tables.
+  cpuPct?: number;
+  memFreeMb?: number;
+  memTotalMb?: number;
+  sensorTemperatures?: Array<{ name: string; celsius: number }>;
 }
 
 export interface DiscoveredVip {
@@ -1796,7 +1813,7 @@ export async function discoverDhcpSubnets(
           data: {
             target: [`/adom/${adom}/device/${deviceName}`],
             action: "get",
-            resource: "/api/v2/monitor/wifi/managed_ap?format=name|wtp_id|serial|model|wtp_profile|ip_addr|ip_address|local_ipv4_address|wtp_ip|connecting_ip|base_mac|mac|status|state|version|firmware_version|lldp|mesh_uplink|parent_wtp_id",
+            resource: `/api/v2/monitor/wifi/managed_ap?format=${FORTIAP_MONITOR_FORMAT}`,
           },
         }],
       };
@@ -1816,27 +1833,10 @@ export async function discoverDhcpSubnets(
       } else if (Array.isArray(apResults)) {
         didApQuery = true;
         for (const ap of apResults) {
-          const rawApIp = ap.ip_addr || ap.ip_address || ap.local_ipv4_address || ap.wtp_ip || ap.connecting_ip || "";
-          const rawApMac = ap.base_mac || ap.mac || "";
-          // LLDP-resolved wired uplink + mesh fields. The detected-device
-          // fallback further down only fires for APs where peerSwitch is
-          // still empty after this stage.
-          const lldpExt = extractApLldpAndMesh(ap);
-          localAps.push({
-            device: deviceName,
-            name: ap.name || ap.wtp_id || "",
-            serial: ap.serial || ap.wtp_id || "",
-            model: ap.model || ap.wtp_profile || "",
-            ipAddress: rawApIp === "0.0.0.0" ? "" : rawApIp,
-            baseMac: /^0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}[:\-.]0{1,2}$/i.test(rawApMac) ? "" : rawApMac,
-            status: ap.status || ap.state || "",
-            osVersion: ap.version || ap.firmware_version || "",
-            ...(lldpExt.lldpUplinkSwitch && lldpExt.lldpUplinkPort
-              ? { peerSwitch: lldpExt.lldpUplinkSwitch, peerPort: lldpExt.lldpUplinkPort, peerSource: "lldp" as const }
-              : {}),
-            ...(lldpExt.meshUplink ? { meshUplink: lldpExt.meshUplink } : {}),
-            ...(lldpExt.parentApSerial ? { parentApSerial: lldpExt.parentApSerial } : {}),
-          });
+          // Shared parser — same shape across FMG proxy and standalone
+          // FortiGate REST paths. See utils/fortiapMonitorRow.ts.
+          const parsed = parseFortiapMonitorRow(ap as Record<string, unknown>);
+          localAps.push({ device: deviceName, ...parsed });
           apCount++;
         }
         log("discover.fortiaps", "info", `${deviceName}: Found ${apCount} managed FortiAP(s)`, deviceName);

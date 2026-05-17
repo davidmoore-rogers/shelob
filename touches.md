@@ -1370,7 +1370,7 @@ Listed alphabetically.
 **Invariants:**
 - fgRequest is the low-level bearer-token auth layer; all per-device queries use it.
 - discoverDhcpSubnets returns DiscoveryResult identical to FMG's shape so integrations.ts syncDhcpSubnets pipeline handles both identically.
-- FortiAP LLDP/mesh extraction reuses extractApLldpAndMesh (same logic as FMG).
+- FortiAP `/api/v2/monitor/wifi/managed_ap` row parsing is centralized in `src/utils/fortiapMonitorRow.ts` (`parseFortiapMonitorRow` + `FORTIAP_MONITOR_FORMAT`) — both transports import the same parser + format string so they can't drift.
 - Standalone FortiGate has no proxy/direct toggle (useProxy doesn't apply); all queries go directly to the device's management IP.
 - proxyQuery is a read-only REST pass-through for manual API testing; does not modify CMDB.
 - Per-FortiGate query fan-out is seven parallel chains (A-G); Chain G calls `/api/v2/monitor/system/ha-peer` to populate `DiscoveredDevice.haMode` + `haMembers`. 404 / empty = standalone.
@@ -1471,7 +1471,7 @@ Listed alphabetically.
 - Direct mode (`useProxy: false`) requires valid fortigateApiUser/fortigateApiToken on the FMG integration; mgmt IPs come from either the warm cache (monitor-up firewall Asset rows) or `resolveDeviceMgmtIpViaFmg` for cache-cold/new devices. Cache-cold mgmt-IP resolves now run concurrently across the worker pool (native lane is unbounded) — fresh installs no longer pay the serial-resolve penalty before per-device discovery can start.
 - All FMG-bound calls go through `rpc()`, which inspects the JSON-RPC payload's first param URL and routes to `getFmgWorker(integrationId).submitProxy` (when it's `/sys/proxy/json`) or `submitNative` (every other URL). Per-device direct-FortiGate calls do NOT touch FMG and fan out up to `discoveryParallelism` wide independently of the worker.
 - Parity invariant: both FMG and standalone FortiGate return identical DiscoveryResult shape for sync pipeline compatibility.
-- FortiAP LLDP/mesh fields extracted via extractApLldpAndMesh, skipping wireless-mesh peers (system_description != "FortiSwitch-*").
+- FortiAP `/api/v2/monitor/wifi/managed_ap` row parsing centralized in `src/utils/fortiapMonitorRow.ts` (`parseFortiapMonitorRow` + `FORTIAP_MONITOR_FORMAT`) — shared with the standalone FortiGate path. Captures IP / MAC (with `board_mac` fallback) / model (with `deriveFortiapModelFromSerial` for blank-model APs) / `apUplinkInterface` (from `wan_status[].interface` then LLDP `local_port`) plus the live telemetry snapshot (`cpu_usage` / `mem_free` / `mem_total` / `sensors_temperatures`) which feeds the AssetSource observed blob and the runtime AP REST telemetry collector.
 - Cache-miss fallback in processDevice's direct-mode branch: if a warm-cache dispatch fails, re-resolve via FMG worker and retry once at the freshly-resolved IP. Cleared via `cachedNames.delete(deviceName)` so the loop never iterates more than twice.
 - HA detection is **zero extra calls**: `extractHaFromFmgDevice(raw)` reads `ha_mode` + `ha_slave[]` directly off each `/dvmdb/adom/<adom>/device` record FMG already returns. The "current primary" is identified by matching `ha_slave[].sn` against `device.sn`; `idx === 0` is the fallback. Standalone devices return `{ haMode: "standalone", haMembers: [] }` so downstream code branches uniformly.
 - Direct-mode HA precedence: when FMG's `ha_slave[]` is populated, it wins over fortigateService's `ha-peer`-derived view (FMG's view is stable across failover; ha-peer reflects whichever physical box is currently active and would flip on failover).

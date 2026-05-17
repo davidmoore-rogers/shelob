@@ -22,11 +22,21 @@ export interface FortiapLldpResult {
   // wired uplink. system_name and port_id from the matching LLDP entry.
   lldpUplinkSwitch?: string;
   lldpUplinkPort?: string;
+  // The AP-local port that observed the FortiSwitch neighbor (e.g.
+  // "lan1"). Captured from the same matching LLDP entry's `local_port`.
+  // Falls back to `wan_status.interface` in the caller when LLDP is empty.
+  lldpLocalPort?: string;
   // Mesh role + parent. mesh_uplink: "ethernet" = wired-uplink AP, "mesh"
   // = wireless-mesh leaf. parent_wtp_id = the parent AP's serial number;
   // only meaningful when meshUplink === "mesh".
   meshUplink?: "ethernet" | "mesh";
   parentApSerial?: string;
+  // AP's own uplink interface as reported by `wan_status[].interface` on
+  // the managed_ap row. `lan*` = physical Ethernet; `wbh*` = wireless
+  // bridge (virtual). Preferred signal for "which port on the AP is
+  // uplinking" because it's authoritative regardless of whether LLDP
+  // saw anything. Falls back to `lldpLocalPort` when missing.
+  wanInterface?: string;
 }
 
 interface ApLldpEntry {
@@ -42,6 +52,7 @@ interface ApRowForLldp {
   lldp?: unknown;
   mesh_uplink?: unknown;
   parent_wtp_id?: unknown;
+  wan_status?: unknown;
 }
 
 function asString(v: unknown): string {
@@ -66,8 +77,27 @@ export function extractApLldpAndMesh(row: ApRowForLldp): FortiapLldpResult {
       if (!sysName || !portId) continue;
       out.lldpUplinkSwitch = sysName;
       out.lldpUplinkPort = portId;
+      const localPort = asString(e.local_port).trim();
+      if (localPort) out.lldpLocalPort = localPort;
       break;
     }
+  }
+
+  // 1b. `wan_status` reports the AP's own uplink interface authoritatively
+  //     — works even when LLDP is empty (e.g. AP plugged into a non-LLDP
+  //     speaker, or LLDP RX not enabled on the FortiSwitch port).
+  //     FortiOS firmware variance: sometimes a single object, sometimes
+  //     an array. Pick the first entry whose `interface` is non-empty.
+  const wanStatus = row.wan_status;
+  if (Array.isArray(wanStatus)) {
+    for (const w of wanStatus as unknown[]) {
+      if (!w || typeof w !== "object") continue;
+      const iface = asString((w as { interface?: unknown }).interface).trim();
+      if (iface) { out.wanInterface = iface; break; }
+    }
+  } else if (wanStatus && typeof wanStatus === "object") {
+    const iface = asString((wanStatus as { interface?: unknown }).interface).trim();
+    if (iface) out.wanInterface = iface;
   }
 
   // 2. Mesh fields. mesh_uplink is FortiOS's own classification — trust
