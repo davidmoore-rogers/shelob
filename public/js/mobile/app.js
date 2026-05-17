@@ -117,10 +117,68 @@ window.PolarisTheme = {
   // ─── Shell ─────────────────────────────────────────────────────────────
   function renderShell() {
     app.innerHTML = ''
+      + '<div id="search-slot">' + buildSearchbar() + '</div>'
       + '<div id="topbar-slot"></div>'
       + '<main class="app-body" id="app-body"></main>'
       + buildNavbar();
+    wireSearchbar();
     wireNavbar();
+  }
+
+  // Persistent searchbar — visible at the top of every page. Typing
+  // routes the user to the Search tab (which renders results into
+  // #app-body) without losing the input value across navigation, since
+  // the input lives in this shell-owned slot and is never re-rendered.
+  function buildSearchbar() {
+    var initials = (currentUser && currentUser.username || "?").slice(0, 2).toUpperCase();
+    return ''
+      + '<div class="m3-searchbar" style="margin:8px 16px 4px;">'
+      + '  <button class="icon-btn" id="search-clear-btn" aria-label="Clear" type="button" style="display:none;"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>'
+      + '  <button class="icon-btn" id="search-icon-btn" aria-label="Search" type="button"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></button>'
+      + '  <input class="input" type="search" id="search-input" placeholder="Search IPs, assets, networks…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">'
+      + '  <div class="avatar" id="search-avatar">' + PolarisTabs.escapeHtml(initials) + '</div>'
+      + '</div>';
+  }
+
+  function wireSearchbar() {
+    var input    = document.getElementById("search-input");
+    var clearBtn = document.getElementById("search-clear-btn");
+    var iconBtn  = document.getElementById("search-icon-btn");
+    if (!input) return;
+
+    function setClearVisible(visible) {
+      if (!clearBtn || !iconBtn) return;
+      clearBtn.style.display = visible ? "" : "none";
+      iconBtn.style.display  = visible ? "none" : "";
+    }
+
+    input.addEventListener("input", function () {
+      var q = input.value.trim();
+      setClearVisible(!!input.value);
+      // Typing anywhere except the Search tab routes to /search so the
+      // results land in the body. Replace history so back doesn't have
+      // to walk through every keystroke's intermediate route.
+      var cur = PolarisRouter.current();
+      if (q.length > 0 && cur.name !== "search") {
+        PolarisRouter.go("search", { replace: true });
+      }
+      PolarisSearch.debounce(q);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        input.value = "";
+        setClearVisible(false);
+        PolarisSearch.runSearch("");
+      }
+    });
+
+    if (clearBtn) clearBtn.addEventListener("click", function () {
+      input.value = "";
+      setClearVisible(false);
+      PolarisSearch.runSearch("");
+      input.focus();
+    });
   }
 
   function buildNavbar() {

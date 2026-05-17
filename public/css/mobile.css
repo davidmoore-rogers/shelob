@@ -528,6 +528,7 @@ input, select, textarea { font-family: inherit; }
    slot and bottom navbar both step out of the way. */
 .app[data-tab="__fullbleed"] .m3-navbar { display: none; }
 .app[data-tab="__fullbleed"] #topbar-slot { display: none; }
+.app[data-tab="__fullbleed"] #search-slot { display: none; }
 .app[data-tab="__fullbleed"] .app-body { padding: 0; }
 
 /* ─── Text fields ─────────────────────────────────────────────────────── */

@@ -96,186 +96,175 @@
     return null;
   }
 
+  // ─── Persistent search engine ──────────────────────────────────────────
+  // The search input lives in #search-slot in the app shell (wired by
+  // app.js renderShell) so it's visible on every page. The actual query
+  // execution + result rendering lives here and is exposed via
+  // window.PolarisSearch — the shell calls run() on every input change
+  // and the Search tab's render() calls it once on mount to paint
+  // results for the current input value.
+  var _searchInFlight = null;
+  var _searchDebounce = null;
+
+  function searchState() {
+    return document.getElementById("search-state");
+  }
+
+  function renderSearchEmpty() {
+    var state = searchState();
+    if (!state) return;
+    state.innerHTML = ''
+      + '<div class="empty-state" style="padding-top:48px;">'
+      + '  <div class="icon"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></div>'
+      + '  <div class="ttl">Search Polaris</div>'
+      + '  <div class="desc">Find IPs, assets, networks, FortiGate sites and reservations. Try typing an IP, hostname, MAC, or partial name.</div>'
+      + '</div>';
+  }
+
+  function renderSearchLoading() {
+    var state = searchState();
+    if (!state) return;
+    state.innerHTML = '<div class="loading-screen" style="padding:48px 0;"><div class="spinner"></div></div>';
+  }
+
+  function renderSearchError(msg) {
+    var state = searchState();
+    if (!state) return;
+    state.innerHTML = ''
+      + '<div class="empty-state" style="padding-top:48px;">'
+      + '  <div class="icon" style="background:var(--md-error-container);color:var(--md-on-error-container);"><svg viewBox="0 0 24 24"><use href="#i-warn"/></svg></div>'
+      + '  <div class="ttl">Search failed</div>'
+      + '  <div class="desc">' + escapeHtml(msg) + '</div>'
+      + '</div>';
+  }
+
+  function renderSearchResults(data) {
+    var state = searchState();
+    if (!state) return;
+    // Mirror desktop: surface endpoint asset hits that resolved to a
+    // pinned FortiGate as virtual "Device Map" entries so a workstation
+    // search opens its origin site's topology graph, not just the asset
+    // details page. Without this the Device Map section only ever appears
+    // when the operator types a firewall hostname directly.
+    var virtualSites = (data.assets || [])
+      .filter(function (h) { return h.context && h.context.siteId; })
+      .map(function (h) {
+        var ctx = Object.assign({}, h.context, { mapEntry: true });
+        var subtitle = ctx.siteHostname ? ("On " + ctx.siteHostname) : (h.subtitle || "");
+        return Object.assign({}, h, { subtitle: subtitle, context: ctx });
+      });
+    data.sites = (data.sites || []).concat(virtualSites);
+
+    var totalHits = 0;
+    SEARCH_GROUP_ORDER.forEach(function (g) { totalHits += (data[g] || []).length; });
+    if (totalHits === 0) {
+      state.innerHTML = ''
+        + '<div class="empty-state" style="padding-top:48px;">'
+        + '  <div class="icon"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></div>'
+        + '  <div class="ttl">No matches</div>'
+        + '  <div class="desc">Nothing matched “' + escapeHtml(data.query || "") + '”. Try a different query.</div>'
+        + '</div>';
+      return;
+    }
+
+    var html = "";
+    SEARCH_GROUP_ORDER.forEach(function (g) {
+      var hits = data[g] || [];
+      if (hits.length === 0) return;
+      var meta = SEARCH_GROUP_META[g];
+      html += '<div class="section-head">' + meta.label + '<span class="count">' + hits.length + '</span></div>';
+      hits.forEach(function (hit, idx) {
+        var titleClass = (g === "ips" || g === "subnets" || g === "blocks") ? "headline mono" : "headline";
+        var leadingCls = "leading" + (meta.leading ? " " + meta.leading : "");
+        html += ''
+          + '<button class="list-item two-line" data-group="' + g + '" data-idx="' + idx + '">'
+          + '  <span class="' + leadingCls + '"><svg viewBox="0 0 24 24"><use href="' + meta.icon + '"/></svg></span>'
+          + '  <div class="content">'
+          + '    <div class="' + titleClass + '">' + escapeHtml(hit.title || "") + '</div>'
+          + (hit.subtitle ? '    <div class="supporting">' + escapeHtml(hit.subtitle) + '</div>' : '')
+          + '  </div>'
+          + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
+          + '</button>';
+      });
+    });
+    state.innerHTML = html;
+
+    // Wire row taps. We rebuild the list on every query so listeners
+    // are fresh — no leak risk.
+    state.querySelectorAll(".list-item").forEach(function (row) {
+      row.addEventListener("click", function () {
+        var g = row.dataset.group;
+        var idx = parseInt(row.dataset.idx, 10);
+        var hit = (data[g] || [])[idx];
+        if (!hit) return;
+        var target = hitTarget(g, hit);
+        if (target) {
+          PolarisRouter.go(target);
+        } else {
+          showSnackbar("No mobile view for this result yet — open it on desktop.");
+        }
+      });
+    });
+  }
+
+  // Called by the shell on every searchbar input (debounced) and by the
+  // Search tab's render() on mount. No-op when #search-state isn't in
+  // the DOM yet — happens on detail pages where the body owns its own
+  // content; the bar still navigates to /search via the shell handler
+  // before this would matter.
+  function runSearch(q) {
+    if (!searchState()) return;
+    if (_searchInFlight) { _searchInFlight.abort(); _searchInFlight = null; }
+    if (q.length < 2) {
+      renderSearchEmpty();
+      return;
+    }
+    _searchInFlight = new AbortController();
+    var thisFlight = _searchInFlight;
+
+    renderSearchLoading();
+    fetch("/api/v1/search?q=" + encodeURIComponent(q), { signal: thisFlight.signal })
+      .then(function (r) {
+        if (r.status === 401) { window.PolarisMobile.boot(); throw new Error("auth"); }
+        if (!r.ok) throw new Error("Request failed (" + r.status + ")");
+        return r.json();
+      })
+      .then(function (data) {
+        if (thisFlight !== _searchInFlight) return; // superseded
+        renderSearchResults(data);
+      })
+      .catch(function (err) {
+        if (err.name === "AbortError" || err.message === "auth") return;
+        renderSearchError(err.message || "Network error");
+      });
+  }
+
+  function debounceSearch(q) {
+    clearTimeout(_searchDebounce);
+    _searchDebounce = setTimeout(function () { runSearch(q); }, 200);
+  }
+
   var Search = {
     title: "Search",
     icon: "#i-search",
-    renderTopbar: function (ctx) {
-      var initials = (ctx.user && ctx.user.username || "?")
-        .slice(0, 2).toUpperCase();
-      return ''
-        + '<div class="m3-searchbar" style="margin:8px 16px 0;">'
-        + '  <button class="icon-btn" id="search-clear-btn" aria-label="Clear" type="button" style="display:none;"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>'
-        + '  <button class="icon-btn" id="search-icon-btn" aria-label="Search" type="button"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></button>'
-        + '  <input class="input" type="search" id="search-input" placeholder="Search IPs, assets, networks…" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">'
-        + '  <div class="avatar">' + escapeHtml(initials) + '</div>'
-        + '</div>';
-    },
+    // No per-tab topbar — the persistent searchbar lives in the shell
+    // (#search-slot, wired by app.js renderShell).
+    renderTopbar: function () { return ''; },
     render: function (body) {
       body.innerHTML = '<div id="search-state"></div>';
-      var state = document.getElementById("search-state");
+      // Re-run against the current persistent-input value so coming back
+      // to the Search tab with a non-empty bar shows the same results.
       var input = document.getElementById("search-input");
-      var clearBtn = document.getElementById("search-clear-btn");
-      var iconBtn  = document.getElementById("search-icon-btn");
-
-      var debounceTimer = null;
-      var inFlight = null;
-
-      function setClearVisible(visible) {
-        if (!clearBtn || !iconBtn) return;
-        clearBtn.style.display = visible ? "" : "none";
-        iconBtn.style.display  = visible ? "none" : "";
-      }
-
-      function renderEmpty() {
-        state.innerHTML = ''
-          + '<div class="empty-state" style="padding-top:48px;">'
-          + '  <div class="icon"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></div>'
-          + '  <div class="ttl">Search Polaris</div>'
-          + '  <div class="desc">Find IPs, assets, networks, FortiGate sites and reservations. Try typing an IP, hostname, MAC, or partial name.</div>'
-          + '</div>';
-      }
-
-      function renderLoading() {
-        state.innerHTML = '<div class="loading-screen" style="padding:48px 0;"><div class="spinner"></div></div>';
-      }
-
-      function renderError(msg) {
-        state.innerHTML = ''
-          + '<div class="empty-state" style="padding-top:48px;">'
-          + '  <div class="icon" style="background:var(--md-error-container);color:var(--md-on-error-container);"><svg viewBox="0 0 24 24"><use href="#i-warn"/></svg></div>'
-          + '  <div class="ttl">Search failed</div>'
-          + '  <div class="desc">' + escapeHtml(msg) + '</div>'
-          + '</div>';
-      }
-
-      function renderResults(data) {
-        // Mirror desktop: surface endpoint asset hits that resolved to a
-        // pinned FortiGate as virtual "Device Map" entries so a workstation
-        // search opens its origin site's topology graph, not just the asset
-        // details page. Without this the Device Map section only ever appears
-        // when the operator types a firewall hostname directly.
-        var virtualSites = (data.assets || [])
-          .filter(function (h) { return h.context && h.context.siteId; })
-          .map(function (h) {
-            var ctx = Object.assign({}, h.context, { mapEntry: true });
-            var subtitle = ctx.siteHostname ? ("On " + ctx.siteHostname) : (h.subtitle || "");
-            return Object.assign({}, h, { subtitle: subtitle, context: ctx });
-          });
-        data.sites = (data.sites || []).concat(virtualSites);
-
-        var totalHits = 0;
-        SEARCH_GROUP_ORDER.forEach(function (g) { totalHits += (data[g] || []).length; });
-        if (totalHits === 0) {
-          state.innerHTML = ''
-            + '<div class="empty-state" style="padding-top:48px;">'
-            + '  <div class="icon"><svg viewBox="0 0 24 24"><use href="#i-search"/></svg></div>'
-            + '  <div class="ttl">No matches</div>'
-            + '  <div class="desc">Nothing matched “' + escapeHtml(data.query || "") + '”. Try a different query.</div>'
-            + '</div>';
-          return;
-        }
-
-        var html = "";
-        SEARCH_GROUP_ORDER.forEach(function (g) {
-          var hits = data[g] || [];
-          if (hits.length === 0) return;
-          var meta = SEARCH_GROUP_META[g];
-          html += '<div class="section-head">' + meta.label + '<span class="count">' + hits.length + '</span></div>';
-          hits.forEach(function (hit, idx) {
-            var titleClass = (g === "ips" || g === "subnets" || g === "blocks") ? "headline mono" : "headline";
-            var leadingCls = "leading" + (meta.leading ? " " + meta.leading : "");
-            html += ''
-              + '<button class="list-item two-line" data-group="' + g + '" data-idx="' + idx + '">'
-              + '  <span class="' + leadingCls + '"><svg viewBox="0 0 24 24"><use href="' + meta.icon + '"/></svg></span>'
-              + '  <div class="content">'
-              + '    <div class="' + titleClass + '">' + escapeHtml(hit.title || "") + '</div>'
-              + (hit.subtitle ? '    <div class="supporting">' + escapeHtml(hit.subtitle) + '</div>' : '')
-              + '  </div>'
-              + '  <div class="trailing"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>'
-              + '</button>';
-          });
-        });
-        state.innerHTML = html;
-
-        // Wire row taps. We rebuild the list on every query so listeners
-        // are fresh — no leak risk.
-        state.querySelectorAll(".list-item").forEach(function (row) {
-          row.addEventListener("click", function () {
-            var g = row.dataset.group;
-            var idx = parseInt(row.dataset.idx, 10);
-            var hit = (data[g] || [])[idx];
-            if (!hit) return;
-            var target = hitTarget(g, hit);
-            if (target) {
-              PolarisRouter.go(target);
-            } else {
-              showSnackbar("No mobile view for this result yet — open it on desktop.");
-            }
-          });
-        });
-      }
-
-      function runSearch(q) {
-        // Abort any in-flight request first, even if we're about to bail
-        // on the short-query check — otherwise a slow response from a
-        // longer prior query can paint stale results over the empty state.
-        if (inFlight) { inFlight.abort(); inFlight = null; }
-        if (q.length < 2) {
-          renderEmpty();
-          return;
-        }
-        inFlight = new AbortController();
-        var thisFlight = inFlight;
-
-        renderLoading();
-        fetch("/api/v1/search?q=" + encodeURIComponent(q), { signal: thisFlight.signal })
-          .then(function (r) {
-            if (r.status === 401) { window.PolarisMobile.boot(); throw new Error("auth"); }
-            if (!r.ok) throw new Error("Request failed (" + r.status + ")");
-            return r.json();
-          })
-          .then(function (data) {
-            if (thisFlight !== inFlight) return; // superseded
-            renderResults(data);
-          })
-          .catch(function (err) {
-            if (err.name === "AbortError" || err.message === "auth") return;
-            renderError(err.message || "Network error");
-          });
-      }
-
-      input.addEventListener("input", function () {
-        setClearVisible(!!input.value);
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(function () { runSearch(input.value.trim()); }, 200);
-      });
-
-      input.addEventListener("keydown", function (e) {
-        if (e.key === "Escape") {
-          input.value = "";
-          setClearVisible(false);
-          renderEmpty();
-        }
-      });
-
-      if (clearBtn) {
-        clearBtn.addEventListener("click", function () {
-          input.value = "";
-          setClearVisible(false);
-          renderEmpty();
-          input.focus();
-        });
-      }
-
-      // Initial state.
-      renderEmpty();
-      // Auto-focus the input on first land. Skip on touch devices
-      // (showing the keyboard before the user asks is annoying on
-      // phones — it covers the screen).
-      if (!("ontouchstart" in window)) {
-        setTimeout(function () { try { input.focus(); } catch (_) {} }, 50);
-      }
+      var q = input ? (input.value || "").trim() : "";
+      if (q.length >= 2) runSearch(q);
+      else renderSearchEmpty();
     },
+  };
+
+  // Exposed so app.js can wire the persistent input.
+  window.PolarisSearch = {
+    runSearch: runSearch,
+    debounce:  debounceSearch,
   };
 
   // ─── Map ───────────────────────────────────────────────────────────────
