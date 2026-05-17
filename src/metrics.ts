@@ -153,7 +153,7 @@ const dbPoolMax = new Gauge({
 
 const capacitySeverity = new Gauge({
   name: "polaris_capacity_severity",
-  help: "Overall capacity severity: 0=ok, 1=watch, 2=amber, 3=red. Mirrors the Maintenance-tab pill and the sidebar critical-alert state.",
+  help: "Overall capacity severity: 0=ok, 1=watch, 2=warning, 3=critical. Mirrors the Maintenance-tab pill and the sidebar critical-alert state.",
   registers: [registry],
 });
 
@@ -357,8 +357,8 @@ export function setFmgWorkerNativeInflight(integrationId: string, count: number)
   fmgWorkerNativeInflight.set({ integrationId }, count);
 }
 
-export type Severity = "ok" | "watch" | "amber" | "red";
-const SEVERITY_VALUES: Record<Severity, number> = { ok: 0, watch: 1, amber: 2, red: 3 };
+export type Severity = "ok" | "watch" | "warning" | "critical";
+const SEVERITY_VALUES: Record<Severity, number> = { ok: 0, watch: 1, warning: 2, critical: 3 };
 
 export interface DbPoolGauges {
   currentInUse: number;

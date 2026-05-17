@@ -788,15 +788,29 @@ function buildPgRecommended(): Record<string, { min: number; unit: string; displ
   const MB = 1024 * 1024;
   const GB = 1024 * MB;
 
-  // Floor all values to whole-MB boundaries so recommendations match what
-  // PostgreSQL accepts and comparisons don't produce "60MB → 60MB" false positives.
-  const floorMB = (b: number) => Math.floor(b / MB) * MB;
-  const floorGB = (b: number) => Math.floor(b / GB) * GB;
+  // Round to clean multiples of 8 so the recommended values sit on the same
+  // boundaries operators are used to seeing in postgresql.conf (8/16/24/32 GB,
+  // 8/16/24 MB). Postgres accepts any MB-resolution value, but recommending
+  // "15 GB" or "46 GB" reads as an arbitrary fraction of host RAM — bumping
+  // those to the nearest 8 GB (16 GB / 48 GB) makes the recommendation
+  // actionable without a "...why that specific number?" pause.
+  const roundToMultipleOf = (b: number, unit: number) => Math.round(b / unit) * unit;
+  const EIGHT_MB = 8 * MB;
+  const EIGHT_GB = 8 * GB;
 
-  const sharedBuffers = Math.max(128 * MB, floorGB(ram * 0.25) || floorMB(ram * 0.25));
-  const effectiveCache = Math.max(256 * MB, floorGB(ram * 0.75) || floorMB(ram * 0.75));
-  // work_mem: RAM/128, capped at 256 MB, min 32 MB
-  const workMem = Math.max(32 * MB, Math.min(256 * MB, floorMB(ram / 128)));
+  // For shared_buffers / effective_cache_size: round to 8 GB on hosts where
+  // the natural value lands ≥4 GB (so it rounds up cleanly), and fall back to
+  // 8 MB rounding on tiny-RAM hosts where 8-GB rounding would collapse to 0.
+  const sharedBuffers = Math.max(
+    128 * MB,
+    roundToMultipleOf(ram * 0.25, EIGHT_GB) || roundToMultipleOf(ram * 0.25, EIGHT_MB),
+  );
+  const effectiveCache = Math.max(
+    256 * MB,
+    roundToMultipleOf(ram * 0.75, EIGHT_GB) || roundToMultipleOf(ram * 0.75, EIGHT_MB),
+  );
+  // work_mem: RAM/128, rounded to nearest 8 MB, capped at 256 MB, min 32 MB.
+  const workMem = Math.max(32 * MB, Math.min(256 * MB, roundToMultipleOf(ram / 128, EIGHT_MB)));
 
   const fmt = (b: number) =>
     b >= GB ? (b / GB) + "GB"

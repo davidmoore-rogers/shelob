@@ -1591,28 +1591,35 @@ function _resetAutoLogoutTimer() {
 
 // ─── Capacity Critical Alert (sidebar) ────────────────────────────────────────
 
-// Renders the non-dismissible critical alert when capacity.severity === "red".
-// Red is a capacity emergency (disk near full, autovacuum stalled, projected
-// DB size > 8x host RAM) and must not be silenceable from the UI. Amber and
-// watch reasons live on the Database card under Server Settings → Maintenance.
+// Renders the non-dismissible critical alert when capacity.severity is
+// "critical". Critical is a capacity emergency (disk near full, autovacuum
+// stalled, projected DB size > 8x host RAM) and must not be silenceable
+// from the UI. Warning and Watch reasons live on the Database card under
+// Server Settings → Maintenance. Accepts the legacy "red" string for one
+// release cycle so a stale browser tab on an old build doesn't suppress
+// the banner after server-side rollout.
 function renderCapacityCriticalAlert(capacity) {
   var el = document.getElementById("capacity-critical-alert");
   if (!el) return;
 
-  if (!capacity || capacity.severity !== "red") {
+  var sev = capacity ? capacity.severity : null;
+  var isCritical = sev === "critical" || sev === "red";
+  if (!isCritical) {
     el.style.display = "none";
     return;
   }
 
-  var redReasons = (capacity.reasons || []).filter(function (r) { return r.severity === "red"; });
-  if (redReasons.length === 0) {
+  var criticalReasons = (capacity.reasons || []).filter(function (r) {
+    return r.severity === "critical" || r.severity === "red";
+  });
+  if (criticalReasons.length === 0) {
     el.style.display = "none";
     return;
   }
 
   // Show the topmost reason; the Maintenance tab lists them all.
-  var top = redReasons[0];
-  var moreCount = redReasons.length - 1;
+  var top = criticalReasons[0];
+  var moreCount = criticalReasons.length - 1;
 
   el.innerHTML =
     '<div class="pg-tuning-header">' +

@@ -47,7 +47,21 @@ import { BACKUP_DIR, STATE_DIR } from "../utils/paths.js";
 import { logger } from "../utils/logger.js";
 import { getDirectDatabaseUrl, isPgbouncerMode } from "../utils/dbConnections.js";
 
-export type Severity = "ok" | "watch" | "amber" | "red";
+export type Severity = "ok" | "watch" | "warning" | "critical";
+
+// Back-compat shim: older Polaris versions stored severity as "red" / "amber"
+// in `Setting.capacity.lastSeverity` and may exist in flight on cached snapshots
+// returned from the route handler between an old browser tab and a new server.
+// `normalizeSeverity()` accepts either vocabulary and returns the new form so
+// downstream comparisons + persistence + metrics stay consistent. The two
+// legacy names are intentionally narrowed off the exported `Severity` type so
+// new code can't introduce them.
+export function normalizeSeverity(s: unknown): Severity {
+  if (s === "critical" || s === "warning" || s === "watch" || s === "ok") return s;
+  if (s === "red") return "critical";
+  if (s === "amber") return "warning";
+  return "ok";
+}
 
 // ─── Connection-pool peak tracking ───────────────────────────────────────────
 //
@@ -109,10 +123,15 @@ function readEnvInt(envName: string, fallback: number): number {
 }
 
 export interface CapacityReason {
-  severity: "watch" | "amber" | "red";
+  severity: "watch" | "warning" | "critical";
   code: string;
   message: string;
   suggestion: string;
+  /** Optional grouping tag. Reasons sharing a family collapse to the
+   *  highest-severity one in `collapseReasonsByFamily()`; lower-severity
+   *  reasons in the same family are suppressed from the rendered card.
+   *  Reasons without a family pass through unchanged. */
+  family?: string;
 }
 
 export type VolumeRole = "app" | "state" | "backups" | "db";
@@ -542,6 +561,27 @@ export interface AdvisorGapsForReasons {
   handlerTimeoutPressure?: import("./capacityAdvisorService.js").HandlerTimeoutPressure[];
 }
 
+// Stable family key for a volume. The collapse pass groups every disk reason
+// targeting the same filesystem under one family so the higher-severity
+// projection reasons absorb the volume-percentage thresholds. Different
+// volumes (DB / app / state / backups) each get their own family — they're
+// independently actionable.
+function volumeFamilyKey(v: VolumeStat): string {
+  if (v.roles.includes("db")) return "disk:db";
+  if (v.roles.length > 0) return `disk:${[...v.roles].sort().join("+")}`;
+  return `disk:${v.paths[0] ?? "unknown"}`;
+}
+
+// Message wording convention across all reasons:
+//
+//   `<Subject> <state> (<metric context>). <Action>.`
+//
+// Subject: noun phrase ("Database volume", "Host RAM", "Database steady-state size")
+// State:   active-voice verb ("has 27% free", "exceeds 4× host RAM")
+// Metric:  parenthetical with concrete numbers + units; absent if the state
+//          line already carries them
+// Action:  imperative one-sentence remediation, ending with a period
+
 function computeReasons(
   snap: CapacitySnapshot,
   recommendedRamGb: number,
@@ -558,31 +598,36 @@ function computeReasons(
   for (const v of snap.appHost.volumes) {
     if (v.totalBytes <= 0) continue;
     const pct = v.freeBytes / v.totalBytes;
-    const pathHint = v.paths[0] ? ` (${v.paths[0]})` : "";
+    const pathHint = v.paths[0] ? `, ${v.paths[0]}` : "";
     const label = volumeLabel(v);
+    const family = volumeFamilyKey(v);
+    const metric = `${(pct * 100).toFixed(1)}% free — ${formatBytes(v.freeBytes)} of ${formatBytes(v.totalBytes)}${pathHint}`;
 
     if (pct < 0.10) {
       reasons.push({
-        severity: "red",
+        severity: "critical",
         code: "disk_critical",
-        message: `${label} has only ${formatBytes(v.freeBytes)} free (${(pct * 100).toFixed(1)}%)${pathHint}.`,
+        family,
+        message: `${label} is critically full (${metric}).`,
         suggestion: v.roles.includes("db")
-          ? "Free disk space immediately or expand the volume — PostgreSQL will refuse new writes once the volume is full."
-          : "Free disk space immediately or expand the volume — backups and update rollback both need headroom.",
+          ? "Free disk or expand the volume immediately — PostgreSQL refuses new writes when the volume is full."
+          : "Free disk or expand the volume immediately — backups and update rollback both need headroom.",
       });
     } else if (pct < 0.20) {
       reasons.push({
-        severity: "amber",
+        severity: "warning",
         code: "disk_low",
-        message: `${label} free is ${(pct * 100).toFixed(0)}%${pathHint}.`,
-        suggestion: "Plan to expand the volume soon. Backups and update rollback both require headroom.",
+        family,
+        message: `${label} is running low on space (${metric}).`,
+        suggestion: "Plan to expand the volume soon — backups and update rollback both need headroom.",
       });
     } else if (pct < 0.30) {
       reasons.push({
         severity: "watch",
         code: "disk_watch",
-        message: `${label} free is ${(pct * 100).toFixed(0)}%${pathHint}.`,
-        suggestion: "Watch trend over the next few weeks; expand the volume before it crosses 20%.",
+        family,
+        message: `${label} is getting tight (${metric}).`,
+        suggestion: "Watch the trend; expand the volume before it crosses 20%.",
       });
     }
   }
@@ -601,17 +646,19 @@ function computeReasons(
   );
   if (dbVolume && projectedGrowthBytes > dbVolume.freeBytes) {
     reasons.push({
-      severity: "red",
+      severity: "critical",
       code: "projected_exceeds_disk",
-      message: `Projected database growth (${formatBytes(projectedGrowthBytes)} to reach steady-state of ${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
+      family: "disk:db",
+      message: `Database growth will overflow the DB volume before reaching steady-state (need ${formatBytes(projectedGrowthBytes)} more, only ${formatBytes(dbVolume.freeBytes)} free; steady-state target ${formatBytes(snap.workload.steadyStateSizeBytes)}).`,
       suggestion: "Reduce sample retention or monitored asset count, or expand the database volume. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
     });
   } else if (dbVolume && projectedGrowthBytes > dbVolume.freeBytes * 0.75) {
     reasons.push({
-      severity: "amber",
+      severity: "warning",
       code: "projected_approaches_disk",
-      message: `Projected database growth (${formatBytes(projectedGrowthBytes)} to reach steady-state of ${formatBytes(snap.workload.steadyStateSizeBytes)}) will consume more than 75% of free space on the database volume (${formatBytes(dbVolume.freeBytes)} free).`,
-      suggestion: "Consider reducing sample retention or expanding the database volume before it fills. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
+      family: "disk:db",
+      message: `Database growth will consume more than 75% of the DB volume's free space before reaching steady-state (need ${formatBytes(projectedGrowthBytes)} more, only ${formatBytes(dbVolume.freeBytes)} free; steady-state target ${formatBytes(snap.workload.steadyStateSizeBytes)}).`,
+      suggestion: "Reduce sample retention or expand the database volume before it fills. The Capacity Advisor card surfaces retention and cadence levers if you can't expand the volume.",
     });
   }
 
@@ -632,26 +679,28 @@ function computeReasons(
   if (staleTables.length > 0) {
     const names = staleTables.map((t) => t.name).join(", ");
     reasons.push({
-      severity: "red",
+      severity: "critical",
       code: "autovacuum_stale",
+      family: "autovacuum",
       message: staleTables.length === 1
-        ? `Table ${names} hasn't been autovacuumed in over 7 days.`
-        : `${staleTables.length} tables haven't been autovacuumed in over 7 days: ${names}.`,
-      suggestion: `Investigate autovacuum status. Run VACUUM on the affected tables manually and lower autovacuum_vacuum_scale_factor to 0.05 for each.`,
+        ? `PostgreSQL autovacuum hasn't run on ${names} in over 7 days.`
+        : `PostgreSQL autovacuum hasn't run on ${staleTables.length} sample tables in over 7 days (${names}).`,
+      suggestion: `Run VACUUM manually on the affected tables and lower autovacuum_vacuum_scale_factor to 0.05 for each.`,
     });
   }
 
   // Steady-state DB size > 8× host RAM — query performance will collapse.
   if (snap.workload.steadyStateSizeBytes > ram * 8) {
     reasons.push({
-      severity: "red",
+      severity: "critical",
       code: "projected_db_huge",
-      message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) is more than 8× host RAM at current settings.`,
-      suggestion: "Add RAM, reduce sample retention, or reduce the monitored asset count. Charts will get progressively slower. The Capacity Advisor card surfaces retention and cadence levers if you can't add RAM.",
+      family: "db_ram",
+      message: `Database steady-state size is more than 8× host RAM (steady-state ${formatBytes(snap.workload.steadyStateSizeBytes)}, host RAM ${formatBytes(ram)}).`,
+      suggestion: "Add RAM or reduce sample retention — query performance will collapse without it. The Capacity Advisor card surfaces retention and cadence levers if you can't add RAM.",
     });
   }
 
-  // ── Amber: autovacuum lag ────────────────────────────────────────────────
+  // ── Warning: autovacuum lag ──────────────────────────────────────────────
   // Collapsed into a single reason listing every affected table with its
   // dead-tuple percentage — multiple bloated sample tables would otherwise
   // each push their own near-identical warning row.
@@ -660,24 +709,26 @@ function computeReasons(
   );
   if (laggingTables.length > 0) {
     const list = laggingTables
-      .map((t) => `${t.name} (${(t.deadTupRatio * 100).toFixed(0)}%)`)
+      .map((t) => `${t.name} ${(t.deadTupRatio * 100).toFixed(0)}%`)
       .join(", ");
     reasons.push({
-      severity: "amber",
+      severity: "warning",
       code: "autovacuum_lag",
+      family: "autovacuum",
       message: laggingTables.length === 1
-        ? `Table ${list} has dead tuples building up — autovacuum is falling behind.`
-        : `${laggingTables.length} tables have dead tuples building up — autovacuum is falling behind: ${list}.`,
+        ? `PostgreSQL autovacuum is falling behind on ${list} dead tuples.`
+        : `PostgreSQL autovacuum is falling behind on ${laggingTables.length} sample tables (${list}).`,
       suggestion: `Lower autovacuum_vacuum_scale_factor to 0.05 for the affected tables.`,
     });
   }
 
   if (snap.workload.steadyStateSizeBytes > ram * 4 && snap.workload.steadyStateSizeBytes <= ram * 8) {
     reasons.push({
-      severity: "amber",
+      severity: "warning",
       code: "projected_db_large",
-      message: `Steady-state database size (${formatBytes(snap.workload.steadyStateSizeBytes)}) exceeds 4× host RAM.`,
-      suggestion: "Consider adding RAM or reducing sample retention before performance degrades. The Capacity Advisor card surfaces retention and cadence levers if you can't add RAM.",
+      family: "db_ram",
+      message: `Database steady-state size exceeds 4× host RAM (steady-state ${formatBytes(snap.workload.steadyStateSizeBytes)}, host RAM ${formatBytes(ram)}).`,
+      suggestion: "Add RAM or reduce sample retention before performance degrades. The Capacity Advisor card surfaces retention and cadence levers if you can't add RAM.",
     });
   }
 
@@ -707,7 +758,8 @@ function computeReasons(
     reasons.push({
       severity: "watch",
       code: "timescale_recommended",
-      message: `Sample tables are ${formatBytes(sampleTableBytes)}. Installing TimescaleDB would compress them by ~10× and make daily prune instant.`,
+      family: "timescale",
+      message: `Sample tables are ${formatBytes(sampleTableBytes)} without TimescaleDB compression (~10× shrink available).`,
       suggestion,
     });
   }
@@ -730,7 +782,8 @@ function computeReasons(
     reasons.push({
       severity: "watch",
       code: "pool_undersized",
-      message: `Database connection pool is sized below what the current peak demand requires.`,
+      family: "db_pool",
+      message: `Database connection pool is below current peak demand (peak ${pool.peakObserved} of ${pool.prismaPoolSize + (pool.pgbossPoolSize ?? 0)} Polaris capacity).`,
       suggestion:
         `Open the Capacity Advisor card and click Stage to write the recommended pool sizes ` +
         `to .env. Bumping the pool is a low-risk fix when Postgres has headroom. If ` +
@@ -742,11 +795,12 @@ function computeReasons(
   // Single rollup reason — one entry per cadence would clutter the panel.
   // The advisor card carries the per-cadence recommendations.
   if (advisor?.workersUndersized) {
-    const gapText = advisor.worstGap ? ` Worst gap: ${advisor.worstGap}.` : "";
+    const gapText = advisor.worstGap ? ` (worst gap: ${advisor.worstGap})` : "";
     reasons.push({
       severity: "watch",
       code: "monitor_workers_undersized",
-      message: `Monitor worker pool is sized below what the current workload requires.${gapText}`,
+      family: "monitor_workers",
+      message: `Monitor worker pool is below current workload${gapText}.`,
       suggestion:
         `Open the Capacity Advisor card and click Stage to write the recommended worker ` +
         `counts to .env. Takes effect on next Polaris restart.`,
@@ -765,7 +819,8 @@ function computeReasons(
     reasons.push({
       severity: "watch",
       code: "monitor_handler_timeout_pressure",
-      message: `Monitor handler runtime is brushing the pg-boss timeout cap on one or more cadences. ${parts}.`,
+      family: "monitor_handlers",
+      message: `Monitor handler runtime is brushing the pg-boss timeout cap on one or more cadences (${parts}).`,
       suggestion:
         `Either raise EXPIRE_BY_QUEUE for the affected cadence in src/services/queueService.ts ` +
         `(reapplies on restart via updateQueue), trim the per-asset payload ` +
@@ -780,11 +835,12 @@ function computeReasons(
   // doesn't get a Stage button.
   if (advisor?.maxConnectionsUndersized && advisor.recommendedMaxConnections && pool.maxConnections > 0) {
     reasons.push({
-      severity: "amber",
+      severity: "warning",
       code: "max_connections_undersized",
+      family: "db_max_connections",
       message:
-        `PostgreSQL max_connections is ${pool.maxConnections} but the recommended value ` +
-        `for current workload is ${advisor.recommendedMaxConnections}.`,
+        `PostgreSQL max_connections is below the recommended value for current workload ` +
+        `(current ${pool.maxConnections}, recommended ${advisor.recommendedMaxConnections}).`,
       suggestion:
         `Set max_connections=${advisor.recommendedMaxConnections} in postgresql.conf and ` +
         `restart PostgreSQL. Polaris can't change this from the UI because it requires a Postgres restart.`,
@@ -806,56 +862,135 @@ function computeReasons(
     reasons.push({
       severity: "watch",
       code: "metrics_token_unset",
+      family: "metrics_token",
       message:
-        "/metrics is reachable without authentication. The endpoint exposes " +
-        "fleet size, monitored asset health, monitor pass duration, and queue " +
-        "depth — useful recon for an attacker if Polaris is publicly reachable.",
+        "/metrics is reachable without authentication (leaks fleet size, monitored asset " +
+        "health, monitor pass duration, and queue depth — useful recon if Polaris is " +
+        "publicly reachable).",
       suggestion:
-        "Click Generate token to write METRICS_TOKEN into .env (the gate takes " +
-        "effect immediately — no restart). Then update your Prometheus scrape " +
-        "config to send `Authorization: Bearer <token>` — see docs/grafana/README.md.",
+        "Click Generate token to write METRICS_TOKEN into .env (the gate takes effect " +
+        "immediately — no restart). Then update your Prometheus scrape config to send " +
+        "`Authorization: Bearer <token>` — see docs/grafana/README.md.",
     });
   }
   if (!process.env.HEALTH_TOKEN || process.env.HEALTH_TOKEN.trim() === "") {
     reasons.push({
       severity: "watch",
       code: "health_token_unset",
+      family: "health_token",
       message:
-        "/health is reachable without authentication. The leak is small " +
-        "(just 'the app is up') but the gate is trivial to enable.",
+        "/health is reachable without authentication (leaks only 'the app is up' but the " +
+        "gate is trivial to enable).",
       suggestion:
-        "Click Generate token to write HEALTH_TOKEN into .env (the gate takes " +
-        "effect immediately — no restart). Then configure your monitoring system " +
-        "to send `Authorization: Bearer <token>`.",
+        "Click Generate token to write HEALTH_TOKEN into .env (the gate takes effect " +
+        "immediately — no restart). Then configure your monitoring system to send " +
+        "`Authorization: Bearer <token>`.",
     });
   }
 
-  // RAM-insufficient and PG-tuning are amber card reasons — the route handler
-  // computes the inputs and passes them in here.
+  // RAM-insufficient and PG-tuning are advisory reasons — the route handler
+  // computes the inputs and passes them in here. `ram_insufficient` shares the
+  // db_ram family with projected_db_large / projected_db_huge so a higher-
+  // severity DB-vs-RAM finding absorbs it in the collapse pass.
   if (recommendedRamGb > 0) {
     const installedGb = Math.round(snap.appHost.totalMemoryBytes / (1024 * 1024 * 1024));
     reasons.push({
       severity: "watch",
       code: "ram_insufficient",
-      message: `Host RAM is below the recommended minimum for the current database size.`,
-      suggestion: `Add RAM to reach at least ${recommendedRamGb} GB (installed: ${installedGb} GB).`,
+      family: "db_ram",
+      message: `Host RAM is below the recommended minimum for current database size (installed ${installedGb} GB, recommended ${recommendedRamGb} GB).`,
+      suggestion: `Add RAM, or reduce sample retention to lower the recommended minimum.`,
     });
   }
   if (pgTuningNeeded) {
     reasons.push({
-      severity: "amber",
+      severity: "warning",
       code: "pg_tuning_needed",
-      message: `One or more PostgreSQL settings are below the recommended minimum.`,
+      family: "pg_tuning",
+      message: `One or more PostgreSQL settings are below the recommended minimum for current workload.`,
       suggestion: "See the PostgreSQL Tuning section below for the specific settings to adjust.",
     });
   }
 
-  return reasons;
+  return collapseReasonsByFamily(reasons);
+}
+
+// Severity rank used by the collapse pass and the headline picker. Numeric so
+// `Math.max` works cleanly on a mixed list.
+const SEVERITY_RANK: Record<Severity, number> = {
+  ok: 0,
+  watch: 1,
+  warning: 2,
+  critical: 3,
+};
+
+/**
+ * Group reasons by `family` and keep only the highest-severity entry per
+ * family. Reasons without a `family` pass through unchanged (they're
+ * standalone concerns with no overlapping siblings).
+ *
+ * When a higher-severity reason absorbs lower-severity reasons in the same
+ * family, the suppressed reasons' suggestions are concatenated onto the
+ * winner's suggestion (deduplicated by trimmed equality) so the operator
+ * doesn't lose the original remediation hints. Messages are NOT merged —
+ * the winner's message is the active framing of the family's problem.
+ *
+ * Stable order: preserves the input order of winners. Each family's winner
+ * stays where its highest-severity representative appeared in the input.
+ */
+export function collapseReasonsByFamily(reasons: CapacityReason[]): CapacityReason[] {
+  // First pass: bucket by family, track the winning index within each bucket.
+  const buckets = new Map<string, CapacityReason[]>();
+  const order: Array<{ family: string | null; reason: CapacityReason }> = [];
+  for (const r of reasons) {
+    if (!r.family) {
+      order.push({ family: null, reason: r });
+      continue;
+    }
+    if (!buckets.has(r.family)) {
+      buckets.set(r.family, []);
+      order.push({ family: r.family, reason: r });
+    }
+    buckets.get(r.family)!.push(r);
+  }
+  // Second pass: for each family, pick the highest-severity entry and merge
+  // suggestions from the suppressed ones into it.
+  const winners = new Map<string, CapacityReason>();
+  for (const [family, bucket] of buckets) {
+    const sorted = [...bucket].sort(
+      (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
+    );
+    const winner = sorted[0]!;
+    const losers = sorted.slice(1);
+    if (losers.length === 0) {
+      winners.set(family, winner);
+      continue;
+    }
+    // Deduplicate suggestions by exact trimmed text so we don't append the
+    // winner's own suggestion if a loser happened to use the same words.
+    const seen = new Set<string>([winner.suggestion.trim()]);
+    const extra: string[] = [];
+    for (const l of losers) {
+      const t = l.suggestion.trim();
+      if (!seen.has(t)) {
+        seen.add(t);
+        extra.push(`Also: ${t}`);
+      }
+    }
+    winners.set(family, {
+      ...winner,
+      suggestion: extra.length > 0 ? `${winner.suggestion} ${extra.join(" ")}` : winner.suggestion,
+    });
+  }
+  // Third pass: emit in the recorded order, substituting bucket winners.
+  return order.map((entry) =>
+    entry.family ? winners.get(entry.family) ?? entry.reason : entry.reason,
+  );
 }
 
 function deriveSeverity(reasons: CapacityReason[]): Severity {
-  if (reasons.some((r) => r.severity === "red")) return "red";
-  if (reasons.some((r) => r.severity === "amber")) return "amber";
+  if (reasons.some((r) => r.severity === "critical")) return "critical";
+  if (reasons.some((r) => r.severity === "warning")) return "warning";
   if (reasons.some((r) => r.severity === "watch")) return "watch";
   return "ok";
 }
@@ -1098,7 +1233,12 @@ async function readStoredSeverity(): Promise<StoredSeverity | null> {
   if (!row) return null;
   const v = row.value as Partial<StoredSeverity> | null;
   if (!v || !v.severity) return null;
-  return { severity: v.severity as Severity, recordedAt: v.recordedAt ?? new Date(0).toISOString() };
+  // Back-compat: pre-rename rows store "red"/"amber"; normalize on read so
+  // the transition compare against the fresh severity uses the same vocab.
+  return {
+    severity: normalizeSeverity(v.severity),
+    recordedAt: v.recordedAt ?? new Date(0).toISOString(),
+  };
 }
 
 async function writeStoredSeverity(severity: Severity): Promise<void> {
@@ -1111,19 +1251,14 @@ async function writeStoredSeverity(severity: Severity): Promise<void> {
 }
 
 function severityRank(s: Severity): number {
-  if (s === "red") return 3;
-  if (s === "amber") return 2;
-  if (s === "watch") return 1;
-  return 0;
+  return SEVERITY_RANK[s];
 }
 
 function pickHeadlineReason(reasons: CapacityReason[]): CapacityReason | null {
   if (reasons.length === 0) return null;
-  const ranked = [...reasons].sort((a, b) => {
-    const rank = (s: CapacityReason["severity"]) =>
-      s === "red" ? 3 : s === "amber" ? 2 : 1;
-    return rank(b.severity) - rank(a.severity);
-  });
+  const ranked = [...reasons].sort(
+    (a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity],
+  );
   return ranked[0];
 }
 
@@ -1141,9 +1276,9 @@ export async function recordCapacityTransition(snap: CapacitySnapshot): Promise<
     const prior = await readStoredSeverity();
     if (prior && prior.severity === snap.severity) return;
 
-    const level = snap.severity === "red"
+    const level = snap.severity === "critical"
       ? "error"
-      : snap.severity === "amber" || snap.severity === "watch"
+      : snap.severity === "warning" || snap.severity === "watch"
       ? "warning"
       : "info";
 

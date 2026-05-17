@@ -981,10 +981,24 @@ function _capacityFormatPct(num, denom) {
 }
 
 function _capacitySeverityLabel(s) {
-  if (s === "red") return "Critical";
-  if (s === "amber") return "Action recommended";
+  // Accept both the new vocabulary (critical/warning/watch/ok) and the
+  // legacy color names (red/amber) so a stale snapshot returned from an
+  // older server build still renders cleanly during a partial rollout.
+  if (s === "critical" || s === "red") return "Critical";
+  if (s === "warning" || s === "amber") return "Action recommended";
   if (s === "watch") return "Watch";
   return "Healthy";
+}
+
+// CSS classes for the capacity pills/cards stay on the color vocabulary
+// (`capacity-pill-red`, `capacity-reason-amber`, etc.) — they're tied to
+// the actual colors, not to severity names, so renaming the enum doesn't
+// change them. This helper maps a severity to its CSS class suffix.
+function _capacitySeverityCssClass(s) {
+  if (s === "critical" || s === "red") return "red";
+  if (s === "warning" || s === "amber") return "amber";
+  if (s === "watch") return "watch";
+  return "ok";
 }
 
 // Friendly label for a volume's set of roles. Matches the backend's
@@ -1286,7 +1300,10 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
   }
 
   var severity = capacity.severity || "ok";
-  var pillClass = "capacity-pill capacity-pill-" + severity;
+  // CSS class suffix stays on the color vocab (`red`/`amber`/`watch`/`ok`)
+  // while the severity enum uses critical/warning. See _capacitySeverityCssClass.
+  var severityCssClass = _capacitySeverityCssClass(severity);
+  var pillClass = "capacity-pill capacity-pill-" + severityCssClass;
 
   // pg_tuning_needed used to inline a per-setting table here; that's now
   // rendered inside the Capacity Advisor card, which also covers max_connections
@@ -1322,12 +1339,13 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
           } else if (r.code === "health_token_unset") {
             action = '<button class="btn btn-sm btn-primary capacity-action" data-action="generate-token" data-which="health" style="margin-top:0.5rem">Generate token</button>';
           }
-          var rowPillLabel = r.severity === "red" ? "Critical"
+          var rowPillLabel = (r.severity === "critical" || r.severity === "red") ? "Critical"
             : r.severity === "watch" ? "Watch"
             : "Warning";
-          return '<div class="capacity-reason capacity-reason-' + r.severity + '">' +
+          var cssClass = _capacitySeverityCssClass(r.severity);
+          return '<div class="capacity-reason capacity-reason-' + cssClass + '">' +
             '<div class="capacity-reason-head">' +
-              '<span class="capacity-pill capacity-pill-' + r.severity + ' capacity-pill-sm">' +
+              '<span class="capacity-pill capacity-pill-' + cssClass + ' capacity-pill-sm">' +
                 rowPillLabel +
               '</span>' +
               '<span class="capacity-reason-msg">' + escapeHtml(r.message) + '</span>' +
@@ -1445,7 +1463,7 @@ function renderCapacityCard(capacity, dbInfo, pgTuning) {
 
   var enginePoolHtml = renderEnginePoolStatHtml(dbInfo, capacity);
 
-  return '<div class="settings-card capacity-card capacity-card-' + severity + '" id="capacity-card">' +
+  return '<div class="settings-card capacity-card capacity-card-' + severityCssClass + '" id="capacity-card">' +
     '<div class="capacity-header">' +
       '<h4 style="margin:0">Database</h4>' +
       '<span class="' + pillClass + '">' + _capacitySeverityLabel(severity) + '</span>' +
