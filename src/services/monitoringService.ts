@@ -272,11 +272,12 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
 
 // ─── Legacy global-tier types (transitional, scheduled for removal) ────────
 //
-// The old single-row `monitorSettings` Setting + per-class fortiswitch/fortiap
-// blocks. Kept alive temporarily so the prune helpers and capacityService
-// continue working while the migration job (step 5) seeds the new tiers.
-// After that migration runs, the legacy row is deleted and these types stop
-// being read at all — at which point they get removed in a follow-up pass.
+// The old single-row `monitorSettings` Setting + per-class switch/accessPoint
+// blocks (formerly named fortiswitch/fortiap — see the renameMonitorClassKeys
+// startup job for the JSON-key migration). Kept alive temporarily so the
+// prune helpers and capacityService continue working while the multi-tier
+// retention work seeds new shapes. After the legacy row is fully decoupled
+// these types get removed in a follow-up pass.
 
 /** @deprecated use MonitorTierSettings */
 export interface MonitorClassSettings {
@@ -292,8 +293,8 @@ export interface MonitorClassSettings {
 
 /** @deprecated legacy storage shape; new code uses MonitorTierSettings */
 export interface MonitorSettings extends MonitorClassSettings {
-  fortiswitch: MonitorClassSettings;
-  fortiap:     MonitorClassSettings;
+  switch:      MonitorClassSettings;
+  accessPoint: MonitorClassSettings;
 }
 
 const SETTING_KEY = "monitorSettings";
@@ -317,8 +318,8 @@ const DEFAULT_CLASS_SETTINGS: MonitorClassSettings = {
 
 const DEFAULT_SETTINGS: MonitorSettings = {
   ...DEFAULT_CLASS_SETTINGS,
-  fortiswitch: { ...DEFAULT_CLASS_SETTINGS },
-  fortiap:     { ...DEFAULT_CLASS_SETTINGS },
+  switch:      { ...DEFAULT_CLASS_SETTINGS },
+  accessPoint: { ...DEFAULT_CLASS_SETTINGS },
 };
 
 const sysUpTimeOid = "1.3.6.1.2.1.1.3.0";
@@ -371,12 +372,20 @@ export async function getMonitorSettings(): Promise<MonitorSettings> {
   // a fresh install with no per-class entries inherits the operator's
   // top-level values, not the hard-coded constants.
   const base = readClassFromJson(v, DEFAULT_CLASS_SETTINGS);
-  const fsRaw = (v.fortiswitch as Record<string, unknown> | undefined) || undefined;
-  const faRaw = (v.fortiap     as Record<string, unknown> | undefined) || undefined;
+  // Per-class overrides: prefer the new switch/accessPoint keys; fall back
+  // to the legacy fortiswitch/fortiap keys until renameMonitorClassKeys
+  // (one-shot startup job) rewrites them. After fleet-wide migration this
+  // fallback can go.
+  const swRaw = (v.switch      as Record<string, unknown> | undefined)
+             ?? (v.fortiswitch as Record<string, unknown> | undefined)
+             ?? undefined;
+  const apRaw = (v.accessPoint as Record<string, unknown> | undefined)
+             ?? (v.fortiap     as Record<string, unknown> | undefined)
+             ?? undefined;
   return {
     ...base,
-    fortiswitch: readClassFromJson(fsRaw, base),
-    fortiap:     readClassFromJson(faRaw, base),
+    switch:      readClassFromJson(swRaw, base),
+    accessPoint: readClassFromJson(apRaw, base),
   };
 }
 
@@ -396,8 +405,8 @@ function mergeClassUpdate(current: MonitorClassSettings, input: Partial<MonitorC
 }
 
 export type MonitorSettingsUpdateInput = Partial<MonitorClassSettings> & {
-  fortiswitch?: Partial<MonitorClassSettings>;
-  fortiap?:     Partial<MonitorClassSettings>;
+  switch?:      Partial<MonitorClassSettings>;
+  accessPoint?: Partial<MonitorClassSettings>;
 };
 
 export async function updateMonitorSettings(input: MonitorSettingsUpdateInput): Promise<MonitorSettings> {
@@ -417,8 +426,8 @@ export async function updateMonitorSettings(input: MonitorSettingsUpdateInput): 
   const base = mergeClassUpdate(current, baseUpdate);
   const next: MonitorSettings = {
     ...base,
-    fortiswitch: mergeClassUpdate(current.fortiswitch, input.fortiswitch),
-    fortiap:     mergeClassUpdate(current.fortiap,     input.fortiap),
+    switch:      mergeClassUpdate(current.switch,      input.switch),
+    accessPoint: mergeClassUpdate(current.accessPoint, input.accessPoint),
   };
   await prisma.setting.upsert({
     where:  { key: SETTING_KEY },
@@ -5672,36 +5681,39 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
 
 // ─── Retention prune helpers ────────────────────────────────────────────────
 //
-// Retention is per-class (default / fortiswitch / fortiap), so each prune
-// query runs three buckets: Fortinet switches with the fortiswitch retention,
-// Fortinet APs with the fortiap retention, and everything else with the
+// Retention is per-class (default / switch / accessPoint), so each prune
+// query runs three buckets: switches with the switch retention, access
+// points with the accessPoint retention, and everything else with the
 // top-level retention. Any class with retentionDays <= 0 is skipped (= keep
-// forever for that bucket).
+// forever for that bucket). Class membership today is still filtered to
+// Fortinet — that's the only fleet where the heavy sample volume actually
+// concentrates on switch/AP roles — but the dimension name is generic so a
+// non-Fortinet expansion is a one-spot change.
 
-async function getFortinetClassAssetIds(): Promise<{ swIds: string[]; apIds: string[] }> {
+async function getSwitchAndAccessPointAssetIds(): Promise<{ switchIds: string[]; accessPointIds: string[] }> {
   const rows = await prisma.asset.findMany({
     where:  { manufacturer: { equals: "Fortinet", mode: "insensitive" }, assetType: { in: ["switch", "access_point"] } },
     select: { id: true, assetType: true },
   });
-  const swIds: string[] = [];
-  const apIds: string[] = [];
+  const switchIds: string[] = [];
+  const accessPointIds: string[] = [];
   for (const r of rows) {
-    if (r.assetType === "switch")       swIds.push(r.id);
-    else if (r.assetType === "access_point") apIds.push(r.id);
+    if (r.assetType === "switch")            switchIds.push(r.id);
+    else if (r.assetType === "access_point") accessPointIds.push(r.id);
   }
-  return { swIds, apIds };
+  return { switchIds, accessPointIds };
 }
 
 type SamplePruneFn = (where: Record<string, unknown>) => Promise<{ count: number }>;
 
 async function pruneOneTable(
   fn: SamplePruneFn,
-  retentionDays: { default: number; fortiswitch: number; fortiap: number },
-  classIds: { swIds: string[]; apIds: string[] },
+  retentionDays: { default: number; switch: number; accessPoint: number },
+  classIds: { switchIds: string[]; accessPointIds: string[] },
   hypertableName?: string,
 ): Promise<number> {
   const nowMs = Date.now();
-  const fortinetClassIds = [...classIds.swIds, ...classIds.apIds];
+  const taggedClassIds = [...classIds.switchIds, ...classIds.accessPointIds];
 
   // Phase 1 (hypertable fast path). When this table is a Timescale hypertable,
   // drop whole chunks older than the LONGEST configured retention. drop_chunks
@@ -5712,7 +5724,7 @@ async function pruneOneTable(
   //
   // No-op when the table is plain Postgres (`dropChunks` returns immediately).
   if (hypertableName) {
-    const longest = Math.max(retentionDays.default, retentionDays.fortiswitch, retentionDays.fortiap);
+    const longest = Math.max(retentionDays.default, retentionDays.switch, retentionDays.accessPoint);
     if (longest > 0) {
       await dropChunks(hypertableName, new Date(nowMs - longest * 24 * 3600 * 1000));
     }
@@ -5725,18 +5737,18 @@ async function pruneOneTable(
   if (retentionDays.default > 0) {
     const cutoff = new Date(nowMs - retentionDays.default * 24 * 3600 * 1000);
     const where: Record<string, unknown> = { timestamp: { lt: cutoff } };
-    if (fortinetClassIds.length > 0) where.assetId = { notIn: fortinetClassIds };
+    if (taggedClassIds.length > 0) where.assetId = { notIn: taggedClassIds };
     const { count } = await fn(where);
     total += count;
   }
-  if (retentionDays.fortiswitch > 0 && classIds.swIds.length > 0) {
-    const cutoff = new Date(nowMs - retentionDays.fortiswitch * 24 * 3600 * 1000);
-    const { count } = await fn({ assetId: { in: classIds.swIds }, timestamp: { lt: cutoff } });
+  if (retentionDays.switch > 0 && classIds.switchIds.length > 0) {
+    const cutoff = new Date(nowMs - retentionDays.switch * 24 * 3600 * 1000);
+    const { count } = await fn({ assetId: { in: classIds.switchIds }, timestamp: { lt: cutoff } });
     total += count;
   }
-  if (retentionDays.fortiap > 0 && classIds.apIds.length > 0) {
-    const cutoff = new Date(nowMs - retentionDays.fortiap * 24 * 3600 * 1000);
-    const { count } = await fn({ assetId: { in: classIds.apIds }, timestamp: { lt: cutoff } });
+  if (retentionDays.accessPoint > 0 && classIds.accessPointIds.length > 0) {
+    const cutoff = new Date(nowMs - retentionDays.accessPoint * 24 * 3600 * 1000);
+    const { count } = await fn({ assetId: { in: classIds.accessPointIds }, timestamp: { lt: cutoff } });
     total += count;
   }
   return total;
@@ -5748,13 +5760,13 @@ async function pruneOneTable(
  */
 export async function pruneMonitorSamples(): Promise<number> {
   const settings = await getMonitorSettings();
-  const ids = await getFortinetClassAssetIds();
+  const ids = await getSwitchAndAccessPointAssetIds();
   return pruneOneTable(
     (where) => prisma.assetMonitorSample.deleteMany({ where: where as any }),
     {
       default:     settings.sampleRetentionDays,
-      fortiswitch: settings.fortiswitch.sampleRetentionDays,
-      fortiap:     settings.fortiap.sampleRetentionDays,
+      switch:      settings.switch.sampleRetentionDays,
+      accessPoint: settings.accessPoint.sampleRetentionDays,
     },
     ids,
     "asset_monitor_samples",
@@ -5769,11 +5781,11 @@ export async function pruneMonitorSamples(): Promise<number> {
  */
 export async function pruneTelemetrySamples(): Promise<number> {
   const settings = await getMonitorSettings();
-  const ids = await getFortinetClassAssetIds();
+  const ids = await getSwitchAndAccessPointAssetIds();
   const r = {
     default:     settings.telemetryRetentionDays,
-    fortiswitch: settings.fortiswitch.telemetryRetentionDays,
-    fortiap:     settings.fortiap.telemetryRetentionDays,
+    switch:      settings.switch.telemetryRetentionDays,
+    accessPoint: settings.accessPoint.telemetryRetentionDays,
   };
   const [tel, temps] = await Promise.all([
     pruneOneTable((where) => prisma.assetTelemetrySample.deleteMany({   where: where as any }), r, ids, "asset_telemetry_samples"),
@@ -5793,11 +5805,11 @@ export async function pruneTelemetrySamples(): Promise<number> {
  */
 export async function pruneSystemInfoSamples(): Promise<number> {
   const settings = await getMonitorSettings();
-  const ids = await getFortinetClassAssetIds();
+  const ids = await getSwitchAndAccessPointAssetIds();
   const r = {
     default:     settings.systemInfoRetentionDays,
-    fortiswitch: settings.fortiswitch.systemInfoRetentionDays,
-    fortiap:     settings.fortiap.systemInfoRetentionDays,
+    switch:      settings.switch.systemInfoRetentionDays,
+    accessPoint: settings.accessPoint.systemInfoRetentionDays,
   };
   const [ifaces, storage, ipsec, lldp] = await Promise.all([
     pruneOneTable((where) => prisma.assetInterfaceSample.deleteMany({    where: where as any }), r, ids, "asset_interface_samples"),
@@ -5809,28 +5821,28 @@ export async function pruneSystemInfoSamples(): Promise<number> {
 }
 
 async function pruneLldpNeighbors(
-  retention: { default: number; fortiswitch: number; fortiap: number },
-  ids: { swIds: string[]; apIds: string[] },
+  retention: { default: number; switch: number; accessPoint: number },
+  ids: { switchIds: string[]; accessPointIds: string[] },
 ): Promise<number> {
   const now = Date.now();
   const cutoff = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000);
-  const [d, fs, fa] = await Promise.all([
+  const [d, sw, ap] = await Promise.all([
     prisma.assetLldpNeighbor.deleteMany({
       where: {
         lastSeen: { lt: cutoff(retention.default) },
-        assetId:  { notIn: [...ids.swIds, ...ids.apIds] },
+        assetId:  { notIn: [...ids.switchIds, ...ids.accessPointIds] },
       },
     }),
-    ids.swIds.length === 0
+    ids.switchIds.length === 0
       ? Promise.resolve({ count: 0 })
       : prisma.assetLldpNeighbor.deleteMany({
-          where: { assetId: { in: ids.swIds }, lastSeen: { lt: cutoff(retention.fortiswitch) } },
+          where: { assetId: { in: ids.switchIds }, lastSeen: { lt: cutoff(retention.switch) } },
         }),
-    ids.apIds.length === 0
+    ids.accessPointIds.length === 0
       ? Promise.resolve({ count: 0 })
       : prisma.assetLldpNeighbor.deleteMany({
-          where: { assetId: { in: ids.apIds }, lastSeen: { lt: cutoff(retention.fortiap) } },
+          where: { assetId: { in: ids.accessPointIds }, lastSeen: { lt: cutoff(retention.accessPoint) } },
         }),
   ]);
-  return d.count + fs.count + fa.count;
+  return d.count + sw.count + ap.count;
 }
