@@ -29,6 +29,31 @@ export const METRIC_KEYS: MetricKey[] = [
   "cpu", "memory", "temperature", "interfaces", "lldp", "storage", "wirelessStations",
 ];
 
+// Allowed display-only standard-MIB hints an operator can pin on a profile
+// metric or override. Must stay in sync with the frontend `_SNMP_STANDARD_MIBS`
+// table in `public/js/assets.js` (the SNMP Walk dropdown) — the keys are
+// shared so the same labels render in both surfaces.
+export const STD_MIB_KEYS = new Set<string>([
+  "std:system",
+  "std:interfaces",
+  "std:if-ext",
+  "std:host-resources",
+  "std:entity",
+  "std:entity-sensor",
+  "std:lldp",
+]);
+
+function asStdMibKeyOrNull(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") {
+    throw new AppError(400, "MIB std key must be a string");
+  }
+  if (!STD_MIB_KEYS.has(value)) {
+    throw new AppError(400, `Unknown standard MIB key: ${value}`);
+  }
+  return value;
+}
+
 // Multi-OID composition for the memory metric. Today consulted only when
 // metricKey="memory" — lets operators express bytes-form memory in the editable
 // profile, matching what the hardcoded VENDOR_TELEMETRY_PROFILES baseline can
@@ -49,6 +74,7 @@ export interface MetricOverrideRow {
   modelPattern: string;
   symbol:       string;
   mibId:        string | null;
+  mibStdKey:    string | null;
   type:         "scalar" | "table";
   transform:    TransformKind | null;
   order:        number;
@@ -60,6 +86,7 @@ export interface MetricRow {
   metricKey:        MetricKey;
   defaultSymbol:    string | null;
   defaultMibId:     string | null;
+  defaultMibStdKey: string | null;
   defaultType:      "scalar" | "table";
   defaultTransform: TransformKind | null;
   composition:      MemoryComposition | null;
@@ -210,6 +237,7 @@ function shapeProfile(row: any): ProfileFull {
     metricKey:        asMetricKey(m.metricKey),
     defaultSymbol:    m.defaultSymbol ?? null,
     defaultMibId:     m.defaultMibId ?? null,
+    defaultMibStdKey: m.defaultMibStdKey ?? null,
     defaultType:      asType(m.defaultType),
     defaultTransform: asTransform(m.defaultTransform),
     composition:      shapeStoredComposition(m.composition),
@@ -218,6 +246,7 @@ function shapeProfile(row: any): ProfileFull {
       modelPattern: o.modelPattern,
       symbol:       o.symbol,
       mibId:        o.mibId ?? null,
+      mibStdKey:    o.mibStdKey ?? null,
       type:         asType(o.type),
       transform:    asTransform(o.transform),
       order:        o.order,
@@ -366,6 +395,7 @@ export async function updateMetricRow(
   input: {
     defaultSymbol?:    string | null;
     defaultMibId?:     string | null;
+    defaultMibStdKey?: string | null;
     defaultType?:      string;
     defaultTransform?: string | null;
     // Memory-only today. Validated by parseMemoryComposition; explicit null
@@ -390,11 +420,25 @@ export async function updateMetricRow(
     compositionUpdate = parseMemoryComposition(input.composition);
   }
 
+  // Mutual exclusion: a metric row points at AT MOST one MIB source —
+  // either an uploaded MibFile (defaultMibId) or a built-in standard MIB
+  // hint (defaultMibStdKey). The UI surfaces both via a single dropdown so
+  // selecting one clears the other; reject on the wire if a caller sends
+  // both as non-null in the same request.
+  const nextMibId  = input.defaultMibId     === undefined ? row.defaultMibId     : (input.defaultMibId  ?? null);
+  const nextStdKey = input.defaultMibStdKey === undefined
+    ? row.defaultMibStdKey
+    : asStdMibKeyOrNull(input.defaultMibStdKey);
+  if (nextMibId && nextStdKey) {
+    throw new AppError(400, "defaultMibId and defaultMibStdKey are mutually exclusive");
+  }
+
   const updated = await (prisma as any).manufacturerProfileMetric.update({
     where: { id: row.id },
     data: {
       defaultSymbol:    input.defaultSymbol === undefined    ? undefined : (input.defaultSymbol ?? null),
       defaultMibId:     input.defaultMibId === undefined     ? undefined : (input.defaultMibId ?? null),
+      defaultMibStdKey: input.defaultMibStdKey === undefined ? undefined : nextStdKey,
       defaultType:      input.defaultType === undefined      ? undefined : asType(input.defaultType),
       defaultTransform: input.defaultTransform === undefined ? undefined : (asTransform(input.defaultTransform) ?? null),
       composition:      compositionUpdate === undefined ? undefined : (compositionUpdate ?? null),
@@ -408,6 +452,7 @@ export async function updateMetricRow(
     metricKey:        mk,
     defaultSymbol:    updated.defaultSymbol ?? null,
     defaultMibId:     updated.defaultMibId ?? null,
+    defaultMibStdKey: updated.defaultMibStdKey ?? null,
     defaultType:      asType(updated.defaultType),
     defaultTransform: asTransform(updated.defaultTransform),
     composition:      shapeStoredComposition(updated.composition),
@@ -416,6 +461,7 @@ export async function updateMetricRow(
       modelPattern: o.modelPattern,
       symbol:       o.symbol,
       mibId:        o.mibId ?? null,
+      mibStdKey:    o.mibStdKey ?? null,
       type:         asType(o.type),
       transform:    asTransform(o.transform),
       order:        o.order,
@@ -431,6 +477,7 @@ export async function createOverride(
     modelPattern: string;
     symbol?:      string;
     mibId?:       string | null;
+    mibStdKey?:   string | null;
     type?:        string;
     transform?:   string | null;
     order?:       number;
@@ -463,6 +510,10 @@ export async function createOverride(
   if (!composition && !symbol) {
     throw new AppError(400, "symbol or composition is required");
   }
+  const stdKey = asStdMibKeyOrNull(input.mibStdKey ?? null);
+  if (input.mibId && stdKey) {
+    throw new AppError(400, "mibId and mibStdKey are mutually exclusive");
+  }
   const created = await (prisma as any).manufacturerProfileMetricOverride.create({
     data: {
       metricRowId:  row.id,
@@ -473,6 +524,7 @@ export async function createOverride(
       // without losing the bytes-form intent.
       symbol:       symbol || (composition?.usedSymbol ?? composition?.pctSymbol ?? ""),
       mibId:        input.mibId ?? null,
+      mibStdKey:    stdKey,
       type:         asType(input.type ?? "scalar"),
       transform:    asTransform(input.transform ?? null),
       order:        Number.isFinite(input.order) ? Number(input.order) : 0,
@@ -486,6 +538,7 @@ export async function createOverride(
     modelPattern: created.modelPattern,
     symbol:       created.symbol,
     mibId:        created.mibId ?? null,
+    mibStdKey:    created.mibStdKey ?? null,
     type:         asType(created.type),
     transform:    asTransform(created.transform),
     order:        created.order,
@@ -499,6 +552,7 @@ export async function updateOverride(
     modelPattern?: string;
     symbol?:       string;
     mibId?:        string | null;
+    mibStdKey?:    string | null;
     type?:         string;
     transform?:    string | null;
     order?:        number;
@@ -510,6 +564,15 @@ export async function updateOverride(
     include: { metricRow: true },
   });
   if (!existing) throw new AppError(404, "Override not found");
+
+  // Mutual exclusion: an override row points at AT MOST one MIB source.
+  const nextMibId  = input.mibId     === undefined ? existing.mibId     : (input.mibId  ?? null);
+  const nextStdKey = input.mibStdKey === undefined
+    ? existing.mibStdKey
+    : asStdMibKeyOrNull(input.mibStdKey);
+  if (nextMibId && nextStdKey) {
+    throw new AppError(400, "mibId and mibStdKey are mutually exclusive");
+  }
   if (input.modelPattern !== undefined) {
     if (!input.modelPattern.trim()) throw new AppError(400, "modelPattern is required");
     try { new RegExp(input.modelPattern); } catch {
@@ -539,6 +602,7 @@ export async function updateOverride(
       modelPattern: input.modelPattern === undefined ? undefined : input.modelPattern,
       symbol:       input.symbol === undefined       ? undefined : input.symbol,
       mibId:        input.mibId === undefined        ? undefined : (input.mibId ?? null),
+      mibStdKey:    input.mibStdKey === undefined    ? undefined : nextStdKey,
       type:         input.type === undefined         ? undefined : asType(input.type),
       transform:    input.transform === undefined    ? undefined : (asTransform(input.transform) ?? null),
       order:        input.order === undefined        ? undefined : Number(input.order),
@@ -552,6 +616,7 @@ export async function updateOverride(
     modelPattern: updated.modelPattern,
     symbol:       updated.symbol,
     mibId:        updated.mibId ?? null,
+    mibStdKey:    updated.mibStdKey ?? null,
     type:         asType(updated.type),
     transform:    asTransform(updated.transform),
     order:        updated.order,

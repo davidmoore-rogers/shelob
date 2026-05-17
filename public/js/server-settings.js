@@ -5626,8 +5626,10 @@ function renderProfileDetail(detail) {
       // it during this edit session it lives on the <select>; we capture
       // it from the existing DOM before the re-render via the change
       // handler that also pre-warms `_mfgMibSymbolsCache`). For first
-      // render fall back to the persisted defaultMibId.
-      var editMibId = (typeof _mfgEditMibId === "function" && _mfgEditMibId(detail.id, m.metricKey)) || m.defaultMibId;
+      // render fall back to the persisted defaultMibId / defaultMibStdKey
+      // (joined into a single combined dropdown value).
+      var editMibId = (typeof _mfgEditMibId === "function" && _mfgEditMibId(detail.id, m.metricKey))
+        || joinMibSelection(m.defaultMibId, m.defaultMibStdKey);
       if (isMemory) {
         // Memory's Type cell becomes a Shape selector; the Symbol cell holds
         // 1 or 2 pickers driven by the Shape value. Live shape is taken from
@@ -5662,11 +5664,16 @@ function renderProfileDetail(detail) {
         ? (m.composition.usedSymbol || m.composition.pctSymbol || m.defaultSymbol)
         : m.defaultSymbol;
       var seedMib = seedMibSym ? SEED_SYMBOL_MIB[seedMibSym] : null;
+      // Display order: uploaded MIB → operator-pinned std MIB hint → implied
+      // seed MIB from the symbol → literal "seed" fallback.
+      var stdMibLabel = m.defaultMibStdKey ? STD_MIB_LABELS[m.defaultMibStdKey] : null;
       var mibDisplay = m.defaultMibId
         ? '<span style="font-size:0.78rem">' + escapeHtml(_mfgLookupMibLabel(m.defaultMibId)) + '</span>'
-        : (seedMib
-            ? '<span style="font-size:0.78rem;color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMib) + '</span>'
-            : '<span style="font-size:0.78rem;color:var(--color-text-tertiary);font-style:italic">seed</span>');
+        : (stdMibLabel
+            ? '<span style="font-size:0.78rem">' + escapeHtml(stdMibLabel) + '</span>'
+            : (seedMib
+                ? '<span style="font-size:0.78rem;color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMib) + '</span>'
+                : '<span style="font-size:0.78rem;color:var(--color-text-tertiary);font-style:italic">seed</span>'));
       var typeCell = isMemory
         ? _memoryViewShapeHTML(m.composition, m.defaultType)
         : '<span style="font-size:0.78rem">' + escapeHtml(m.defaultType) + '</span>';
@@ -5736,7 +5743,7 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
     '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.78rem">↳ model</td>';
   if (editing) {
     var oMibId = _mfgOverrideEditMibId(o.id);
-    if (oMibId === undefined) oMibId = o.mibId; // first render: persisted value
+    if (oMibId === undefined) oMibId = joinMibSelection(o.mibId, o.mibStdKey); // first render: persisted value
     if (isMemory) {
       var memShape = _mfgEditMemoryShapeFor("override:" + o.id, o.composition && o.composition.shape);
       return head +
@@ -5767,11 +5774,14 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
     ? (o.composition.usedSymbol || o.composition.pctSymbol || o.symbol)
     : o.symbol;
   var seedMibO = seedMibSymOverride ? SEED_SYMBOL_MIB[seedMibSymOverride] : null;
+  var stdMibLabelO = o.mibStdKey ? STD_MIB_LABELS[o.mibStdKey] : null;
   var mibLabel = o.mibId
     ? escapeHtml(_mfgLookupMibLabel(o.mibId))
-    : (seedMibO
-        ? '<span style="color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMibO) + '</span>'
-        : '<span style="color:var(--color-text-tertiary);font-style:italic">seed</span>');
+    : (stdMibLabelO
+        ? escapeHtml(stdMibLabelO)
+        : (seedMibO
+            ? '<span style="color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMibO) + '</span>'
+            : '<span style="color:var(--color-text-tertiary);font-style:italic">seed</span>'));
   var symbolCell = isMemory
     ? '<div style="display:flex;flex-direction:column;gap:2px">' +
         '<span style="font-size:0.78rem;color:var(--color-text-secondary)">model regex: <code style="font-size:0.78rem">' + escapeHtml(o.modelPattern) + '</code></span>' +
@@ -5789,6 +5799,41 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
     '<td><button class="btn btn-sm mfg-override-edit">Edit</button> ' +
       '<button class="btn btn-sm btn-danger mfg-override-del">Del</button></td>' +
   '</tr>';
+}
+
+// Standard MIB hints the operator can pin on a metric row or override.
+// Keys mirror `_SNMP_STANDARD_MIBS` in `public/js/assets.js` (the SNMP Walk
+// dropdown) and the `STD_MIB_KEYS` set in `manufacturerProfileService.ts`.
+// `std:fortinet` deliberately omitted — vendor MIBs belong in the Uploaded
+// MIBs section, not the Standard MIBs optgroup.
+var STD_MIB_LABELS = {
+  "std:system":         "System (RFC 1213)",
+  "std:interfaces":     "IF-MIB (RFC 2863)",
+  "std:if-ext":         "IF-MIB Extended (RFC 2863)",
+  "std:host-resources": "HOST-RESOURCES-MIB (RFC 2790)",
+  "std:entity":         "ENTITY-MIB (RFC 4133)",
+  "std:entity-sensor":  "ENTITY-SENSOR-MIB (RFC 3433)",
+  "std:lldp":           "LLDP-MIB (IEEE 802.1AB)",
+};
+var STD_MIB_ORDER = ["std:system", "std:interfaces", "std:if-ext", "std:host-resources", "std:entity", "std:entity-sensor", "std:lldp"];
+
+// Splits a single dropdown value into the {mibId, mibStdKey} pair the
+// backend expects. The dropdown carries one combined string ("" = built-in
+// seed, "std:*" = standard MIB hint, otherwise a UUID = uploaded MIB) so
+// the operator only has to pick once.
+function splitMibSelection(value) {
+  if (!value) return { mibId: null, mibStdKey: null };
+  if (value.indexOf("std:") === 0) return { mibId: null, mibStdKey: value };
+  return { mibId: value, mibStdKey: null };
+}
+
+// Inverse of splitMibSelection — turns the persisted pair into the single
+// string the dropdown's <option value=…> expects. Std key wins when both
+// are non-null (defensive — the backend rejects that combination).
+function joinMibSelection(mibId, mibStdKey) {
+  if (mibStdKey) return mibStdKey;
+  if (mibId)     return mibId;
+  return "";
 }
 
 // Built-in seed symbols → originating MIB module name. The values mirror
@@ -5854,7 +5899,11 @@ function renderTransformSelect(current, cls) {
 // names. While the structure is in flight we render a disabled select
 // with "Loading…" so the operator sees the chain react.
 function renderSymbolPicker(currentSymbol, mibId, cls) {
-  if (!mibId) {
+  // Standard-MIB picks (std:*) and "Built-in seed" (empty) both fall back
+  // to free-text — there's no enumerable symbol directory on the frontend
+  // for those, since the seeded OIDs live in oidRegistry without a parsed
+  // structure document the picker can walk.
+  if (!mibId || (typeof mibId === "string" && mibId.indexOf("std:") === 0)) {
     return '<input type="text" class="' + cls + '" value="' + escapeHtml(currentSymbol || "") +
       '" placeholder="Symbol (e.g. fgSysCpuUsage)" style="width:100%;font-size:0.78rem">';
   }
@@ -5895,6 +5944,9 @@ function renderSymbolPicker(currentSymbol, mibId, cls) {
 // state in the picker swaps to the populated dropdown.
 function _ensureMibSymbols(mibId) {
   if (!mibId) return;
+  // Std-MIB hints are display-only — no MibFile row exists to fetch a
+  // structure from. Skip the network call.
+  if (typeof mibId === "string" && mibId.indexOf("std:") === 0) return;
   if (_mfgMibSymbolsCache[mibId] && !_mfgMibSymbolsCache[mibId].loading) return;
   if (_mfgMibSymbolsCache[mibId] && _mfgMibSymbolsCache[mibId].loading) return; // already in flight
   _mfgMibSymbolsCache[mibId] = { loading: true, names: [] };
@@ -5913,33 +5965,71 @@ function _ensureMibSymbols(mibId) {
 }
 
 // Dropdown of MIBs available to symbol resolution at this manufacturer's
-// scope: built-in seed (value="") + every uploaded MIB whose `manufacturer`
-// matches (case-insensitive). Filter mirrors the resolver's vendor-scope
-// pass — operators see exactly the MIBs Polaris would consult for this
-// vendor. `omitSeed=true` hides the "Built-in seed" placeholder so the
-// add-row dropdown shows only real uploaded MIBs (an empty-on-submit value
-// still round-trips to mibId=null on the server side).
-function renderMibSelect(currentMibId, cls, manufacturer, omitSeed) {
+// scope. Three groups, in order:
+//   1) Standard MIBs (RFC / IEEE specs Polaris ships seeded OIDs for) — the
+//      `std:*` keys. Display-only at probe time; the value persists into
+//      `defaultMibStdKey` so the MIB column shows a meaningful label.
+//   2) Vendor MIBs — uploaded MIBs whose `manufacturer` matches this profile
+//      (case-insensitive). Mirrors `oidRegistry`'s vendor-scope pass.
+//   3) Generic MIBs — uploaded MIBs with `manufacturer = null`. The
+//      resolver consults these at the generic tier for every vendor.
+//
+// `currentSelection` is the combined dropdown value (see joinMibSelection):
+// "" = built-in seed, "std:*" = standard MIB key, UUID = uploaded MIB.
+// `omitSeed=true` hides the "Built-in seed" placeholder so the add-row
+// dropdown shows only real options (an empty-on-submit value still
+// round-trips to mibId=null on the server side).
+function renderMibSelect(currentSelection, cls, manufacturer, omitSeed) {
+  var current = currentSelection || "";
   var mfg = (manufacturer || "").toLowerCase();
-  var scoped = (_mibsData || []).filter(function (m) {
+  var vendorScoped = (_mibsData || []).filter(function (m) {
     return (m.manufacturer || "").toLowerCase() === mfg;
+  });
+  var generic = (_mibsData || []).filter(function (m) {
+    return !m.manufacturer;
   });
   var html = '<select class="' + cls + '" style="font-size:0.78rem">';
   if (omitSeed) {
-    if (!currentMibId) {
+    if (!current) {
       html += '<option value="" selected disabled>— select MIB —</option>';
     }
   } else {
-    html += '<option value=""' + (!currentMibId ? " selected" : "") + '>Built-in seed</option>';
+    html += '<option value=""' + (!current ? " selected" : "") + '>Built-in seed</option>';
   }
-  scoped.forEach(function (m) {
-    var label = m.moduleName || m.filename || m.id;
-    if (m.model) label += " (" + m.model + ")";
-    html += '<option value="' + escapeHtml(m.id) + '"' +
-      (currentMibId === m.id ? " selected" : "") + '>' +
-      escapeHtml(label) +
+  // Standard MIBs optgroup
+  html += '<optgroup label="Standard MIBs">';
+  STD_MIB_ORDER.forEach(function (key) {
+    html += '<option value="' + escapeHtml(key) + '"' +
+      (current === key ? " selected" : "") + '>' +
+      escapeHtml(STD_MIB_LABELS[key]) +
     '</option>';
   });
+  html += '</optgroup>';
+  // Vendor MIBs optgroup (only when this profile has any vendor-scoped uploads)
+  if (vendorScoped.length) {
+    html += '<optgroup label="Vendor MIBs">';
+    vendorScoped.forEach(function (m) {
+      var label = m.moduleName || m.filename || m.id;
+      if (m.model) label += " (" + m.model + ")";
+      html += '<option value="' + escapeHtml(m.id) + '"' +
+        (current === m.id ? " selected" : "") + '>' +
+        escapeHtml(label) +
+      '</option>';
+    });
+    html += '</optgroup>';
+  }
+  // Generic MIBs optgroup (only when at least one uploaded MIB has no manufacturer)
+  if (generic.length) {
+    html += '<optgroup label="Generic MIBs">';
+    generic.forEach(function (m) {
+      var label = m.moduleName || m.filename || m.id;
+      html += '<option value="' + escapeHtml(m.id) + '"' +
+        (current === m.id ? " selected" : "") + '>' +
+        escapeHtml(label) +
+      '</option>';
+    });
+    html += '</optgroup>';
+  }
   html += '</select>';
   return html;
 }
@@ -6147,7 +6237,10 @@ async function saveMetricEdit(tr) {
   var profileId = tr.getAttribute("data-profile-id");
   var metricKey = tr.getAttribute("data-metric-key");
   var transform = (tr.querySelector(".mfg-edit-transform") || {}).value || "";
-  var mibId     = (tr.querySelector(".mfg-edit-mib")       || {}).value || "";
+  var mibSel    = (tr.querySelector(".mfg-edit-mib")       || {}).value || "";
+  // Single dropdown value carries either a UUID, a std:* key, or "" — split
+  // into the per-column shape the backend persists.
+  var mibSplit  = splitMibSelection(mibSel);
   // Memory rows use the Shape + multi-OID picker block; other metrics use
   // the single Symbol picker + Type select. Composition is memory-only and
   // omitted from non-memory payloads so the backend's "memory only" guard
@@ -6165,7 +6258,8 @@ async function saveMetricEdit(tr) {
     var primary = composition.usedSymbol || composition.pctSymbol || "";
     payload = {
       defaultSymbol:    primary || null,
-      defaultMibId:     mibId || null,
+      defaultMibId:     mibSplit.mibId,
+      defaultMibStdKey: mibSplit.mibStdKey,
       defaultType:      "scalar",
       defaultTransform: transform || null,
       composition:      composition,
@@ -6175,7 +6269,8 @@ async function saveMetricEdit(tr) {
     var type   = (tr.querySelector(".mfg-edit-type")   || {}).value || "scalar";
     payload = {
       defaultSymbol:    symbol.trim() ? symbol.trim() : null,
-      defaultMibId:     mibId || null,
+      defaultMibId:     mibSplit.mibId,
+      defaultMibStdKey: mibSplit.mibStdKey,
       defaultType:      type,
       defaultTransform: transform || null,
     };
@@ -6199,7 +6294,8 @@ async function addOverride(tr) {
   var metricKey = tr.getAttribute("data-metric-key");
   var pattern   = (tr.querySelector(".mfg-new-override-pattern")   || {}).value || "";
   var transform = (tr.querySelector(".mfg-new-override-transform") || {}).value || "";
-  var mibId     = (tr.querySelector(".mfg-new-override-mib")       || {}).value || "";
+  var mibSel    = (tr.querySelector(".mfg-new-override-mib")       || {}).value || "";
+  var mibSplit  = splitMibSelection(mibSel);
   if (!pattern.trim()) { showToast("Model regex is required", "error"); return; }
   var payload;
   if (metricKey === "memory") {
@@ -6212,7 +6308,8 @@ async function addOverride(tr) {
     payload = {
       modelPattern: pattern.trim(),
       symbol:       primary,
-      mibId:        mibId || null,
+      mibId:        mibSplit.mibId,
+      mibStdKey:    mibSplit.mibStdKey,
       type:         "scalar",
       transform:    transform || null,
       composition:  composition,
@@ -6224,7 +6321,8 @@ async function addOverride(tr) {
     payload = {
       modelPattern: pattern.trim(),
       symbol:       symbol.trim(),
-      mibId:        mibId || null,
+      mibId:        mibSplit.mibId,
+      mibStdKey:    mibSplit.mibStdKey,
       type:         type,
       transform:    transform || null,
     };
@@ -6262,8 +6360,9 @@ async function saveOverrideEdit(tr) {
   var metricKey  = tr.getAttribute("data-metric-key");
   var overrideId = tr.getAttribute("data-override-id");
   var pattern    = (tr.querySelector(".mfg-edit-override-pattern")   || {}).value || "";
-  var mibId      = (tr.querySelector(".mfg-edit-override-mib")       || {}).value || "";
+  var mibSel     = (tr.querySelector(".mfg-edit-override-mib")       || {}).value || "";
   var transform  = (tr.querySelector(".mfg-edit-override-transform") || {}).value || "";
+  var mibSplit   = splitMibSelection(mibSel);
   if (!pattern.trim()) { showToast("Model regex is required", "error"); return; }
   var payload;
   if (metricKey === "memory") {
@@ -6276,7 +6375,8 @@ async function saveOverrideEdit(tr) {
     payload = {
       modelPattern: pattern.trim(),
       symbol:       primary,
-      mibId:        mibId || null,
+      mibId:        mibSplit.mibId,
+      mibStdKey:    mibSplit.mibStdKey,
       type:         "scalar",
       transform:    transform || null,
       composition:  composition,
@@ -6288,7 +6388,8 @@ async function saveOverrideEdit(tr) {
     payload = {
       modelPattern: pattern.trim(),
       symbol:       symbol.trim(),
-      mibId:        mibId || null,
+      mibId:        mibSplit.mibId,
+      mibStdKey:    mibSplit.mibStdKey,
       type:         type,
       transform:    transform || null,
     };

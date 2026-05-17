@@ -4088,7 +4088,13 @@ function _renderStorageTable(container, si, asset) {
 function _renderTemperatures(container, si, asset) {
   if (!container) return;
   _updateTemperatureUpdatedStamp(asset, si);
-  var latest = (si && si.temperatures) || [];
+  var latestRaw = (si && si.temperatures) || [];
+  // Auto-hide sensors with no usable reading — devices commonly emit 0.0 °C
+  // as a "no value" sentinel for unpopulated SFP cages, missing daughter
+  // boards, etc. Treat null/NaN and exact-zero the same way.
+  var latest = latestRaw.filter(function (t) {
+    return typeof t.celsius === "number" && isFinite(t.celsius) && t.celsius !== 0;
+  });
   if (latest.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
       var tempPolling = _assetMonitorStreamSource(asset, "temperature").polling || "REST API";
@@ -9098,6 +9104,11 @@ var _snmpWalkLastObjectName = "";   // persists object name across tab open/clos
 var _snmpMibCache = null;           // null = not yet loaded; [] = loaded (may be empty)
 var _snmpMibStructureCache = {};    // keyed by mibId; structure payload from GET /mibs/:id/structure
 
+// "Standard MIBs" in the SNMP Walk dropdown are strictly RFC/IEEE specs
+// Polaris seeds top-level OIDs for. Vendor MIBs (FORTINET-FORTIGATE-MIB,
+// CISCO-PROCESS-MIB, etc.) belong in the Uploaded MIBs section — operators
+// upload them via Server Settings → Identification → MIB Database, which
+// also unlocks the MIB-aware walk (symbol resolution + value decoding).
 var _SNMP_STANDARD_MIBS = [
   { id: "std:system",         label: "System (RFC 1213)",              oid: "1.3.6.1.2.1.1"          },
   { id: "std:interfaces",     label: "Interfaces — IF-MIB (RFC 2863)", oid: "1.3.6.1.2.1.2"          },
@@ -9106,7 +9117,6 @@ var _SNMP_STANDARD_MIBS = [
   { id: "std:entity",         label: "ENTITY-MIB (RFC 4133)",          oid: "1.3.6.1.2.1.47"         },
   { id: "std:entity-sensor",  label: "ENTITY-SENSOR-MIB (RFC 3433)",   oid: "1.3.6.1.2.1.99"         },
   { id: "std:lldp",           label: "LLDP-MIB (IEEE 802.1AB)",        oid: "1.0.8802.1.1.2"         },
-  { id: "std:fortinet",       label: "Fortinet FORTIGATE-MIB",         oid: "1.3.6.1.4.1.12356.101"  },
 ];
 
 function _snmpCredentialOptions(selectedId) {

@@ -1550,6 +1550,13 @@ model ManufacturerProfileMetric {
   defaultSymbol    String?
   defaultMibId     String?
   defaultMib       MibFile? @relation("ManufacturerProfileMetricDefaultMib", fields: [defaultMibId], references: [id], onDelete: SetNull)
+  // Operator-pinned standard MIB key (e.g. "std:lldp", "std:host-resources").
+  // Mutually exclusive with defaultMibId in the UI — picking a standard MIB
+  // sets this and clears defaultMibId, and vice versa. Display-only at probe
+  // time: the resolver still walks asset → model → vendor → generic → seed.
+  // Lets the Manufacturer Profile table show a meaningful MIB label for
+  // metrics whose symbol comes from a built-in seed instead of "seed".
+  defaultMibStdKey String?
   defaultType      String   @default("scalar") // "scalar" | "table"
   defaultTransform String?  // "celsius_to_fahrenheit" | "bytes_to_mb" | ... | null
   // Multi-OID composition. Today consulted only when metricKey="memory" — lets
@@ -1580,6 +1587,9 @@ model ManufacturerProfileMetricOverride {
   symbol       String
   mibId        String?
   mib          MibFile? @relation("ManufacturerProfileMetricOverrideMib", fields: [mibId], references: [id], onDelete: SetNull)
+  // Same display-only standard-MIB hint as the parent metric row. See
+  // ManufacturerProfileMetric.defaultMibStdKey.
+  mibStdKey    String?
   type         String   @default("scalar") // "scalar" | "table"
   transform    String?
   order        Int      @default(0)
