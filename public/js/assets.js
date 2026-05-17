@@ -4118,12 +4118,10 @@ function _renderTemperatures(container, si, asset) {
   }
   var rows = latest.map(function (t) {
     var c = (typeof t.celsius === "number") ? t.celsius.toFixed(1) + ' °C' : '—';
-    var f = (typeof t.celsius === "number") ? (t.celsius * 9 / 5 + 32).toFixed(1) + ' °F' : '—';
     var name = '<a href="#" class="asset-temp-link" data-name="' + escapeHtml(t.sensorName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(t.sensorName) + '</a>';
     return '<tr>' +
       '<td>' + name + '</td>' +
       '<td class="mono">' + c + '</td>' +
-      '<td class="mono" style="color:var(--color-text-secondary)">' + f + '</td>' +
     '</tr>';
   }).join("");
   // Stale-state surfaces in the section header's updated stamp instead of a
@@ -4135,7 +4133,7 @@ function _renderTemperatures(container, si, asset) {
   _updateTemperatureUpdatedStamp(asset, si);
   container.innerHTML =
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
-      '<th>Sensor</th><th>Celsius</th><th>Fahrenheit</th>' +
+      '<th>Sensor</th><th>Reading</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
   container.querySelectorAll(".asset-temp-link").forEach(function (link) {
@@ -4821,7 +4819,7 @@ function _renderSensorChart(container, samples, opts) {
   _wireChartTooltip(container, function (target) {
     var c = Number(target.getAttribute("data-c"));
     return '<div style="font-weight:600;margin-bottom:2px">' + escapeHtml(_fmtTooltipTs(target.getAttribute("data-ts"))) + '</div>' +
-      '<div>' + c.toFixed(1) + ' °C / ' + (c * 9 / 5 + 32).toFixed(1) + ' °F</div>';
+      '<div>' + c.toFixed(1) + ' °C</div>';
   });
   _addChartScreenshotButton(container, "Temperature", { yAxis: "Temperature (°C)", subject: opts.subject });
   _observeChartResize(container, function (c) { _renderSensorChart(c, samples, opts); });
