@@ -39,9 +39,18 @@
  *     silently rewriting stored content.
  */
 
+import { Resvg } from "@resvg/resvg-js";
 import { prisma } from "../db.js";
 import { AppError } from "../utils/errors.js";
 import { normalizeManufacturer } from "../utils/manufacturerNormalize.js";
+
+// Target pixel dimensions for SVG rasterization. 512px is comfortably
+// above any topology zoom we render at (typical FortiGate node is 64
+// model px ≈ ~256 render px at 4× zoom). Cytoscape's image pipeline
+// can't scale a bitmap past its natural pixel size, so we render
+// large up-front and let the renderer downsize. PNG is the output
+// because it preserves the SVG's transparency cleanly.
+const SVG_RASTER_SIZE = 512;
 
 const MAX_ICON_BYTES = 256 * 1024; // 256 KB — plenty for a raster node icon.
 const MAX_SVG_BYTES = 32 * 1024;   // 32 KB — SVGs are text and parser work scales with size; node icons are simple.
@@ -211,36 +220,107 @@ export function validateUpload(input: UploadedIcon): void {
   }
 }
 
+// Render an SVG buffer to a 512×512 PNG using resvg. Throws AppError(400)
+// with the operator-facing message if resvg can't parse the SVG (caller
+// has already passed it through validateSvg's security gate, so failures
+// here are almost always malformed XML rather than something hostile).
+function rasterizeSvgToPng(svgData: Buffer): Buffer {
+  let resvg: Resvg;
+  try {
+    resvg = new Resvg(svgData, {
+      fitTo: { mode: "width", value: SVG_RASTER_SIZE },
+      // background: undefined → transparent. Topology renderer fills
+      // the node interior with white before painting the icon, so a
+      // transparent PNG composites correctly over either basemap theme.
+    });
+  } catch (err) {
+    throw new AppError(400, `SVG could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return Buffer.from(resvg.render().asPng());
+}
+
 export async function uploadIcon(input: UploadedIcon): Promise<DeviceIconSummary> {
   validateUpload(input);
   const key = buildKey(input.scope, input.manufacturer, input.typeOrModel);
+  // SVG uploads are transparently converted to PNG before storage.
+  // Cytoscape's bitmap pipeline doesn't scale SVGs past their browser-
+  // assigned natural size (typically tiny when the SVG has only a
+  // viewBox + no width/height — the Adobe Illustrator export default).
+  // Rasterizing up-front at 512px sidesteps the whole class of bug —
+  // stored bytes are PNG with intrinsic pixel dimensions, and the
+  // serve path no longer needs SVG-specific handling.
+  let storedMime = input.mimeType;
+  let storedData = input.data;
+  let storedFilename = input.filename;
+  if (input.mimeType === "image/svg+xml") {
+    storedData = rasterizeSvgToPng(input.data);
+    storedMime = "image/png";
+    storedFilename = input.filename.replace(/\.svg$/i, "") + ".png";
+  }
   // Prisma 7 Bytes column wants Uint8Array<ArrayBuffer> strictly; the
   // Buffer type from multer is Buffer<ArrayBufferLike> (where ArrayBufferLike
   // includes SharedArrayBuffer). Copy into a fresh Uint8Array backed by a
   // dedicated ArrayBuffer so the type narrows correctly.
-  const dataBytes = new Uint8Array(input.data.byteLength);
-  dataBytes.set(input.data);
+  const dataBytes = new Uint8Array(storedData.byteLength);
+  dataBytes.set(storedData);
   const row = await prisma.deviceIcon.upsert({
     where: { scope_key: { scope: input.scope, key } },
     create: {
       scope: input.scope,
       key,
-      filename: input.filename,
-      mimeType: input.mimeType,
+      filename: storedFilename,
+      mimeType: storedMime,
       data: dataBytes,
-      size: input.data.length,
+      size: storedData.length,
       uploadedBy: input.uploadedBy ?? null,
     },
     update: {
-      filename: input.filename,
-      mimeType: input.mimeType,
+      filename: storedFilename,
+      mimeType: storedMime,
       data: dataBytes,
-      size: input.data.length,
+      size: storedData.length,
       uploadedBy: input.uploadedBy ?? null,
       uploadedAt: new Date(),
     },
   });
   return summarize(row);
+}
+
+// One-shot backfill: convert any DeviceIcon rows still stored as SVG
+// into PNG using the same rasterizer the upload path uses. Idempotent
+// via the mimeType filter — second-run finds zero rows. Best-effort
+// per-row: a single malformed SVG doesn't abort the rest of the
+// migration; failures are logged and the row is left alone.
+export async function rasterizeStoredSvgIcons(): Promise<{ converted: number; failed: number }> {
+  const rows = await prisma.deviceIcon.findMany({
+    where: { mimeType: "image/svg+xml" },
+    select: { id: true, filename: true, data: true },
+  });
+  let converted = 0;
+  let failed = 0;
+  for (const row of rows) {
+    try {
+      const png = rasterizeSvgToPng(Buffer.from(row.data));
+      const pngBytes = new Uint8Array(png.byteLength);
+      pngBytes.set(png);
+      await prisma.deviceIcon.update({
+        where: { id: row.id },
+        data: {
+          mimeType: "image/png",
+          filename: row.filename.replace(/\.svg$/i, "") + ".png",
+          data: pngBytes,
+          size: png.length,
+        },
+      });
+      converted++;
+    } catch (err) {
+      failed++;
+      // Surface to the caller's logger — keeps this service free of
+      // a direct pino import for what's effectively a one-time job.
+      console.warn(`[deviceIconService] backfill: failed to rasterize SVG icon ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { converted, failed };
 }
 
 export async function listIcons(): Promise<DeviceIconSummary[]> {

@@ -52,6 +52,7 @@ import "./jobs/backfillFortigateEndpointSources.js";
 import "./jobs/fixInfraAssetTypes.js";
 import "./jobs/backfillDependencyTree.js";
 import "./jobs/backfillMonitorStatusChangedAt.js";
+import "./jobs/rasterizeStoredSvgIcons.js";
 import "./jobs/dependencyReconciler.js";
 import "./jobs/reconcileMapRegions.js";
 import "./jobs/reconcileDnsResolvedReservations.js";
