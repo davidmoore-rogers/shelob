@@ -4091,10 +4091,14 @@ function _renderTemperatures(container, si, asset) {
   var latestRaw = (si && si.temperatures) || [];
   // Auto-hide sensors with no usable reading — devices commonly emit 0.0 °C
   // as a "no value" sentinel for unpopulated SFP cages, missing daughter
-  // boards, etc. Treat null/NaN and exact-zero the same way.
-  var latest = latestRaw.filter(function (t) {
+  // boards, etc. Treat null/NaN and exact-zero the same way. The hidden
+  // sensors are reachable via a "Show N sensors with no reading" toggle
+  // below the table.
+  var hasReading = function (t) {
     return typeof t.celsius === "number" && isFinite(t.celsius) && t.celsius !== 0;
-  });
+  };
+  var latest = latestRaw.filter(hasReading);
+  var hidden = latestRaw.filter(function (t) { return !hasReading(t); });
   if (latest.length === 0) {
     if (_isRestApiManagedNetworkDevice(asset)) {
       var tempPolling = _assetMonitorStreamSource(asset, "temperature").polling || "REST API";
@@ -4122,14 +4126,16 @@ function _renderTemperatures(container, si, asset) {
     }
     return;
   }
-  var rows = latest.map(function (t) {
+  var rowFor = function (t) {
     var c = (typeof t.celsius === "number") ? t.celsius.toFixed(1) + ' °C' : '—';
     var name = '<a href="#" class="asset-temp-link" data-name="' + escapeHtml(t.sensorName) + '" style="color:var(--color-accent);text-decoration:none">' + escapeHtml(t.sensorName) + '</a>';
     return '<tr>' +
       '<td>' + name + '</td>' +
       '<td class="mono">' + c + '</td>' +
     '</tr>';
-  }).join("");
+  };
+  var rows = latest.map(rowFor).join("");
+  var hiddenRows = hidden.map(rowFor).join("");
   // Stale-state surfaces in the section header's updated stamp instead of a
   // separate banner — the conflict between "header says 22s ago" and "banner
   // says 15h ago" was operators reading the telemetry-pass timestamp vs the
@@ -4137,10 +4143,25 @@ function _renderTemperatures(container, si, asset) {
   // sensor pull fails; one stamp using the table-specific timestamp is
   // unambiguous.
   _updateTemperatureUpdatedStamp(asset, si);
+  var toggleHTML = "";
+  if (hidden.length > 0) {
+    toggleHTML =
+      '<details class="asset-temp-hidden" style="margin-top:0.5rem;font-size:0.82rem">' +
+        '<summary style="cursor:pointer;color:var(--color-text-tertiary);user-select:none">' +
+          'Show ' + hidden.length + ' sensor' + (hidden.length === 1 ? '' : 's') + ' with no reading' +
+        '</summary>' +
+        '<div class="table-wrapper" style="margin-top:0.4rem">' +
+          '<table class="data-table" style="font-size:0.82rem"><thead><tr>' +
+            '<th>Sensor</th><th>Reading</th>' +
+          '</tr></thead><tbody>' + hiddenRows + '</tbody></table>' +
+        '</div>' +
+      '</details>';
+  }
   container.innerHTML =
     '<div class="table-wrapper"><table class="data-table" style="font-size:0.82rem"><thead><tr>' +
       '<th>Sensor</th><th>Reading</th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    toggleHTML;
 
   container.querySelectorAll(".asset-temp-link").forEach(function (link) {
     link.addEventListener("click", function (e) {
