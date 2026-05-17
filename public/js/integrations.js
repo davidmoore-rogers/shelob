@@ -266,6 +266,31 @@ document.addEventListener("DOMContentLoaded", function () {
   if (!document.getElementById("integrations-list")) return;
   loadIntegrations();
   document.getElementById("btn-add-integration").addEventListener("click", showTypePicker);
+
+  // Tab switching: Integrations (default) ↔ Polaris Agents. Agents tab lazy-
+  // mounts the agent-build card on first activation; the + Add Integration
+  // button in the page header is hidden while the Agents tab is active so
+  // it doesn't suggest the button applies to agents (the agent install flow
+  // lives on each asset's details modal).
+  var _agentsTabLoaded = false;
+  var addBtn = document.getElementById("btn-add-integration");
+  document.querySelectorAll("#integration-tabs .page-tab").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      var target = tab.getAttribute("data-tab");
+      document.querySelectorAll("#integration-tabs .page-tab").forEach(function (t) { t.classList.remove("active"); });
+      document.querySelectorAll(".page-tab-panel").forEach(function (p) { p.classList.remove("active"); });
+      tab.classList.add("active");
+      var panel = document.getElementById("tab-" + target);
+      if (panel) panel.classList.add("active");
+      if (addBtn) addBtn.style.display = (target === "integrations") ? "" : "none";
+      if (target === "agents" && !_agentsTabLoaded) {
+        _agentsTabLoaded = true;
+        if (window.PolarisAgentBuild && window.PolarisAgentBuild.init) {
+          window.PolarisAgentBuild.init();
+        }
+      }
+    });
+  });
 });
 
 // Kick off the direct-transport sanity check after a successful FMG test and
@@ -734,15 +759,11 @@ function _integrationCadenceSectionHTML(s, integrationType) {
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin:0.75rem 0">Temperature</p>' +
     num("temperatureIntervalSeconds", "Temperature interval (seconds)", s.temperatureIntervalSeconds, 60,    15,   86400,  "How often each asset's temperature sensors are scraped. Default 60 s — set higher to ease load on small-branch FortiGates whose sensor endpoint is slow to respond.", false) +
     num("temperatureTimeoutMs",       "Temperature timeout (ms)",       s.temperatureTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the temperature collector. Default 10000 ms.", false) +
-    num("telemetryRetentionDays",   "Telemetry retention (days)",   s.telemetryRetentionDays,   30,    0,    3650,   "Shared retention setting — applies to both CPU/memory samples and temperature samples. 0 = forever.", false) +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
     '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Interface, storage &amp; LLDP discovery</p>' +
     num("systemInfoIntervalSeconds","Discovery interval (seconds)", s.systemInfoIntervalSeconds, 600,   60,   86400,  "How often interfaces, storage, IPsec and LLDP neighbors are scraped. Default 600 s (10 min).", false) +
     num("systemInfoTimeoutMs",      "Discovery timeout (ms)",       s.systemInfoTimeoutMs,       10000, 1000, 120000, "Per-request timeout for the interface / storage / LLDP collector. Default 10000 ms.", false) +
-    num("systemInfoRetentionDays",  "Sample retention (days)",      s.systemInfoRetentionDays,   30,    0,    3650,   "How long interface and storage samples are kept. 0 = forever.", false) +
-    '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-    '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Response-time sample retention</p>' +
-    num("sampleRetentionDays",      "Sample retention (days)",      s.sampleRetentionDays,       30,  0,   3650,  "How long response-time probe samples are kept. 0 = forever.", false);
+    '<p class="hint" style="margin:1rem 0 0 0;font-size:0.78rem">Sample retention is a global setting. Edit it in <a href="/server-settings.html?tab=retention">Server Settings → Retention</a>.</p>';
 }
 
 // Picker block for the FortiSwitch / FortiAP subtab — "enable direct polling"
@@ -1271,9 +1292,6 @@ function _readIntegrationCadenceForm() {
     cpuMemoryIntervalSeconds:  n("cpuMemoryIntervalSeconds"),
     temperatureIntervalSeconds: n("temperatureIntervalSeconds"),
     systemInfoIntervalSeconds: n("systemInfoIntervalSeconds"),
-    sampleRetentionDays:       n("sampleRetentionDays"),
-    telemetryRetentionDays:    n("telemetryRetentionDays"),
-    systemInfoRetentionDays:   n("systemInfoRetentionDays"),
   };
   // Slice 2 split telemetry into cpuMemory + temperature streams server-side
   // (TierSettingsSchema requires both). The integration edit modal hasn't

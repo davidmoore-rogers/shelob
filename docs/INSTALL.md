@@ -576,7 +576,7 @@ The Polaris Agent is a small Go binary you can install on Linux / macOS / Window
 **The default path:** the install scripts in this guide (`deploy/setup-{rhel,ubuntu,windows}.{sh,ps1}` and their `-nodb` variants) provision Go 1.22+ alongside Node 20+, so a freshly-installed Polaris server is ready to produce agent binaries on demand. From the web UI:
 
 1. Sign in as admin
-2. Server Settings → **Maintenance** → **Polaris Agent** card → **Build agent binaries (vX.Y.Z)**
+2. Integrations → **Polaris Agents** tab → **Polaris Agent** card → **Build agent binaries (vX.Y.Z)**
 3. Watch the progress strip; all six platforms reach ✓ within ~90 s on a 2-vCPU host
 
 The button is hidden + replaced by a yellow notice ("install Go 1.22+ and reload") when Go isn't on the server's PATH. The card also shows a per-platform inventory grid and surfaces a drift hint when `agent/VERSION` has moved past `manifest.json` (the auto-build job fires this build for you on the next boot if you don't click it sooner).
@@ -660,7 +660,7 @@ When `agent/VERSION` advances and you build (or auto-build fires), existing inst
 
 **Per-asset:** Asset details modal → System tab → Polaris Agent panel → **Upgrade…** button. Confirm and watch the install-state pill flip `active → upgrading → active` within ~10 s. The agent's bearer + cert pin survive the swap — no re-enrollment, no need to repick a credential (the install credential stored on the row is reused).
 
-**Fleet-wide:** Server Settings → Maintenance → Polaris Agent card. When any installed agents lag the current build, the card shows an "N of M installed agents running an older version" line with an **Upgrade all** button. Click → confirm → Polaris fans out to every out-of-date host with a Promise pool of 4 (the SSH/WinRM connections are the bottleneck; higher parallelism risks tripping per-host concurrent-connection limits — Windows WinRM caps at ~5 by default).
+**Fleet-wide:** Integrations → Polaris Agents tab → Polaris Agent card. When any installed agents lag the current build, the card shows an "N of M installed agents running an older version" line with an **Upgrade all** button. Click → confirm → Polaris fans out to every out-of-date host with a Promise pool of 4 (the SSH/WinRM connections are the bottleneck; higher parallelism risks tripping per-host concurrent-connection limits — Windows WinRM caps at ~5 by default).
 
 Failures land per-row as `installStatus="upgrade_failed"` with the error captured in `installError`; an audit Event (`agent.upgrade_failed`) goes out per failed host. The operator retries individuals via the Retry Upgrade button on the asset details panel, or just clicks Upgrade-all again (already-current hosts are silently skipped by the eligibility filter).
 

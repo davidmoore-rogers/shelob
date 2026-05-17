@@ -32,6 +32,7 @@ document.addEventListener("DOMContentLoaded", function () {
       if (target === "identification" && !_tagsLoaded) loadIdentificationTab();
       if (target === "customization" && !_brandingLoaded) loadCustomizationTab();
       if (target === "credentials" && !_credsLoaded) loadCredentialsTab();
+      if (target === "retention" && !_retentionLoaded) loadRetentionTab();
       if (target === "api-tokens" && !_apiTokensLoaded) loadApiTokensTab();
     });
   });
@@ -966,6 +967,31 @@ async function deleteServerCert(id, name) {
 
 var _dbLoaded = false;
 var _advisorJustStaged = false;
+var _retentionLoaded = false;
+
+// ─── Retention Tab (sample retention only — event retention lives on the
+//                    Events Settings page) ─────────────────────────────────
+//
+// Lazy-loaded on first click of the Retention tab. Fetches the global
+// Setting("sampleRetention") via api.serverSettings.getSampleRetention()
+// and reuses the existing renderSampleRetentionCard / _wireSampleRetentionCard
+// helpers. Was previously crammed into the Maintenance tab; phase 7 moved
+// it here so the Maintenance tab keeps its DB-health focus.
+
+async function loadRetentionTab() {
+  var container = document.getElementById("tab-retention");
+  if (!container) return;
+  container.innerHTML = '<div class="settings-card"><p class="empty-state">Loading retention settings…</p></div>';
+  try {
+    var resp = await api.serverSettings.getSampleRetention();
+    var retention = resp && resp.retention ? resp.retention : null;
+    _retentionLoaded = true;
+    container.innerHTML = renderSampleRetentionCard(retention);
+    _wireSampleRetentionCard();
+  } catch (err) {
+    container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err && err.message ? err.message : String(err)) + '</p></div>';
+  }
+}
 
 function _capacityFormatBytes(b) {
   if (b == null) return "—";
@@ -1651,7 +1677,6 @@ async function loadDatabaseInfo() {
       api.serverSettings.getDatabase(),
       api.serverSettings.getCapacityAdvisor(),
       loadTzOverride(),
-      api.serverSettings.getSampleRetention(),
     ]);
     if (results[0].status === "rejected") throw results[0].reason;
     var db = results[0].value;
@@ -1662,13 +1687,10 @@ async function loadDatabaseInfo() {
     var capacity = advisorResp && advisorResp.capacity ? advisorResp.capacity : null;
     var pgTuning = advisorResp && advisorResp.pgTuning ? advisorResp.pgTuning : null;
     var dbConnectionMode = advisorResp && advisorResp.dbConnectionMode ? advisorResp.dbConnectionMode : "direct";
-    var retentionResp = results[3].status === "fulfilled" && results[3].value ? results[3].value : null;
-    var retention = retentionResp && retentionResp.retention ? retentionResp.retention : null;
     _dbLoaded = true;
 
     container.innerHTML =
       renderCapacityAdvisorCard(advisor, pgTuning && pgTuning.pgConfigFile, dbConnectionMode) +
-      renderSampleRetentionCard(retention) +
       renderCapacityCard(capacity, db, pgTuning) +
       // ── Outbound API Calls card ──
       '<div class="settings-card" id="api-call-chart-card">' +
@@ -1715,21 +1737,6 @@ async function loadDatabaseInfo() {
         '</details>' +
       '</div>' +
       // ── Polaris Agent card ──
-      // Builds the agent binaries operators install on remote hosts via
-      // the Install Agent button. Visible to admins regardless of whether
-      // the operator is using the feature; the card surfaces install-state
-      // (no manifest yet) clearly so it self-documents.
-      '<div class="settings-card" id="agent-build-card">' +
-        '<h4>Polaris Agent</h4>' +
-        '<p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
-          'Build the agent binaries that operators install on remote hosts via Install Agent on the asset details modal. ' +
-          'Binaries are stamped with the version from <code>agent/VERSION</code> and served at ' +
-          '<code>/api/v1/agents/binary/&lt;filename&gt;</code> to the install scripts.' +
-        '</p>' +
-        '<div id="agent-build-body">' +
-          '<p class="empty-state" style="padding:1rem 0">Loading...</p>' +
-        '</div>' +
-      '</div>' +
       // ── Backup / Restore / History — three columns ──
       '<div class="settings-cards-row-3">' +
 
@@ -1816,9 +1823,7 @@ async function loadDatabaseInfo() {
     initUpdateControls();
     initCapacityActions();
     initCapacityAdvisorActions();
-    _wireSampleRetentionCard();
     initApiCallChart();
-    initAgentBuildCard();
   } catch (err) {
     container.innerHTML = '<div class="settings-card"><p class="empty-state">Error: ' + escapeHtml(err.message) + '</p></div>';
   }
@@ -2370,487 +2375,6 @@ function dbInfoRow(label, value) {
 function formatNumber(n) {
   if (n === undefined || n === null) return "-";
   return Number(n).toLocaleString();
-}
-
-// ─── Polaris Agent build card ──────────────────────────────────────────────
-//
-// Three states for the card body:
-//   1. No manifest on disk           → "No binaries built yet" + Build button.
-//   2. Manifest present, build idle  → inventory grid + Build button + version
-//                                      drift hint when agent/VERSION moved.
-//   3. Build in flight               → progress strip (poll every 2 s).
-//
-// On tab mount, we fetch /inventory AND /build/current in parallel. If a
-// build is currently running, we immediately render the progress strip
-// and start polling — this rehydrates an operator's view when they
-// switched away mid-build.
-
-var _agentBuildPollTimer = null;
-
-function initAgentBuildCard() {
-  Promise.all([
-    api.serverSettings.agentInventory().catch(function () { return null; }),
-    api.serverSettings.agentBuildCurrent().catch(function () { return { current: null, queue: [] }; }),
-  ]).then(function (results) {
-    var inv     = results[0];
-    var current = results[1] && results[1].current;
-    var queue   = (results[1] && results[1].queue) || [];
-    if (current && current.phase !== "complete" && current.phase !== "failed") {
-      renderAgentBuildProgress(current, queue);
-      startAgentBuildPoll(current.buildId);
-    } else {
-      renderAgentBuildInventory(inv);
-    }
-  });
-}
-
-function renderAgentBuildInventory(inv) {
-  var body = document.getElementById("agent-build-body");
-  if (!body) return;
-  if (!inv) {
-    body.innerHTML = '<p class="empty-state" style="padding:1rem 0">Failed to load agent build inventory.</p>';
-    return;
-  }
-
-  // Go-detection: when Go isn't installed, gate the whole Build pathway
-  // with a yellow notice. Inventory grid still renders (operators may
-  // have staged binaries from a separate build host).
-  var goNotice = "";
-  if (!inv.goAvailable) {
-    goNotice =
-      '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(255,160,40,0.08);' +
-        'border-left:3px solid var(--color-warning);border-radius:4px;font-size:0.82rem;color:var(--color-warning)">' +
-        '⚠ Go is not installed on this Polaris server. Install Go 1.22+ on the host (see ' +
-        '<code>docs/INSTALL.md</code> → "Optional: Polaris Agent") and reload to enable the Build button.' +
-      '</div>';
-  }
-
-  // Version-drift hint: manifest's currentVersion lags getAgentVersion().
-  var drift = "";
-  if (inv.manifest && inv.manifest.currentVersion !== inv.agentSourceVersion) {
-    drift =
-      '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(80,150,255,0.08);' +
-        'border-left:3px solid var(--color-accent);border-radius:4px;font-size:0.82rem">' +
-        'Agent source has moved to <strong>v' + escapeHtml(inv.agentSourceVersion) + '</strong>; built binaries are still ' +
-        '<strong>v' + escapeHtml(inv.manifest.currentVersion) + '</strong>. Click Build to refresh.' +
-      '</div>';
-  } else if (!inv.manifest) {
-    drift =
-      '<div style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;background:rgba(80,150,255,0.08);' +
-        'border-left:3px solid var(--color-accent);border-radius:4px;font-size:0.82rem">' +
-        'No agent binaries built yet. Click Build to produce <strong>v' + escapeHtml(inv.agentSourceVersion) + '</strong>.' +
-      '</div>';
-  }
-
-  var rows = inv.files.map(function (f) {
-    var key  = f.platform + "-" + f.arch;
-    var size = f.present && f.sizeBytes != null ? humanBytes(f.sizeBytes) : "—";
-    var when = f.present && f.mtime ? formatLocalTime(f.mtime) : "—";
-    var mark = f.present
-      ? '<span style="color:var(--color-success)">✓</span>'
-      : '<span style="color:var(--color-text-tertiary)">—</span>';
-    return '<tr>' +
-      '<td style="padding:4px 8px"><code>' + escapeHtml(key) + '</code></td>' +
-      '<td style="padding:4px 8px;text-align:right">' + escapeHtml(size) + '</td>' +
-      '<td style="padding:4px 8px;font-size:0.78rem;color:var(--color-text-tertiary)">' + escapeHtml(when) + '</td>' +
-      '<td style="padding:4px 8px;text-align:center">' + mark + '</td>' +
-      '</tr>';
-  }).join("");
-
-  var buildBtn = inv.goAvailable
-    ? '<button class="btn btn-primary" id="btn-agent-build">Build agent binaries (v' + escapeHtml(inv.agentSourceVersion) + ')</button>'
-    : '<button class="btn btn-primary" disabled title="Install Go 1.22+ on the server to enable">Build agent binaries</button>';
-
-  var goVerLine = inv.goAvailable && inv.goVersion
-    ? '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.5rem 0 0">Toolchain: ' + escapeHtml(inv.goVersion) + '</p>'
-    : '';
-
-  // Old-versions cleanup line + button. Vanishes when there are none.
-  // The "freed" estimate is the on-disk total; the actual pruned set
-  // respects keep-last-N + in-use protection so the real freed bytes
-  // can be smaller. UI text says "up to" to set the right expectation.
-  var oldVersions = inv.oldVersions || [];
-  var cleanupLine = "";
-  if (oldVersions.length > 0) {
-    var totalBytes = oldVersions.reduce(function (s, v) { return s + (v.bytes || 0); }, 0);
-    cleanupLine =
-      '<div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--color-border);' +
-          'display:flex;align-items:center;gap:0.5rem;font-size:0.85rem">' +
-        '<span style="color:var(--color-text-secondary);flex:1">' +
-          oldVersions.length + ' old version' + (oldVersions.length > 1 ? 's' : '') +
-          ' on disk (up to ' + escapeHtml(humanBytes(totalBytes)) + ')' +
-        '</span>' +
-        '<button class="btn btn-secondary" id="btn-agent-prune" style="padding:4px 12px;font-size:0.8rem">Clean up</button>' +
-      '</div>';
-  }
-
-  // Server-URL row: input pre-filled with the effective URL the agent
-  // would dial right now. The cert-derived default sits underneath as
-  // a hint so the operator can see what they'd inherit if they cleared
-  // the override (empty + Save → deletes the Setting row). The id is
-  // re-rendered from inv.serverUrl every time the card refreshes so the
-  // value stays in sync after a Save / cert rotation / etc.
-  var srvUrl = inv.serverUrl || { effective: "", override: null, derived: "" };
-  var srvUrlVal = srvUrl.override != null ? srvUrl.override : (srvUrl.derived || srvUrl.effective || "");
-  var srvUrlHint = srvUrl.override != null
-    ? 'Override active. Cert-derived default would be: <code>' + escapeHtml(srvUrl.derived || "—") + '</code>'
-    : 'Derived from the HTTPS certificate. Edit to override.';
-  var serverUrlRow =
-    '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border);font-size:0.85rem">' +
-      '<label for="agent-server-url-input" style="display:block;margin-bottom:0.3rem;color:var(--color-text-secondary)">' +
-        'Server URL stamped into agent.conf' +
-        (srvUrl.override != null
-          ? ' <span style="font-size:0.72rem;color:var(--color-accent);font-weight:600;margin-left:0.4rem">OVERRIDE</span>'
-          : '') +
-      '</label>' +
-      '<div style="display:flex;gap:0.5rem;align-items:center">' +
-        '<input type="text" id="agent-server-url-input" value="' + escapeHtml(srvUrlVal) + '" ' +
-          'placeholder="' + escapeHtml(srvUrl.derived || "https://your-host:443") + '" ' +
-          'style="flex:1;padding:5px 8px;font-family:var(--font-mono, monospace);font-size:0.85rem">' +
-        '<button class="btn btn-secondary" id="btn-agent-server-url-save" style="padding:4px 14px;font-size:0.8rem">Save</button>' +
-      '</div>' +
-      '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.3rem 0 0">' + srvUrlHint + '</p>' +
-    '</div>';
-
-  // Auto-build toggle row. Initial state is loaded async — render the
-  // checkbox unchecked, then flip it on settle so the toggle doesn't
-  // flash misleadingly. Defaults to ON when the Setting row is absent.
-  var autoBuildRow =
-    '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border);' +
-        'display:flex;align-items:center;gap:8px;font-size:0.85rem">' +
-      '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">' +
-        '<input type="checkbox" id="agent-auto-build-toggle" style="width:15px;height:15px;flex-shrink:0">' +
-        '<span>Auto-build agent binaries when <code>agent/VERSION</code> changes</span>' +
-      '</label>' +
-    '</div>' +
-    '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.3rem 0 0 23px">' +
-      'Fires once on server boot when the on-disk manifest lags the agent source. Disable for strict supply-chain controls.' +
-    '</p>';
-
-  // Reserved slot for the "N installed agents are out-of-date" line +
-  // Upgrade-all button. Populated by an async fetch right after the
-  // initial render so the layout is stable.
-  var installedSummarySlot = '<div id="agent-installed-summary"></div>';
-
-  body.innerHTML =
-    goNotice +
-    drift +
-    '<table style="width:100%;border-collapse:collapse;margin-bottom:0.75rem;font-size:0.85rem">' +
-      '<thead><tr style="border-bottom:1px solid var(--color-border)">' +
-        '<th style="padding:4px 8px;text-align:left;font-weight:600;color:var(--color-text-secondary)">Platform</th>' +
-        '<th style="padding:4px 8px;text-align:right;font-weight:600;color:var(--color-text-secondary)">Size</th>' +
-        '<th style="padding:4px 8px;text-align:left;font-weight:600;color:var(--color-text-secondary)">Built</th>' +
-        '<th style="padding:4px 8px;text-align:center;font-weight:600;color:var(--color-text-secondary)">Present</th>' +
-      '</tr></thead>' +
-      '<tbody>' + rows + '</tbody>' +
-    '</table>' +
-    '<div>' + buildBtn + '</div>' +
-    goVerLine +
-    installedSummarySlot +
-    cleanupLine +
-    serverUrlRow +
-    autoBuildRow;
-
-  var btn = document.getElementById("btn-agent-build");
-  if (btn) btn.addEventListener("click", onAgentBuildClick);
-  var pruneBtn = document.getElementById("btn-agent-prune");
-  if (pruneBtn) pruneBtn.addEventListener("click", onAgentPruneClick);
-
-  var srvSaveBtn = document.getElementById("btn-agent-server-url-save");
-  var srvInput   = document.getElementById("agent-server-url-input");
-  if (srvSaveBtn && srvInput) {
-    srvSaveBtn.addEventListener("click", function () {
-      // Empty input clears the override (Setting row deleted server-side).
-      // Anything else is validated for http(s):// prefix server-side.
-      var raw = (srvInput.value || "").trim();
-      // If the input still matches the cert-derived default AND there was
-      // no override before, treat Save as a no-op clear so we don't
-      // persist a Setting that just mirrors the default.
-      var sendVal = raw === "" ? "" : raw;
-      srvSaveBtn.disabled = true;
-      api.serverSettings.agentServerUrlSet(sendVal).then(function () {
-        showToast(sendVal ? "Agent server URL updated" : "Agent server URL override cleared", "success");
-        // Refresh the inventory so the OVERRIDE pill + hint text reflect
-        // the new state. The whole card re-renders.
-        api.serverSettings.agentInventory().then(renderAgentBuildInventory);
-      }).catch(function (err) {
-        showToast("Failed: " + err.message, "error");
-        srvSaveBtn.disabled = false;
-      });
-    });
-  }
-
-  var autoToggle = document.getElementById("agent-auto-build-toggle");
-  if (autoToggle) {
-    api.serverSettings.agentAutoBuildSettingGet().then(function (s) {
-      autoToggle.checked = s.enabled !== false;
-    }).catch(function () {
-      autoToggle.checked = true;
-    });
-    autoToggle.addEventListener("change", function () {
-      api.serverSettings.agentAutoBuildSettingSet(autoToggle.checked).catch(function (err) {
-        showToast("Failed to save setting: " + err.message, "error");
-        autoToggle.checked = !autoToggle.checked;
-      });
-    });
-  }
-
-  // Installed-summary line + Upgrade-all button. Loaded async so the
-  // rest of the card paints first; on failure the slot stays empty
-  // (better than blocking the operator with a spinner that may never
-  // resolve when the DB is wedged).
-  api.serverSettings.agentInstalledSummary().then(function (s) {
-    var slot = document.getElementById("agent-installed-summary");
-    if (!slot) return;
-    if (!s.totalActive) return; // hide entirely when no agents are installed
-    if (!s.outOfDate) {
-      slot.innerHTML =
-        '<p style="font-size:0.78rem;color:var(--color-text-tertiary);margin:0.5rem 0 0">' +
-          s.totalActive + ' installed agent' + (s.totalActive > 1 ? 's' : '') +
-          ' running v' + escapeHtml(s.currentVersion || "?") + ' (current).' +
-        '</p>';
-      return;
-    }
-    slot.innerHTML =
-      '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border);' +
-          'display:flex;align-items:center;gap:0.5rem;font-size:0.85rem">' +
-        '<span style="color:var(--color-text-secondary);flex:1">' +
-          s.outOfDate + ' of ' + s.totalActive + ' installed agent' + (s.totalActive > 1 ? 's' : '') +
-          ' running an older version' +
-          (s.currentVersion ? ' (current: v' + escapeHtml(s.currentVersion) + ')' : '') + '.' +
-        '</span>' +
-        '<button class="btn btn-secondary" id="btn-agent-upgrade-all" style="padding:4px 12px;font-size:0.8rem">Upgrade all</button>' +
-      '</div>';
-    var btn = document.getElementById("btn-agent-upgrade-all");
-    if (btn) btn.addEventListener("click", function () {
-      showConfirm(
-        "Push the new agent binary to all " + s.outOfDate + " out-of-date host" + (s.outOfDate > 1 ? 's' : '') + "?\n\n" +
-        "Each host briefly bounces its agent service while the binary is replaced. " +
-        "Bearers and cert pins are preserved — no re-enrollment required.",
-      ).then(function (ok) {
-        if (!ok) return;
-        api.serverSettings.agentUpgradeAll().then(function (r) {
-          showToast("Queued " + r.queued + " of " + r.eligible + " upgrade(s)", "success");
-          // Re-fetch summary so the line updates as upgrades complete.
-          api.serverSettings.agentInventory().then(renderAgentBuildInventory);
-        }).catch(function (err) {
-          showToast("Upgrade-all failed: " + err.message, "error");
-        });
-      });
-    });
-  }).catch(function () { /* leave the slot empty */ });
-}
-
-function onAgentPruneClick() {
-  // No confirm — the policy explicitly preserves the current version,
-  // in-use versions, and the keep-last-N window, so there's no way this
-  // accidentally takes out something the operator needs. Toast names the
-  // freed bytes so the operator sees the impact.
-  api.serverSettings.agentPrune().then(function (r) {
-    var n = (r.removed || []).length;
-    if (n === 0) {
-      showToast("Nothing to clean up — old versions are in use or within the keep-last-N window", "info");
-    } else {
-      var bytes = r.removed.reduce(function (s, e) { return s + (e.bytes || 0); }, 0);
-      showToast("Removed " + n + " old version" + (n > 1 ? "s" : "") + " (" + humanBytes(bytes) + " freed)", "success");
-    }
-    api.serverSettings.agentInventory().then(renderAgentBuildInventory);
-  }).catch(function (err) {
-    showToast("Clean up failed: " + err.message, "error");
-  });
-}
-
-function onAgentBuildClick() {
-  api.serverSettings.agentBuildStart().then(function (r) {
-    // Optimistic: switch to progress mode immediately. The first poll
-    // tick populates real per-platform steps. queuePosition === 0 means
-    // we got the active slot; >0 means we landed in the queue.
-    var phase = r.queuePosition === 0 ? "preparing" : "queued";
-    renderAgentBuildProgress({
-      buildId:   r.buildId,
-      version:   r.version,
-      phase:     phase,
-      steps:     [],
-      queuedAt:  new Date().toISOString(),
-      startedAt: r.queuePosition === 0 ? new Date().toISOString() : null,
-    }, []);
-    if (r.queuePosition > 0) {
-      showToast("Build queued (position " + r.queuePosition + ")", "info");
-    }
-    startAgentBuildPoll(r.buildId);
-  }).catch(function (err) {
-    showToast("Build failed to start: " + err.message, "error");
-  });
-}
-
-function startAgentBuildPoll(buildId) {
-  if (_agentBuildPollTimer) clearTimeout(_agentBuildPollTimer);
-  var tick = function () {
-    // Pull both the focused build + the current/queue snapshot in one
-    // tick so the queue display stays accurate as other operators fire
-    // builds while ours is running.
-    Promise.all([
-      api.serverSettings.agentBuildStatus(buildId),
-      api.serverSettings.agentBuildCurrent().catch(function () { return { current: null, queue: [] }; }),
-    ]).then(function (results) {
-      var state   = results[0];
-      var current = results[1] && results[1].current;
-      var queue   = (results[1] && results[1].queue) || [];
-      // While our build is queued we render the FOCUS build itself in
-      // the queued section + show the currently-running one above it
-      // so the operator sees what they're waiting behind.
-      var primary = (state.phase === "queued" && current) ? current : state;
-      var queueWithoutPrimary = queue.filter(function (q) { return q.buildId !== primary.buildId; });
-      renderAgentBuildProgress(primary, queueWithoutPrimary);
-      if (state.phase === "complete" || state.phase === "failed") {
-        _agentBuildPollTimer = null;
-        api.serverSettings.agentInventory().then(function (inv) {
-          renderAgentBuildInventory(inv);
-          if (state.phase === "complete") {
-            showToast("Built agent binaries v" + state.version, "success");
-          } else {
-            showToast("Build failed: " + (state.error || "unknown error"), "error");
-          }
-        });
-        return;
-      }
-      _agentBuildPollTimer = setTimeout(tick, 2000);
-    }).catch(function () {
-      // Network blip / route still settling — try again after a longer pause.
-      _agentBuildPollTimer = setTimeout(tick, 5000);
-    });
-  };
-  _agentBuildPollTimer = setTimeout(tick, 200);
-}
-
-function renderAgentBuildProgress(state, queue) {
-  var body = document.getElementById("agent-build-body");
-  if (!body) return;
-
-  // Elapsed: from queuedAt when queued, from startedAt once running.
-  var elapsedAnchor = state.startedAt || state.queuedAt;
-  var elapsedMs = elapsedAnchor ? Date.now() - new Date(elapsedAnchor).getTime() : 0;
-  var elapsedTxt = formatElapsed(elapsedMs);
-
-  var stepsHtml = (state.steps || []).map(function (s) {
-    var icon, color;
-    if (s.status === "success")      { icon = "✓"; color = "var(--color-success)"; }
-    else if (s.status === "failed")  { icon = "✗"; color = "var(--color-danger)"; }
-    else if (s.status === "running") { icon = "▸"; color = "var(--color-accent)"; }
-    else                              { icon = "○"; color = "var(--color-text-tertiary)"; }
-    var dur = s.elapsedMs != null ? formatElapsed(s.elapsedMs) : (s.status === "running" ? "running" : "pending");
-    return '<tr>' +
-      '<td style="padding:3px 8px;color:' + color + '">' + icon + '</td>' +
-      '<td style="padding:3px 8px"><code>' + escapeHtml(s.platform) + '-' + escapeHtml(s.arch) + '</code></td>' +
-      '<td style="padding:3px 8px;text-align:right;font-size:0.78rem;color:var(--color-text-tertiary)">' + escapeHtml(dur) + '</td>' +
-      (s.error
-        ? '<td style="padding:3px 8px;font-family:monospace;font-size:0.75rem;color:var(--color-danger)">' + escapeHtml(s.error) + '</td>'
-        : '<td></td>') +
-      '</tr>';
-  }).join("");
-
-  var isFinished  = state.phase === "complete" || state.phase === "failed" || state.phase === "cancelled";
-  var cancelBtn   = isFinished
-    ? ""
-    : ' <button class="btn-icon agent-build-cancel" data-build-id="' + escapeHtml(state.buildId) +
-        '" title="Cancel" style="margin-left:0.5rem;padding:1px 8px;font-size:0.75rem">×</button>';
-
-  var label;
-  if (state.phase === "complete") {
-    label = '<strong style="color:var(--color-success)">Built v' + escapeHtml(state.version) + '</strong>';
-  } else if (state.phase === "failed") {
-    label = '<strong style="color:var(--color-danger)">Build failed</strong>';
-  } else if (state.phase === "cancelled") {
-    label = '<strong style="color:var(--color-warning)">Build cancelled</strong>';
-  } else if (state.phase === "queued") {
-    label = '<strong>Queued: v' + escapeHtml(state.version) + '</strong> · waiting · ' + escapeHtml(elapsedTxt) + cancelBtn;
-  } else {
-    label = '<strong>Building agent binaries v' + escapeHtml(state.version) + '</strong> · ' + escapeHtml(elapsedTxt) + ' elapsed' + cancelBtn;
-  }
-
-  // Queue display: tiny rows per queued build with actor + queued-at + × cancel.
-  var queueHtml = "";
-  if (queue && queue.length > 0) {
-    queueHtml =
-      '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid var(--color-border)">' +
-        '<div style="font-size:0.78rem;color:var(--color-text-secondary);margin-bottom:0.3rem">Queued (' + queue.length + ')</div>' +
-        queue.map(function (q) {
-          return '<div style="font-size:0.78rem;color:var(--color-text-tertiary);padding:2px 0;display:flex;align-items:center;gap:6px">' +
-            '<span style="flex:1">• v' + escapeHtml(q.version) + ' — queued by ' + escapeHtml(q.actor) +
-              (q.queuedAt ? ' (' + escapeHtml(timeAgoLocal(q.queuedAt)) + ')' : '') +
-            '</span>' +
-            '<button class="btn-icon agent-build-cancel" data-build-id="' + escapeHtml(q.buildId) +
-              '" title="Cancel" style="padding:1px 8px;font-size:0.75rem">×</button>' +
-          '</div>';
-        }).join("") +
-      '</div>';
-  }
-
-  body.innerHTML =
-    '<div style="margin-bottom:0.5rem">' + label + '</div>' +
-    (stepsHtml
-      ? '<table style="width:100%;border-collapse:collapse;font-size:0.85rem"><tbody>' + stepsHtml + '</tbody></table>'
-      : "") +
-    (state.error
-      ? '<div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:rgba(255,80,80,0.08);' +
-          'border-left:3px solid var(--color-danger);border-radius:4px;font-family:monospace;font-size:0.78rem;' +
-          'color:var(--color-danger);white-space:pre-wrap;word-break:break-word">' + escapeHtml(state.error) + '</div>'
-      : "") +
-    queueHtml;
-
-  // Wire every × button in this re-render. Re-querying after innerHTML
-  // swap is safer than persisting handlers across renders.
-  body.querySelectorAll(".agent-build-cancel").forEach(function (btn) {
-    btn.addEventListener("click", function (e) {
-      e.preventDefault();
-      var id = btn.getAttribute("data-build-id");
-      if (!id) return;
-      showConfirm("Cancel this build? Any partial binaries will remain on disk but unused.").then(function (ok) {
-        if (!ok) return;
-        api.serverSettings.agentBuildCancel(id).then(function () {
-          showToast("Build cancelled", "info");
-          // Forced refresh of the card — the operator's mental model is
-          // "× → instantly gone from the list".
-          api.serverSettings.agentBuildCurrent().then(function (snap) {
-            var cur = snap && snap.current;
-            if (cur && cur.phase !== "complete" && cur.phase !== "failed" && cur.phase !== "cancelled") {
-              renderAgentBuildProgress(cur, (snap.queue || []).filter(function (q) { return q.buildId !== cur.buildId; }));
-            } else {
-              api.serverSettings.agentInventory().then(renderAgentBuildInventory);
-            }
-          });
-        }).catch(function (err) {
-          showToast("Cancel failed: " + err.message, "error");
-        });
-      });
-    });
-  });
-}
-
-// Lightweight relative-time formatter for the queue rows. The main
-// timeAgo helper isn't a global on every page; this keeps the agent
-// card self-contained.
-function timeAgoLocal(iso) {
-  var ms = Date.now() - new Date(iso).getTime();
-  if (ms < 0) ms = 0;
-  if (ms < 60_000) return Math.floor(ms / 1000) + "s ago";
-  if (ms < 3_600_000) return Math.floor(ms / 60_000) + "m ago";
-  return Math.floor(ms / 3_600_000) + "h ago";
-}
-
-function humanBytes(n) {
-  if (n < 1024) return n + " B";
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KiB";
-  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MiB";
-  return (n / (1024 * 1024 * 1024)).toFixed(2) + " GiB";
-}
-
-function formatElapsed(ms) {
-  if (ms < 1000) return ms + " ms";
-  var s = Math.floor(ms / 1000);
-  if (s < 60) return s + "." + Math.floor((ms % 1000) / 100) + " s";
-  var m = Math.floor(s / 60);
-  return m + "m " + (s % 60) + "s";
 }
 
 // ─── Application Updates ───────────────────────────────────────────────────

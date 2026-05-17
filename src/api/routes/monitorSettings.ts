@@ -70,9 +70,14 @@ const TierSettingsSchema = z.object({
   cpuMemoryIntervalSeconds:   z.number().int().min(15).max(86400),
   temperatureIntervalSeconds: z.number().int().min(15).max(86400),
   systemInfoIntervalSeconds:  z.number().int().min(60).max(86400),
-  sampleRetentionDays:        z.number().int().min(0).max(3650),
-  telemetryRetentionDays:     z.number().int().min(0).max(3650),
-  systemInfoRetentionDays:    z.number().int().min(0).max(3650),
+  // Retention used to live on this tier (sample/telemetry/systemInfo
+  // RetentionDays). Phase 5 moved it to the global Setting("sampleRetention")
+  // edited from Server Settings → Retention. The fields are still tolerated
+  // on writes (z.unknown()) so old clients don't 400, but the values are
+  // dropped before persistence — no consumer reads them.
+  sampleRetentionDays:        z.unknown().optional(),
+  telemetryRetentionDays:     z.unknown().optional(),
+  systemInfoRetentionDays:    z.unknown().optional(),
   responseTimePolling:        PollingMethodEnum.nullable().optional(),
   cpuMemoryPolling:           PollingMethodEnum.nullable().optional(),
   temperaturePolling:         PollingMethodEnum.nullable().optional(),
@@ -98,9 +103,12 @@ const OverrideSettingsSchema = z.object({
   cpuMemoryIntervalSeconds:   z.number().int().min(15).max(86400).nullable().optional(),
   temperatureIntervalSeconds: z.number().int().min(15).max(86400).nullable().optional(),
   systemInfoIntervalSeconds:  z.number().int().min(60).max(86400).nullable().optional(),
-  sampleRetentionDays:        z.number().int().min(0).max(3650).nullable().optional(),
-  telemetryRetentionDays:     z.number().int().min(0).max(3650).nullable().optional(),
-  systemInfoRetentionDays:    z.number().int().min(0).max(3650).nullable().optional(),
+  // Class-override retention is dead — see the comment on the matching
+  // fields in TierSettingsSchema above. Tolerated on input, dropped before
+  // persistence; retention now lives globally in Setting("sampleRetention").
+  sampleRetentionDays:        z.unknown().optional(),
+  telemetryRetentionDays:     z.unknown().optional(),
+  systemInfoRetentionDays:    z.unknown().optional(),
   responseTimePolling:        PollingMethodEnum.nullable().optional(),
   cpuMemoryPolling:           PollingMethodEnum.nullable().optional(),
   temperaturePolling:         PollingMethodEnum.nullable().optional(),
@@ -159,10 +167,22 @@ router.get("/manual", async (_req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * Strip legacy retention keys from a tier-3 or class-override blob before
+ * persistence. Retention moved to Setting("sampleRetention") in phase 5;
+ * the schema still tolerates the keys on input so old clients don't 400,
+ * but persistence drops them so the JSON stays clean.
+ */
+function stripLegacyRetention<T extends Record<string, unknown>>(input: T): Omit<T, "sampleRetentionDays" | "telemetryRetentionDays" | "systemInfoRetentionDays"> {
+  const { sampleRetentionDays: _s, telemetryRetentionDays: _t, systemInfoRetentionDays: _i, ...rest } = input;
+  void _s; void _t; void _i;
+  return rest;
+}
+
 /** Write the manual tier. Affects every asset with discoveredByIntegrationId = null. */
 router.put("/manual", requireAssetsAdmin, async (req, res, next) => {
   try {
-    const input = TierSettingsSchema.parse(req.body);
+    const input = stripLegacyRetention(TierSettingsSchema.parse(req.body));
     await prisma.setting.upsert({
       where:  { key: MANUAL_SETTING_KEY },
       update: { value: input as any },
@@ -205,7 +225,7 @@ router.get("/integration/:id", async (req, res, next) => {
 /** Write the integration tier. Affects every asset discovered by this integration. */
 router.put("/integration/:id", requireAssetsAdmin, async (req, res, next) => {
   try {
-    const input = TierSettingsSchema.parse(req.body);
+    const input = stripLegacyRetention(TierSettingsSchema.parse(req.body));
     const integrationId = req.params.id as string;
     const integration = await prisma.integration.findUnique({
       where:  { id: integrationId },
@@ -298,7 +318,8 @@ router.post("/class-overrides", requireAssetsAdmin, async (req, res, next) => {
       );
     }
 
-    const { integrationId, assetType, ...settings } = input;
+    const { integrationId, assetType, ...rest } = input;
+    const settings = stripLegacyRetention(rest);
     const created = await prisma.monitorClassOverride.create({
       data:    { integrationId, assetType, ...settings },
       include: { integration: { select: { id: true, name: true, type: true } } },
@@ -319,7 +340,7 @@ router.post("/class-overrides", requireAssetsAdmin, async (req, res, next) => {
 
 router.put("/class-overrides/:id", requireAssetsAdmin, async (req, res, next) => {
   try {
-    const input = ClassUpdateSchema.parse(req.body);
+    const input = stripLegacyRetention(ClassUpdateSchema.parse(req.body));
     const id = req.params.id as string;
     const existing = await prisma.monitorClassOverride.findUnique({
       where:   { id },

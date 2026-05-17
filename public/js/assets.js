@@ -10037,9 +10037,6 @@ var MON_TIER_DEFAULTS = {
   cpuMemoryIntervalSeconds:  60,
   temperatureIntervalSeconds: 60,
   systemInfoIntervalSeconds: 600,
-  sampleRetentionDays:       30,
-  telemetryRetentionDays:    30,
-  systemInfoRetentionDays:   30,
 };
 
 // Polling-method helpers (_POLLING_LABELS / _POLLING_COMPAT /
@@ -10143,13 +10140,11 @@ function _monsetManualSectionHTML(v) {
       _monsetField("monset-manual-temperatureTimeoutMs",       "Temperature timeout",    "ms",                             values.temperatureTimeoutMs,       1000, 120000, false) +
       _monsetField("monset-manual-systemInfoIntervalSeconds",  "System info interval",   "seconds (interfaces + storage)", values.systemInfoIntervalSeconds,  60,   86400,  false) +
       _monsetField("monset-manual-systemInfoTimeoutMs",        "System info timeout",    "ms (interface/storage/LLDP)",    values.systemInfoTimeoutMs,        1000, 120000, false) +
-      _monsetField("monset-manual-sampleRetentionDays",        "Probe sample retention", "days (0 = forever)",             values.sampleRetentionDays,        0,    3650,   false) +
-      _monsetField("monset-manual-telemetryRetentionDays",     "Telemetry retention",    "days (CPU/mem + temp share this; 0 = forever)", values.telemetryRetentionDays, 0, 3650, false) +
-      _monsetField("monset-manual-systemInfoRetentionDays",    "System info retention",  "days (0 = forever)",             values.systemInfoRetentionDays,    0,    3650,   false) +
     '</div>' +
     '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
     _polarisPollingFourStreamHTML("monset-manual-", "manual", values) +
-    '<p class="hint" style="margin:0 0 0.75rem 0;color:var(--color-text-tertiary)">Manual tier accepts any method — operator picks per stream and supplies a credential at the asset level (or relies on ICMP).</p>' +
+    '<p class="hint" style="margin:0 0 0.5rem 0;color:var(--color-text-tertiary)">Manual tier accepts any method — operator picks per stream and supplies a credential at the asset level (or relies on ICMP).</p>' +
+    '<p class="hint" style="margin:0 0 0.75rem 0;font-size:0.78rem">Sample retention is a global setting. Edit it in <a href="/server-settings.html?tab=retention">Server Settings → Retention</a>.</p>' +
     '<div style="margin-top:1rem;text-align:right">' +
       '<button class="btn btn-primary" id="btn-monset-save-manual">Save Manual Tier</button>' +
     '</div>' +
@@ -10192,9 +10187,6 @@ async function _monsetSaveManual() {
     cpuMemoryIntervalSeconds:  _monsetReadField("monset-manual-cpuMemoryIntervalSeconds",  MON_TIER_DEFAULTS.cpuMemoryIntervalSeconds),
     temperatureIntervalSeconds: _monsetReadField("monset-manual-temperatureIntervalSeconds", MON_TIER_DEFAULTS.temperatureIntervalSeconds),
     systemInfoIntervalSeconds: _monsetReadField("monset-manual-systemInfoIntervalSeconds", MON_TIER_DEFAULTS.systemInfoIntervalSeconds),
-    sampleRetentionDays:       _monsetReadField("monset-manual-sampleRetentionDays",       MON_TIER_DEFAULTS.sampleRetentionDays),
-    telemetryRetentionDays:    _monsetReadField("monset-manual-telemetryRetentionDays",    MON_TIER_DEFAULTS.telemetryRetentionDays),
-    systemInfoRetentionDays:   _monsetReadField("monset-manual-systemInfoRetentionDays",   MON_TIER_DEFAULTS.systemInfoRetentionDays),
   };
   Object.assign(body, _polarisReadPollingFourStream("monset-manual-"));
   try {
@@ -10255,9 +10247,6 @@ function _monsetOverrideSummary(o) {
     cpuMemoryIntervalSeconds:  "cpu-mem",
     temperatureIntervalSeconds: "temp",
     systemInfoIntervalSeconds: "sysinfo",
-    sampleRetentionDays:       "probe-retain",
-    telemetryRetentionDays:    "telem-retain",
-    systemInfoRetentionDays:   "sysinfo-retain",
     responseTimePolling:       "rt-poll",
     cpuMemoryPolling:          "tel-poll",
     interfacesPolling:         "if-poll",
@@ -10336,10 +10325,8 @@ function _monsetOpenOverrideEditor(existing) {
       _monsetField("monset-ov-temperatureTimeoutMs",       "Temperature timeout",    "ms",                             v.temperatureTimeoutMs,       1000, 120000, false) +
       _monsetField("monset-ov-systemInfoIntervalSeconds",  "System info interval",   "seconds (interfaces + storage)", v.systemInfoIntervalSeconds,  60,   86400,  false) +
       _monsetField("monset-ov-systemInfoTimeoutMs",        "System info timeout",    "ms (interface/storage/LLDP)",    v.systemInfoTimeoutMs,        1000, 120000, false) +
-      _monsetField("monset-ov-sampleRetentionDays",        "Probe sample retention", "days (0 = forever)",             v.sampleRetentionDays,        0,    3650,   false) +
-      _monsetField("monset-ov-telemetryRetentionDays",     "Telemetry retention",    "days (CPU/mem + temp share this; 0 = forever)", v.telemetryRetentionDays, 0, 3650, false) +
-      _monsetField("monset-ov-systemInfoRetentionDays",    "System info retention",  "days (0 = forever)",             v.systemInfoRetentionDays,    0,    3650,   false) +
     '</div>' +
+    '<p class="hint" style="margin:0.5rem 0 0 0;font-size:0.78rem">Sample retention is a global setting. Edit it in <a href="/server-settings.html?tab=retention">Server Settings → Retention</a>.</p>' +
     '<hr style="margin:1rem 0;border:none;border-top:1px solid var(--color-border)">' +
     '<div id="monset-ov-polling-block">' + _polarisPollingFourStreamHTML("monset-ov-", initialSourceKind, v, {
       showMibRows:  true,
@@ -10459,9 +10446,6 @@ async function _monsetSaveOverride(existing) {
     cpuMemoryIntervalSeconds:  readOptional("monset-ov-cpuMemoryIntervalSeconds"),
     temperatureIntervalSeconds: readOptional("monset-ov-temperatureIntervalSeconds"),
     systemInfoIntervalSeconds: readOptional("monset-ov-systemInfoIntervalSeconds"),
-    sampleRetentionDays:       readOptional("monset-ov-sampleRetentionDays"),
-    telemetryRetentionDays:    readOptional("monset-ov-telemetryRetentionDays"),
-    systemInfoRetentionDays:   readOptional("monset-ov-systemInfoRetentionDays"),
   };
   Object.assign(fields, _polarisReadPollingFourStream("monset-ov-"));
   Object.assign(fields, _polarisReadCredFourStream("monset-ov-"));

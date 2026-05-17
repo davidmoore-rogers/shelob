@@ -15,19 +15,40 @@
     <main class="main">
       <div class="page-header">
         <h2>Integrations</h2>
-        <div class="page-header-actions">
+        <div class="page-header-actions" id="page-header-actions">
           <button class="btn btn-primary" id="btn-add-integration">+ Add Integration</button>
         </div>
       </div>
 
-      <div id="integrations-list">
-        <p class="empty-state">Loading...</p>
+      <div class="page-tabs" id="integration-tabs">
+        <button class="page-tab active" data-tab="integrations">Integrations</button>
+        <button class="page-tab" data-tab="agents">Polaris Agents</button>
+      </div>
+
+      <div class="page-tab-panel active" id="tab-integrations">
+        <div id="integrations-list">
+          <p class="empty-state">Loading...</p>
+        </div>
+      </div>
+      <div class="page-tab-panel" id="tab-agents">
+        <div class="settings-card">
+          <h4>Polaris Agent</h4>
+          <p style="font-size:0.82rem;color:var(--color-text-secondary);margin-bottom:1rem">
+            Build the agent binaries that operators install on remote hosts via Install Agent on the asset details modal.
+            Binaries are stamped with the version from <code>agent/VERSION</code> and served at
+            <code>/api/v1/agents/binary/&lt;filename&gt;</code> to the install scripts.
+          </p>
+          <div id="agent-build-body">
+            <p class="empty-state" style="padding:1rem 0">Loading...</p>
+          </div>
+        </div>
       </div>
     </main>
   </div>
 
   <script src="/js/api.js"></script>
   <script src="/js/app.js"></script>
+  <script src="/js/agent-build.js"></script>
   <script src="/js/integrations.js"></script>
 </body>
 </html>
