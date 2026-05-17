@@ -2915,6 +2915,41 @@ function _mfgEditTypeFor(key, fallback) {
   if (key in _mfgEditTypeSelections) return _mfgEditTypeSelections[key];
   return fallback || "scalar";
 }
+
+// Per-widget edit state. Key shape: "widget:" + widgetId. Edit mode opens
+// when the operator clicks Edit on a widget card; cleared on save / cancel.
+var _mfgWidgetEdit = {};
+// Per-profile add-widget state. Key shape: profileId. true = the "+ Add
+// widget" card below the list is expanded into a form.
+var _mfgAddingWidget = {};
+// Widget-edit shadow stores (mirror the metric-row shadow pattern). Same
+// key-shape convention so the dropdown change handlers can re-render the
+// dependent pickers (Symbol depends on MIB + Type; the gauge/line/table
+// display options block depends on widgetType). Cleared on save / cancel.
+//   _mfgWidgetEditMib[key]        — currently selected MIB (split via splitMibSelection on save)
+//   _mfgWidgetEditType[key]       — scalar | table (drives Symbol picker)
+//   _mfgWidgetEditWidgetType[key] — gauge | line | table (drives displayOptions sub-editor)
+// Key shape: "widget:" + widgetId | "new-widget:" + profileId
+var _mfgWidgetEditMib        = {};
+var _mfgWidgetEditType       = {};
+var _mfgWidgetEditWidgetType = {};
+function _mfgWidgetMibFor(key, fallback) {
+  if (key in _mfgWidgetEditMib) return _mfgWidgetEditMib[key];
+  return fallback || "";
+}
+function _mfgWidgetTypeFor(key, fallback) {
+  if (key in _mfgWidgetEditType) return _mfgWidgetEditType[key];
+  return fallback || "scalar";
+}
+function _mfgWidgetWidgetTypeFor(key, fallback) {
+  if (key in _mfgWidgetEditWidgetType) return _mfgWidgetEditWidgetType[key];
+  return fallback || "gauge";
+}
+function _mfgWidgetClearShadow(key) {
+  delete _mfgWidgetEditMib[key];
+  delete _mfgWidgetEditType[key];
+  delete _mfgWidgetEditWidgetType[key];
+}
 var _MEMORY_SHAPE_LABELS = {
   percent:           "Percent (single OID)",
   bytes_used_total:  "Bytes (used + total)",
@@ -5754,10 +5789,264 @@ function renderProfileDetail(detail) {
     }
   });
   html += '</tbody></table>';
-  html += '<div style="font-size:0.74rem;color:var(--color-text-tertiary)">Widgets: ' + detail.widgets.length +
-    ' &middot; Widget editor lands in the Custom MIB tab (Slice 7).</div>';
+  // ─── Custom widgets section ──────────────────────────────────────────
+  // Each widget here renders on the asset details Custom MIB tab for every
+  // asset whose alias-normalized manufacturer matches this profile (and
+  // whose model satisfies the optional per-widget gate). Polaris probes
+  // each widget on the telemetry cadence; the asset tab reads the latest
+  // sample from AssetCustomWidgetSample.
+  html += renderWidgetSection(detail);
   html += '</div>';
   return html;
+}
+
+// ─── Widget section + per-widget card renderers ────────────────────────
+// Cards layout — one per widget — instead of a wide table. The metric
+// table already eats most of the horizontal real estate; cramming 8-10
+// fields per row here would force wrapping that breaks scan-ability.
+// Each card has a compact view mode and an inline-expanded edit mode.
+
+var WIDGET_TYPE_LABELS = { gauge: "Gauge", line: "Line chart", table: "Table" };
+var WIDGET_TYPE_ORDER  = ["gauge", "line", "table"];
+
+function renderWidgetSection(detail) {
+  var widgets = (detail.widgets || []).slice().sort(function (a, b) {
+    if ((a.order || 0) !== (b.order || 0)) return (a.order || 0) - (b.order || 0);
+    return (a.name || "").localeCompare(b.name || "");
+  });
+  var html = '<div style="margin-top:18px">' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
+      '<h5 style="margin:0;font-size:0.9rem;font-weight:600">Custom widgets</h5>' +
+      (_mfgAddingWidget[detail.id]
+        ? '<span style="font-size:0.78rem;color:var(--color-text-tertiary)">New widget…</span>'
+        : '<button class="btn btn-sm mfg-widget-add-toggle" data-profile-id="' + escapeHtml(detail.id) + '">+ Add widget</button>') +
+    '</div>' +
+    '<div style="font-size:0.78rem;color:var(--color-text-secondary);margin-bottom:8px">' +
+      'Widgets render on the asset details <b>Custom MIB</b> tab for every asset whose manufacturer matches ' +
+      'this profile. Each widget walks its symbol against the chosen MIB on the telemetry cadence.' +
+    '</div>';
+  if (widgets.length === 0 && !_mfgAddingWidget[detail.id]) {
+    html += '<p class="empty-state" style="padding:0.5rem 0;margin:0;font-size:0.82rem">No widgets defined yet.</p>';
+  }
+  widgets.forEach(function (w) {
+    html += renderWidgetCard(detail.id, w, detail.manufacturer);
+  });
+  if (_mfgAddingWidget[detail.id]) {
+    html += renderAddWidgetCard(detail.id, detail.manufacturer);
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderWidgetCard(profileId, w, manufacturer) {
+  if (_mfgWidgetEdit[w.id]) return renderWidgetEditCard(profileId, w, manufacturer);
+  // View mode — single compact card.
+  var mibLabel = w.mibId
+    ? _mfgLookupMibLabel(w.mibId)
+    : '<span style="color:var(--color-text-tertiary);font-style:italic">(no MIB)</span>';
+  var modelLabel = w.modelPattern
+    ? '<code style="font-size:0.78rem">' + escapeHtml(w.modelPattern) + '</code>'
+    : '<span style="color:var(--color-text-tertiary)">any model</span>';
+  var transformLabel_ = w.transform ? escapeHtml(transformLabel(w.transform)) : "—";
+  var optsLabel = _widgetOptionsSummary(w);
+  return '<div class="mfg-widget-card" data-profile-id="' + escapeHtml(profileId) + '" data-widget-id="' + escapeHtml(w.id) + '" style="border:1px solid var(--color-border);border-radius:6px;padding:8px 10px;margin-bottom:6px;background:var(--color-bg-primary)">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+      '<span style="font-weight:600">' + escapeHtml(w.name) + '</span>' +
+      '<span style="font-size:0.72rem;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.04em">' + escapeHtml(WIDGET_TYPE_LABELS[w.widgetType] || w.widgetType) + '</span>' +
+      '<span style="flex:1"></span>' +
+      '<button class="btn btn-sm mfg-widget-edit">Edit</button>' +
+      ' <button class="btn btn-sm btn-danger mfg-widget-del">Del</button>' +
+    '</div>' +
+    '<div style="font-size:0.78rem;color:var(--color-text-secondary);display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:4px 12px">' +
+      '<span><b>MIB:</b> ' + mibLabel + '</span>' +
+      '<span><b>Symbol:</b> <code style="font-size:0.78rem">' + escapeHtml(w.symbol) + '</code> <span style="color:var(--color-text-tertiary)">(' + escapeHtml(w.type) + ')</span></span>' +
+      '<span><b>Model:</b> ' + modelLabel + '</span>' +
+      '<span><b>Transform:</b> ' + transformLabel_ + '</span>' +
+      (optsLabel ? '<span style="grid-column:1/-1"><b>Display:</b> ' + optsLabel + '</span>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+function renderWidgetEditCard(profileId, w, manufacturer) {
+  var key = "widget:" + w.id;
+  var storedMib = _mfgWidgetMibFor(key, joinMibSelection(w.mibId, null));
+  var storedType = _mfgWidgetTypeFor(key, w.type);
+  var storedWidgetType = _mfgWidgetWidgetTypeFor(key, w.widgetType);
+  return _renderWidgetFormCard({
+    profileId:        profileId,
+    formClass:        "mfg-widget-edit-card",
+    dataAttrs:        ' data-widget-id="' + escapeHtml(w.id) + '"',
+    title:            "Edit widget",
+    nameValue:        w.name,
+    modelValue:       w.modelPattern || "",
+    orderValue:       (w.order != null) ? w.order : 0,
+    mibSelected:      storedMib,
+    typeSelected:     storedType,
+    widgetTypeSelected: storedWidgetType,
+    symbolValue:      w.symbol || "",
+    transformValue:   w.transform,
+    displayOptions:   w.displayOptions || {},
+    manufacturer:     manufacturer,
+    saveBtnClass:     "mfg-widget-save",
+    cancelBtnClass:   "mfg-widget-cancel",
+    saveBtnLabel:     "Save",
+  });
+}
+
+function renderAddWidgetCard(profileId, manufacturer) {
+  var key = "new-widget:" + profileId;
+  var storedMib = _mfgWidgetMibFor(key, "");
+  var storedType = _mfgWidgetTypeFor(key, "scalar");
+  var storedWidgetType = _mfgWidgetWidgetTypeFor(key, "gauge");
+  return _renderWidgetFormCard({
+    profileId:        profileId,
+    formClass:        "mfg-widget-add-card",
+    dataAttrs:        '',
+    title:            "New widget",
+    nameValue:        "",
+    modelValue:       "",
+    orderValue:       0,
+    mibSelected:      storedMib,
+    typeSelected:     storedType,
+    widgetTypeSelected: storedWidgetType,
+    symbolValue:      "",
+    transformValue:   null,
+    displayOptions:   {},
+    manufacturer:     manufacturer,
+    saveBtnClass:     "mfg-widget-add-save",
+    cancelBtnClass:   "mfg-widget-add-cancel",
+    saveBtnLabel:     "Add widget",
+  });
+}
+
+// Shared form renderer for both Edit and Add. Field IDs/classes are the
+// same in both modes — the save handler dispatches off the form's outer
+// class (mfg-widget-edit-card vs mfg-widget-add-card) instead of unique
+// per-field selectors.
+function _renderWidgetFormCard(o) {
+  var html = '<div class="' + o.formClass + '" data-profile-id="' + escapeHtml(o.profileId) + '"' + o.dataAttrs + ' style="border:1px solid var(--color-primary,#4fc3f7);border-radius:6px;padding:10px 12px;margin-bottom:6px;background:var(--color-bg-secondary,rgba(127,127,127,0.04))">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+      '<span style="font-weight:600;font-size:0.85rem">' + escapeHtml(o.title) + '</span>' +
+      '<span style="flex:1"></span>' +
+      '<button class="btn btn-sm btn-primary ' + o.saveBtnClass + '">' + escapeHtml(o.saveBtnLabel) + '</button>' +
+      ' <button class="btn btn-sm ' + o.cancelBtnClass + '">Cancel</button>' +
+    '</div>' +
+    // Field grid — name + widget-type + MIB + symbol-type + symbol + transform + model + order
+    '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px">' +
+      _widgetFormField("Name *",
+        '<input type="text" class="mfg-widget-name" value="' + escapeHtml(o.nameValue) + '" placeholder="e.g. Connected wireless clients" style="width:100%;font-size:0.82rem">') +
+      _widgetFormField("Widget type",
+        _widgetTypeSelectHTML("mfg-widget-widgettype", o.widgetTypeSelected)) +
+      _widgetFormField("MIB *",
+        renderMibSelect(o.mibSelected, "mfg-widget-mib", o.manufacturer, true)) +
+      _widgetFormField("Symbol type",
+        renderTypeSelect(o.typeSelected, "mfg-widget-type")) +
+      _widgetFormField("Symbol *",
+        renderSymbolPicker(o.symbolValue, o.mibSelected, "mfg-widget-symbol", o.typeSelected)) +
+      _widgetFormField("Transform",
+        renderTransformSelect(o.transformValue, "mfg-widget-transform")) +
+      _widgetFormField("Model regex (optional)",
+        '<input type="text" class="mfg-widget-model" value="' + escapeHtml(o.modelValue) + '" placeholder="e.g. FortiAP-231F" style="width:100%;font-size:0.82rem">') +
+      _widgetFormField("Order",
+        '<input type="number" class="mfg-widget-order" value="' + escapeHtml(String(o.orderValue)) + '" min="0" step="1" style="width:100%;font-size:0.82rem">') +
+    '</div>' +
+    '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--color-border)">' +
+      '<div style="font-size:0.78rem;font-weight:600;margin-bottom:6px">Display options</div>' +
+      _widgetDisplayOptionsForm(o.widgetTypeSelected, o.displayOptions) +
+    '</div>' +
+  '</div>';
+  return html;
+}
+
+function _widgetFormField(label, controlHTML) {
+  return '<label style="display:flex;flex-direction:column;gap:2px;font-size:0.74rem;color:var(--color-text-secondary)">' +
+    '<span>' + escapeHtml(label) + '</span>' +
+    controlHTML +
+  '</label>';
+}
+
+function _widgetTypeSelectHTML(cls, current) {
+  var v = current || "gauge";
+  var html = '<select class="' + cls + '" style="width:100%;font-size:0.82rem">';
+  WIDGET_TYPE_ORDER.forEach(function (k) {
+    html += '<option value="' + k + '"' + (v === k ? " selected" : "") + '>' + escapeHtml(WIDGET_TYPE_LABELS[k]) + '</option>';
+  });
+  html += '</select>';
+  return html;
+}
+
+// Per-widgetType displayOptions sub-form. Fields match what the asset
+// Custom MIB tab consumes today:
+//   gauge → min, max, unit, warningAt (warningAt drives the upcoming
+//           threshold band in _renderCustomWidgetGauge)
+//   line  → unit
+//   table → no operator-tunable options; the renderer derives columns
+//           from the latest sample.
+function _widgetDisplayOptionsForm(widgetType, opts) {
+  var o = opts || {};
+  function num(v) { return (v === null || v === undefined) ? "" : String(v); }
+  if (widgetType === "gauge") {
+    return '<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px 10px">' +
+      _widgetFormField("Min", '<input type="number" class="mfg-widget-opt-min" value="' + escapeHtml(num(o.min)) + '" step="any" style="width:100%;font-size:0.82rem">') +
+      _widgetFormField("Max", '<input type="number" class="mfg-widget-opt-max" value="' + escapeHtml(num(o.max)) + '" step="any" style="width:100%;font-size:0.82rem">') +
+      _widgetFormField("Unit", '<input type="text"   class="mfg-widget-opt-unit" value="' + escapeHtml(o.unit || "") + '" placeholder="e.g. % or clients" style="width:100%;font-size:0.82rem">') +
+      _widgetFormField("Warning at", '<input type="number" class="mfg-widget-opt-warning" value="' + escapeHtml(num(o.warningAt)) + '" step="any" style="width:100%;font-size:0.82rem">') +
+    '</div>';
+  }
+  if (widgetType === "line") {
+    return '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 10px">' +
+      _widgetFormField("Unit", '<input type="text" class="mfg-widget-opt-unit" value="' + escapeHtml(o.unit || "") + '" placeholder="e.g. bps or %" style="width:100%;font-size:0.82rem">') +
+    '</div>';
+  }
+  // table — no editable options
+  return '<div style="font-size:0.78rem;color:var(--color-text-tertiary)">Table widgets render every column from the latest sample. No display options to configure.</div>';
+}
+
+// Compact one-line summary of displayOptions for the view card.
+function _widgetOptionsSummary(w) {
+  var o = w.displayOptions || {};
+  var parts = [];
+  if (w.widgetType === "gauge") {
+    if (o.min != null) parts.push("min " + o.min);
+    if (o.max != null) parts.push("max " + o.max);
+    if (o.unit)        parts.push("unit " + o.unit);
+    if (o.warningAt != null) parts.push("warn " + o.warningAt);
+  } else if (w.widgetType === "line") {
+    if (o.unit) parts.push("unit " + o.unit);
+  }
+  return parts.length ? escapeHtml(parts.join(" · ")) : "";
+}
+
+// Read displayOptions back from a form scope (an edit card or add card).
+// Empty / non-numeric values are dropped so the stored JSON stays tight.
+function _readWidgetDisplayOptions(scope, widgetType) {
+  function numOrNull(input) {
+    if (!input) return null;
+    var s = (input.value || "").trim();
+    if (s === "") return null;
+    var n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  function strOrNull(input) {
+    if (!input) return null;
+    var s = (input.value || "").trim();
+    return s === "" ? null : s;
+  }
+  var out = {};
+  if (widgetType === "gauge") {
+    var min  = numOrNull(scope.querySelector(".mfg-widget-opt-min"));
+    var max  = numOrNull(scope.querySelector(".mfg-widget-opt-max"));
+    var unit = strOrNull(scope.querySelector(".mfg-widget-opt-unit"));
+    var warn = numOrNull(scope.querySelector(".mfg-widget-opt-warning"));
+    if (min != null)  out.min = min;
+    if (max != null)  out.max = max;
+    if (unit)         out.unit = unit;
+    if (warn != null) out.warningAt = warn;
+  } else if (widgetType === "line") {
+    var unitL = strOrNull(scope.querySelector(".mfg-widget-opt-unit"));
+    if (unitL) out.unit = unitL;
+  }
+  return out;
 }
 
 function renderOverrideRow(profileId, metricKey, o, manufacturer) {
@@ -6148,6 +6437,56 @@ function wireManufacturerProfileControls() {
 
     var cancelOverBtn = target.closest(".mfg-override-cancel");
     if (cancelOverBtn) return cancelOverrideEdit(cancelOverBtn.closest("tr"));
+
+    // ─── Widget click handlers ─────────────────────────────────────────
+    var addWidgetToggleBtn = target.closest(".mfg-widget-add-toggle");
+    if (addWidgetToggleBtn) {
+      var pidAdd = addWidgetToggleBtn.getAttribute("data-profile-id");
+      _mfgAddingWidget[pidAdd] = true;
+      renderIdentificationTab();
+      return;
+    }
+    var widgetEditBtn = target.closest(".mfg-widget-edit");
+    if (widgetEditBtn) {
+      var cardEdit = widgetEditBtn.closest(".mfg-widget-card");
+      if (cardEdit) {
+        _mfgWidgetEdit[cardEdit.getAttribute("data-widget-id")] = true;
+        renderIdentificationTab();
+      }
+      return;
+    }
+    var widgetSaveBtn = target.closest(".mfg-widget-save");
+    if (widgetSaveBtn) return saveWidgetEdit(widgetSaveBtn.closest(".mfg-widget-edit-card"));
+    var widgetCancelBtn = target.closest(".mfg-widget-cancel");
+    if (widgetCancelBtn) {
+      var cardC = widgetCancelBtn.closest(".mfg-widget-edit-card");
+      if (cardC) {
+        var wid = cardC.getAttribute("data-widget-id");
+        delete _mfgWidgetEdit[wid];
+        _mfgWidgetClearShadow("widget:" + wid);
+        renderIdentificationTab();
+      }
+      return;
+    }
+    var widgetAddSaveBtn = target.closest(".mfg-widget-add-save");
+    if (widgetAddSaveBtn) return saveNewWidget(widgetAddSaveBtn.closest(".mfg-widget-add-card"));
+    var widgetAddCancelBtn = target.closest(".mfg-widget-add-cancel");
+    if (widgetAddCancelBtn) {
+      var cardAC = widgetAddCancelBtn.closest(".mfg-widget-add-card");
+      if (cardAC) {
+        var pidAC = cardAC.getAttribute("data-profile-id");
+        delete _mfgAddingWidget[pidAC];
+        _mfgWidgetClearShadow("new-widget:" + pidAC);
+        renderIdentificationTab();
+      }
+      return;
+    }
+    var widgetDelBtn = target.closest(".mfg-widget-del");
+    if (widgetDelBtn) {
+      var cardDel = widgetDelBtn.closest(".mfg-widget-card");
+      if (cardDel) return deleteWidget(cardDel.getAttribute("data-profile-id"), cardDel.getAttribute("data-widget-id"));
+      return;
+    }
   });
 
   // The chained MIB → Symbol pickers need a `change` listener separate
@@ -6236,7 +6575,47 @@ function wireManufacturerProfileControls() {
       renderIdentificationTab();
       return;
     }
+    // ─── Widget MIB / Type / WidgetType selects ───────────────────────
+    // The widget card hosts THREE chained selects (MIB → symbol Type →
+    // Symbol picker; plus a parallel WidgetType select that drives the
+    // displayOptions sub-form). They share these class names with the
+    // metric-row controls, so first resolve which card they live in
+    // before falling through to the metric handlers above… actually
+    // the widget-card classes are unique (mfg-widget-mib etc.) so this
+    // is straight-through.
+    if (target.classList.contains("mfg-widget-mib")) {
+      var cardWM = target.closest(".mfg-widget-edit-card, .mfg-widget-add-card");
+      if (!cardWM) return;
+      var keyWM = _widgetCardKey(cardWM);
+      _mfgWidgetEditMib[keyWM] = target.value || "";
+      if (target.value) _ensureMibSymbols(target.value);
+      renderIdentificationTab();
+      return;
+    }
+    if (target.classList.contains("mfg-widget-type")) {
+      var cardWT = target.closest(".mfg-widget-edit-card, .mfg-widget-add-card");
+      if (!cardWT) return;
+      _mfgWidgetEditType[_widgetCardKey(cardWT)] = target.value;
+      renderIdentificationTab();
+      return;
+    }
+    if (target.classList.contains("mfg-widget-widgettype")) {
+      var cardWWT = target.closest(".mfg-widget-edit-card, .mfg-widget-add-card");
+      if (!cardWWT) return;
+      _mfgWidgetEditWidgetType[_widgetCardKey(cardWWT)] = target.value;
+      renderIdentificationTab();
+      return;
+    }
   });
+}
+
+// Derive the widget-shadow-store key from an edit or add card element.
+function _widgetCardKey(cardEl) {
+  if (!cardEl) return "";
+  if (cardEl.classList.contains("mfg-widget-edit-card")) {
+    return "widget:" + cardEl.getAttribute("data-widget-id");
+  }
+  return "new-widget:" + cardEl.getAttribute("data-profile-id");
 }
 
 async function addManufacturerProfile() {
@@ -6560,4 +6939,119 @@ function removeOverrideFromDetail(profileId, metricKey, overrideId) {
   m.overrides = (m.overrides || []).filter(function (o) { return o.id !== overrideId; });
   var summary = _mfgProfiles.find(function (p) { return p.id === profileId; });
   if (summary && summary.overrideCount > 0) summary.overrideCount -= 1;
+}
+
+// ─── Widget mutations ─────────────────────────────────────────────────
+
+// Read the shared widget form (Add or Edit card) into a payload the
+// backend route accepts. Returns null + toasts on validation failure.
+function _readWidgetFormPayload(scope) {
+  if (!scope) return null;
+  var name           = (scope.querySelector(".mfg-widget-name")        || {}).value || "";
+  var mibSel         = (scope.querySelector(".mfg-widget-mib")         || {}).value || "";
+  var typeSel        = (scope.querySelector(".mfg-widget-type")        || {}).value || "scalar";
+  var widgetType     = (scope.querySelector(".mfg-widget-widgettype")  || {}).value || "gauge";
+  var symbol         = (scope.querySelector(".mfg-widget-symbol")      || {}).value || "";
+  var modelPattern   = (scope.querySelector(".mfg-widget-model")       || {}).value || "";
+  var orderRaw       = (scope.querySelector(".mfg-widget-order")       || {}).value || "0";
+  var transform      = (scope.querySelector(".mfg-widget-transform")   || {}).value || "";
+
+  if (!name.trim())   { showToast("Widget name is required", "error");                 return null; }
+  // Backend requires a real MibFile UUID — std:* keys aren't acceptable
+  // because the asset-side collector needs an enumerable symbol directory
+  // to walk against on the device.
+  var mibSplit = splitMibSelection(mibSel);
+  if (!mibSplit.mibId) { showToast("Pick an uploaded MIB (Standard MIBs aren't supported for widgets)", "error"); return null; }
+  if (!symbol.trim()) { showToast("Symbol is required", "error");                       return null; }
+
+  var displayOptions = _readWidgetDisplayOptions(scope, widgetType);
+  return {
+    name:           name.trim(),
+    symbol:         symbol.trim(),
+    mibId:          mibSplit.mibId,
+    type:           typeSel,
+    widgetType:     widgetType,
+    transform:      transform || null,
+    displayOptions: displayOptions,
+    order:          Number(orderRaw) || 0,
+    modelPattern:   modelPattern.trim() ? modelPattern.trim() : null,
+  };
+}
+
+async function saveNewWidget(scope) {
+  if (!scope) return;
+  var profileId = scope.getAttribute("data-profile-id");
+  var payload = _readWidgetFormPayload(scope);
+  if (!payload) return;
+  try {
+    var resp = await api.serverSettings.createProfileWidget(profileId, payload);
+    if (resp && resp.widget) appendWidgetToDetail(profileId, resp.widget);
+    delete _mfgAddingWidget[profileId];
+    _mfgWidgetClearShadow("new-widget:" + profileId);
+    showToast("Widget added");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Add widget failed", "error");
+  }
+}
+
+async function saveWidgetEdit(scope) {
+  if (!scope) return;
+  var profileId = scope.getAttribute("data-profile-id");
+  var widgetId  = scope.getAttribute("data-widget-id");
+  var payload   = _readWidgetFormPayload(scope);
+  if (!payload) return;
+  try {
+    var resp = await api.serverSettings.updateProfileWidget(profileId, widgetId, payload);
+    if (resp && resp.widget) replaceWidgetInDetail(profileId, resp.widget);
+    delete _mfgWidgetEdit[widgetId];
+    _mfgWidgetClearShadow("widget:" + widgetId);
+    showToast("Saved");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Save failed", "error");
+  }
+}
+
+async function deleteWidget(profileId, widgetId) {
+  if (!profileId || !widgetId) return;
+  var d = _mfgProfileDetail[profileId];
+  var w = d && (d.widgets || []).find(function (x) { return x.id === widgetId; });
+  var name = w ? w.name : "this widget";
+  var ok = await showConfirm('Delete the "' + name + '" widget?', "Delete");
+  if (!ok) return;
+  try {
+    await api.serverSettings.deleteProfileWidget(profileId, widgetId);
+    removeWidgetFromDetail(profileId, widgetId);
+    delete _mfgWidgetEdit[widgetId];
+    _mfgWidgetClearShadow("widget:" + widgetId);
+    showToast("Widget deleted");
+    renderIdentificationTab();
+  } catch (err) {
+    showToast(err.message || "Delete failed", "error");
+  }
+}
+
+function appendWidgetToDetail(profileId, widget) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d) return;
+  d.widgets = (d.widgets || []).concat([widget]);
+  var summary = _mfgProfiles.find(function (p) { return p.id === profileId; });
+  if (summary) summary.widgetCount = (summary.widgetCount || 0) + 1;
+}
+
+function replaceWidgetInDetail(profileId, widget) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d || !d.widgets) return;
+  for (var i = 0; i < d.widgets.length; i++) {
+    if (d.widgets[i].id === widget.id) { d.widgets[i] = widget; return; }
+  }
+}
+
+function removeWidgetFromDetail(profileId, widgetId) {
+  var d = _mfgProfileDetail[profileId];
+  if (!d || !d.widgets) return;
+  d.widgets = d.widgets.filter(function (w) { return w.id !== widgetId; });
+  var summary = _mfgProfiles.find(function (p) { return p.id === profileId; });
+  if (summary && summary.widgetCount > 0) summary.widgetCount -= 1;
 }
