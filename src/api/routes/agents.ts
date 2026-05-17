@@ -45,6 +45,7 @@ import {
   enqueueInterfaceSamples,
   enqueueStorageSamples,
 } from "../../services/sampleWriteBuffer.js";
+import { reconcileMacAddresses } from "../../utils/macAddresses.js";
 import { logEvent } from "./events.js";
 import { logger } from "../../utils/logger.js";
 
@@ -519,7 +520,7 @@ agentsRouter.post("/system-info", async (req, res, next) => {
       where:  { id: assetId },
       select: {
         hostname: true, serialNumber: true, manufacturer: true, model: true,
-        os: true, osVersion: true, learnedLocation: true,
+        os: true, osVersion: true, learnedLocation: true, macAddress: true,
       },
     });
     if (current) {
@@ -533,6 +534,49 @@ agentsRouter.post("/system-info", async (req, res, next) => {
           diff[f] = next as string;
         }
       }
+
+      // MAC isn't owned by projectAssetFromSources (see CLAUDE.md "Fields the
+      // projection does NOT own") — every discovery path writes it inline.
+      // Mirror that here: normalize the agent's primaryMac to colon-upper,
+      // merge into the AssetMacAddress side table preserving entries from
+      // other sources, and bump Asset.macAddress to the freshest MAC.
+      const agentMac = formatMacColonUpper(body.primaryMac);
+      if (agentMac) {
+        const existingRows = await prisma.assetMacAddress.findMany({
+          where:  { assetId },
+          select: { mac: true, source: true, device: true, subnetCidr: true, subnetName: true, lastSeen: true },
+        });
+        const nowIso = now.toISOString();
+        const merged = existingRows.map((r) => ({
+          mac:        r.mac,
+          source:     r.source,
+          device:     r.device     ?? undefined,
+          subnetCidr: r.subnetCidr ?? undefined,
+          subnetName: r.subnetName ?? undefined,
+          lastSeen:   r.lastSeen.toISOString(),
+        }));
+        const hit = merged.find((m) => m.mac === agentMac);
+        if (hit) {
+          hit.lastSeen = nowIso;
+          hit.source   = "polaris-agent";
+        } else {
+          merged.push({
+            mac:        agentMac,
+            source:     "polaris-agent",
+            device:     undefined,
+            subnetCidr: undefined,
+            subnetName: undefined,
+            lastSeen:   nowIso,
+          });
+        }
+        merged.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+        await reconcileMacAddresses(assetId, merged);
+        const primary = merged[0]?.mac ?? null;
+        if (primary && current.macAddress !== primary) {
+          diff.macAddress = primary;
+        }
+      }
+
       if (Object.keys(diff).length > 0) {
         await prisma.asset.update({ where: { id: assetId }, data: diff as any });
       }
@@ -552,6 +596,16 @@ agentsRouter.post("/system-info", async (req, res, next) => {
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────
+
+// Normalize a MAC string to colon-uppercase (AA:BB:CC:DD:EE:FF) — the
+// stored format on AssetMacAddress.mac. Returns "" when the input isn't a
+// 12-hex-digit MAC after stripping separators.
+function formatMacColonUpper(mac: unknown): string {
+  if (!mac) return "";
+  const hex = String(mac).replace(/[^0-9A-Fa-f]/g, "").toUpperCase();
+  if (hex.length !== 12) return "";
+  return hex.match(/.{2}/g)!.join(":");
+}
 
 async function computeConfigEtag(assetId: string): Promise<string> {
   const asset = await prisma.asset.findUnique({
