@@ -229,6 +229,14 @@ window.PolarisTheme = {
       body = document.getElementById("app-body");
     }
 
+    // Page-aware search ordering: snapshot every non-search route so
+    // when the operator starts typing (which replace-navigates to
+    // /search) the result renderer still knows which page they came
+    // from and can hoist the matching section to the top.
+    if (route && route.name !== "search" && window.PolarisSearch && PolarisSearch.setOriginRoute) {
+      PolarisSearch.setOriginRoute(route.name, route.parts);
+    }
+
     // Top-level tab?
     var tabSpec = PolarisTabs.byId(route.name);
     if (tabSpec) {

@@ -24,7 +24,7 @@
   var _mounts = Object.create(null);
   function mountState(id) {
     if (!_mounts[id]) {
-      _mounts[id] = { subnet: null, ips: [], page: 1, totalIps: 0, loading: false, ipv6: false };
+      _mounts[id] = { subnet: null, ips: [], page: 1, totalIps: 0, loading: false, ipv6: false, expandedIp: null };
     }
     return _mounts[id];
   }
@@ -183,49 +183,164 @@
     renderIpList(st, user);
   }
 
+  // Reserved rows tap-expand inline (same pattern as the Reservations
+  // tab) so the operator can see full reservation details and act on
+  // them — Edit / Free / Reserve-to-gate / Open asset — without having
+  // to leave the Networks page. Free rows keep the original behavior:
+  // tap goes straight to the Reserve sheet (creating a reservation is
+  // the only thing you can do with a free row, so an extra expand
+  // click would just be in the way).
   function renderIpList(st, user) {
     var host = document.getElementById("subnet-ip-list");
     if (!host) return;
+    var subnetId = (PolarisRouter.current().parts || [])[0] || "";
 
     var html = "";
     st.ips.forEach(function (ip, idx) {
       var r = ip.reservation;
       var reserved = !!r;
+      var expanded = reserved && st.expandedIp === ip.address;
       var iconHref = reserved ? "#i-bookmark" : "#i-add";
       var leadCls  = reserved ? "tonal" : "";
       var headlineMain = '<span class="mono">' + escapeHtml(ip.address) + '</span>';
+
       var sub = "";
       if (reserved) {
+        // Same subtitle ordering as the Reservations tab: MAC first
+        // (because it's the most discriminating identifier on a DHCP
+        // network), hostname second.
         var bits = [];
-        if (r.hostname) bits.push(escapeHtml(r.hostname));
-        if (r.owner) bits.push(escapeHtml(r.owner));
         if (r.macAddress) bits.push('<span class="mono">' + escapeHtml(r.macAddress) + '</span>');
-        if (r.sourceType && r.sourceType !== "manual") bits.push(escapeHtml(r.sourceType.replace(/_/g, " ")));
+        if (r.hostname) bits.push(escapeHtml(r.hostname));
+        if (bits.length === 0) {
+          if (r.owner) bits.push(escapeHtml(r.owner));
+          else if (r.sourceType && r.sourceType !== "manual") bits.push(escapeHtml(r.sourceType.replace(/_/g, " ")));
+        }
         sub = bits.join(" · ");
       } else {
         sub = ip.type === "host" ? "Free" : escapeHtml(ip.type);
       }
+
+      var trailing = reserved
+        ? '<div class="trailing"><svg viewBox="0 0 24 24"><use href="' + (expanded ? "#i-chev-down" : "#i-chev-right") + '"/></svg></div>'
+        : '';
+
       html += ''
-        + '<button class="list-item' + (sub ? " two-line" : "") + '" data-ip="' + escapeHtml(ip.address) + '" data-reserved="' + (reserved ? "1" : "0") + '" data-asset="' + escapeHtml(ip.assetId || "") + '" data-type="' + escapeHtml(ip.type) + '">'
+        + '<button class="list-item' + (sub ? " two-line" : "") + '" data-ip="' + escapeHtml(ip.address) + '" data-reserved="' + (reserved ? "1" : "0") + '" data-asset="' + escapeHtml(ip.assetId || "") + '" data-type="' + escapeHtml(ip.type) + '"' + (expanded ? ' aria-expanded="true"' : '') + '>'
         + '  <span class="leading ' + leadCls + '"><svg viewBox="0 0 24 24"><use href="' + iconHref + '"/></svg></span>'
         + '  <div class="content">'
         + '    <div class="headline">' + headlineMain + '</div>'
         + (sub ? '    <div class="supporting">' + sub + '</div>' : '')
         + '  </div>'
+        +    trailing
         + '</button>'
+        + (expanded ? renderIpExpandedPanel(ip, st, subnetId, user) : '')
         + (idx < st.ips.length - 1 ? '<div class="list-divider"></div>' : '');
     });
     host.innerHTML = html;
+
+    wireIpRowHandlers(host, st, subnetId, user);
+  }
+
+  function renderIpExpandedPanel(ip, st, subnetId, user) {
+    var r = ip.reservation;
+    if (!r) return '';
+    var pushEligible = !!(st.subnet && st.subnet.pushEligible);
+
+    // Row carries the subnetId (implied by the page) onto the
+    // reservation object so the shared action helpers can find it.
+    var rowForActions = Object.assign({}, r, { ipAddress: ip.address, subnetId: subnetId, pushEligible: pushEligible });
+
+    var detailRows = [];
+    if (r.hostname) detailRows.push(ipDetailRow("Hostname", escapeHtml(r.hostname)));
+    if (r.owner)    detailRows.push(ipDetailRow("Owner", escapeHtml(r.owner)));
+    if (r.sourceType) detailRows.push(ipDetailRow("Source", escapeHtml(String(r.sourceType).replace(/_/g, " "))));
+    if (r.notes)    detailRows.push(ipDetailRow("Notes", escapeHtml(r.notes)));
+    if (r.macAddress) detailRows.push(ipDetailRow("MAC", '<span class="mono">' + escapeHtml(r.macAddress) + '</span>'));
+    if (r.expiresAt) detailRows.push(ipDetailRow("Expires", escapeHtml(_formatDateShort(r.expiresAt))));
+    if (r.createdBy) detailRows.push(ipDetailRow("Created by", escapeHtml(r.createdBy)));
+
+    var actions = window.PolarisReservationActions || {};
+    var canCreate = actions.canCreate ? actions.canCreate(user) : false;
+    var canModify = actions.canModify ? actions.canModify(user, rowForActions) : false;
+
+    var buttons = [];
+    var isLease = r.sourceType === "dhcp_lease";
+    if (isLease && canCreate) {
+      var reserveCls = pushEligible ? "btn-success" : "btn-filled";
+      var reserveTitle = pushEligible ? "Reserve on Gate" : "Reserve in Polaris";
+      buttons.push('<button class="btn ' + reserveCls + '" data-act="reserve" data-ip="' + escapeHtml(ip.address) + '" title="' + reserveTitle + '">Reserve</button>');
+    }
+    if (canModify) {
+      buttons.push('<button class="btn btn-tonal" data-act="edit" data-ip="' + escapeHtml(ip.address) + '">Edit</button>');
+      var freeLabel = isLease ? "Revoke" : "Release";
+      buttons.push('<button class="btn btn-error" data-act="free" data-ip="' + escapeHtml(ip.address) + '">' + freeLabel + '</button>');
+    }
+    if (ip.assetId) {
+      buttons.push('<button class="btn btn-text" data-act="open-asset" data-asset="' + escapeHtml(ip.assetId) + '">Open asset</button>');
+    }
+
+    var btnBar = buttons.length
+      ? '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px;">' + buttons.join("") + '</div>'
+      : '';
+
+    return ''
+      + '<div class="reservation-expand" style="background:var(--md-surface-cont-low);padding:12px 16px 16px;border-radius:0 0 var(--shape-md) var(--shape-md);">'
+      +   detailRows.join('')
+      +   btnBar
+      + '</div>';
+  }
+
+  function ipDetailRow(label, valueHtml) {
+    return ''
+      + '<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;font-size:13px;">'
+      + '  <span style="color:var(--md-on-surface-variant);flex-shrink:0;">' + escapeHtml(label) + '</span>'
+      + '  <span style="text-align:right;word-break:break-word;">' + valueHtml + '</span>'
+      + '</div>';
+  }
+
+  function _formatDateShort(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  function wireIpRowHandlers(host, st, subnetId, user) {
+    // Action buttons first so stopPropagation prevents the row tap
+    // from collapsing the panel out from under the click target.
+    host.querySelectorAll(".reservation-expand button[data-act]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var act = btn.dataset.act;
+        var ipAddr = btn.dataset.ip;
+        var assetId = btn.dataset.asset;
+        if (act === "open-asset" && assetId) { PolarisRouter.go("asset/" + assetId); return; }
+        var ipEntry = st.ips.find(function (x) { return x.address === ipAddr; });
+        if (!ipEntry || !ipEntry.reservation) return;
+        var row = Object.assign({}, ipEntry.reservation, {
+          ipAddress: ipAddr,
+          subnetId: subnetId,
+          pushEligible: !!(st.subnet && st.subnet.pushEligible),
+        });
+        var actions = window.PolarisReservationActions || {};
+        var onSuccess = function () { st.expandedIp = null; reloadList(subnetId, st, user); };
+        if (act === "edit"    && actions.edit)             actions.edit(row, user, onSuccess);
+        if (act === "free"    && actions.free)             actions.free(row, user, onSuccess);
+        if (act === "reserve" && actions.reserveFromLease) actions.reserveFromLease(row, user, onSuccess);
+      });
+    });
 
     host.querySelectorAll(".list-item").forEach(function (row) {
       row.addEventListener("click", function () {
         var ip = row.dataset.ip;
         var reserved = row.dataset.reserved === "1";
-        var assetId = row.dataset.asset;
         var type = row.dataset.type;
         if (reserved) {
-          if (assetId) PolarisRouter.go("asset/" + assetId);
-          else PolarisTabs.showSnackbar(ip + " — reserved (no linked asset)");
+          // Toggle expansion (same as Reservations tab).
+          st.expandedIp = (st.expandedIp === ip) ? null : ip;
+          renderIpList(st, user);
           return;
         }
         if (type !== "host") {
@@ -236,10 +351,6 @@
           PolarisTabs.showSnackbar("Read-only role — reservations live on desktop.");
           return;
         }
-        // Find subnetId from the route (the host element doesn't carry it)
-        var subnetRoute = PolarisRouter.current();
-        var subnetId = subnetRoute.parts[0];
-        var st = mountState(subnetId);
         openReserveSheet(subnetId, st, user, ip);
       });
     });

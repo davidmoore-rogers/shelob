@@ -230,19 +230,20 @@
   }
 
   // ─── Reserve-from-lease ────────────────────────────────────────────────
-  function startReserveFromLease(row) {
+  function startReserveFromLease(row, user, onSuccess) {
+    user = user || _state.user;
     if (!row.subnetId) {
       PolarisTabs.showSnackbar("Lease has no subnet — can't promote.", { error: true });
       return;
     }
-    window.PolarisReserveSheet.open(row.subnetId, _state.user, {
+    window.PolarisReserveSheet.open(row.subnetId, user, {
       ip: row.ipAddress,
       mac: row.macAddress,
       hostname: row.hostname,
       notes: row.notes,
     }, {
       existingLeaseId: row.id,
-      onSuccess: function () {
+      onSuccess: onSuccess || function () {
         _state.expandedId = null;
         load();
       },
@@ -250,15 +251,17 @@
   }
 
   // ─── Free (release) ────────────────────────────────────────────────────
-  function confirmFree(row) {
+  function confirmFree(row, onSuccess) {
     var label = row.ipAddress || row.hostname || "this reservation";
-    if (!window.confirm("Release " + label + "?")) return;
+    var isLease = row.sourceType === "dhcp_lease";
+    var verb = isLease ? "Revoke" : "Release";
+    if (!window.confirm(verb + " " + label + "?")) return;
     api.reservations.release(row.id).then(function () {
-      PolarisTabs.showSnackbar("Released " + label);
-      _state.expandedId = null;
-      load();
+      PolarisTabs.showSnackbar(verb + "d " + label);
+      if (typeof onSuccess === "function") onSuccess();
+      else { _state.expandedId = null; load(); }
     }).catch(function (err) {
-      PolarisTabs.showSnackbar(err && err.message ? err.message : "Release failed", { error: true });
+      PolarisTabs.showSnackbar(err && err.message ? err.message : (verb + " failed"), { error: true });
     });
   }
 
@@ -268,7 +271,7 @@
   // eligibility — on push-eligible subnets, clearing the MAC is rejected
   // server-side (DHCP reservations are MAC→IP); the UI hides the clear
   // hint and labels MAC as required.
-  function openEditSheet(row) {
+  function openEditSheet(row, onSuccess) {
     closeEditSheet();
     if (!row.subnetId) {
       PolarisTabs.showSnackbar("Reservation has no subnet — can't edit.", { error: true });
@@ -276,13 +279,13 @@
     }
     api.subnets.ips(row.subnetId, { page: 1, pageSize: 1 }).then(function (resp) {
       var subnet = resp && resp.subnet;
-      renderEditSheet(row, subnet);
+      renderEditSheet(row, subnet, onSuccess);
     }).catch(function (err) {
       PolarisTabs.showSnackbar(err && err.message ? err.message : "Could not load network", { error: true });
     });
   }
 
-  function renderEditSheet(row, subnet) {
+  function renderEditSheet(row, subnet, onSuccess) {
     var pushEligible = !!(subnet && subnet.pushEligible);
     var scrim = document.createElement("div");
     scrim.className = "scrim";
@@ -335,11 +338,11 @@
     document.getElementById("edit-rsv-cancel").addEventListener("click", closeEditSheet);
     document.getElementById("edit-rsv-form").addEventListener("submit", function (e) {
       e.preventDefault();
-      submitEdit(row, pushEligible);
+      submitEdit(row, pushEligible, onSuccess);
     });
   }
 
-  function submitEdit(row, pushEligible) {
+  function submitEdit(row, pushEligible, onSuccess) {
     clearEditError();
     var hostname = (document.getElementById("e-hostname").value || "").trim();
     var owner    = (document.getElementById("e-owner").value || "").trim();
@@ -368,7 +371,8 @@
     api.reservations.update(row.id, body).then(function () {
       closeEditSheet();
       PolarisTabs.showSnackbar("Saved");
-      load();
+      if (typeof onSuccess === "function") onSuccess();
+      else load();
     }).catch(function (err) {
       btn.disabled = false;
       btn.innerHTML = "Save";
@@ -410,4 +414,18 @@
   }
 
   window.PolarisReservationsTab = { spec: Reservations };
+
+  // Cross-page reservation action helpers. Used by subnet-detail.js so
+  // the IP-list rows on the Networks page can reuse the same Edit /
+  // Free / Reserve-from-lease flows without duplicating modal markup
+  // or backend wiring. Each action accepts an optional onSuccess
+  // callback so the caller can refresh its own list rather than the
+  // Reservations tab's.
+  window.PolarisReservationActions = {
+    canCreate: canCreate,
+    canModify: canModify,
+    edit:             function (row, user, onSuccess) { openEditSheet(row, onSuccess); },
+    free:             function (row, user, onSuccess) { confirmFree(row, onSuccess); },
+    reserveFromLease: function (row, user, onSuccess) { startReserveFromLease(row, user, onSuccess); },
+  };
 })();

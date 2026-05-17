@@ -50,11 +50,50 @@
   }
 
   // ─── Search ────────────────────────────────────────────────────────────
-  // Group order on results — picks the most discriminating hits first so
-  // the user sees the answer they were typing toward at the top of the
-  // list. IPs is first because typing an IP is the strongest signal
-  // ("the user knows the exact IP and wants to see what's there").
+  // Default group order on results — picks the most discriminating hits
+  // first so the user sees the answer they were typing toward at the top
+  // of the list. IPs is first because typing an IP is the strongest
+  // signal ("the user knows the exact IP and wants to see what's
+  // there"). Page-aware hoisting: when the operator was on a specific
+  // page before they started typing (Reservations / Networks / Assets /
+  // Map / Blocks), that page's section is moved to the top so they see
+  // matches from the surface they were already working on first.
   var SEARCH_GROUP_ORDER = ["sites", "ips", "assets", "subnets", "reservations", "blocks"];
+
+  // Updated by app.js whenever the user navigates to a non-search route.
+  // Persists across the user typing in the searchbar (which replace-
+  // navigates them to /search), so we still know which page they came
+  // from when we render results.
+  var _searchOriginRoute = { name: "", parts: [] };
+
+  function setSearchOriginRoute(name, parts) {
+    _searchOriginRoute = { name: name || "", parts: parts || [] };
+  }
+
+  // Map the current/originating route to its corresponding search group,
+  // or null when the page doesn't correspond to any group (Search tab,
+  // More root, Events, etc.).
+  function groupForOriginRoute(route) {
+    var n = route && route.name;
+    var p = (route && route.parts) || [];
+    if (n === "reservations")                       return "reservations";
+    if (n === "assets" || n === "asset")            return "assets";
+    if (n === "map" || n === "site" || n === "topology") return "sites";
+    if (n === "subnet")                             return "subnets";
+    if (n === "block")                              return "blocks";
+    if (n === "more") {
+      if (p[0] === "subnets") return "subnets";
+      if (p[0] === "blocks")  return "blocks";
+    }
+    return null;
+  }
+
+  function orderedSearchGroups() {
+    var hoist = groupForOriginRoute(_searchOriginRoute);
+    if (!hoist) return SEARCH_GROUP_ORDER.slice();
+    var rest = SEARCH_GROUP_ORDER.filter(function (g) { return g !== hoist; });
+    return [hoist].concat(rest);
+  }
 
   var SEARCH_GROUP_META = {
     ips:           { label: "IP addresses",  icon: "#i-router",   leading: "tonal" },
@@ -155,8 +194,9 @@
       });
     data.sites = (data.sites || []).concat(virtualSites);
 
+    var groupOrder = orderedSearchGroups();
     var totalHits = 0;
-    SEARCH_GROUP_ORDER.forEach(function (g) { totalHits += (data[g] || []).length; });
+    groupOrder.forEach(function (g) { totalHits += (data[g] || []).length; });
     if (totalHits === 0) {
       state.innerHTML = ''
         + '<div class="empty-state" style="padding-top:48px;">'
@@ -168,7 +208,7 @@
     }
 
     var html = "";
-    SEARCH_GROUP_ORDER.forEach(function (g) {
+    groupOrder.forEach(function (g) {
       var hits = data[g] || [];
       if (hits.length === 0) return;
       var meta = SEARCH_GROUP_META[g];
@@ -265,6 +305,9 @@
   window.PolarisSearch = {
     runSearch: runSearch,
     debounce:  debounceSearch,
+    // Called by app.js on every non-search route change so the result
+    // renderer can hoist the matching section to the top.
+    setOriginRoute: setSearchOriginRoute,
   };
 
   // ─── Map ───────────────────────────────────────────────────────────────
