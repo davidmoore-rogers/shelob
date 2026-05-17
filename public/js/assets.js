@@ -9718,7 +9718,8 @@ function _depTreeNodeRow(node, opts) {
     hostHTML = '<button type="button" class="dep-tree-link" data-asset-id="' + escapeHtml(node.id) + '" title="Open ' + safeName + '">' + safeName + '</button>';
   }
   var sourceTag = (node.source === "override") ? ' <span class="dep-tree-source-tag" title="Operator override">override</span>' : "";
-  return '<div class="dep-tree-row' + (opts.self ? ' dep-tree-row-self' : '') + '">' +
+  var depthClass = opts.depth ? ' dep-tree-row-depth-' + opts.depth : '';
+  return '<div class="dep-tree-row' + (opts.self ? ' dep-tree-row-self' : '') + depthClass + '">' +
     pip + ' ' + hostHTML +
     ' <span class="dep-tree-type">' + escapeHtml(typeLabel) + '</span>' +
     sourceTag +
@@ -9776,7 +9777,11 @@ function renderDependencyTreeBlock(payload, selfId) {
   if (children.length > 0) {
     childrenHTML += '<div class="dep-tree-connector">│</div>';
     childrenHTML += children.map(function (c) {
-      return _depTreeNodeRow(c);
+      var row = _depTreeNodeRow(c, { depth: 1 });
+      var gcs = Array.isArray(c.grandchildren) ? c.grandchildren : [];
+      if (gcs.length === 0) return row;
+      var gcRows = gcs.map(function (gc) { return _depTreeNodeRow(gc, { depth: 2 }); }).join("");
+      return row + gcRows;
     }).join("");
   }
 

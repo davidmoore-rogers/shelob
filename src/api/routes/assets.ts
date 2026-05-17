@@ -2396,6 +2396,79 @@ router.get("/:id/dependencies", async (req, res, next) => {
       return (a.hostname || "").localeCompare(b.hostname || "");
     });
 
+    // One additional layer down (grandchildren) so the asset details modal can
+    // render firewall → switch → AP without click-through. Same binding rule
+    // as direct children: a grandchild is bound to its parent via override
+    // when any override exists for the grandchild, else via computed.
+    const grandchildrenByParent = new Map<string, typeof children>();
+    const childIdSet = children.map(c => c.id);
+    if (childIdSet.length > 0) {
+      const gcRows = await prisma.assetDependencyParent.findMany({
+        where: { parentAssetId: { in: childIdSet } },
+        include: {
+          asset: {
+            select: {
+              id: true,
+              hostname: true,
+              assetType: true,
+              dependencyLayer: true,
+              monitorStatus: true,
+              monitored: true,
+              dependencySuppressed: true,
+              dependencyTestUntil: true,
+            },
+          },
+        },
+        orderBy: [{ source: "asc" }, { createdAt: "asc" }],
+      });
+      const gcIds = [...new Set(gcRows.map(r => r.assetId))];
+      const gcOverrideMap = new Map<string, boolean>();
+      if (gcIds.length > 0) {
+        const gcOverrides = await prisma.assetDependencyParent.findMany({
+          where: { assetId: { in: gcIds }, source: "override" },
+          select: { assetId: true },
+        });
+        for (const r of gcOverrides) gcOverrideMap.set(r.assetId, true);
+      }
+      // Dedupe per (parentId, childId) so an MCLAG pair doesn't render twice
+      // under one parent.
+      const seenGc = new Set<string>();
+      for (const r of gcRows) {
+        const gcHasOverride = gcOverrideMap.get(r.assetId) === true;
+        const isBinding = gcHasOverride ? r.source === "override" : r.source === "computed";
+        if (!isBinding) continue;
+        const dedupeKey = r.parentAssetId + "|" + r.assetId;
+        if (seenGc.has(dedupeKey)) continue;
+        seenGc.add(dedupeKey);
+        const list = grandchildrenByParent.get(r.parentAssetId) ?? [];
+        list.push({
+          id:                  r.asset.id,
+          hostname:            r.asset.hostname,
+          assetType:           r.asset.assetType,
+          dependencyLayer:     r.asset.dependencyLayer,
+          monitorStatus:       r.asset.monitorStatus,
+          monitored:           r.asset.monitored,
+          dependencySuppressed: r.asset.dependencySuppressed,
+          dependencyTestUntil: r.asset.dependencyTestUntil,
+          source:              r.source,
+          detectedVia:         r.detectedVia,
+        });
+        grandchildrenByParent.set(r.parentAssetId, list);
+      }
+      for (const list of grandchildrenByParent.values()) {
+        list.sort((a, b) => {
+          const ta = TYPE_ORDER[a.assetType] ?? 99;
+          const tb = TYPE_ORDER[b.assetType] ?? 99;
+          if (ta !== tb) return ta - tb;
+          return (a.hostname || "").localeCompare(b.hostname || "");
+        });
+      }
+    }
+    const childrenWithGrandchildren = children.map(c => ({
+      ...c,
+      grandchildren: grandchildrenByParent.get(c.id) ?? [],
+    }));
+
     res.json({
       asset: {
         id:                      asset.id,
@@ -2411,7 +2484,7 @@ router.get("/:id/dependencies", async (req, res, next) => {
       computedParents,
       overrideParents,
       hasOverride,
-      children,
+      children: childrenWithGrandchildren,
     });
   } catch (err) {
     next(err);
