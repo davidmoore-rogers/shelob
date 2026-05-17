@@ -304,6 +304,7 @@ export async function discoverDhcpSubnets(
     serial: deviceSerial,
     model: deviceModel,
     mgmtIp: mgmtIp || "",
+    osVersion: deviceOsVersion,
     ...(deviceLatitude !== undefined && deviceLongitude !== undefined
       ? { latitude: deviceLatitude, longitude: deviceLongitude }
       : {}),

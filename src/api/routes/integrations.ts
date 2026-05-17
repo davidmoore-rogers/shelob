@@ -2947,7 +2947,7 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           hostname: member.memberHostname || fgHostname,
           serial: member.serial,
           model: device.model,
-          osVersion: (device as any).osVersion,
+          osVersion: device.osVersion,
           mgmtIp: member.isPrimary ? device.mgmtIp : "",
           latitude: device.latitude,
           longitude: device.longitude,

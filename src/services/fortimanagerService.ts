@@ -644,6 +644,11 @@ export interface DiscoveredDevice {
   serial: string;
   model: string;
   mgmtIp: string;        // management IP from device list
+  // FortiOS firmware version. FMG: built from `os_ver` + `mr` + `patch` on the
+  // device-list record (e.g. "7.4.5"). Standalone FortiGate: `version` field
+  // from /api/v2/monitor/system/status. Consumed by buildFortigateFirewallObservedBlob
+  // in integrations.ts → projected onto Asset.osVersion via projectAssetFromSources.
+  osVersion?: string;
   latitude?: number;     // decimal degrees, from config system global (Device Map)
   longitude?: number;    // decimal degrees
   // FMG per-device metavariables `Latitude` / `Longitude`. Operator-managed
@@ -978,6 +983,23 @@ export function extractMetavarCoordsFromFmgDevice(
 }
 
 /**
+ * Build a FortiOS version string ("7.4.5") from a raw FMG `/dvmdb/adom/<adom>/device`
+ * record. FMG splits the version across three integer fields: `os_ver` (major),
+ * `mr` (minor release), `patch`. Returns "" when the major version is missing
+ * or unparseable so the caller can fall back to other sources.
+ */
+export function buildFmgOsVersion(raw: any): string {
+  const major = Number(raw?.os_ver);
+  if (!Number.isFinite(major) || major <= 0) return "";
+  const mr = Number(raw?.mr);
+  const patch = Number(raw?.patch);
+  const parts: number[] = [major];
+  if (Number.isFinite(mr) && mr >= 0) parts.push(mr);
+  if (Number.isFinite(patch) && patch >= 0) parts.push(patch);
+  return parts.join(".");
+}
+
+/**
  * Query FortiManager for DHCP servers across all managed FortiGate devices.
  * Returns discovered subnets, device metadata (for asset creation),
  * and interface IPs (for reservation creation).
@@ -1252,6 +1274,10 @@ export async function discoverDhcpSubnets(
             serial:   rawDevice.sn || fgResult.devices[0]?.serial || "",
             model:    rawDevice.platform_str || fgResult.devices[0]?.model || "",
             mgmtIp:   directHost,
+            // FortiOS version: prefer fortigateService's live read of /system/status
+            // (canonical FortiOS version string); fall back to FMG's os_ver/mr/patch
+            // when the direct call didn't surface one.
+            osVersion: fgResult.devices[0]?.osVersion || buildFmgOsVersion(rawDevice) || "",
             latitude:  fmgCoordsOk ? fmgLat : fgResult.devices[0]?.latitude,
             longitude: fmgCoordsOk ? fmgLng : fgResult.devices[0]?.longitude,
             ...(mv.latitude !== undefined ? { metavarLatitude: mv.latitude } : {}),
@@ -1345,6 +1371,7 @@ export async function discoverDhcpSubnets(
       serial: rawDevice.sn || "",
       model: rawDevice.platform_str || "",
       mgmtIp: rawDevice.ip || "",
+      osVersion: buildFmgOsVersion(rawDevice) || "",
       ...(fmgCoordsOk ? { latitude: fmgLat, longitude: fmgLng } : {}),
       ...(mv.latitude !== undefined ? { metavarLatitude: mv.latitude } : {}),
       ...(mv.longitude !== undefined ? { metavarLongitude: mv.longitude } : {}),
