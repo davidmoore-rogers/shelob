@@ -43,12 +43,17 @@
   var Reservations = {
     title: "Reservations",
     icon: "#i-bookmark",
-    renderTopbar: function () {
+    renderTopbar: function (ctx) {
+      var user = (ctx && ctx.user) || null;
+      var addBtn = canCreate(user)
+        ? '    <button class="icon-btn" id="reservations-add-btn" aria-label="Reserve an IP"><svg viewBox="0 0 24 24"><use href="#i-add"/></svg></button>'
+        : '';
       return ""
         + '<div class="m3-topbar">'
         + '  <div class="leading"></div>'
         + '  <div class="title">Reservations</div>'
         + '  <div class="trailing">'
+        +      addBtn
         + '    <button class="icon-btn" id="reservations-refresh-btn" aria-label="Refresh"><svg viewBox="0 0 24 24"><use href="#i-refresh"/></svg></button>'
         + '  </div>'
         + '</div>';
@@ -63,6 +68,11 @@
       if (btn) btn.addEventListener("click", function () {
         btn.disabled = true;
         load().finally(function () { btn.disabled = false; });
+      });
+
+      var addBtn = document.getElementById("reservations-add-btn");
+      if (addBtn) addBtn.addEventListener("click", function () {
+        openCreateByIpSheet();
       });
     },
   };
@@ -394,6 +404,151 @@
   }
   function clearEditError() {
     var el = document.getElementById("edit-rsv-error");
+    if (el) el.classList.add("hidden");
+  }
+
+  // ─── Reserve-by-IP sheet ───────────────────────────────────────────────
+  // Quick-reserve: operator types an IP, we look up the containing subnet
+  // via /search, then either create the reservation, navigate to a more
+  // specific error toast (no network / IP in use as VIP / DHCP lease /
+  // existing reservation), or surface the server's create error inline.
+  function openCreateByIpSheet() {
+    closeCreateByIpSheet();
+
+    var scrim = document.createElement("div");
+    scrim.className = "scrim";
+    scrim.id = "create-rsv-scrim";
+
+    var sheet = document.createElement("div");
+    sheet.className = "sheet";
+    sheet.id = "create-rsv-sheet";
+    sheet.innerHTML = ""
+      + '<div class="sheet-handle"></div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+      + '  <h3 class="sheet-title" style="margin:0;">Reserve an IP</h3>'
+      + '  <button class="icon-btn" id="create-rsv-close" aria-label="Close"><svg viewBox="0 0 24 24"><use href="#i-close"/></svg></button>'
+      + '</div>'
+      + '<div style="color:var(--md-on-surface-variant);font-size:13px;margin-bottom:12px;">Polaris will find the matching network for you.</div>'
+      + '<div id="create-rsv-error" class="hidden" style="background:var(--md-error-container);color:var(--md-on-error-container);border-radius:var(--shape-xs);padding:10px 14px;font-size:13px;margin-bottom:12px;letter-spacing:.25px;"></div>'
+      + '<form id="create-rsv-form" autocomplete="off">'
+      + '  <div class="tf-outlined"><span class="lbl">IP address *</span>'
+      + '    <input class="field mono" id="c-ip" placeholder="10.1.2.3" required>'
+      + '  </div>'
+      + '  <div class="tf-outlined"><span class="lbl">Hostname</span>'
+      + '    <input class="field" id="c-hostname" maxlength="100">'
+      + '  </div>'
+      + '  <div class="tf-outlined"><span class="lbl">MAC address</span>'
+      + '    <input class="field mono" id="c-mac" placeholder="optional">'
+      + '    <div class="support">Required if the network pushes DHCP reservations to a FortiGate.</div>'
+      + '  </div>'
+      + '  <div class="tf-outlined"><span class="lbl">Notes</span>'
+      + '    <input class="field" id="c-notes" maxlength="500">'
+      + '  </div>'
+      + '  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">'
+      + '    <button type="button" class="btn btn-text" id="create-rsv-cancel">Cancel</button>'
+      + '    <button type="submit" class="btn btn-filled" id="create-rsv-submit">Reserve</button>'
+      + '  </div>'
+      + '</form>';
+
+    document.body.appendChild(scrim);
+    document.body.appendChild(sheet);
+
+    scrim.addEventListener("click", closeCreateByIpSheet);
+    document.getElementById("create-rsv-close").addEventListener("click", closeCreateByIpSheet);
+    document.getElementById("create-rsv-cancel").addEventListener("click", closeCreateByIpSheet);
+    document.getElementById("create-rsv-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      submitCreateByIp();
+    });
+    setTimeout(function () {
+      var ipInput = document.getElementById("c-ip");
+      if (ipInput) try { ipInput.focus(); } catch (_) {}
+    }, 50);
+  }
+
+  function submitCreateByIp() {
+    clearCreateError();
+    var ip       = (document.getElementById("c-ip").value || "").trim();
+    var hostname = (document.getElementById("c-hostname").value || "").trim();
+    var mac      = (document.getElementById("c-mac").value || "").trim();
+    var notes    = (document.getElementById("c-notes").value || "").trim();
+    if (!ip) { showCreateError("IP address is required"); return; }
+
+    var btn = document.getElementById("create-rsv-submit");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="width:18px;height:18px;border-width:2px;"></span>';
+    var restore = function () {
+      var b = document.getElementById("create-rsv-submit");
+      if (!b) return;
+      b.disabled = false;
+      b.innerHTML = "Reserve";
+    };
+
+    api.search.query(ip).then(function (resp) {
+      var hit = resp && resp.ips && resp.ips[0];
+      if (!hit || !hit.context || !hit.context.subnetId) {
+        restore();
+        PolarisTabs.showSnackbar("No network contains " + ip, { error: true });
+        return;
+      }
+      var ctx = hit.context;
+      if (ctx.reservationId) {
+        // IP already taken — fetch the existing row so the toast can name
+        // the kind of hold (manual reservation / VIP / DHCP lease / etc.).
+        return api.reservations.get(ctx.reservationId).then(function (existing) {
+          restore();
+          var src = (existing && existing.sourceType) || "";
+          var msg;
+          if (src === "vip") msg = ip + " is in use as a FortiGate VIP";
+          else if (src === "dhcp_lease") msg = ip + " is held by an active DHCP lease";
+          else if (src === "dhcp_reservation") msg = ip + " is already a DHCP reservation";
+          else if (src === "interface_ip") msg = ip + " is a FortiGate interface IP";
+          else if (src === "fortiswitch") msg = ip + " is in use by a FortiSwitch";
+          else if (src === "fortinap") msg = ip + " is in use by a FortiAP";
+          else if (src === "dns_resolved") msg = ip + " is already in use (DNS-resolved)";
+          else msg = ip + " is already reserved";
+          PolarisTabs.showSnackbar(msg, { error: true });
+        }).catch(function () {
+          restore();
+          PolarisTabs.showSnackbar(ip + " is already reserved", { error: true });
+        });
+      }
+
+      // Free — create the reservation.
+      var body = { subnetId: ctx.subnetId, ipAddress: ip };
+      if (hostname) body.hostname = hostname;
+      if (mac)      body.macAddress = mac;
+      if (notes)    body.notes = notes;
+
+      return api.reservations.create(body).then(function () {
+        closeCreateByIpSheet();
+        var where = ctx.subnetName || ctx.subnetCidr || "network";
+        PolarisTabs.showSnackbar("Reserved " + ip + " in " + where);
+        load();
+      }).catch(function (err) {
+        restore();
+        showCreateError(err && err.message ? err.message : "Reservation failed");
+      });
+    }).catch(function (err) {
+      restore();
+      showCreateError(err && err.message ? err.message : "Lookup failed");
+    });
+  }
+
+  function closeCreateByIpSheet() {
+    var s = document.getElementById("create-rsv-sheet");
+    var sc = document.getElementById("create-rsv-scrim");
+    if (s) s.remove();
+    if (sc) sc.remove();
+  }
+  function showCreateError(msg) {
+    var el = document.getElementById("create-rsv-error");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove("hidden");
+  }
+  function clearCreateError() {
+    var el = document.getElementById("create-rsv-error");
     if (el) el.classList.add("hidden");
   }
 

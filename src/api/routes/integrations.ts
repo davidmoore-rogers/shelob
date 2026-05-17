@@ -47,7 +47,6 @@ import {
   buildMacRowsForCreate,
   type MacJsonEntry,
 } from "../../utils/macAddresses.js";
-import { withIntegrationCtx } from "../../utils/apiCallTracker.js";
 import { logger } from "../../utils/logger.js";
 
 const router = Router();
@@ -1506,7 +1505,6 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
 
   (async () => {
     try {
-      await withIntegrationCtx(integrationId, integrationName, async () => {
       let discoveryResult: DiscoveryResult;
 
       // Accumulate per-device sync totals for the completion log
@@ -1604,7 +1602,6 @@ export async function triggerDiscovery(integrationId: string, actor: string): Pr
         recordSample(integrationId, Date.now() - runStartedAt).catch(() => {});
         recordDiscovery(integrationType, (Date.now() - runStartedAt) / 1000, "success");
       }
-      }); // end withIntegrationCtx
     } catch (err: any) {
       if (err.name !== "AbortError") {
         logEvent({ action: "integration.discover.error", resourceType: "integration", resourceId: integrationId, resourceName: integrationName, actor, level: "error", message: `${label} ${kindLabel} failed for "${integrationName}": ${err.message || "Unknown error"}` });

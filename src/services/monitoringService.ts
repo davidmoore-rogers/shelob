@@ -76,7 +76,6 @@ import {
   isPollingMethodCompatible,
   assetSourceKindFromIntegrationType,
 } from "../utils/pollingCompatibility.js";
-import { withIntegrationCtx } from "../utils/apiCallTracker.js";
 import { propagateAfterStatusChange } from "./dependencyTreeService.js";
 
 export interface ProbeResult {
@@ -2020,8 +2019,6 @@ export interface TelemetrySample {
   memPct?:        number | null;
   memUsedBytes?:  number | null;
   memTotalBytes?: number | null;
-  /** One entry per sensor; empty/undefined when the device doesn't expose temperatures. Persisted as AssetTemperatureSample rows. */
-  temperatures?:  TemperatureSample[];
 }
 
 export interface InterfaceSample {
@@ -2172,16 +2169,12 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
     ...asset,
     discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
   });
-  // Pragmatic stream-split dispatch: collectTelemetry covers CPU + memory +
-  // temperature in one session. The resolver now exposes separate
-  // cpuMemoryPolling / temperaturePolling — for this dispatch path we read
-  // cpuMemoryPolling as the unified telemetry method (CPU/memory is the
-  // primary signal, temperature is collected alongside as a bonus via the
-  // ENTITY-SENSOR walk + scalar fallback in collectTemperaturesSnmp). A
-  // future commit splits the loop into two independent SNMP sessions so
-  // operators can run CPU/memory over REST while temperature scrapes over
-  // SNMP — for now the unified path keeps the resolver simple and the
-  // collector unchanged.
+  // CPU/memory dispatch. Temperatures are collected separately by
+  // `collectTemperatures` so operators can run CPU/memory over REST while
+  // temperature scrapes over SNMP (branch-class FortiGate workaround when
+  // /api/v2/monitor/system/sensor-info is unreliable). The two streams share
+  // the telemetry cadence today; an independent temperatureIntervalSeconds
+  // timer can land in a follow-up.
   const polling = effective.cpuMemoryPolling;
   if (!polling) return { supported: false };
   // Agent-mode: the Polaris Agent on the host pushes telemetry via
@@ -2221,10 +2214,10 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
     }
     if (polling === "snmp") {
       // Per-stream asset credential wins, then asset default, then class-
-      // override credential, then integration fallback. The pragmatic
-      // unified dispatch reads from cpuMemoryCredential — when a temperature
-      // -only credential differs, the unified loop won't see it until the
-      // collector loop is split into two sessions in a follow-up commit.
+      // override credential, then integration fallback. CPU/memory reads from
+      // cpuMemoryCredential — temperature has its own credential resolved
+      // inside `collectTemperatures` so the two streams can authenticate
+      // independently when an operator points each at a different community.
       const effectiveTelemetryCred = asset.cpuMemoryCredential ?? asset.monitorCredential;
       let snmpCfg: Record<string, unknown>;
       if (effectiveTelemetryCred?.type === "snmp") {
@@ -2256,6 +2249,134 @@ export async function collectTelemetry(assetId: string): Promise<CollectionResul
   } catch (err: any) {
     return { supported: true, error: err?.message || "Telemetry collection failed" };
   }
+}
+
+/**
+ * Temperature scrape for one asset. Dispatches on `temperaturePolling` —
+ * deliberately separate from `cpuMemoryPolling` so an operator can run
+ * CPU/memory over REST while temperature scrapes over SNMP (the common
+ * branch-class FortiGate workaround when /api/v2/monitor/system/sensor-info
+ * is unreliable on the platform's FortiOS build). Uses the temperature-
+ * specific credential / MIB / timeout returned by the four-tier resolver.
+ *
+ * Cadence note: today temperature shares the telemetry cadence trigger
+ * (cpuMemoryIntervalSeconds drives when `runTelemetryFor` fires both
+ * streams). An independent temperatureIntervalSeconds timer is a future
+ * follow-up — see `temperatureIntervalSec` on the schema.
+ */
+export async function collectTemperatures(assetId: string): Promise<CollectionResult<TemperatureSample[]>> {
+  const asset = await prisma.asset.findUnique({
+    where: { id: assetId },
+    include: { monitorCredential: true, temperatureCredential: true, discoveredByIntegration: true },
+  });
+  if (!asset)            return { supported: false, error: "Asset not found" };
+  if (!asset.monitored)  return { supported: false };
+
+  const effective = await resolveMonitorSettings({
+    ...asset,
+    discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
+  });
+  const polling = effective.temperaturePolling;
+  if (!polling) return { supported: false };
+  // Agent-mode: the Polaris Agent on the host pushes temperature samples
+  // alongside its telemetry stream via POST /api/v1/agents/samples on its
+  // own schedule. Periodic puller stays out of the way.
+  if (polling === "agent") return { supported: false };
+  const timeoutMs = effective.temperatureTimeoutMs;
+
+  const targetIp =
+    asset.ipAddress ||
+    ((polling === "winrm" || polling === "ssh") ? (asset.dnsName || asset.hostname) : null);
+  if (!targetIp) return { supported: false, error: "Asset has no IP address" };
+
+  const integration         = asset.discoveredByIntegration ?? null;
+  const isFortinetSrc       = integration?.type === "fortimanager" || integration?.type === "fortigate";
+  const isManagedSwitchOrAp = asset.assetType === "switch" || asset.assetType === "access_point";
+
+  try {
+    if (polling === "rest_api") {
+      // Temperature over REST API is FortiOS-specific (sensor-info endpoint).
+      // Managed FortiSwitches/FortiAPs aren't directly REST-able — same guard
+      // as collectTelemetry.
+      if (!isFortinetSrc || !integration) return { supported: false };
+      if (isManagedSwitchOrAp)            return { supported: false };
+      const fg = buildFortinetConfig(targetIp, integration as any);
+      if ("error" in fg) throw new Error(fg.error);
+      const data = await collectTemperaturesFortinet(fg, timeoutMs);
+      return { supported: true, data };
+    }
+    if (polling === "snmp") {
+      // Per-stream asset credential wins, then asset default, then class-
+      // override credential, then integration fallback. Same priority chain
+      // as cpuMemoryCredential but resolved against the temperature-stream
+      // columns so the two streams can authenticate independently.
+      const effectiveTempCred = asset.temperatureCredential ?? asset.monitorCredential;
+      let snmpCfg: Record<string, unknown>;
+      if (effectiveTempCred?.type === "snmp") {
+        snmpCfg = effectiveTempCred.config as Record<string, unknown>;
+      } else {
+        const classCred = await loadClassOverrideStreamCredential(effective.temperatureCredentialId, "snmp");
+        if (classCred) {
+          snmpCfg = classCred.config as Record<string, unknown>;
+        } else if (isFortinetSrc && integration) {
+          snmpCfg = await loadSnmpCredentialConfigForFortinetAsset(effectiveTempCred, integration);
+        } else {
+          return { supported: true, error: "No SNMP credential selected" };
+        }
+      }
+      const data = await collectTemperaturesViaSnmpSession(
+        targetIp,
+        snmpCfg,
+        asset.manufacturer,
+        asset.model,
+        asset.os,
+        timeoutMs,
+        effective.temperatureMibId,
+      );
+      return { supported: true, data };
+    }
+    // winrm / ssh / icmp don't deliver temperature data.
+    return { supported: false };
+  } catch (err: any) {
+    return { supported: true, error: err?.message || "Temperature collection failed" };
+  }
+}
+
+/**
+ * Open an SNMP session and run the existing collectTemperaturesSnmp walk
+ * inside it. Mirrors collectTelemetrySnmp's MIB-pin pattern so that pinning
+ * an uploaded MIB on the temperature stream feeds the right manufacturer /
+ * module-name / model into pickVendorProfileMerged.
+ */
+async function collectTemperaturesViaSnmpSession(
+  host: string,
+  config: Record<string, unknown>,
+  manufacturer?: string | null,
+  model?: string | null,
+  os?: string | null,
+  timeoutMs?: number,
+  temperatureMibId?: string | null,
+): Promise<TemperatureSample[]> {
+  await ensureRegistryLoaded();
+  let profileManufacturer = manufacturer;
+  let profileModel        = model;
+  let profileOs           = os;
+  if (temperatureMibId && !temperatureMibId.startsWith("std:")) {
+    const mib = await prisma.mibFile.findUnique({
+      where:  { id: temperatureMibId },
+      select: { moduleName: true, manufacturer: true, model: true },
+    }).catch(() => null);
+    if (mib) {
+      profileManufacturer = mib.manufacturer ?? manufacturer;
+      profileModel        = mib.model        ?? model;
+      profileOs           = mib.moduleName;
+    }
+  }
+  const profile = pickVendorProfileMerged(profileManufacturer, profileOs, profileModel);
+  const scope   = { manufacturer, model };
+  return await withSnmpSession(host, config, async (session) => {
+    return await collectTemperaturesSnmp(session, manufacturer, profile, scope);
+  }, timeoutMs);
 }
 
 /**
@@ -2608,14 +2729,15 @@ async function collectTelemetryFortinet(host: string, integration: { type: strin
   // resource name (cpu, mem, disk, session, ...). Each entry can be either an
   // array of {interval, current, historical} samples or a single object,
   // depending on FortiOS version. Pull whatever's freshest.
+  //
+  // Temperatures are NOT pulled here — collectTemperatures dispatches on its
+  // own polling method (which may resolve to SNMP even when CPU/memory is on
+  // REST, e.g. when /api/v2/monitor/system/sensor-info is unreliable on the
+  // branch-class FortiGate and the operator routes temperature to SNMP).
   const res = await fgRequest<any>(fg, "GET", "/api/v2/monitor/system/resource/usage", { query: { scope: "global" }, timeoutMs });
   const cpuPct = pickFortinetUsage(res?.cpu);
   const memPct = pickFortinetUsage(res?.mem ?? res?.memory);
-  const temperatures = await collectTemperaturesFortinet(fg, timeoutMs).catch((err: unknown) => {
-    logger.debug({ err, host }, "Temperature collection failed (sensor-info unavailable or timed out)");
-    return [] as TemperatureSample[];
-  });
-  return { cpuPct, memPct, memUsedBytes: null, memTotalBytes: null, temperatures };
+  return { cpuPct, memPct, memUsedBytes: null, memTotalBytes: null };
 }
 
 // FortiOS exposes temperature, fan, and power sensors at one endpoint. We
@@ -3576,15 +3698,12 @@ async function collectTelemetrySnmp(
       memPct = clampPct((memUsedBytes / memTotalBytes) * 100);
     }
 
-    // Temperatures: walk ENTITY-SENSOR-MIB and pick rows with type=8 (celsius)
-    // and operStatus=1 (ok). entPhysicalDescr (ENTITY-MIB) keyed by the same
-    // physical-entity index gives the friendly name. Devices that don't
-    // implement the MIB fall through to the Fortinet sensor-name heuristic
-    // (fgHwSensorTable) and then to the profile's scalar temperature symbol
-    // (FortiAPs publish only `fapTemperature` and implement neither table).
-    const temperatures = await collectTemperaturesSnmp(session, manufacturer, profile, scope).catch(() => [] as TemperatureSample[]);
-
-    return { cpuPct, memPct, memUsedBytes, memTotalBytes, temperatures };
+    // Temperatures are collected separately by `collectTemperatures`, which
+    // dispatches on temperaturePolling instead of cpuMemoryPolling so an
+    // operator can run CPU/memory over REST and temperature over SNMP (the
+    // common branch-class FortiGate workaround for an unreliable
+    // /api/v2/monitor/system/sensor-info).
+    return { cpuPct, memPct, memUsedBytes, memTotalBytes };
   }, timeoutMs);
 }
 
@@ -4351,20 +4470,33 @@ export async function recordTelemetryResult(assetId: string, result: CollectionR
       memUsedBytes:  d.memUsedBytes  != null ? BigInt(Math.round(d.memUsedBytes))  : null,
       memTotalBytes: d.memTotalBytes != null ? BigInt(Math.round(d.memTotalBytes)) : null,
     });
-    if (Array.isArray(d.temperatures) && d.temperatures.length > 0) {
-      enqueueTemperatureSamples(
-        d.temperatures.map((t) => ({
-          assetId,
-          timestamp: now,
-          sensorName: t.sensorName,
-          celsius:    t.celsius,
-        })),
-      );
-    }
   }
   // Always advance the cadence stamp so a transient failure doesn't make us
   // hammer the device every 5 s.
   await prisma.asset.update({ where: { id: assetId }, data: { lastTelemetryAt: now } });
+}
+
+/**
+ * Persist a temperature-stream collection result. Unlike telemetry there is
+ * no Asset.lastTemperatureAt column — the System tab derives the last-sample
+ * timestamp from the latest AssetTemperatureSample row. If no samples were
+ * written (device exposes no sensors, or the scrape failed), the System tab
+ * keeps showing the prior timestamp and surfaces an amber "last successful
+ * update X ago" badge once it falls behind the resolved cadence.
+ */
+export async function recordTemperatureResult(assetId: string, result: CollectionResult<TemperatureSample[]>): Promise<void> {
+  if (!result.supported) return;
+  if (Array.isArray(result.data) && result.data.length > 0) {
+    const now = new Date();
+    enqueueTemperatureSamples(
+      result.data.map((t) => ({
+        assetId,
+        timestamp: now,
+        sensorName: t.sensorName,
+        celsius:    t.celsius,
+      })),
+    );
+  }
 }
 
 export async function recordSystemInfoResult(assetId: string, result: CollectionResult<SystemInfoSample>): Promise<void> {
@@ -5149,33 +5281,55 @@ export async function runProbeFor(assetId: string, labels: WorkItemLabels): Prom
 }
 
 /**
- * Telemetry pull (CPU + memory + temperatures) for one asset. Returns
- * `success` on a clean run regardless of whether data was collected —
- * `supported=false` is a normal outcome for ICMP/SSH-monitored assets.
- * `failure` means the transport is supported but the call returned no
- * data (timed-out, rejected, etc.).
+ * Telemetry pull (CPU/memory + temperatures) for one asset. The two streams
+ * dispatch independently — cpuMemoryPolling drives CPU/memory while
+ * temperaturePolling drives the temperature scrape — but they run together
+ * on the telemetry cadence trigger. Returns `success` on a clean run
+ * regardless of whether data was collected (supported=false is a normal
+ * outcome for ICMP/SSH-monitored assets). `failure` means at least one
+ * supported stream returned no data (timed-out, rejected, etc.).
  */
 export async function runTelemetryFor(assetId: string, labels: WorkItemLabels): Promise<CadenceOutcome> {
   const stopWork = startWorkTimer("telemetry", labels);
   try {
-    const tr = await collectTelemetry(assetId);
-    await recordTelemetryResult(assetId, tr);
+    // Run CPU/memory and temperature in parallel — different transports
+    // (possibly different credentials, MIBs, even different protocols), so
+    // serializing would double the wall-time of a typical telemetry pass.
+    // Each catch keeps a transport failure on one stream from poisoning the
+    // other; thrown errors are packaged into the result shape.
+    const [tr, temp] = await Promise.all([
+      collectTelemetry(assetId).catch((err: unknown) => {
+        logger.debug({ err, assetId }, "CPU/memory collection threw");
+        return { supported: true, error: (err as Error)?.message || "Telemetry collection failed" } as CollectionResult<TelemetrySample>;
+      }),
+      collectTemperatures(assetId).catch((err: unknown) => {
+        logger.debug({ err, assetId }, "Temperature collection threw");
+        return { supported: true, error: (err as Error)?.message || "Temperature collection failed" } as CollectionResult<TemperatureSample[]>;
+      }),
+    ]);
+    await Promise.all([
+      recordTelemetryResult(assetId, tr),
+      recordTemperatureResult(assetId, temp),
+    ]);
     // Custom widgets ride the telemetry cadence (Slice 7b). Fire-and-forget
     // so a slow walk on one widget can't drag the telemetry tick — failures
     // log inside the helper without escalating to a cadence crash.
     void collectAndRecordCustomWidgets(assetId).catch((err) => {
       logger.debug({ err, assetId }, "Custom widget collection failed");
     });
-    if (tr.supported) {
-      if (tr.data) {
-        recordWorkOutcome("telemetry", "success", labels);
-        return "success";
-      }
-      recordWorkOutcome("telemetry", "failure", labels);
-      return "failure";
+    // Outcome aggregates both streams. Success when each stream either
+    // delivered (data present, including empty array for a sensor-less
+    // device) or wasn't supported on this transport in the first place;
+    // failure when at least one supported stream came back with an error
+    // and no data.
+    const cpuMemOk = !tr.supported   || tr.data   !== undefined;
+    const tempOk   = !temp.supported || temp.data !== undefined;
+    if (cpuMemOk && tempOk) {
+      recordWorkOutcome("telemetry", "success", labels);
+      return "success";
     }
-    recordWorkOutcome("telemetry", "success", labels);
-    return "success";
+    recordWorkOutcome("telemetry", "failure", labels);
+    return "failure";
   } catch (err) {
     logger.error({ err, assetId }, "Telemetry collection crashed");
     recordWorkOutcome("telemetry", "crash", labels);
@@ -5423,8 +5577,8 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       // Joined for the resolver — picks the source-default polling method
       // (rest_api for fortinet, icmp for everything else). Without this the
       // resolver maps every candidate to "manual" and the cadence calculation
-      // silently drifts. id + name feed withIntegrationCtx for API call tracking.
-      discoveredByIntegration: { select: { type: true, id: true, name: true } },
+      // silently drifts.
+      discoveredByIntegration: { select: { type: true } },
       monitorStatus: true, consecutiveFailures: true,
       lastMonitorAt: true, monitorIntervalSec: true,
       lastTelemetryAt: true, cpuMemoryIntervalSec: true, temperatureIntervalSec: true,
@@ -5495,7 +5649,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
   }
 
   type WorkKind = "probe" | "telemetry" | "systemInfo" | "fastFiltered";
-  type Work = { id: string; kind: WorkKind; integrationId?: string; integrationName?: string };
+  type Work = { id: string; kind: WorkKind };
   const probes: Work[]       = [];
   const fastFiltereds: Work[] = [];
   const telemetries: Work[]  = [];
@@ -5582,11 +5736,9 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // The cheap probe keeps firing in every state so recovery can be
     // detected within one tick of the resolved cadence.
     const isUp = a.monitorStatus === "up" && !a.dependencySuppressed;
-    const integrationId   = a.discoveredByIntegration?.id   ?? undefined;
-    const integrationName = a.discoveredByIntegration?.name ?? undefined;
-    if (probe      && enabled.has("probe"))                                      probes.push({ id: a.id, kind: "probe", integrationId, integrationName });
-    if (telemetry  && canTelemetry  && enabled.has("telemetry")  && isUp)        telemetries.push({ id: a.id, kind: "telemetry", integrationId, integrationName });
-    if (systemInfo && canSystemInfo && enabled.has("systemInfo") && isUp)        systemInfos.push({ id: a.id, kind: "systemInfo", integrationId, integrationName });
+    if (probe      && enabled.has("probe"))                                      probes.push({ id: a.id, kind: "probe" });
+    if (telemetry  && canTelemetry  && enabled.has("telemetry")  && isUp)        telemetries.push({ id: a.id, kind: "telemetry" });
+    if (systemInfo && canSystemInfo && enabled.has("systemInfo") && isUp)        systemInfos.push({ id: a.id, kind: "systemInfo" });
     // Fast-cadence pinned scrape rides the response-time cadence (default 60s).
     // Skip it when the full systemInfo pass is also due — they'd hit the same
     // OIDs twice and the full pass already covers the pinned subset. The
@@ -5597,7 +5749,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
     // every following light tick until systemInfo runs successfully and
     // bumps lastSystemInfoAt.
     if (probe && hasFastPin && canSystemInfo && !systemInfo && isUp && enabled.has("fastFiltered")) {
-      fastFiltereds.push({ id: a.id, kind: "fastFiltered", integrationId, integrationName });
+      fastFiltereds.push({ id: a.id, kind: "fastFiltered" });
     }
   }
   // Order matters: probes first so a saturated worker pool drains the cheap
@@ -5665,11 +5817,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
           }
         }
       };
-      if (w.integrationId && w.integrationName) {
-        await withIntegrationCtx(w.integrationId, w.integrationName, runWork);
-      } else {
-        await runWork();
-      }
+      await runWork();
     }
   }
   try {

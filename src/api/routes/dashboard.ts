@@ -40,9 +40,9 @@ router.get("/summary", async (_req, res, next) => {
           monitorStatus: true,
           monitorStatusChangedAt: true,
         },
-        // Nulls last so a freshly-flipped asset without a transition timestamp
-        // doesn't push older outages off the visible head of the list.
-        orderBy: [{ monitorStatusChangedAt: { sort: "asc", nulls: "last" } }],
+        // Newest transitions first; nulls (unknown transition time, typically
+        // pre-backfill assets) sink to the bottom.
+        orderBy: [{ monitorStatusChangedAt: { sort: "desc", nulls: "last" } }],
         take: MONITOR_ALERT_CAP + 1,
       }),
     ]);
