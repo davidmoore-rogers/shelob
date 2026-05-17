@@ -5633,13 +5633,17 @@ function renderProfileDetail(detail) {
       '<td><b>' + escapeHtml(METRIC_KEY_LABELS[m.metricKey] || m.metricKey) + '</b></td>';
     if (editing) {
       // Use the row's current MIB selection (if the operator has changed
-      // it during this edit session it lives on the <select>; we capture
-      // it from the existing DOM before the re-render via the change
-      // handler that also pre-warms `_mfgMibSymbolsCache`). For first
-      // render fall back to the persisted defaultMibId / defaultMibStdKey
-      // (joined into a single combined dropdown value).
-      var editMibId = (typeof _mfgEditMibId === "function" && _mfgEditMibId(detail.id, m.metricKey))
-        || joinMibSelection(m.defaultMibId, m.defaultMibStdKey);
+      // it during this edit session it lives in the shadow store via the
+      // change handler that also pre-warms `_mfgMibSymbolsCache`). For
+      // first render fall back to the persisted defaultMibId /
+      // defaultMibStdKey (joined into a single combined dropdown value).
+      // Check `=== undefined` rather than truthiness so an explicit `""`
+      // (operator picked "Built-in seed" to reset) is preserved instead of
+      // being clobbered by the persisted value on re-render.
+      var storedEditMib = _mfgEditMibId(detail.id, m.metricKey);
+      var editMibId = (storedEditMib === undefined)
+        ? joinMibSelection(m.defaultMibId, m.defaultMibStdKey)
+        : storedEditMib;
       if (isMemory) {
         // Memory's Type slot becomes a Shape selector; the Symbol cell holds
         // 1 or 2 pickers driven by the Shape value. Live shape is taken from
