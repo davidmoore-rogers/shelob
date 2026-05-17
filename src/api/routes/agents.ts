@@ -36,6 +36,7 @@ import {
 import {
   recordProbeResult,
   resolveMonitorSettings,
+  invalidateMonitorSettingsCache,
 } from "../../services/monitoringService.js";
 import {
   enqueueMonitorSample,
@@ -307,6 +308,57 @@ agentsRouter.get("/config", async (req, res, next) => {
       include: { discoveredByIntegration: true },
     });
     if (!asset) throw new AppError(404, "Asset not found");
+
+    // Self-heal: an active agent owns all five per-stream polling columns.
+    // consumeEnrollmentToken stamps them at enroll, but historical assets
+    // enrolled before that landed (commit d43b9d8) — or an operator manually
+    // resetting one to null after the fact — leave drift. Re-stamp here so
+    // the agent's cadence reads, the resolver, and the System tab gate all
+    // agree without requiring a Reinstall. Cheap: at-most one UPDATE per
+    // drifted asset, after which the per-minute /config polls find no
+    // drift and skip the write.
+    const drift =
+      asset.responseTimePolling !== "agent" ||
+      asset.cpuMemoryPolling    !== "agent" ||
+      asset.temperaturePolling  !== "agent" ||
+      asset.interfacesPolling   !== "agent" ||
+      asset.lldpPolling         !== "agent";
+    if (drift) {
+      const before = {
+        responseTimePolling: asset.responseTimePolling,
+        cpuMemoryPolling:    asset.cpuMemoryPolling,
+        temperaturePolling:  asset.temperaturePolling,
+        interfacesPolling:   asset.interfacesPolling,
+        lldpPolling:         asset.lldpPolling,
+      };
+      await prisma.asset.update({
+        where: { id: assetId },
+        data: {
+          responseTimePolling: "agent",
+          cpuMemoryPolling:    "agent",
+          temperaturePolling:  "agent",
+          interfacesPolling:   "agent",
+          lldpPolling:         "agent",
+        },
+      });
+      invalidateMonitorSettingsCache({
+        integrationId: asset.discoveredByIntegrationId ?? null,
+        assetType:     asset.assetType,
+      });
+      asset.responseTimePolling = "agent";
+      asset.cpuMemoryPolling    = "agent";
+      asset.temperaturePolling  = "agent";
+      asset.interfacesPolling   = "agent";
+      asset.lldpPolling         = "agent";
+      await logEvent({
+        action:       "monitor.polling_overridden_by_agent",
+        resourceType: "asset",
+        resourceId:   assetId,
+        level:        "info",
+        message:      "Polaris Agent took over all monitoring streams on this asset",
+        details:      { before, managedAgentId: req.managedAgent!.managedAgentId },
+      });
+    }
 
     const eff = await resolveMonitorSettings({
       ...asset,

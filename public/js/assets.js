@@ -3266,8 +3266,8 @@ function assetSystemViewHTML(a) {
     '</div>';
   }
   // Heavy-cadence streams (telemetry / interfaces / storage) are only
-  // delivered when the resolved interfacesPolling is REST API or SNMP.
-  // ICMP / SSH / WinRM don't carry the data shapes yet.
+  // delivered when the resolved interfacesPolling is REST API, SNMP, or
+  // Polaris Agent. ICMP / SSH / WinRM don't carry the data shapes yet.
   var ifPolling = a.interfacesPolling;
   if (!ifPolling) {
     var integ = a.discoveredByIntegration;
@@ -3275,9 +3275,9 @@ function assetSystemViewHTML(a) {
     if (sk !== "fortimanager" && sk !== "fortigate") ifPolling = null;
     else ifPolling = "rest_api";
   }
-  if (ifPolling !== "rest_api" && ifPolling !== "snmp") {
+  if (ifPolling !== "rest_api" && ifPolling !== "snmp" && ifPolling !== "agent") {
     return '<div style="padding:1rem 0;color:var(--color-text-secondary)">' +
-      'System metrics (CPU / memory / interfaces / storage) require REST API or SNMP polling on the Interfaces stream. Switch the polling method on the Monitoring tab to enable.' +
+      "System metrics (CPU / memory / interfaces / storage) require REST API, SNMP, or Polaris Agent on the Interfaces stream. Install the Polaris Agent (Edit → Monitoring) or switch the polling method to enable." +
     '</div>';
   }
   var rangeBtns =
