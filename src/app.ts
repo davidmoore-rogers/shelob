@@ -58,6 +58,7 @@ import "./jobs/rasterizeStoredSvgIcons.js";
 import "./jobs/dependencyReconciler.js";
 import "./jobs/reconcileMapRegions.js";
 import "./jobs/reconcileDnsResolvedReservations.js";
+import "./jobs/runSampleRollup.js";
 import "./jobs/autoBuildAgents.js";
 import { ensureRegistryLoaded } from "./services/oidRegistry.js";
 import { detectTimescale, migrateToHypertables } from "./services/timescaleService.js";

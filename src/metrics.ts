@@ -226,6 +226,14 @@ const sampleBufferDepth = new Gauge({
   registers: [registry],
 });
 
+const sampleRollupDuration = new Histogram({
+  name: "polaris_sample_rollup_duration_seconds",
+  help: "Wall-clock duration of one INSERT...ON CONFLICT rollup statement against a single source table. `tier` is hourly | daily; `table` is the logical source name (monitor / telemetry / temperature / interface / storage / ipsec). Hourly cadence runs every 30 minutes; daily runs once a day. Watch this to spot a rollup tick that starts dragging behind its cadence at fleet growth.",
+  labelNames: ["tier", "table"] as const,
+  buckets: [0.05, 0.25, 1, 5, 15, 60, 300],
+  registers: [registry],
+});
+
 // ─── HTTP server ──────────────────────────────────────────────────────────
 
 const httpRequestDuration = new Histogram({
@@ -436,6 +444,10 @@ export function recordDiscovery(
 
 export function startSampleWriteTimer(table: string): () => number {
   return sampleWriteDuration.startTimer({ table });
+}
+
+export function startSampleRollupTimer(tier: "hourly" | "daily", table: string): () => number {
+  return sampleRollupDuration.startTimer({ tier, table });
 }
 
 export function setSampleBufferDepth(table: string, depth: number): void {
