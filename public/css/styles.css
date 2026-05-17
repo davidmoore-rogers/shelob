@@ -2951,13 +2951,10 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 
 /* ── Click-to-copy cells ─────────────────────────────────────────────── */
 .copy-cell {
-  display: inline-block;
-  max-width: 100%;
   cursor: pointer;
   border-radius: 3px;
   padding: 1px 3px;
   margin: -1px -3px;
-  overflow-wrap: anywhere;
   transition: background 0.15s, color 0.15s;
 }
 .copy-cell:hover {
