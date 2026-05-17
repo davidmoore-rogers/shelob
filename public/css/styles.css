@@ -867,6 +867,15 @@ code {
   border-color: var(--color-accent);
   color: var(--color-text-primary);
 }
+.btn-success {
+  background: var(--color-success);
+  color: #0d0d1a;
+  border-color: var(--color-success);
+  font-weight: 600;
+}
+.btn-success:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
 .btn-danger {
   background: rgba(255,23,68,0.15);
   color: var(--color-danger);

@@ -248,6 +248,9 @@ function _renderIpList(data) {
     return;
   }
 
+  var pushEligible = !!(data.subnet && data.subnet.pushEligible);
+  var reserveBtnClass = pushEligible ? "btn-success" : "btn-primary";
+
   var hasReleasable = data.ips.some(function (ip) {
     return !ip.type && ip.reservation && ip.reservation.status === "active" && canManageNetworks();
   });
@@ -346,7 +349,14 @@ function _renderIpList(data) {
     // unavailable button is skipped, but the visible buttons stay in that
     // sequence so the column scans cleanly down the table.
     var editBtn = canEditThis && r ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '';
-    var freeBtn = canEditThis && r ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="Release">Free</button>' : '';
+    // Lease rows say "Revoke" (the FortiGate forgets the current lease but
+    // the same client can re-acquire it); everything else says "Release"
+    // (the reservation is given up).
+    var isLeaseRow = r && r.status === "active" && (r.sourceType === "dhcp_lease" || r.owner === "dhcp-lease");
+    var freeLabel = isLeaseRow ? "Revoke" : "Release";
+    var freeTitle = isLeaseRow ? "Revoke Lease" : "Release Reservation";
+    var freeBtn = canEditThis && r ? '<button class="btn btn-sm btn-danger ip-release-btn" data-rid="' + r.id + '" title="' + freeTitle + '">' + freeLabel + '</button>' : '';
+    var reserveTitle = pushEligible ? "Reserve on Gate" : "Reserve in Polaris";
     if (isSpecial) {
       actions = "";
     } else if (r && r.status === "active" && (r.sourceType === "dhcp_reservation" || r.owner === "dhcp-reservation")) {
@@ -355,9 +365,9 @@ function _renderIpList(data) {
       // owner="dhcp-lease" placeholder on a dhcp_reservation row can't trip
       // the lease branch below.
       actions = freeBtn + assetBtn + editBtn;
-    } else if (r && r.status === "active" && (r.sourceType === "dhcp_lease" || r.owner === "dhcp-lease")) {
+    } else if (isLeaseRow) {
       var reserveBtn = canReserveIps()
-        ? '<button class="btn btn-sm btn-primary ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '">Reserve</button>'
+        ? '<button class="btn btn-sm ' + reserveBtnClass + ' ip-lease-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-rid="' + escapeHtml(r.id) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '" title="' + reserveTitle + '">Reserve</button>'
         : '';
       actions = reserveBtn + freeBtn + assetBtn + editBtn;
     } else if (r && r.status === "active" && r.sourceType === "vip") {
@@ -365,7 +375,7 @@ function _renderIpList(data) {
       // Reserve lets the operator attach editable metadata (hostname / owner /
       // notes) that survives across discovery cycles.
       var vipReserveBtn = canReserveIps()
-        ? '<button class="btn btn-sm btn-primary ip-vip-reserve-btn" data-rid="' + escapeHtml(r.id) + '">Reserve</button>'
+        ? '<button class="btn btn-sm ' + reserveBtnClass + ' ip-vip-reserve-btn" data-rid="' + escapeHtml(r.id) + '" title="' + reserveTitle + '">Reserve</button>'
         : '';
       actions = vipReserveBtn + assetBtn + editBtn;
     } else if (r && r.status === "active") {
@@ -373,7 +383,7 @@ function _renderIpList(data) {
     } else if (r && r.status === "expired") {
       actions = assetBtn + editBtn;
     } else if (!r && canReserveIps()) {
-      actions = '<button class="btn btn-sm btn-primary ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '">Reserve</button>' + assetBtn;
+      actions = '<button class="btn btn-sm ' + reserveBtnClass + ' ip-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" title="' + reserveTitle + '">Reserve</button>' + assetBtn;
     } else {
       actions = assetBtn;
     }

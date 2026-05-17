@@ -519,7 +519,7 @@ build auto-prune + boot-time auto-build are layered on top.
 - `src/services/reservationService.ts` (`createReservation`) — manual create's existing-active-reservation check excludes dns_resolved; calls `releaseDnsResolvedAt` inline before the `$transaction`.
 
 **Readers** (files that consume it):
-- `public/js/ip-panel.js:282-347` — recognizes `r.sourceType === "dns_resolved"` to render a distinct "DNS Resolved" status pill and tooltip. The Reserve/Free/Edit button gating is unchanged — `createdBy === "system:dns-resolved"` doesn't match any user, so non-admin operators see view-only.
+- `public/js/ip-panel.js:282-347` — recognizes `r.sourceType === "dns_resolved"` to render a distinct "DNS Resolved" status pill and tooltip. The Reserve/Release/Edit button gating is unchanged — `createdBy === "system:dns-resolved"` doesn't match any user, so non-admin operators see view-only.
 - `src/api/routes/assets.ts:buildIpContexts` — `ipContext.reservation.sourceType` carries the value through to the assets list's View Lease deep-link target; no special handling needed (the deep link just opens the IP panel which renders the badge).
 
 **Invariants:**
@@ -1740,6 +1740,7 @@ Listed alphabetically.
 - No duplicate active reservations (unique constraint on subnetId, ipAddress, status="active")
 - Subnet must not be deprecated (409 if status="deprecated")
 - Push failure rolls back the Polaris reservation (fail-on-failure semantics)
+- `listReservations` decorates every row with `pushEligible: boolean` (true when integration is fortimanager/fortigate AND `config.pushReservations === true` AND `ipAddress` is non-null) and strips the raw integration config from the response — callers only need the flag and config can carry credentials. Mobile reservations-tab reads this to color the Reserve button green.
 - updateReservation accepts an optional `macAddress`; on push-eligible subnets a MAC change pushes a PUT to the FortiGate via reservationPushService.updatePushedReservation BEFORE the Polaris write — device-side failure throws and Polaris stays untouched. Clearing the MAC on a push-eligible subnet is rejected with 400 (DHCP reservations are MAC→IP).
 - updateReservation auto-stamps `owner = caller.username` when `input.owner === undefined`. Pairs with the discovery sync's MAC-aware owner-preservation rule in `integrations.ts` `syncDhcpSubnets` Phase 6 — discovery only overwrites owner with `asset.assignedTo` when the discovered MAC differs from `reservation.macAddress`, so a Polaris-stamped owner survives across discovery cycles for stable reservations.
 - Released reservations clear pushedTo* fields and drop historical released rows (unique constraint relief)

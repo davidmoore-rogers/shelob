@@ -252,6 +252,10 @@ input, select, textarea { font-family: inherit; }
 .btn-outlined  { background: transparent; color: var(--md-primary); border: 1px solid var(--md-outline); }
 .btn-text      { background: transparent; color: var(--md-primary); padding: 0 12px; }
 .btn-error     { background: var(--md-error-container); color: var(--md-on-error-container); }
+/* Green Reserve button used when the target subnet's integration has
+   reservation push enabled — the operator should see at a glance that
+   creating this reservation will also write the entry to the FortiGate. */
+.btn-success   { background: #2e7d32; color: #fff; }
 
 .btn-block     { width: 100%; }
 

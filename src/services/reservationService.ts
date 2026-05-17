@@ -72,7 +72,16 @@ export async function listReservations(filter: ListReservationsFilter = {}) {
   const [reservations, total] = await Promise.all([
     prisma.reservation.findMany({
       where,
-      include: { subnet: { select: { cidr: true, name: true } } },
+      include: {
+        subnet: {
+          select: {
+            cidr: true,
+            name: true,
+            fortigateDevice: true,
+            integration: { select: { type: true, config: true } },
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
       skip: offset,
       take: limit,
@@ -80,7 +89,23 @@ export async function listReservations(filter: ListReservationsFilter = {}) {
     prisma.reservation.count({ where }),
   ]);
 
-  return { reservations, total, limit, offset };
+  const decorated = reservations.map((r) => {
+    const s = r.subnet as { integration: { type: string; config: unknown } | null } | null;
+    const integration = s?.integration ?? null;
+    const cfg = (integration?.config ?? {}) as Record<string, unknown>;
+    const pushEligible = !!(
+      r.ipAddress &&
+      integration &&
+      (integration.type === "fortimanager" || integration.type === "fortigate") &&
+      cfg.pushReservations === true
+    );
+    // Strip the integration blob from the response — callers only need the
+    // computed flag, and config can carry credentials.
+    const { integration: _omit, ...subnetOut } = (r.subnet ?? {}) as Record<string, unknown>;
+    return { ...r, subnet: r.subnet ? subnetOut : r.subnet, pushEligible };
+  });
+
+  return { reservations: decorated, total, limit, offset };
 }
 
 // ─── Get ──────────────────────────────────────────────────────────────────────

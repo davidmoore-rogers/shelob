@@ -156,12 +156,21 @@
 
     var user = _state.user;
     var buttons = [];
-    if (r.sourceType === "dhcp_lease" && canCreate(user)) {
-      buttons.push('<button class="btn btn-filled" data-act="reserve" data-id="' + escapeHtml(r.id) + '">Reserve to gate</button>');
+    var isLease = r.sourceType === "dhcp_lease";
+    if (isLease && canCreate(user)) {
+      // Green when push-eligible so the operator sees that confirming
+      // also writes the reservation to the FortiGate.
+      var reserveCls = r.pushEligible ? "btn-success" : "btn-filled";
+      var reserveTitle = r.pushEligible ? "Reserve on Gate" : "Reserve in Polaris";
+      buttons.push('<button class="btn ' + reserveCls + '" data-act="reserve" data-id="' + escapeHtml(r.id) + '" title="' + reserveTitle + '">Reserve</button>');
     }
     if (canModify(user, r)) {
       buttons.push('<button class="btn btn-tonal" data-act="edit" data-id="' + escapeHtml(r.id) + '">Edit</button>');
-      buttons.push('<button class="btn btn-error" data-act="free" data-id="' + escapeHtml(r.id) + '">Free</button>');
+      // Leases → Revoke (forgets the current lease, client can re-acquire);
+      // reservations → Release (gives up the reservation).
+      var freeLabel = isLease ? "Revoke" : "Release";
+      var freeTitle = isLease ? "Revoke Lease" : "Release Reservation";
+      buttons.push('<button class="btn btn-error" data-act="free" data-id="' + escapeHtml(r.id) + '" title="' + freeTitle + '">' + freeLabel + '</button>');
     }
     if (r.subnetId) {
       buttons.push('<button class="btn btn-text" data-act="open-subnet" data-subnet="' + escapeHtml(r.subnetId) + '">Open network</button>');
