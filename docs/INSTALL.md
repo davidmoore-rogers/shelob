@@ -239,7 +239,7 @@ sudo systemctl start polaris
 sudo journalctl -u polaris -f --no-pager
 ```
 
-After step 10 succeeds, follow *Recommended: TimescaleDB* below to install the extension. On the first restart afterward, Polaris detects the extension and converts the six monitoring sample tables to hypertables (~5-15 min for a fleet that's been running for weeks; no operator action required, just patience as conversions log in the journal).
+After step 10 succeeds, follow *Recommended: TimescaleDB* below to install the extension. On the first restart afterward, Polaris detects the extension and converts the eighteen monitoring sample tables to hypertables — six source tables plus twelve `*_hourly` / `*_daily` rollup tables produced by the tiered-retention rollup job (~5-15 min for a fleet that's been running for weeks; no operator action required, just patience as conversions log in the journal).
 
 ### Recovery: postgres crashes on a full /var
 
@@ -432,13 +432,13 @@ Browse to `http://<host>:3000` to run the setup wizard.
 
 ## Recommended: TimescaleDB
 
-Polaris's monitoring sample tables (`asset_monitor_samples`, `asset_telemetry_samples`, `asset_temperature_samples`, `asset_interface_samples`, `asset_storage_samples`, `asset_ipsec_tunnel_samples`) are append-only time-series. Plain Postgres handles them fine at small scale, but once the combined size crosses ~1 GB the daily retention prune starts seq-scanning hundreds of millions of rows, contending with normal write load. **TimescaleDB** (an official Postgres extension) converts these tables to hypertables with chunk-based partitioning and native compression:
+Polaris's monitoring data lives in eighteen sample tables: six source tables (`asset_monitor_samples`, `asset_telemetry_samples`, `asset_temperature_samples`, `asset_interface_samples`, `asset_storage_samples`, `asset_ipsec_tunnel_samples`) that hold raw per-cadence samples, plus twelve `*_hourly` / `*_daily` rollup tables produced by the tiered-retention rollup job (one hourly + one daily companion per source). All eighteen are append-only / upsert-only time-series. Plain Postgres handles them fine at small scale, but once the combined size crosses ~1 GB the daily retention prune starts seq-scanning hundreds of millions of rows, contending with normal write load. **TimescaleDB** (an official Postgres extension) converts all of them to hypertables with chunk-based partitioning and native compression:
 
 - Daily prune becomes `DROP CHUNK` (instant, no seq-scan, no lock contention)
 - Compressed chunks (default: anything older than 7 days) take ~10–30× less disk
 - Read queries are unchanged — Polaris uses ordinary SQL, Timescale handles transparency
 
-Polaris **detects the extension at boot**. If present, the boot-time migration converts the six sample tables to hypertables on the next startup and adds the compression policy. If absent, Polaris stays on plain-Postgres prune and surfaces a `timescale_recommended` alert in the Maintenance tab once sample tables grow past 1 GB.
+Polaris **detects the extension at boot**. If present, the boot-time migration converts all eighteen tables to hypertables on the next startup (source tables partitioned by `timestamp`; rollup tables by `bucketStart`) and adds the compression policy. If absent, Polaris stays on plain-Postgres prune and surfaces a `timescale_recommended` alert in the Maintenance tab once sample tables grow past 1 GB.
 
 If you're standing up a new install on RHEL/Rocky/AlmaLinux 9, Ubuntu/Debian, or Docker, install Timescale **before** the first run so all sample tables become hypertables from the start with no conversion downtime.
 
