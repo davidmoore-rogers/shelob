@@ -5617,12 +5617,13 @@ function renderProfileDetail(detail) {
     'every asset under this profile; per-model exceptions fall under each row.' +
   '</div>';
   html += '<table class="ip-table" style="margin-bottom:8px"><thead><tr>' +
-    '<th style="width:12%">Metric</th>' +
+    '<th style="width:8%">Metric</th>' +
+    '<th style="width:12%">Model</th>' +
     '<th style="width:18%">MIB</th>' +
     '<th style="width:9%">Type</th>' +
-    '<th>Default symbol</th>' +
-    '<th style="width:14%">Transform</th>' +
-    '<th style="width:140px"></th>' +
+    '<th>Symbol</th>' +
+    '<th style="width:12%">Transform</th>' +
+    '<th style="width:140px">Action</th>' +
   '</tr></thead><tbody>';
 
   detail.metrics.forEach(function (m) {
@@ -5630,7 +5631,12 @@ function renderProfileDetail(detail) {
     var editing = !!_mfgProfileMetricEdit[editKey];
     var isMemory = m.metricKey === "memory";
     html += '<tr data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '">' +
-      '<td><b>' + escapeHtml(METRIC_KEY_LABELS[m.metricKey] || m.metricKey) + '</b></td>';
+      '<td><b>' + escapeHtml(METRIC_KEY_LABELS[m.metricKey] || m.metricKey) + '</b></td>' +
+      // MODEL column for the default row — "DEFAULT" badge marks the
+      // profile-wide entry the resolver falls back to when no per-model
+      // override matches. Override rows fill this column with their model
+      // pattern instead.
+      '<td><span style="font-size:0.74rem;font-weight:600;letter-spacing:0.04em;color:var(--color-text-tertiary)">DEFAULT</span></td>';
     if (editing) {
       // Use the row's current MIB selection (if the operator has changed
       // it during this edit session it lives in the shadow store via the
@@ -5716,35 +5722,32 @@ function renderProfileDetail(detail) {
     // tab width. Each cell of the parent table gets its own field so the
     // columns line up vertically with the metric row above.
     var newMibId = _mfgNewOverrideMibId(detail.id, m.metricKey) || null;
+    // Add-override row layout matches the override view + edit rows:
+    //   METRIC (blank) · MODEL (↳ add label + pattern input) · MIB · TYPE · SYMBOL · TRANSFORM · ACTION
+    var newPatternCell =
+      '<td style="padding-left:20px"><div style="display:flex;align-items:center;gap:4px">' +
+        '<span style="color:var(--color-text-tertiary);font-size:0.74rem">↳ add</span>' +
+        '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex" style="flex:1;font-size:0.78rem">' +
+      '</div></td>';
     if (isMemory) {
-      // Memory's add-override row mirrors the edit form. Column order matches
-      // the metric edit row above: MIB · Shape (in the Type slot) · pattern +
-      // Symbol(s) · Transform · Add.
       var newMemShape = _mfgEditMemoryShapeFor("new:" + detail.id + ":" + m.metricKey, "bytes_used_total");
       html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '" style="background:var(--color-bg-primary)">' +
-        '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.74rem">↳ add</td>' +
+        '<td></td>' +
+        newPatternCell +
         '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer, true) + '</td>' +
         '<td>' + _memoryShapeSelectHTML("mfg-new-override-mem-shape", newMemShape) + '</td>' +
-        '<td><div style="display:flex;flex-direction:column;gap:4px">' +
-          '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex" style="font-size:0.78rem">' +
-          _memoryEditSymbolHTML(newMemShape, newMibId, null, "", "mfg-new-override-mem") +
-        '</div></td>' +
+        '<td>' + _memoryEditSymbolHTML(newMemShape, newMibId, null, "", "mfg-new-override-mem") + '</td>' +
         '<td>' + renderTransformSelect(null, "mfg-new-override-transform") + '</td>' +
         '<td><button class="btn btn-sm mfg-override-add">Add</button></td>' +
       '</tr>';
     } else {
-      // Column order: MIB · Type · pattern + Symbol · Transform · Add. Type
-      // picks first so the Symbol dropdown populates from either the scalar
-      // list or the table list of the chosen MIB.
       var newType = _mfgEditTypeFor("new:" + detail.id + ":" + m.metricKey, "scalar");
       html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '" style="background:var(--color-bg-primary)">' +
-        '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.74rem">↳ add</td>' +
+        '<td></td>' +
+        newPatternCell +
         '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer, true) + '</td>' +
         '<td>' + renderTypeSelect(newType, "mfg-new-override-type") + '</td>' +
-        '<td><div style="display:flex;gap:4px">' +
-          '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex"  style="flex:0 0 130px;font-size:0.78rem">' +
-          renderSymbolPicker("", newMibId, "mfg-new-override-symbol", newType) +
-        '</div></td>' +
+        '<td>' + renderSymbolPicker("", newMibId, "mfg-new-override-symbol", newType) + '</td>' +
         '<td>' + renderTransformSelect(null, "mfg-new-override-transform") + '</td>' +
         '<td><button class="btn btn-sm mfg-override-add">Add</button></td>' +
       '</tr>';
@@ -5760,22 +5763,31 @@ function renderProfileDetail(detail) {
 function renderOverrideRow(profileId, metricKey, o, manufacturer) {
   var editing = !!_mfgProfileOverrideEdit[o.id];
   var isMemory = metricKey === "memory";
+  // Override rows leave the METRIC column blank (the default row above
+  // already names the metric). The MODEL column carries the override's
+  // identity — the regex literal in view mode, a Model regex input in
+  // edit mode. The leading ↳ visually nests the row under its default.
   var head = '<tr class="mfg-override-row" data-profile-id="' + escapeHtml(profileId) +
     '" data-metric-key="' + escapeHtml(metricKey) +
     '" data-override-id="' + escapeHtml(o.id) + '" style="background:var(--color-bg-primary)">' +
-    '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.78rem">↳ model</td>';
+    '<td></td>';
   if (editing) {
     var oMibId = _mfgOverrideEditMibId(o.id);
     if (oMibId === undefined) oMibId = joinMibSelection(o.mibId, o.mibStdKey); // first render: persisted value
+    // Column order matches the metric default row above:
+    //   METRIC (blank) · MODEL (↳ pattern input) · MIB · TYPE · SYMBOL · TRANSFORM · ACTION
+    var patternCell =
+      '<td style="padding-left:20px"><div style="display:flex;align-items:center;gap:4px">' +
+        '<span style="color:var(--color-text-tertiary);font-size:0.78rem">↳</span>' +
+        '<input type="text" class="mfg-edit-override-pattern" value="' + escapeHtml(o.modelPattern) + '" placeholder="Model regex" style="flex:1;font-size:0.78rem">' +
+      '</div></td>';
     if (isMemory) {
       var memShape = _mfgEditMemoryShapeFor("override:" + o.id, o.composition && o.composition.shape);
       return head +
+        patternCell +
         '<td>' + renderMibSelect(oMibId, "mfg-edit-override-mib", manufacturer) + '</td>' +
         '<td>' + _memoryShapeSelectHTML("mfg-edit-override-mem-shape", memShape) + '</td>' +
-        '<td><div style="display:flex;flex-direction:column;gap:4px">' +
-          '<input type="text" class="mfg-edit-override-pattern" value="' + escapeHtml(o.modelPattern) + '" placeholder="Model regex" style="font-size:0.78rem">' +
-          _memoryEditSymbolHTML(memShape, oMibId, o.composition, o.symbol, "mfg-edit-override-mem") +
-        '</div></td>' +
+        '<td>' + _memoryEditSymbolHTML(memShape, oMibId, o.composition, o.symbol, "mfg-edit-override-mem") + '</td>' +
         '<td>' + renderTransformSelect(o.transform, "mfg-edit-override-transform") + '</td>' +
         '<td><button class="btn btn-sm btn-primary mfg-override-save">Save</button> ' +
           '<button class="btn btn-sm mfg-override-cancel">Cancel</button></td>' +
@@ -5783,12 +5795,10 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
     }
     var oEditType = _mfgEditTypeFor("override:" + o.id, o.type);
     return head +
+      patternCell +
       '<td>' + renderMibSelect(oMibId, "mfg-edit-override-mib", manufacturer) + '</td>' +
       '<td>' + renderTypeSelect(oEditType, "mfg-edit-override-type") + '</td>' +
-      '<td><div style="display:flex;gap:4px">' +
-        '<input type="text" class="mfg-edit-override-pattern" value="' + escapeHtml(o.modelPattern) + '" placeholder="Model regex" style="flex:0 0 130px;font-size:0.78rem">' +
-        renderSymbolPicker(o.symbol, oMibId, "mfg-edit-override-symbol", oEditType) +
-      '</div></td>' +
+      '<td>' + renderSymbolPicker(o.symbol, oMibId, "mfg-edit-override-symbol", oEditType) + '</td>' +
       '<td>' + renderTransformSelect(o.transform, "mfg-edit-override-transform") + '</td>' +
       '<td><button class="btn btn-sm btn-primary mfg-override-save">Save</button> ' +
         '<button class="btn btn-sm mfg-override-cancel">Cancel</button></td>' +
@@ -5806,16 +5816,22 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
         : (seedMibO
             ? '<span style="color:var(--color-text-secondary);font-style:italic">' + escapeHtml(seedMibO) + '</span>'
             : '<span style="color:var(--color-text-tertiary);font-style:italic">seed</span>'));
+  // MODEL column carries the regex literal (e.g. "FortiSwitch") with a
+  // leading ↳ to nest it visually under its default row above.
+  var modelCell =
+    '<td style="padding-left:20px"><span style="color:var(--color-text-tertiary);font-size:0.78rem">↳</span> ' +
+      '<code style="font-size:0.8rem">' + escapeHtml(o.modelPattern) + '</code>' +
+    '</td>';
+  // Symbol cell no longer carries the model regex — that's in the MODEL
+  // column now. Just the symbol value (or memory's multi-OID display).
   var symbolCell = isMemory
-    ? '<div style="display:flex;flex-direction:column;gap:2px">' +
-        '<span style="font-size:0.78rem;color:var(--color-text-secondary)">model regex: <code style="font-size:0.78rem">' + escapeHtml(o.modelPattern) + '</code></span>' +
-        _memoryViewSymbolHTML(o.composition, o.symbol) +
-      '</div>'
-    : '<code style="font-size:0.8rem">' + escapeHtml(o.modelPattern) + '</code> &rarr; <code style="font-size:0.8rem">' + escapeHtml(o.symbol) + '</code>';
+    ? _memoryViewSymbolHTML(o.composition, o.symbol)
+    : '<code style="font-size:0.8rem">' + escapeHtml(o.symbol) + '</code>';
   var typeCell = isMemory
     ? _memoryViewShapeHTML(o.composition, o.type)
     : '<span style="font-size:0.78rem">' + escapeHtml(o.type) + '</span>';
   return head +
+    modelCell +
     '<td><span style="font-size:0.78rem">' + mibLabel + '</span></td>' +
     '<td>' + typeCell + '</td>' +
     '<td>' + symbolCell + '</td>' +
