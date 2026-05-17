@@ -2905,6 +2905,16 @@ function _mfgEditMemoryShapeFor(key, fallbackShape) {
   if (key in _mfgEditMemoryShape) return _mfgEditMemoryShape[key];
   return fallbackShape || "percent";
 }
+
+// Mid-edit Type selections (scalar | table). Same lifecycle / key shape as
+// _mfgEditMibSelections. Drives the per-row Symbol picker so flipping Type
+// re-renders the dropdown with either the MIB's scalar list or its table
+// list. Cleared on save / cancel.
+var _mfgEditTypeSelections = {};    // key → "scalar" | "table"
+function _mfgEditTypeFor(key, fallback) {
+  if (key in _mfgEditTypeSelections) return _mfgEditTypeSelections[key];
+  return fallback || "scalar";
+}
 var _MEMORY_SHAPE_LABELS = {
   percent:           "Percent (single OID)",
   bytes_used_total:  "Bytes (used + total)",
@@ -5609,8 +5619,8 @@ function renderProfileDetail(detail) {
   html += '<table class="ip-table" style="margin-bottom:8px"><thead><tr>' +
     '<th style="width:12%">Metric</th>' +
     '<th style="width:18%">MIB</th>' +
-    '<th>Default symbol</th>' +
     '<th style="width:9%">Type</th>' +
+    '<th>Default symbol</th>' +
     '<th style="width:14%">Transform</th>' +
     '<th style="width:140px"></th>' +
   '</tr></thead><tbody>';
@@ -5631,23 +5641,28 @@ function renderProfileDetail(detail) {
       var editMibId = (typeof _mfgEditMibId === "function" && _mfgEditMibId(detail.id, m.metricKey))
         || joinMibSelection(m.defaultMibId, m.defaultMibStdKey);
       if (isMemory) {
-        // Memory's Type cell becomes a Shape selector; the Symbol cell holds
+        // Memory's Type slot becomes a Shape selector; the Symbol cell holds
         // 1 or 2 pickers driven by the Shape value. Live shape is taken from
         // the in-edit shadow map first, then the persisted composition, then
         // "percent" as the default for newly-edited rows with no composition.
+        // Column order: MIB · Shape (in Type slot) · Symbol(s) · Transform.
         var memShape = _mfgEditMemoryShapeFor("metric:" + detail.id + ":memory", m.composition && m.composition.shape);
         html +=
           '<td>' + renderMibSelect(editMibId, "mfg-edit-mib", detail.manufacturer) + '</td>' +
-          '<td>' + _memoryEditSymbolHTML(memShape, editMibId, m.composition, m.defaultSymbol, "mfg-edit-mem") + '</td>' +
           '<td>' + _memoryShapeSelectHTML("mfg-edit-mem-shape", memShape) + '</td>' +
+          '<td>' + _memoryEditSymbolHTML(memShape, editMibId, m.composition, m.defaultSymbol, "mfg-edit-mem") + '</td>' +
           '<td>' + renderTransformSelect(m.defaultTransform, "mfg-edit-transform") + '</td>' +
           '<td><button class="btn btn-sm btn-primary mfg-metric-save">Save</button> ' +
             '<button class="btn btn-sm mfg-metric-cancel">Cancel</button></td>';
       } else {
+        // Column order: MIB · Type · Symbol · Transform. Type picks first so
+        // the Symbol dropdown populates from either the scalar list or the
+        // table list of the chosen MIB.
+        var editType = _mfgEditTypeFor("metric:" + detail.id + ":" + m.metricKey, m.defaultType);
         html +=
           '<td>' + renderMibSelect(editMibId, "mfg-edit-mib", detail.manufacturer) + '</td>' +
-          '<td>' + renderSymbolPicker(m.defaultSymbol || "", editMibId, "mfg-edit-symbol") + '</td>' +
-          '<td>' + renderTypeSelect(m.defaultType, "mfg-edit-type") + '</td>' +
+          '<td>' + renderTypeSelect(editType, "mfg-edit-type") + '</td>' +
+          '<td>' + renderSymbolPicker(m.defaultSymbol || "", editMibId, "mfg-edit-symbol", editType) + '</td>' +
           '<td>' + renderTransformSelect(m.defaultTransform, "mfg-edit-transform") + '</td>' +
           '<td><button class="btn btn-sm btn-primary mfg-metric-save">Save</button> ' +
             '<button class="btn btn-sm mfg-metric-cancel">Cancel</button></td>';
@@ -5679,8 +5694,8 @@ function renderProfileDetail(detail) {
         : '<span style="font-size:0.78rem">' + escapeHtml(m.defaultType) + '</span>';
       html +=
         '<td>' + mibDisplay + '</td>' +
-        '<td>' + defaultDisplay + '</td>' +
         '<td>' + typeCell + '</td>' +
+        '<td>' + defaultDisplay + '</td>' +
         '<td><span style="font-size:0.78rem;color:var(--color-text-secondary)">' + (m.defaultTransform ? escapeHtml(transformLabel(m.defaultTransform)) : "—") + '</span></td>' +
         '<td><button class="btn btn-sm mfg-metric-edit">Edit</button></td>';
     }
@@ -5698,30 +5713,34 @@ function renderProfileDetail(detail) {
     // columns line up vertically with the metric row above.
     var newMibId = _mfgNewOverrideMibId(detail.id, m.metricKey) || null;
     if (isMemory) {
-      // Memory's add-override row mirrors the edit form: Shape picker drives
-      // 1 or 2 stacked symbol pickers; pattern + Shape live in the standard
-      // pattern-cell + type-cell slots so the table columns stay aligned.
+      // Memory's add-override row mirrors the edit form. Column order matches
+      // the metric edit row above: MIB · Shape (in the Type slot) · pattern +
+      // Symbol(s) · Transform · Add.
       var newMemShape = _mfgEditMemoryShapeFor("new:" + detail.id + ":" + m.metricKey, "bytes_used_total");
       html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '" style="background:var(--color-bg-primary)">' +
         '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.74rem">↳ add</td>' +
         '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer, true) + '</td>' +
+        '<td>' + _memoryShapeSelectHTML("mfg-new-override-mem-shape", newMemShape) + '</td>' +
         '<td><div style="display:flex;flex-direction:column;gap:4px">' +
           '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex" style="font-size:0.78rem">' +
           _memoryEditSymbolHTML(newMemShape, newMibId, null, "", "mfg-new-override-mem") +
         '</div></td>' +
-        '<td>' + _memoryShapeSelectHTML("mfg-new-override-mem-shape", newMemShape) + '</td>' +
         '<td>' + renderTransformSelect(null, "mfg-new-override-transform") + '</td>' +
         '<td><button class="btn btn-sm mfg-override-add">Add</button></td>' +
       '</tr>';
     } else {
+      // Column order: MIB · Type · pattern + Symbol · Transform · Add. Type
+      // picks first so the Symbol dropdown populates from either the scalar
+      // list or the table list of the chosen MIB.
+      var newType = _mfgEditTypeFor("new:" + detail.id + ":" + m.metricKey, "scalar");
       html += '<tr class="mfg-add-override-row" data-profile-id="' + escapeHtml(detail.id) + '" data-metric-key="' + escapeHtml(m.metricKey) + '" style="background:var(--color-bg-primary)">' +
         '<td style="padding-left:24px;color:var(--color-text-tertiary);font-size:0.74rem">↳ add</td>' +
         '<td>' + renderMibSelect(newMibId, "mfg-new-override-mib", detail.manufacturer, true) + '</td>' +
+        '<td>' + renderTypeSelect(newType, "mfg-new-override-type") + '</td>' +
         '<td><div style="display:flex;gap:4px">' +
           '<input type="text" class="mfg-new-override-pattern" placeholder="Model regex"  style="flex:0 0 130px;font-size:0.78rem">' +
-          renderSymbolPicker("", newMibId, "mfg-new-override-symbol") +
+          renderSymbolPicker("", newMibId, "mfg-new-override-symbol", newType) +
         '</div></td>' +
-        '<td>' + renderTypeSelect("scalar", "mfg-new-override-type") + '</td>' +
         '<td>' + renderTransformSelect(null, "mfg-new-override-transform") + '</td>' +
         '<td><button class="btn btn-sm mfg-override-add">Add</button></td>' +
       '</tr>';
@@ -5748,23 +5767,24 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
       var memShape = _mfgEditMemoryShapeFor("override:" + o.id, o.composition && o.composition.shape);
       return head +
         '<td>' + renderMibSelect(oMibId, "mfg-edit-override-mib", manufacturer) + '</td>' +
+        '<td>' + _memoryShapeSelectHTML("mfg-edit-override-mem-shape", memShape) + '</td>' +
         '<td><div style="display:flex;flex-direction:column;gap:4px">' +
           '<input type="text" class="mfg-edit-override-pattern" value="' + escapeHtml(o.modelPattern) + '" placeholder="Model regex" style="font-size:0.78rem">' +
           _memoryEditSymbolHTML(memShape, oMibId, o.composition, o.symbol, "mfg-edit-override-mem") +
         '</div></td>' +
-        '<td>' + _memoryShapeSelectHTML("mfg-edit-override-mem-shape", memShape) + '</td>' +
         '<td>' + renderTransformSelect(o.transform, "mfg-edit-override-transform") + '</td>' +
         '<td><button class="btn btn-sm btn-primary mfg-override-save">Save</button> ' +
           '<button class="btn btn-sm mfg-override-cancel">Cancel</button></td>' +
       '</tr>';
     }
+    var oEditType = _mfgEditTypeFor("override:" + o.id, o.type);
     return head +
       '<td>' + renderMibSelect(oMibId, "mfg-edit-override-mib", manufacturer) + '</td>' +
+      '<td>' + renderTypeSelect(oEditType, "mfg-edit-override-type") + '</td>' +
       '<td><div style="display:flex;gap:4px">' +
         '<input type="text" class="mfg-edit-override-pattern" value="' + escapeHtml(o.modelPattern) + '" placeholder="Model regex" style="flex:0 0 130px;font-size:0.78rem">' +
-        renderSymbolPicker(o.symbol, oMibId, "mfg-edit-override-symbol") +
+        renderSymbolPicker(o.symbol, oMibId, "mfg-edit-override-symbol", oEditType) +
       '</div></td>' +
-      '<td>' + renderTypeSelect(o.type, "mfg-edit-override-type") + '</td>' +
       '<td>' + renderTransformSelect(o.transform, "mfg-edit-override-transform") + '</td>' +
       '<td><button class="btn btn-sm btn-primary mfg-override-save">Save</button> ' +
         '<button class="btn btn-sm mfg-override-cancel">Cancel</button></td>' +
@@ -5793,8 +5813,8 @@ function renderOverrideRow(profileId, metricKey, o, manufacturer) {
     : '<span style="font-size:0.78rem">' + escapeHtml(o.type) + '</span>';
   return head +
     '<td><span style="font-size:0.78rem">' + mibLabel + '</span></td>' +
-    '<td>' + symbolCell + '</td>' +
     '<td>' + typeCell + '</td>' +
+    '<td>' + symbolCell + '</td>' +
     '<td><span style="font-size:0.78rem;color:var(--color-text-secondary)">' + (o.transform ? escapeHtml(transformLabel(o.transform)) : "—") + '</span></td>' +
     '<td><button class="btn btn-sm mfg-override-edit">Edit</button> ' +
       '<button class="btn btn-sm btn-danger mfg-override-del">Del</button></td>' +
@@ -5898,7 +5918,7 @@ function renderTransformSelect(current, cls) {
 // we render a `<select>` populated with that MIB's readable symbol
 // names. While the structure is in flight we render a disabled select
 // with "Loading…" so the operator sees the chain react.
-function renderSymbolPicker(currentSymbol, mibId, cls) {
+function renderSymbolPicker(currentSymbol, mibId, cls, type) {
   // Standard-MIB picks (std:*) and "Built-in seed" (empty) both fall back
   // to free-text — there's no enumerable symbol directory on the frontend
   // for those, since the seeded OIDs live in oidRegistry without a parsed
@@ -5918,28 +5938,40 @@ function renderSymbolPicker(currentSymbol, mibId, cls) {
       '<option>Loading symbols…</option>' +
     '</select>';
   }
+  // Pick which side of the split to surface. `type === "table"` shows the
+  // table-row OIDs (each one walks to a 2D result); anything else (scalar
+  // is the default) shows the scalar/leaf symbols. Memory's multi-OID
+  // picker still passes no type and gets the scalars list, matching its
+  // pre-split behaviour.
+  var names = (type === "table") ? (entry.tables || []) : (entry.scalars || []);
   var html = '<select class="' + cls + '" style="width:100%;font-size:0.78rem">' +
     '<option value="">— select —</option>';
-  entry.names.forEach(function (name) {
+  // Defensive: if the current value isn't in the chosen list (e.g. operator
+  // had a table symbol selected and flipped Type to scalar) still surface it
+  // as a selected option so the form save round-trips cleanly while the
+  // operator decides whether to switch.
+  if (currentSymbol && names.indexOf(currentSymbol) === -1) {
+    html += '<option value="' + escapeHtml(currentSymbol) + '" selected>' +
+      escapeHtml(currentSymbol) + ' (not a ' + escapeHtml(type === "table" ? "table" : "scalar") + ')' +
+    '</option>';
+  }
+  names.forEach(function (name) {
     html += '<option value="' + escapeHtml(name) + '"' +
       (currentSymbol === name ? " selected" : "") + '>' +
       escapeHtml(name) +
     '</option>';
   });
-  // Preserve a current value that isn't in the list (operator-typed
-  // symbol from before the dropdown existed) so a re-render doesn't
-  // silently drop it.
-  if (currentSymbol && entry.names.indexOf(currentSymbol) === -1) {
-    html += '<option value="' + escapeHtml(currentSymbol) + '" selected>' +
-      escapeHtml(currentSymbol) + ' (custom)' +
-    '</option>';
-  }
+  // (The "not a scalar"/"not a table" pre-pended option above already
+  // preserves any current value that isn't in the chosen list.)
   html += '</select>';
   return html;
 }
 
-// Lazy-fetch + cache one MIB's symbol list. Walks the structured parse
-// (tables + scalars) and concatenates every readable symbol's `name`.
+// Lazy-fetch + cache one MIB's symbol list, split into `tables` vs
+// `scalars` so the per-row Symbol picker can populate from whichever
+// list matches the operator's chosen Type. Mirrors the Browse modal's
+// split: tables come from `struct.tables[]`, scalars are every other
+// symbol that isn't a table column, table row, or table name.
 // Re-render happens once the fetch resolves so the disabled "Loading…"
 // state in the picker swaps to the populated dropdown.
 function _ensureMibSymbols(mibId) {
@@ -5949,16 +5981,29 @@ function _ensureMibSymbols(mibId) {
   if (typeof mibId === "string" && mibId.indexOf("std:") === 0) return;
   if (_mfgMibSymbolsCache[mibId] && !_mfgMibSymbolsCache[mibId].loading) return;
   if (_mfgMibSymbolsCache[mibId] && _mfgMibSymbolsCache[mibId].loading) return; // already in flight
-  _mfgMibSymbolsCache[mibId] = { loading: true, names: [] };
+  _mfgMibSymbolsCache[mibId] = { loading: true, scalars: [], tables: [] };
   api.serverSettings.getMibStructure(mibId).then(function (struct) {
-    var names = [];
-    (struct.symbols || []).forEach(function (s) { if (s.name) names.push(s.name); });
-    // De-dupe + sort for the dropdown so it's predictable.
-    names = Array.from(new Set(names)).sort(function (a, b) { return a.localeCompare(b); });
-    _mfgMibSymbolsCache[mibId] = { loading: false, names: names };
+    var tables = (struct.tables || []).map(function (t) { return t.name; }).filter(Boolean);
+    // Build "everything that isn't a table-related symbol" for the scalar list.
+    var tableColumns = new Set();
+    var tableRows    = new Set();
+    var tableNames   = new Set(tables);
+    (struct.tables || []).forEach(function (t) {
+      if (t.rowSymbol) tableRows.add(t.rowSymbol);
+      (t.columns || []).forEach(function (c) { tableColumns.add(c); });
+    });
+    var scalars = (struct.symbols || [])
+      .map(function (s) { return s.name; })
+      .filter(function (n) {
+        return n && !tableColumns.has(n) && !tableRows.has(n) && !tableNames.has(n);
+      });
+    // De-dupe + sort so both dropdowns are predictable.
+    tables  = Array.from(new Set(tables)).sort(function (a, b) { return a.localeCompare(b); });
+    scalars = Array.from(new Set(scalars)).sort(function (a, b) { return a.localeCompare(b); });
+    _mfgMibSymbolsCache[mibId] = { loading: false, scalars: scalars, tables: tables };
     renderIdentificationTab();
   }).catch(function (err) {
-    _mfgMibSymbolsCache[mibId] = { loading: false, names: [] };
+    _mfgMibSymbolsCache[mibId] = { loading: false, scalars: [], tables: [] };
     showToast(err.message || "Failed to load MIB symbols", "error");
     renderIdentificationTab();
   });
@@ -6146,6 +6191,31 @@ function wireManufacturerProfileControls() {
       renderIdentificationTab();
       return;
     }
+    // Type selectors — flipping scalar ↔ table re-renders the Symbol picker
+    // so its dropdown populates from the matching list (scalars vs tables)
+    // of the chosen MIB. Three flavours, same key-shape as the MIB and
+    // memory-Shape selectors.
+    if (target.classList.contains("mfg-edit-type")) {
+      var trType = target.closest("tr");
+      if (!trType) return;
+      _mfgEditTypeSelections["metric:" + trType.getAttribute("data-profile-id") + ":" + trType.getAttribute("data-metric-key")] = target.value;
+      renderIdentificationTab();
+      return;
+    }
+    if (target.classList.contains("mfg-edit-override-type")) {
+      var trTypeOv = target.closest("tr");
+      if (!trTypeOv) return;
+      _mfgEditTypeSelections["override:" + trTypeOv.getAttribute("data-override-id")] = target.value;
+      renderIdentificationTab();
+      return;
+    }
+    if (target.classList.contains("mfg-new-override-type")) {
+      var trTypeNew = target.closest("tr");
+      if (!trTypeNew) return;
+      _mfgEditTypeSelections["new:" + trTypeNew.getAttribute("data-profile-id") + ":" + trTypeNew.getAttribute("data-metric-key")] = target.value;
+      renderIdentificationTab();
+      return;
+    }
   });
 }
 
@@ -6229,6 +6299,7 @@ function cancelMetricEdit(tr) {
   delete _mfgProfileMetricEdit[pid + ":" + mk];
   delete _mfgEditMibSelections["metric:" + pid + ":" + mk];
   delete _mfgEditMemoryShape["metric:" + pid + ":" + mk];
+  delete _mfgEditTypeSelections["metric:" + pid + ":" + mk];
   renderIdentificationTab();
 }
 
@@ -6281,6 +6352,7 @@ async function saveMetricEdit(tr) {
     delete _mfgProfileMetricEdit[profileId + ":" + metricKey];
     delete _mfgEditMibSelections["metric:" + profileId + ":" + metricKey];
     delete _mfgEditMemoryShape["metric:" + profileId + ":" + metricKey];
+    delete _mfgEditTypeSelections["metric:" + profileId + ":" + metricKey];
     showToast("Saved");
     renderIdentificationTab();
   } catch (err) {
@@ -6332,6 +6404,7 @@ async function addOverride(tr) {
     if (resp && resp.override) appendOverrideToDetail(profileId, metricKey, resp.override);
     delete _mfgEditMibSelections["new:" + profileId + ":" + metricKey];
     delete _mfgEditMemoryShape["new:" + profileId + ":" + metricKey];
+    delete _mfgEditTypeSelections["new:" + profileId + ":" + metricKey];
     showToast("Override added");
     renderIdentificationTab();
   } catch (err) {
@@ -6351,6 +6424,7 @@ function cancelOverrideEdit(tr) {
   delete _mfgProfileOverrideEdit[oid];
   delete _mfgEditMibSelections["override:" + oid];
   delete _mfgEditMemoryShape["override:" + oid];
+  delete _mfgEditTypeSelections["override:" + oid];
   renderIdentificationTab();
 }
 
@@ -6400,6 +6474,7 @@ async function saveOverrideEdit(tr) {
     delete _mfgProfileOverrideEdit[overrideId];
     delete _mfgEditMibSelections["override:" + overrideId];
     delete _mfgEditMemoryShape["override:" + overrideId];
+    delete _mfgEditTypeSelections["override:" + overrideId];
     showToast("Saved");
     renderIdentificationTab();
   } catch (err) {
