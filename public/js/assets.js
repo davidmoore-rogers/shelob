@@ -118,6 +118,19 @@ function _chartRangeBtnsHTML(barClass, entries, prefKey, fallback) {
 //
 // parts: [{label: "Avg", value: "83 ms"}, ...] — entries with null/empty
 // value are skipped so callers don't have to filter.
+// Build a "View: Hourly avg" / "View: Daily avg" stats-line entry from the
+// chart history response's tier discriminator. Returns null on the detail
+// tier (or when the response predates the tier field) so callers can
+// safely unshift the result and skip rendering. Wired through every chart
+// loader's _renderChartStats call so operators see at a glance that they
+// are looking at rollup aggregates rather than raw samples.
+function _tierStatsPart(data) {
+  if (!data) return null;
+  var tier = data.tier;
+  if (!tier || tier === "detail") return null;
+  return { label: "View", value: tier === "hourly" ? "Hourly avg" : "Daily avg" };
+}
+
 function _renderChartStats(container, count, parts) {
   if (!container) return;
   // Apply the canonical layout styles directly so any stats container
@@ -3428,12 +3441,15 @@ function _renderSystemSummary(container, tel, si) {
     return;
   }
   var s = tel.stats;
-  _renderChartStats(container, s.total, [
+  var telParts = [
     { label: "CPU avg", value: s.avgCpuPct != null ? s.avgCpuPct.toFixed(1) + "%" : "—" },
     { label: "CPU max", value: s.maxCpuPct != null ? s.maxCpuPct.toFixed(1) + "%" : "—" },
     { label: "Mem avg", value: s.avgMemPct != null ? s.avgMemPct.toFixed(1) + "%" : "—" },
     { label: "Mem max", value: s.maxMemPct != null ? s.maxMemPct.toFixed(1) + "%" : "—" },
-  ]);
+  ];
+  var telTierPart = _tierStatsPart(tel);
+  if (telTierPart) telParts.unshift(telTierPart);
+  _renderChartStats(container, s.total, telParts);
 }
 
 // Returns true when the asset is a managed FortiSwitch or FortiAP whose
@@ -4627,11 +4643,14 @@ async function _loadSensorHistoryFor(assetId, sensorName, range, callOpts) {
     var samples = (data.samples || []).filter(function (s) { return typeof s.celsius === "number"; });
     if (stats) {
       var st = data.stats || {};
-      _renderChartStats(stats, samples.length, [
+      var sensorParts = [
         { label: "Avg", value: typeof st.avgCelsius === "number" ? st.avgCelsius.toFixed(1) + " °C" : "—" },
         { label: "Min", value: typeof st.minCelsius === "number" ? st.minCelsius.toFixed(1) + " °C" : "—" },
         { label: "Max", value: typeof st.maxCelsius === "number" ? st.maxCelsius.toFixed(1) + " °C" : "—" },
-      ]);
+      ];
+      var sensorTierPart = _tierStatsPart(data);
+      if (sensorTierPart) sensorParts.unshift(sensorTierPart);
+      _renderChartStats(stats, samples.length, sensorParts);
     }
     _renderSensorChart(chartEl, samples, {
       since:   data.since,
@@ -6079,12 +6098,15 @@ async function _loadMonitorHistoryFor(assetId, selection, callOpts) {
     _renderMonitorChart(chart, data, transitions);
     if (stats && data.stats) {
       var s = data.stats;
-      _renderChartStats(stats, s.total, [
+      var monitorParts = [
         { label: "Avg",         value: s.avgMs != null ? s.avgMs + " ms" : "—" },
         { label: "Min",         value: s.minMs != null ? s.minMs + " ms" : "—" },
         { label: "Max",         value: s.maxMs != null ? s.maxMs + " ms" : "—" },
         { label: "Packet loss", value: s.packetLossRate != null ? (s.packetLossRate * 100).toFixed(1) + "%" : "—" },
-      ]);
+      ];
+      var monitorTierPart = _tierStatsPart(data);
+      if (monitorTierPart) monitorParts.unshift(monitorTierPart);
+      _renderChartStats(stats, s.total, monitorParts);
     }
   } catch (err) {
     if (!silent) chart.textContent = "Error: " + (err.message || "failed to load history");
@@ -6535,9 +6557,9 @@ async function _loadInterfaceHistoryFor(assetId, ifName, range, callOpts) {
   var opts = (typeof range === "string" || !range) ? { range: range || "1h" } : range;
   try {
     var data = await api.assets.interfaceHistory(assetId, ifName, opts);
-    var derived = _derivePerIntervalSeries(data.samples || []);
-    _renderIfaceThroughputStats(tputStats, data.samples || [], derived);
-    _renderIfaceErrorStats(errStats, data.samples || [], derived);
+    var derived = _derivePerIntervalSeries(data.samples || [], data);
+    _renderIfaceThroughputStats(tputStats, data.samples || [], derived, data);
+    _renderIfaceErrorStats(errStats, data.samples || [], derived, data);
     // Refine the title now that we know the alias; show the operator comment
     // when present.
     var titleEl = document.getElementById("iface-panel-title");
@@ -6716,9 +6738,32 @@ async function _saveIfaceComment() {
   }
 }
 
-// Convert cumulative octet/error counters to per-interval bps and per-interval
-// error counts. Negative deltas (counter wraps or device reboots) are dropped.
-function _derivePerIntervalSeries(samples) {
+// Convert per-bucket counter endpoints (rollup tier) or cumulative
+// octet/error counters (detail tier) into the {timestamp, inBps, outBps,
+// inErr, outErr} shape the throughput + error charts consume.
+//
+// Detail tier (`bucketSeconds === 0` or absent): diff each pair of
+// consecutive samples; negative deltas (counter wraps / device reboots)
+// are dropped, matching the long-standing detail-tier behavior.
+//
+// Rollup tier (`bucketSeconds > 0`): the server already pre-computed
+// `*BytesPerSec` / `*ErrorsPerSec` from the bucket's first/last counter
+// values. We emit one derived point per rollup row — no diff. Bits/sec
+// charts multiply bytes-per-sec by 8. The error-count series multiplies
+// errors-per-sec by `bucketSeconds` so each derived point shows "errors
+// in this bucket" — same semantic as detail tier's "errors in this
+// interval", just at a coarser granularity.
+function _derivePerIntervalSeries(samples, data) {
+  if (data && typeof data.bucketSeconds === "number" && data.bucketSeconds > 0) {
+    var bucketSec = data.bucketSeconds;
+    return (samples || []).map(function (s) {
+      var inBps  = typeof s.inBytesPerSec  === "number" ? s.inBytesPerSec  * 8 : null;
+      var outBps = typeof s.outBytesPerSec === "number" ? s.outBytesPerSec * 8 : null;
+      var inErr  = typeof s.inErrorsPerSec  === "number" ? Math.round(s.inErrorsPerSec  * bucketSec) : null;
+      var outErr = typeof s.outErrorsPerSec === "number" ? Math.round(s.outErrorsPerSec * bucketSec) : null;
+      return { timestamp: s.timestamp, inBps: inBps, outBps: outBps, inErr: inErr, outErr: outErr };
+    });
+  }
   var out = [];
   for (var i = 1; i < samples.length; i++) {
     var prev = samples[i - 1];
@@ -6746,33 +6791,39 @@ function _derivePerIntervalSeries(samples) {
   return out;
 }
 
-function _renderIfaceThroughputStats(container, rawSamples, derived) {
+function _renderIfaceThroughputStats(container, rawSamples, derived, data) {
   if (!container) return;
   var inMax = 0, outMax = 0, inSum = 0, outSum = 0, inN = 0, outN = 0;
   derived.forEach(function (d) {
     if (typeof d.inBps  === "number") { inSum  += d.inBps;  inN++;  if (d.inBps  > inMax)  inMax  = d.inBps; }
     if (typeof d.outBps === "number") { outSum += d.outBps; outN++; if (d.outBps > outMax) outMax = d.outBps; }
   });
-  _renderChartStats(container, rawSamples.length, [
+  var ifaceTputParts = [
     { label: "In avg",   value: _fmtBitsPerSec(inN  ? inSum  / inN  : 0) },
     { label: "In peak",  value: _fmtBitsPerSec(inMax) },
     { label: "Out avg",  value: _fmtBitsPerSec(outN ? outSum / outN : 0) },
     { label: "Out peak", value: _fmtBitsPerSec(outMax) },
-  ]);
+  ];
+  var ifaceTputTierPart = _tierStatsPart(data);
+  if (ifaceTputTierPart) ifaceTputParts.unshift(ifaceTputTierPart);
+  _renderChartStats(container, rawSamples.length, ifaceTputParts);
 }
 
-function _renderIfaceErrorStats(container, rawSamples, derived) {
+function _renderIfaceErrorStats(container, rawSamples, derived, data) {
   if (!container) return;
   var errIn = 0, errOut = 0;
   derived.forEach(function (d) {
     if (typeof d.inErr  === "number") errIn  += d.inErr;
     if (typeof d.outErr === "number") errOut += d.outErr;
   });
-  _renderChartStats(container, rawSamples.length, [
+  var ifaceErrParts = [
     { label: "In errors",  value: String(errIn) },
     { label: "Out errors", value: String(errOut) },
     { label: "Total",      value: String(errIn + errOut) },
-  ]);
+  ];
+  var ifaceErrTierPart = _tierStatsPart(data);
+  if (ifaceErrTierPart) ifaceErrParts.unshift(ifaceErrTierPart);
+  _renderChartStats(container, rawSamples.length, ifaceErrParts);
 }
 
 // Render the LLDP neighbor card inside the interface slide-over. Empty when
@@ -7199,8 +7250,8 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
   try {
     var data = await api.assets.ipsecHistory(assetId, tunnelName, opts);
     var samples = data.samples || [];
-    var derived = _deriveIpsecThroughput(samples);
-    _renderIpsecStats(stats, samples, derived);
+    var derived = _deriveIpsecThroughput(samples, data);
+    _renderIpsecStats(stats, samples, derived, data);
     var ipsecOpts = { since: data.since, until: data.until, subject: tunnelName };
     _renderIpsecStatusChart(statusEl, samples, ipsecOpts);
     _renderIpsecBpsChart(inEl,  derived, "in",  ipsecOpts);
@@ -7240,7 +7291,16 @@ async function _loadIpsecHistoryFor(assetId, tunnelName, range, callOpts) {
 // FortiOS resets phase-1 byte counters when the SA renegotiates, so a
 // negative delta is treated as a counter reset (skipped) rather than negative
 // throughput. Same convention as _derivePerIntervalSeries for interfaces.
-function _deriveIpsecThroughput(samples) {
+// Rollup tier delivers `incomingBytesPerSec` / `outgoingBytesPerSec` already —
+// one derived point per rollup sample, no diff needed.
+function _deriveIpsecThroughput(samples, data) {
+  if (data && typeof data.bucketSeconds === "number" && data.bucketSeconds > 0) {
+    return (samples || []).map(function (s) {
+      var inBps  = typeof s.incomingBytesPerSec === "number" ? s.incomingBytesPerSec * 8 : null;
+      var outBps = typeof s.outgoingBytesPerSec === "number" ? s.outgoingBytesPerSec * 8 : null;
+      return { timestamp: s.timestamp, inBps: inBps, outBps: outBps };
+    });
+  }
   var out = [];
   for (var i = 1; i < samples.length; i++) {
     var prev = samples[i - 1];
@@ -7264,15 +7324,27 @@ function _deriveIpsecThroughput(samples) {
   return out;
 }
 
-function _renderIpsecStats(container, samples, derived) {
+function _renderIpsecStats(container, samples, derived, data) {
   if (!container) return;
   var up = 0, down = 0, partial = 0, dynamic = 0;
-  samples.forEach(function (s) {
-    if (s.status === "up") up++;
-    else if (s.status === "down") down++;
-    else if (s.status === "dynamic") dynamic++;
-    else partial++;
-  });
+  if (data && typeof data.bucketSeconds === "number" && data.bucketSeconds > 0) {
+    // Rollup tier: each row carries per-status counts across its bucket.
+    // Sum them so "Status" reads the same as detail-tier semantics —
+    // total samples observed in each state across the whole range.
+    samples.forEach(function (s) {
+      up      += s.statusUpCount      || 0;
+      down    += s.statusDownCount    || 0;
+      partial += s.statusPartialCount || 0;
+      dynamic += s.statusDynamicCount || 0;
+    });
+  } else {
+    samples.forEach(function (s) {
+      if (s.status === "up") up++;
+      else if (s.status === "down") down++;
+      else if (s.status === "dynamic") dynamic++;
+      else partial++;
+    });
+  }
   var inMax = 0, outMax = 0, inSum = 0, outSum = 0, inN = 0, outN = 0;
   derived.forEach(function (d) {
     if (typeof d.inBps  === "number") { inSum  += d.inBps;  inN++;  if (d.inBps  > inMax)  inMax  = d.inBps; }
@@ -7288,13 +7360,16 @@ function _renderIpsecStats(container, samples, derived) {
     statusValue = up + " up / " + partial + " partial / " + down + " down";
     if (dynamic > 0) statusValue += " / " + dynamic + " dynamic";
   }
-  _renderChartStats(container, samples.length, [
+  var ipsecParts = [
     { label: "Status",   value: statusValue },
     { label: "In avg",   value: _fmtBitsPerSec(inN  ? inSum  / inN  : 0) },
     { label: "In peak",  value: _fmtBitsPerSec(inMax) },
     { label: "Out avg",  value: _fmtBitsPerSec(outN ? outSum / outN : 0) },
     { label: "Out peak", value: _fmtBitsPerSec(outMax) },
-  ]);
+  ];
+  var ipsecTierPart = _tierStatsPart(data);
+  if (ipsecTierPart) ipsecParts.unshift(ipsecTierPart);
+  _renderChartStats(container, samples.length, ipsecParts);
 }
 
 function _renderIpsecStatusChart(container, samples, opts) {
@@ -7600,8 +7675,8 @@ async function _loadStorageHistoryFor(assetId, mountPath, range) {
   try {
     var data = await api.assets.storageHistory(assetId, mountPath, reqOpts);
     var samples = (data && data.samples) || [];
-    _renderStorageBytesStats(bytesStats, samples);
-    _renderStoragePctStats(pctStats, samples);
+    _renderStorageBytesStats(bytesStats, samples, data);
+    _renderStoragePctStats(pctStats, samples, data);
     var renderOpts = { since: data.since, until: data.until, subject: mountPath };
     _renderStorageBytesChart(bytesEl, samples, renderOpts);
     _renderStoragePctChart(pctEl, samples, renderOpts);
@@ -7612,19 +7687,22 @@ async function _loadStorageHistoryFor(assetId, mountPath, range) {
   }
 }
 
-function _renderStorageBytesStats(container, samples) {
+function _renderStorageBytesStats(container, samples, data) {
   if (!container) return;
   var latest = samples.length ? samples[samples.length - 1] : null;
-  _renderChartStats(container, samples.length, [
+  var storageBytesParts = [
     { label: "Latest used", value: latest && typeof latest.usedBytes  === "number" ? _fmtBytes(latest.usedBytes)  : "—" },
     { label: "Total",       value: latest && typeof latest.totalBytes === "number" ? _fmtBytes(latest.totalBytes) : "—" },
     { label: "Free",        value: (latest && typeof latest.totalBytes === "number" && typeof latest.usedBytes === "number")
                                    ? _fmtBytes(Math.max(0, latest.totalBytes - latest.usedBytes))
                                    : "—" },
-  ]);
+  ];
+  var storageBytesTierPart = _tierStatsPart(data);
+  if (storageBytesTierPart) storageBytesParts.unshift(storageBytesTierPart);
+  _renderChartStats(container, samples.length, storageBytesParts);
 }
 
-function _renderStoragePctStats(container, samples) {
+function _renderStoragePctStats(container, samples, data) {
   if (!container) return;
   var pcts = [];
   samples.forEach(function (s) {
@@ -7639,12 +7717,15 @@ function _renderStoragePctStats(container, samples) {
   var latestPct = (latest && latest.totalBytes && latest.usedBytes != null && latest.totalBytes > 0)
     ? ((latest.usedBytes / latest.totalBytes) * 100)
     : null;
-  _renderChartStats(container, samples.length, [
+  var storagePctParts = [
     { label: "Latest", value: latestPct != null ? latestPct.toFixed(1) + "%" : "—" },
     { label: "Avg",    value: avgP      != null ? avgP.toFixed(1)      + "%" : "—" },
     { label: "Min",    value: minP      != null ? minP.toFixed(1)      + "%" : "—" },
     { label: "Max",    value: maxP      != null ? maxP.toFixed(1)      + "%" : "—" },
-  ]);
+  ];
+  var storagePctTierPart = _tierStatsPart(data);
+  if (storagePctTierPart) storagePctParts.unshift(storagePctTierPart);
+  _renderChartStats(container, samples.length, storagePctParts);
 }
 
 function _renderStorageBytesChart(container, samples, opts) {

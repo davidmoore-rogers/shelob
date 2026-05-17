@@ -30,6 +30,15 @@ import {
 import { getCredential } from "../../services/credentialService.js";
 import { resolveConnectionPath } from "../../services/connectionPathService.js";
 import { propagateAfterStatusChange } from "../../services/dependencyTreeService.js";
+import { pickSampleTier } from "../../services/sampleQueryRouter.js";
+import {
+  readMonitorHistory,
+  readTelemetryHistory,
+  readTemperatureHistory,
+  readInterfaceHistory,
+  readStorageHistory,
+  readIpsecHistory,
+} from "../../services/sampleHistoryService.js";
 import {
   type PollingMethod,
   assetSourceKindFromIntegrationType,
@@ -629,29 +638,16 @@ router.get("/:id/monitor-history", async (req, res, next) => {
       since = new Date(+until - windowMs);
       rangeLabel = range;
     }
-    const samples = await prisma.assetMonitorSample.findMany({
-      where: { assetId: id, timestamp: { gte: since, lte: until } },
-      orderBy: { timestamp: "asc" },
-      select: { timestamp: true, success: true, responseTimeMs: true, error: true },
-    });
-    const total = samples.length;
-    const failed = samples.filter((s) => !s.success).length;
-    const okSamples = samples.filter((s) => s.success && typeof s.responseTimeMs === "number").map((s) => s.responseTimeMs as number);
-    const avgMs = okSamples.length ? Math.round(okSamples.reduce((a, b) => a + b, 0) / okSamples.length) : null;
-    const minMs = okSamples.length ? Math.min(...okSamples) : null;
-    const maxMs = okSamples.length ? Math.max(...okSamples) : null;
+    const pick = pickSampleTier(since);
+    const result = await readMonitorHistory(id, since, until, pick.tier);
     res.json({
       range: rangeLabel,
       since,
       until,
-      samples,
-      stats: {
-        total,
-        failed,
-        successRate: total ? (total - failed) / total : null,
-        packetLossRate: total ? failed / total : null,
-        avgMs, minMs, maxMs,
-      },
+      tier: pick.tier,
+      bucketSeconds: pick.bucketSeconds,
+      samples: result.samples,
+      stats: result.stats,
     });
   } catch (err) { next(err); }
 });
@@ -877,33 +873,16 @@ router.get("/:id/telemetry-history", async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const { since, until, rangeLabel } = resolveRange(req);
-    const samples = await prisma.assetTelemetrySample.findMany({
-      where: { assetId: id, timestamp: { gte: since, lte: until } },
-      orderBy: { timestamp: "asc" },
-      select: { timestamp: true, cpuPct: true, memPct: true, memUsedBytes: true, memTotalBytes: true },
-    });
-    const rows = samples.map((s) => ({
-      timestamp:     s.timestamp,
-      cpuPct:        s.cpuPct,
-      memPct:        s.memPct,
-      memUsedBytes:  bigIntToNumber(s.memUsedBytes),
-      memTotalBytes: bigIntToNumber(s.memTotalBytes),
-    }));
-    const cpus = rows.map((r) => r.cpuPct).filter((x): x is number => typeof x === "number");
-    const mems = rows.map((r) => r.memPct ?? (r.memTotalBytes && r.memUsedBytes ? (r.memUsedBytes / r.memTotalBytes) * 100 : null))
-                     .filter((x): x is number => typeof x === "number");
+    const pick = pickSampleTier(since);
+    const result = await readTelemetryHistory(id, since, until, pick.tier);
     res.json({
       range: rangeLabel,
       since,
       until,
-      samples: rows,
-      stats: {
-        total:     rows.length,
-        avgCpuPct: cpus.length ? cpus.reduce((a, b) => a + b, 0) / cpus.length : null,
-        maxCpuPct: cpus.length ? Math.max(...cpus) : null,
-        avgMemPct: mems.length ? mems.reduce((a, b) => a + b, 0) / mems.length : null,
-        maxMemPct: mems.length ? Math.max(...mems) : null,
-      },
+      tier: pick.tier,
+      bucketSeconds: pick.bucketSeconds,
+      samples: result.samples,
+      stats: result.stats,
     });
   } catch (err) { next(err); }
 });
@@ -1219,11 +1198,18 @@ router.get("/:id/interface-history", async (req, res, next) => {
     const ifName = req.query.ifName ? String(req.query.ifName) : null;
     if (!ifName) throw new AppError(400, "ifName query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const [samples, override, neighbors] = await Promise.all([
-      prisma.assetInterfaceSample.findMany({
-        where: { assetId: id, ifName, timestamp: { gte: since, lte: until } },
-        orderBy: { timestamp: "asc" },
-      }),
+    const pick = pickSampleTier(since);
+
+    // Samples come from the tier-aware reader. LLDP neighbors and the
+    // operator-typed comment override are stream-independent — both fetch
+    // in parallel against the asset directly, not against the rollup
+    // tables. The reader's meta carries the discovered alias/description
+    // from the latest sample inside the requested window so the slide-over
+    // header reflects what was configured during that window; the
+    // operator-typed override (Polaris-local) takes precedence for the
+    // resolved `description` field shown in the UI.
+    const [history, override, neighbors] = await Promise.all([
+      readInterfaceHistory(id, since, until, pick.tier, ifName),
       prisma.assetInterfaceOverride.findUnique({
         where: { assetId_ifName: { assetId: id, ifName } },
       }),
@@ -1241,36 +1227,19 @@ router.get("/:id/interface-history", async (req, res, next) => {
         },
       }),
     ]);
-    // The slide-over header shows the alias label and operator comment from the
-    // most recent sample so the panel reflects the current configured values
-    // even when the operator is looking at an older time window. The Polaris
-    // operator-typed comment override (AssetInterfaceOverride.description) wins
-    // over the discovered FortiOS CMDB description; the discovered value is
-    // returned as `discoveredDescription` so the UI can show it as a hint.
-    const latest = samples.length > 0 ? samples[samples.length - 1] : null;
-    const discoveredDescription = latest?.description ?? null;
     const overrideDescription = override?.description ?? null;
     res.json({
       range: rangeLabel,
       ifName,
-      alias:       latest?.alias       ?? null,
-      description: overrideDescription ?? discoveredDescription,
-      discoveredDescription,
+      alias:       history.meta.alias,
+      description: overrideDescription ?? history.meta.discoveredDescription,
+      discoveredDescription: history.meta.discoveredDescription,
       overrideDescription,
       since,
       until,
-      samples: samples.map((s) => ({
-        timestamp:   s.timestamp,
-        adminStatus: s.adminStatus,
-        operStatus:  s.operStatus,
-        speedBps:    bigIntToNumber(s.speedBps),
-        ipAddress:   s.ipAddress,
-        macAddress:  s.macAddress,
-        inOctets:    bigIntToNumber(s.inOctets),
-        outOctets:   bigIntToNumber(s.outOctets),
-        inErrors:    bigIntToNumber(s.inErrors),
-        outErrors:   bigIntToNumber(s.outErrors),
-      })),
+      tier: pick.tier,
+      bucketSeconds: pick.bucketSeconds,
+      samples: history.samples,
       lldpNeighbors: neighbors.map((n) => ({
         chassisIdSubtype:  n.chassisIdSubtype,
         chassisId:         n.chassisId,
@@ -1355,27 +1324,17 @@ router.get("/:id/temperature-history", async (req, res, next) => {
     const id = req.params.id as string;
     const sensorName = req.query.sensorName ? String(req.query.sensorName) : null;
     const { since, until, rangeLabel } = resolveRange(req);
-    const samples = await prisma.assetTemperatureSample.findMany({
-      where: { assetId: id, timestamp: { gte: since, lte: until }, ...(sensorName ? { sensorName } : {}) },
-      orderBy: { timestamp: "asc" },
-    });
-    const cs = samples.map((s) => s.celsius).filter((x): x is number => typeof x === "number");
+    const pick = pickSampleTier(since);
+    const result = await readTemperatureHistory(id, since, until, pick.tier, sensorName);
     res.json({
       range: rangeLabel,
       sensorName,
       since,
       until,
-      samples: samples.map((s) => ({
-        timestamp:  s.timestamp,
-        sensorName: s.sensorName,
-        celsius:    s.celsius,
-      })),
-      stats: {
-        total:      samples.length,
-        avgCelsius: cs.length ? cs.reduce((a, b) => a + b, 0) / cs.length : null,
-        maxCelsius: cs.length ? Math.max(...cs) : null,
-        minCelsius: cs.length ? Math.min(...cs) : null,
-      },
+      tier: pick.tier,
+      bucketSeconds: pick.bucketSeconds,
+      samples: result.samples,
+      stats: result.stats,
     });
   } catch (err) { next(err); }
 });
@@ -1387,23 +1346,16 @@ router.get("/:id/ipsec-history", async (req, res, next) => {
     const tunnelName = req.query.tunnelName ? String(req.query.tunnelName) : null;
     if (!tunnelName) throw new AppError(400, "tunnelName query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const samples = await prisma.assetIpsecTunnelSample.findMany({
-      where: { assetId: id, tunnelName, timestamp: { gte: since, lte: until } },
-      orderBy: { timestamp: "asc" },
-    });
+    const pick = pickSampleTier(since);
+    const result = await readIpsecHistory(id, since, until, pick.tier, tunnelName);
     res.json({
       range: rangeLabel,
       tunnelName,
       since,
       until,
-      samples: samples.map((s) => ({
-        timestamp:     s.timestamp,
-        status:        s.status,
-        remoteGateway: s.remoteGateway,
-        incomingBytes: bigIntToNumber(s.incomingBytes),
-        outgoingBytes: bigIntToNumber(s.outgoingBytes),
-        proxyIdCount:  s.proxyIdCount,
-      })),
+      tier: pick.tier,
+      bucketSeconds: pick.bucketSeconds,
+      samples: result.samples,
     });
   } catch (err) { next(err); }
 });
@@ -1415,20 +1367,16 @@ router.get("/:id/storage-history", async (req, res, next) => {
     const mountPath = req.query.mountPath ? String(req.query.mountPath) : null;
     if (!mountPath) throw new AppError(400, "mountPath query parameter is required");
     const { since, until, rangeLabel } = resolveRange(req);
-    const samples = await prisma.assetStorageSample.findMany({
-      where: { assetId: id, mountPath, timestamp: { gte: since, lte: until } },
-      orderBy: { timestamp: "asc" },
-    });
+    const pick = pickSampleTier(since);
+    const result = await readStorageHistory(id, since, until, pick.tier, mountPath);
     res.json({
       range: rangeLabel,
       mountPath,
       since,
       until,
-      samples: samples.map((s) => ({
-        timestamp:  s.timestamp,
-        totalBytes: bigIntToNumber(s.totalBytes),
-        usedBytes:  bigIntToNumber(s.usedBytes),
-      })),
+      tier: pick.tier,
+      bucketSeconds: pick.bucketSeconds,
+      samples: result.samples,
     });
   } catch (err) { next(err); }
 });
