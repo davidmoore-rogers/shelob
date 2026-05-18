@@ -585,14 +585,124 @@ const RESERVATIONS = [
   },
 ];
 
-const USERS = [
-  { id: "u1", username: "admin", role: "admin", authProvider: "local", createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z", lastLogin: "2026-04-17T07:30:00.000Z" },
-  { id: "u2", username: "jsmith", role: "networkadmin", authProvider: "local", createdAt: "2026-01-10T09:00:00.000Z", updatedAt: "2026-01-10T09:00:00.000Z", lastLogin: "2026-04-16T12:00:00.000Z" },
-  { id: "u3", username: "kbrown", role: "assetsadmin", authProvider: "local", createdAt: "2026-02-20T14:00:00.000Z", updatedAt: "2026-02-20T14:00:00.000Z", lastLogin: null },
-  { id: "u4", username: "dmoore", role: "admin", authProvider: "local", createdAt: "2026-03-01T08:00:00.000Z", updatedAt: "2026-03-01T08:00:00.000Z", lastLogin: "2026-04-17T08:15:00.000Z" },
-  { id: "u5", username: "rjones", role: "readonly", authProvider: "azure", displayName: "Robert Jones", email: "rjones@rogersgroup.com", createdAt: "2026-04-10T10:00:00.000Z", updatedAt: "2026-04-10T10:00:00.000Z", lastLogin: "2026-04-16T09:00:00.000Z" },
-  { id: "u6", username: "mwilson", role: "user", authProvider: "azure", displayName: "Maria Wilson", email: "mwilson@rogersgroup.com", createdAt: "2026-04-12T09:00:00.000Z", updatedAt: "2026-04-12T09:00:00.000Z", lastLogin: "2026-04-17T08:00:00.000Z" },
+// Dynamic-roles cutover (2026-05): roles are first-class objects now. The
+// five seeded built-in rows reproduce the prior hardcoded enum's access; the
+// USERS array carries `roleId` pointing at one of them. The /api/v1/users
+// response is built by `userWithRole(u)` which joins the Role object into
+// the row so the frontend reads `user.role.name` consistently.
+
+const FUNCTION_KEYS = [
+  { key: "ipBlocks",             label: "IP Blocks",                          description: "Top-level CIDR blocks." },
+  { key: "subnets",              label: "Subnets",                            description: "Child subnets.", hasOwnershipDimension: true },
+  { key: "reservations",         label: "Reservations",                       description: "IP reservations.", hasOwnershipDimension: true },
+  { key: "reservationPush",      label: "DHCP Reservation Push",              description: "Push manual reservations to FortiGate." },
+  { key: "allocationTemplates",  label: "Allocation Templates",               description: "Saved multi-subnet allocation templates." },
+  { key: "assets",               label: "Assets",                             description: "Asset inventory CRUD + export." },
+  { key: "assetsQuarantine",     label: "Asset Quarantine",                   description: "Push MAC quarantine to FortiGates + release + verify." },
+  { key: "assetsProbe",          label: "Asset Probes",                       description: "Probe-now, SNMP walk, DNS lookups." },
+  { key: "assetMonitorSettings", label: "Asset Monitor Settings",             description: "Per-asset / class / integration / manual monitor settings." },
+  { key: "mibDatabase",          label: "MIB Database",                       description: "Upload / browse / walk SNMP MIB modules." },
+  { key: "manufacturerProfiles", label: "Manufacturer Profiles",              description: "Per-vendor telemetry profile." },
+  { key: "manufacturerAliases",  label: "Manufacturer Aliases",               description: "Vendor-name normalization map." },
+  { key: "credentials",          label: "Credentials",                        description: "Stored SNMP / WinRM / SSH credentials." },
+  { key: "integrations",         label: "Integrations",                       description: "FMG / FortiGate / Windows / Entra / AD CRUD + discovery." },
+  { key: "discoveryConflicts",   label: "Discovery Conflicts",                description: "Accept / reject / merge conflicts." },
+  { key: "deviceMap",            label: "Device Map",                         description: "Map + topology." },
+  { key: "mapRegions",           label: "Map Regions",                        description: "Draw / edit / delete region polygons." },
+  { key: "deviceIcons",          label: "Device Icons",                       description: "Operator-uploaded topology icons." },
+  { key: "events",               label: "Events / Audit Log",                 description: "Audit log + archival settings." },
+  { key: "staleReservations",    label: "Stale Reservations",                 description: "Snooze / ignore stale DHCP alerts." },
+  { key: "apiTokens",            label: "API Tokens",                         description: "Long-lived bearer tokens." },
+  { key: "users",                label: "Users",                              description: "User CRUD + role assignment + TOTP reset." },
+  { key: "roles",                label: "Roles",                              description: "Manage the permission matrix itself." },
+  { key: "serverSettingsSystem", label: "Server Settings — System",           description: "HTTPS / branding / DNS / NTP / capacity advisor." },
+  { key: "serverSettingsData",   label: "Server Settings — Data",             description: "Database backup / queue mode / updates." },
 ];
+
+function _fillPerms(perm) {
+  const out = {};
+  FUNCTION_KEYS.forEach((f) => { out[f.key] = perm[f.key] || "none"; });
+  return out;
+}
+
+const ROLES = [
+  {
+    id: "r-admin", name: "admin", description: "Full access to every function. Locked.",
+    permissions: _fillPerms(Object.fromEntries(FUNCTION_KEYS.map((f) => [f.key, "fullwrite"]))),
+    regionTags: [], isBuiltIn: true, isProtected: true,
+    createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z",
+  },
+  {
+    id: "r-readonly", name: "readonly", description: "Read-only on every public-readable function. Locked.",
+    permissions: _fillPerms(Object.fromEntries(FUNCTION_KEYS.map((f) => {
+      const adminOnly = ["manufacturerAliases", "integrations", "discoveryConflicts", "mapRegions", "deviceIcons", "apiTokens", "users", "roles", "serverSettingsSystem", "serverSettingsData"];
+      return [f.key, adminOnly.includes(f.key) ? "none" : "read"];
+    }))),
+    regionTags: [], isBuiltIn: true, isProtected: true,
+    createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z",
+  },
+  {
+    id: "r-networkadmin", name: "networkadmin", description: "Full CRUD on IP space + integrations + map regions.",
+    permissions: _fillPerms({
+      ipBlocks: "fullwrite", subnets: "fullwrite", reservations: "fullwrite", reservationPush: "write",
+      allocationTemplates: "write", assets: "read", assetsQuarantine: "read", assetsProbe: "write",
+      assetMonitorSettings: "read", mibDatabase: "read", manufacturerProfiles: "read", credentials: "read",
+      integrations: "write", discoveryConflicts: "write", deviceMap: "read", mapRegions: "write",
+      events: "read", staleReservations: "write",
+    }),
+    regionTags: [], isBuiltIn: true, isProtected: false,
+    createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z",
+  },
+  {
+    id: "r-assetsadmin", name: "assetsadmin", description: "Full asset management + own-subnet/own-reservation writes.",
+    permissions: _fillPerms({
+      ipBlocks: "read", subnets: "write", reservations: "write", reservationPush: "read",
+      allocationTemplates: "read", assets: "write", assetsQuarantine: "write", assetsProbe: "write",
+      assetMonitorSettings: "write", mibDatabase: "read", manufacturerProfiles: "read", credentials: "read",
+      discoveryConflicts: "write", deviceMap: "read", events: "read", staleReservations: "read",
+    }),
+    regionTags: [], isBuiltIn: true, isProtected: false,
+    createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z",
+  },
+  {
+    id: "r-user", name: "user", description: "Own-subnet / own-reservation writes; read elsewhere.",
+    permissions: _fillPerms({
+      ipBlocks: "read", subnets: "write", reservations: "write", reservationPush: "read",
+      allocationTemplates: "read", assets: "read", assetsQuarantine: "read", assetsProbe: "write",
+      assetMonitorSettings: "read", mibDatabase: "read", manufacturerProfiles: "read", credentials: "read",
+      deviceMap: "read", events: "read", staleReservations: "write",
+    }),
+    regionTags: [], isBuiltIn: true, isProtected: false,
+    createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z",
+  },
+];
+
+function _roleByName(name) { return ROLES.find((r) => r.name === name) || ROLES[0]; }
+function _roleSummary(r) {
+  return {
+    id: r.id, name: r.name, description: r.description,
+    permissions: r.permissions, regionTags: r.regionTags || [],
+    isBuiltIn: r.isBuiltIn, isProtected: r.isProtected,
+    userCount: USERS.filter((u) => u.roleId === r.id).length,
+    createdAt: r.createdAt, updatedAt: r.updatedAt,
+  };
+}
+
+const USERS = [
+  { id: "u1", username: "admin", roleId: _roleByName("admin").id, regionTags: [], authProvider: "local", createdAt: "2025-11-15T08:00:00.000Z", updatedAt: "2025-11-15T08:00:00.000Z", lastLogin: "2026-04-17T07:30:00.000Z" },
+  { id: "u2", username: "jsmith", roleId: _roleByName("networkadmin").id, regionTags: [], authProvider: "local", createdAt: "2026-01-10T09:00:00.000Z", updatedAt: "2026-01-10T09:00:00.000Z", lastLogin: "2026-04-16T12:00:00.000Z" },
+  { id: "u3", username: "kbrown", roleId: _roleByName("assetsadmin").id, regionTags: [], authProvider: "local", createdAt: "2026-02-20T14:00:00.000Z", updatedAt: "2026-02-20T14:00:00.000Z", lastLogin: null },
+  { id: "u4", username: "dmoore", roleId: _roleByName("admin").id, regionTags: [], authProvider: "local", createdAt: "2026-03-01T08:00:00.000Z", updatedAt: "2026-03-01T08:00:00.000Z", lastLogin: "2026-04-17T08:15:00.000Z" },
+  { id: "u5", username: "rjones", roleId: _roleByName("readonly").id, regionTags: [], authProvider: "azure", displayName: "Robert Jones", email: "rjones@rogersgroup.com", createdAt: "2026-04-10T10:00:00.000Z", updatedAt: "2026-04-10T10:00:00.000Z", lastLogin: "2026-04-16T09:00:00.000Z" },
+  { id: "u6", username: "mwilson", roleId: _roleByName("user").id, regionTags: [], authProvider: "azure", displayName: "Maria Wilson", email: "mwilson@rogersgroup.com", createdAt: "2026-04-12T09:00:00.000Z", updatedAt: "2026-04-12T09:00:00.000Z", lastLogin: "2026-04-17T08:00:00.000Z" },
+];
+
+function _userWithRole(u) {
+  const role = ROLES.find((r) => r.id === u.roleId) || ROLES[0];
+  return Object.assign({}, u, {
+    role: { id: role.id, name: role.name, isProtected: role.isProtected, isBuiltIn: role.isBuiltIn },
+  });
+}
 
 const INTEGRATIONS = [
   {
@@ -609,13 +719,34 @@ const INTEGRATIONS = [
       mgmtInterface: "port1",
       dhcpInclude: ["dhcp-prod-01", "dhcp-prod-02", "dhcp-monitor", "dhcp-k8s", "dhcp-database", "dhcp-lab-01"],
       dhcpExclude: [],
-      // Auto-Monitor Interfaces — pick a different mode per class to demo
-      // all three. FortiGates pin two named WAN uplinks; FortiSwitches use a
-      // wildcard to cover access ports 47–48 (the typical uplink pair) only
-      // when up; FortiAPs grab every "physical" interface that's online.
-      fortigateMonitor:   { addAsMonitored: true, autoMonitorInterfaces: { mode: "names",    names: ["wan1", "wan2"] }, pullSnmpLocation: true, pushGeocodedCoords: true },
-      fortiswitchMonitor: { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: { mode: "wildcard", patterns: ["port4[7-8]"], onlyUp: true } },
-      fortiapMonitor:     { enabled: false, snmpCredentialId: null, addAsMonitored: false, autoMonitorInterfaces: { mode: "type",     types: ["physical"], onlyUp: true } },
+      // Auto-Monitor Interfaces — multi-block union. FortiGates pin two named
+      // WAN uplinks AND every interface whose LLDP neighbor is a monitored
+      // switch (auto-tracks switch fanout). FortiSwitches use a regex pattern
+      // to cover access ports 47–48 (the typical uplink pair) when up AND any
+      // interface whose LLDP neighbor is a firewall (so the FortiLink uplink
+      // is always pinned). FortiAPs grab every "physical" interface that's online.
+      fortigateMonitor: {
+        addAsMonitored: true,
+        autoMonitorInterfaces: {
+          byNames: { names: ["wan1", "wan2"] },
+          byLldp:  { neighborTypes: ["switch"] },
+        },
+        pullSnmpLocation: true,
+        pushGeocodedCoords: true,
+      },
+      fortiswitchMonitor: {
+        enabled: false, snmpCredentialId: null, addAsMonitored: false,
+        autoMonitorInterfaces: {
+          byPatterns: { patterns: ["^port4[7-8]$"], regex: true, onlyUp: true },
+          byLldp:     { neighborTypes: ["firewall"] },
+        },
+      },
+      fortiapMonitor: {
+        enabled: false, snmpCredentialId: null, addAsMonitored: false,
+        autoMonitorInterfaces: {
+          byTypes: { types: ["physical"], onlyUp: true },
+        },
+      },
     },
     enabled: true,
     pollInterval: 12,
@@ -665,7 +796,10 @@ const INTEGRATIONS = [
       inventoryIncludeInterfaces: [],
       inventoryExcludeInterfaces: ["guest*"],
       // Auto-Monitor Interfaces on the standalone FortiGate path too.
-      fortigateMonitor: { addAsMonitored: false, autoMonitorInterfaces: { mode: "names", names: ["wan1"] } },
+      fortigateMonitor: {
+        addAsMonitored: false,
+        autoMonitorInterfaces: { byNames: { names: ["wan1"] } },
+      },
     },
     enabled: true,
     pollInterval: 12,
@@ -2512,7 +2646,8 @@ async function routeAPI(method, path, params, body, res, req) {
     const loginUser = USERS.find((u) => u.username === (body.username || "admin")) || USERS[0];
     loginUser.lastLogin = new Date().toISOString();
     res.setHeader("Set-Cookie", "polaris-session=" + encodeURIComponent(loginUser.username) + "; Path=/; HttpOnly; SameSite=Lax");
-    return json(res, { ok: true, username: loginUser.username, role: loginUser.role });
+    const role = ROLES.find((r) => r.id === loginUser.roleId) || ROLES[0];
+    return json(res, { ok: true, username: loginUser.username, role: role.name });
   }
   if (path === "/api/v1/auth/logout" && method === "POST") {
     res.setHeader("Set-Cookie", "polaris-session=; Path=/; HttpOnly; Max-Age=0");
@@ -2520,7 +2655,20 @@ async function routeAPI(method, path, params, body, res, req) {
   }
   if (path === "/api/v1/auth/me") {
     if (!isLoggedIn) return json(res, { authenticated: false });
-    return json(res, { authenticated: true, username: sessionUser.username, role: sessionUser.role, authProvider: sessionUser.authProvider || "local" });
+    const role = ROLES.find((r) => r.id === sessionUser.roleId) || ROLES[0];
+    const userRegions = sessionUser.regionTags || [];
+    const roleRegions = role.regionTags || [];
+    const effective = Array.from(new Set([...roleRegions, ...userRegions])).sort();
+    return json(res, {
+      authenticated: true,
+      username: sessionUser.username,
+      authProvider: sessionUser.authProvider || "local",
+      role: {
+        id: role.id, name: role.name, isProtected: role.isProtected,
+        permissions: role.permissions, updatedAt: role.updatedAt,
+      },
+      regionTags: { user: userRegions, role: roleRegions, effective: effective },
+    });
   }
 
   // SAML SSO stubs
@@ -2635,7 +2783,7 @@ async function routeAPI(method, path, params, body, res, req) {
 
   // Conflicts — role-scoped list + resolve
   if (path.startsWith("/api/v1/conflicts")) {
-    const role = sessionUser?.role || "admin";
+    const role = sessionUser ? (ROLES.find((r) => r.id === sessionUser.roleId)?.name || "admin") : "admin";
     const visibleTypes =
       role === "admin" ? ["reservation", "asset"] :
       role === "networkadmin" ? ["reservation"] :
@@ -2953,7 +3101,7 @@ async function routeAPI(method, path, params, body, res, req) {
     return r ? json(res, r) : json(res, { error: "Not found" }, 404);
   }
   if (path === "/api/v1/reservations" && method === "POST") {
-    const role = sessionUser ? sessionUser.role : "admin";
+    const role = sessionUser ? (ROLES.find((r) => r.id === sessionUser.roleId)?.name || "admin") : "admin";
     if (role !== "admin" && role !== "networkadmin" && role !== "user" && role !== "assetsadmin") {
       return json(res, { error: "Forbidden — you do not have permission to create reservations" }, 403);
     }
@@ -2984,7 +3132,7 @@ async function routeAPI(method, path, params, body, res, req) {
     return json(res, newRes, 201);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "PUT") {
-    const role = sessionUser ? sessionUser.role : "admin";
+    const role = sessionUser ? (ROLES.find((r) => r.id === sessionUser.roleId)?.name || "admin") : "admin";
     if (role !== "admin" && role !== "networkadmin" && role !== "user" && role !== "assetsadmin") {
       return json(res, { error: "Forbidden — you do not have permission to edit reservations" }, 403);
     }
@@ -3005,7 +3153,7 @@ async function routeAPI(method, path, params, body, res, req) {
     return json(res, existing);
   }
   if (path.match(/^\/api\/v1\/reservations\/[\w-]+$/) && method === "DELETE") {
-    const role = sessionUser ? sessionUser.role : "admin";
+    const role = sessionUser ? (ROLES.find((r) => r.id === sessionUser.roleId)?.name || "admin") : "admin";
     if (role !== "admin" && role !== "networkadmin" && role !== "user" && role !== "assetsadmin") {
       return json(res, { error: "Forbidden — you do not have permission to release reservations" }, 403);
     }
@@ -3035,10 +3183,89 @@ async function routeAPI(method, path, params, body, res, req) {
 
   // Users
   if (path === "/api/v1/users" && method === "GET") {
-    return json(res, USERS);
+    return json(res, USERS.map(_userWithRole));
   }
   if (path === "/api/v1/users" && method === "POST") {
-    return json(res, { id: crypto.randomUUID(), ...body, authProvider: "local", createdAt: new Date().toISOString() }, 201);
+    const role = ROLES.find((r) => r.id === body.roleId);
+    if (!role) return json(res, { error: "roleId not found" }, 400);
+    const newUser = {
+      id: crypto.randomUUID(),
+      username: body.username,
+      roleId: role.id,
+      regionTags: Array.isArray(body.regionTags) ? body.regionTags : [],
+      authProvider: "local",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    USERS.push(newUser);
+    return json(res, _userWithRole(newUser), 201);
+  }
+  // PUT /users/:id/role — Body: { roleId }
+  if (path.match(/^\/api\/v1\/users\/[\w-]+\/role$/) && method === "PUT") {
+    const uid = path.split("/").slice(-2, -1)[0];
+    const u = USERS.find((x) => x.id === uid);
+    const role = ROLES.find((r) => r.id === body.roleId);
+    if (!u) return json(res, { error: "User not found" }, 404);
+    if (!role) return json(res, { error: "roleId not found" }, 400);
+    u.roleId = role.id;
+    u.updatedAt = new Date().toISOString();
+    return json(res, { ok: true, user: _userWithRole(u) });
+  }
+  // PUT /users/:id/regions — Body: { regionTags: string[] }
+  if (path.match(/^\/api\/v1\/users\/[\w-]+\/regions$/) && method === "PUT") {
+    const uid = path.split("/").slice(-2, -1)[0];
+    const u = USERS.find((x) => x.id === uid);
+    if (!u) return json(res, { error: "User not found" }, 404);
+    u.regionTags = Array.isArray(body.regionTags) ? body.regionTags.filter((t) => t && String(t).trim()).map((t) => String(t).trim()) : [];
+    u.updatedAt = new Date().toISOString();
+    return json(res, { ok: true, user: _userWithRole(u) });
+  }
+
+  // Roles
+  if (path === "/api/v1/roles/functions" && method === "GET") {
+    return json(res, { accessLevels: ["none", "read", "write", "fullwrite"], functions: FUNCTION_KEYS });
+  }
+  if (path === "/api/v1/roles" && method === "GET") {
+    return json(res, ROLES.map(_roleSummary));
+  }
+  if (path.match(/^\/api\/v1\/roles\/[\w-]+$/) && method === "GET") {
+    const rid = path.split("/").pop();
+    const r = ROLES.find((x) => x.id === rid);
+    if (!r) return json(res, { error: "Role not found" }, 404);
+    return json(res, _roleSummary(r));
+  }
+  if (path === "/api/v1/roles" && method === "POST") {
+    const newRole = {
+      id: "r-" + crypto.randomUUID().slice(0, 8),
+      name: body.name, description: body.description || null,
+      permissions: _fillPerms(body.permissions || {}),
+      regionTags: Array.isArray(body.regionTags) ? body.regionTags : [],
+      isBuiltIn: false, isProtected: false,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    ROLES.push(newRole);
+    return json(res, _roleSummary(newRole), 201);
+  }
+  if (path.match(/^\/api\/v1\/roles\/[\w-]+$/) && method === "PUT") {
+    const rid = path.split("/").pop();
+    const r = ROLES.find((x) => x.id === rid);
+    if (!r) return json(res, { error: "Role not found" }, 404);
+    if (r.isProtected) return json(res, { error: "Role is protected" }, 403);
+    if (body.name !== undefined) r.name = body.name;
+    if (body.description !== undefined) r.description = body.description;
+    if (body.permissions !== undefined) r.permissions = _fillPerms(body.permissions);
+    if (body.regionTags !== undefined) r.regionTags = Array.isArray(body.regionTags) ? body.regionTags : [];
+    r.updatedAt = new Date().toISOString();
+    return json(res, _roleSummary(r));
+  }
+  if (path.match(/^\/api\/v1\/roles\/[\w-]+$/) && method === "DELETE") {
+    const rid = path.split("/").pop();
+    const idx = ROLES.findIndex((x) => x.id === rid);
+    if (idx === -1) return json(res, { error: "Role not found" }, 404);
+    if (ROLES[idx].isBuiltIn) return json(res, { error: "Built-in role cannot be deleted" }, 409);
+    if (USERS.some((u) => u.roleId === rid)) return json(res, { error: "Role is assigned to users" }, 409);
+    ROLES.splice(idx, 1);
+    res.writeHead(204); return res.end();
   }
   if (path.match(/\/password$/) && method === "PUT") {
     // Find the user and check if Azure (block password reset for Azure users)

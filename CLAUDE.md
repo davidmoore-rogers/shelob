@@ -123,7 +123,7 @@ polaris/
 │   │   ├── activeDirectoryService.ts # On-premise Active Directory computer discovery via LDAP/LDAPS
 │   │   ├── searchService.ts         # Global typeahead search (classifies IP/CIDR/MAC/text; parallel entity queries)
 │   │   ├── allocationTemplateService.ts # Saved multi-subnet allocation templates (Setting-backed)
-│   │   ├── autoMonitorInterfacesService.ts # "Auto-Monitor Interfaces" feature: pure resolver (names/wildcard/type modes) + DB-bound aggregate/preview/apply for the FMG/FortiGate Monitoring tab. Strictly additive to Asset.monitoredInterfaces.
+│   │   ├── autoMonitorInterfacesService.ts # "Auto-Monitor Interfaces" feature: pure resolver over a multi-block union (byNames / byPatterns / byTypes / byLldp) + DB-bound aggregate/preview/apply for the FMG/FortiGate Monitoring tab. By LLDP pins any interface whose AssetLldpNeighbor.matchedAssetId resolves to a monitored asset of one of the selected types. `compilePattern` dispatches wildcards vs raw regex per block. `coerceLegacySelection` rewrites the older single-mode discriminated-union shape (`{mode, ...}`) on read so the Zod parser + apply route + frontend renderer all keep working until the one-shot migration sweeps stored configs. Strictly additive to Asset.monitoredInterfaces.
 │   │   ├── assetIpHistoryService.ts # Asset IP history reads, retention settings, pruning (Setting-backed)
 │   │   ├── discoveryDurationService.ts # Rolling discovery-duration samples + "slow-run" threshold (Setting-backed)
 │   │   ├── azureAuthService.ts      # Azure AD/Entra SAML SSO, user provisioning
@@ -176,6 +176,7 @@ polaris/
 │   │   ├── backfillFortigateEndpointSources.ts # One-shot startup: stamps a `fortigate-endpoint` AssetSource row on every existing endpoint asset that was discovered by an FMG/FortiGate integration but predates the source-kind cutover. Pairs with the inline upsert added to `syncDhcpSubnets` so future sync cycles maintain the row. Eligibility: assetType not firewall/switch/access_point, has macAddress, has discoveredByIntegrationId pointing at a fortimanager/fortigate integration. Sweeps any "manual" source row from the same asset (Phase 1 backfill placeholder superseded by the real source). Idempotent.
 │   │   ├── fixInfraAssetTypes.ts    # One-shot startup cleanup. Earlier code paths created assets via DHCP / device-inventory before FortiSwitch / FortiAP discovery linked them up by serial or hostname. The infra discovery linked the asset (added a `fortiswitch` / `fortiap` source row) but did NOT correct the inherited `assetType="other"`, leaving the infrastructure asset misclassified AND a stale `fortigate-endpoint` source row hanging around alongside the authoritative infra source on the Sources tab. This job: any asset with a `fortiswitch` source whose assetType isn't "switch" → flip to "switch" + delete fortigate-endpoint source rows on the same asset; same for `fortiap` → "access_point". Pairs with the inline correction added to the FortiSwitch / FortiAP update paths in `syncDhcpSubnets` which prevents recurrence. Idempotent.
 │   │   ├── scrubLegacySidGuidTags.ts # One-shot startup: Phase 4b cleanup. Strips `sid:<SID>` and `ad-guid:<GUID>` entries from `Asset.tags` arrays. Both signals now live on AssetSource (entra/intune/ad source rows; SID on observed.onPremisesSecurityIdentifier or observed.objectSid; GUID on the ad source's externalId), so the legacy tag mirroring is redundant. Idempotent. Discovery code stops writing the markers in the same release; this catches data left over from earlier runs. Does NOT touch `Asset.assetTag` (entra:/ad:/fgt:) or `prev-*` breadcrumb tags — those need parallel changes to searchService + conflict resolution before they can be retired.
+│   │   ├── migrateAutoMonitorInterfacesShape.ts # One-shot startup: rewrites `Integration.config.{fortigateMonitor|fortiswitchMonitor|fortiapMonitor}.autoMonitorInterfaces` from the legacy `{mode, ...}` discriminated union to the new multi-block union (`{byNames?, byPatterns?, byTypes?, byLldp?}`). Idempotent via `autoMonitorInterfacesShapeMigratedAt` marker. Pairs with the Zod-layer + apply-route + frontend renderer `coerceLegacySelection` calls that bridge the mixed state between deploy and this job running.
 │   │   ├── capacityWatch.ts        # 10-minute tick: builds a capacity snapshot and calls `recordCapacityTransition` so a flip into watch/amber/red emits one `capacity.severity_changed` Event independent of whether anyone has the Maintenance tab open. Out-of-band path is the operationally important one — when the DB is on the verge of dying the UI is moments from being unreachable, but the Event still flows out via syslog/SFTP archival. Also calls `recomputeAdvisorFromSnapshot` to keep the Capacity Advisor cache warm so the Maintenance tab doesn't have to wait for the recompute on first load; the PG tuning inputs are stubbed here (the route handler queries them on demand when an admin is actually looking).
 │   │   ├── backfillDependencyTree.ts # One-shot startup: runs `recomputeDependencyTree()` 30s after boot so existing installs see populated `AssetDependencyParent` rows + `Asset.dependencyLayer` without waiting for the next scheduled discovery cycle (default 4h). Idempotent. Best-effort — failures log and don't block boot.
 │   │   ├── backfillMonitorStatusChangedAt.ts # One-shot startup (60s after boot): seeds `Asset.monitorStatusChangedAt` for assets already in warning/down/recovering before the column existed. Source for the seed value is the latest `monitor.status_changed` Event whose details.nextStatus matches the asset's current status. Events prune at 7 days, so assets whose last transition is older than that get left null (Dashboard renders "—"). Idempotent — only touches rows where the column is NULL.
@@ -260,7 +261,9 @@ SubnetStatus:            available | reserved | deprecated
 ReservationStatus:       active | expired | released
 ReservationSourceType:   manual | dhcp_reservation | dhcp_lease | interface_ip | vip | fortiswitch | fortinap | fortimanager | fortigate | dns_resolved
 ConflictStatus:          pending | accepted | rejected
-UserRole:                admin | networkadmin | assetsadmin | user | readonly
+// UserRole enum retired in the dynamic-roles cutover (migration
+// 20260524000000_roles_table_cutover). Role identity + permission matrix
+// now live in the `Role` table and are joined into User via `User.roleId`.
 AssetStatus:             active | maintenance | decommissioned | storage | disabled | quarantined
 AssetType:               server | switch | router | firewall | workstation | printer | access_point | other
 ```
@@ -785,7 +788,13 @@ User
   id            UUID PK
   username      String @unique
   passwordHash  String
-  role          UserRole        @default(readonly)
+  roleId        String         -- FK Role; onDelete: Restrict (cannot delete a role that has users)
+  role          Role           -- joined Role row, joined on every list/get response
+  -- Per-user region scope. Empty = unrestricted (matches pre-cutover default).
+  -- Effective regions for a session are `union(role.regionTags, user.regionTags)`.
+  -- Storage only in v1 — the consumer (asset / subnet / reservation list
+  -- filters, map view) lives in a separate change.
+  regionTags    String[]       @default([])
   authProvider  String          -- "local" or "azure"
   azureOid      String? @unique -- Azure AD Object ID
   displayName   String?
@@ -795,6 +804,25 @@ User
   totpEnabledAt   DateTime?     -- Null = not enabled; set on first valid confirm code
   totpBackupCodes String[]      -- argon2id-hashed single-use recovery codes
   needsRoleReview Boolean       -- Flipped true at the password step the first time the user logs in (Asset.lastLogin transitions null → set). Drives the admin-only "new user logged in" panel in the sidebar (#role-review-status, rendered above #query-status). Auto-cleared when an admin PUTs /users/:id/role (implicit review) or DELETEs /users/:id/role-review (explicit Dismiss). Dismiss is global — clearing the flag hides the row for every admin at once. SAML SSO sets it on auto-provision and on first-ever login of an existing account.
+
+Role                            -- Dynamic role + permission matrix; replaces the prior hardcoded `UserRole` enum
+  id            UUID PK
+  name          String @unique  -- 2-32 chars, alphanumeric + dash/underscore. Case-insensitive uniqueness enforced at service layer.
+  description   String?
+  permissions   Json            -- { [functionKey]: "none" | "read" | "write" | "fullwrite" } per the 25-key catalogue in `src/api/middleware/permissions.ts`. Missing keys default to "none" at read.
+  -- Region scope inherited by every user holding this role. Empty =
+  -- unrestricted. Effective regions for a session are
+  -- `union(role.regionTags, user.regionTags)`. Storage only; consumer
+  -- lives in a separate change.
+  regionTags    String[]       @default([])
+  isBuiltIn     Boolean        @default(false) -- true for the five seeded rows (admin / readonly / networkadmin / assetsadmin / user)
+  isProtected   Boolean        @default(false) -- true for admin + readonly only; blocks edit/delete/rename + hides the row from the editable UI
+  updatedAt     DateTime        -- Bumped on every write; doubles as the cache-version stamp the session snapshot compares against on each request to detect a stale matrix
+  -- Seeded by `prisma/migrations/20260524000000_roles_table_cutover/migration.sql`.
+  -- The five seeded rows reproduce the pre-cutover access exactly so
+  -- existing users see no behavior change. Operator-created custom roles
+  -- start with all-`none` permissions; admin grants per function via the
+  -- matrix slide-over on /users.html.
 
 Event                           -- Audit log, 7-day rolling retention
   id            UUID PK
@@ -950,7 +978,7 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 ### Auth — public
 - `POST   /auth/login`
 - `POST   /auth/logout`
-- `GET    /auth/me`                             — Session check
+- `GET    /auth/me`                             — Session probe. Returns `{ authenticated: false }` for unauthenticated callers; otherwise `{ authenticated: true, username, authProvider, role: { id, name, isProtected, permissions, updatedAt }, regionTags: { user, role, effective } }`. The frontend reads `role.permissions[functionKey]` to gate menu items / buttons (see `permAtLeast()` in `public/js/app.js`).
 - `GET    /auth/azure/config`                   — Azure SSO feature flag
 - `GET    /auth/azure/login`                    — Initiate Azure SAML login
 - `POST   /auth/azure/callback`                 — SAML assertion callback
@@ -1004,18 +1032,28 @@ All routes are prefixed `/api/v1/`. Auth guards are applied in `src/api/router.t
 ### Dashboard — `requireAuth`
 - `GET    /dashboard/summary` — Single round-trip backing the new home Dashboard. Returns `{ blockUtilization, recentReservations, assetTypeCounts, monitorAlerts, monitorAlertsOverflow }`. `blockUtilization` is reused from `utilizationService.getGlobalUtilization()` (no extra DB hit). `recentReservations` is the 10 most-recent active reservations filtered to `sourceType="manual"` so DHCP discoveries / leases / VIP echoes don't crowd out reservations a person actually typed in — includes hostname, MAC, createdBy, and the resolved `{subnetId, subnetCidr, subnetName, vlan}` so the card renders without a second fetch. `assetTypeCounts` is a `prisma.asset.groupBy` over `assetType` excluding `status in (decommissioned, disabled)` — feeds the SVG pie chart. `monitorAlerts` is monitored assets currently in `warning` or `down`, ordered by `monitorStatusChangedAt desc nulls last` (newest transitions first), capped at 50 with `monitorAlertsOverflow` flagging when there's more.
 
-### Users — `requireAdmin`
-- `GET    /users`
-- `POST   /users`
-- `GET    /users/:id`
-- `PUT    /users/:id`
-- `DELETE /users/:id`
-- `PUT    /users/:id/role`                      — Update role; also auto-clears `needsRoleReview` since picking a role is an implicit review.
-- `DELETE /users/:id/totp`                      — Admin-initiated TOTP reset (for "lost device" recovery). Clears the secret and backup codes so the user can re-enroll on next login.
-- `GET    /users/role-review-notifications`     — Sidebar feed. Returns `{ users, count }` where `users` is every row with `needsRoleReview=true`, ordered by `lastLogin` asc, projected to `{ id, username, role, displayName, authProvider, email, lastLogin, createdAt }`. Polled every 30s by [public/js/app.js](public/js/app.js) for admins only.
-- `DELETE /users/:id/role-review`               — Dismiss the new-user notification for one user (global — hides the row for every admin).
+### Users — `users` function key
+- `GET    /users`                               *(read)* — Every row is returned with the joined `role: { id, name, isProtected, isBuiltIn }` and `regionTags: string[]` (per-user scope).
+- `POST   /users`                               *(write)* — Body: `{ username, password, roleId, regionTags? }`. The legacy `role: <enum>` field is no longer accepted.
+- `GET    /users/:id`                           *(read)*
+- `DELETE /users/:id`                           *(write)* — Refused with 409 when this would leave Polaris with zero users holding `users=fullwrite` AND `roles=fullwrite` (last-admin-equivalent invariant).
+- `PUT    /users/:id/password`                  *(write)* — Local accounts only.
+- `PUT    /users/:id/role`                      *(write)* — Body: `{ roleId }`. Refused with 400 when reassigning yourself; 409 when this would break the last-admin-equivalent invariant. Auto-clears `needsRoleReview` since picking a role is an implicit review.
+- `PUT    /users/:id/regions`                   *(write)* — Body: `{ regionTags: string[] }`. Empty array clears. Validation: trim, drop empties, dedupe case-insensitively, ≤64 entries, each ≤64 chars. Writes one `user.regions_updated` Event with the from/to diff.
+- `DELETE /users/:id/totp`                      *(write)* — Admin-initiated TOTP reset (for "lost device" recovery). Clears the secret and backup codes so the user can re-enroll on next login.
+- `GET    /users/role-review-notifications`     *(read)* — Sidebar feed. Returns `{ users, count }` where `users` is every row with `needsRoleReview=true`, ordered by `lastLogin` asc, projected to `{ id, username, role: { id, name, ... }, regionTags, displayName, authProvider, email, lastLogin, createdAt, ... }`. Polled every 30s by [public/js/app.js](public/js/app.js) for admins only.
+- `DELETE /users/:id/role-review`               *(write)* — Dismiss the new-user notification for one user (global — hides the row for every admin).
 
-### Integrations — `requireNetworkAdmin`
+### Roles — `roles` function key
+- `GET    /roles`                               *(read)* — Every Role with `{ id, name, description, permissions, regionTags, isBuiltIn, isProtected, userCount, createdAt, updatedAt }`. The frontend filters `isProtected=true` rows (admin + readonly) out of the editable list.
+- `GET    /roles/:id`                           *(read)*
+- `GET    /roles/functions`                     *(read)* — `{ accessLevels: ["none","read","write","fullwrite"], functions: FunctionKeyDef[] }` — the 25-key catalogue with `{ key, label, description, hasOwnershipDimension? }`. Single source of truth backing the permissions slide-over matrix.
+- `POST   /roles`                               *(write)* — `{ name, description?, permissions, regionTags? }`. Name validated against `/^[A-Za-z0-9_-]{2,32}$/` + case-insensitive uniqueness against existing names + the reserved `admin` / `readonly`. Permissions normalized: unknown function keys dropped, missing keys defaulted to `"none"`.
+- `PUT    /roles/:id`                           *(write)* — Body accepts any subset of `{ name?, description?, permissions?, regionTags? }`. Refused with 403 when the role is `isProtected=true` (admin / readonly). Bumps the role-version cache + writes one `role.updated` Event with per-field diff (including a per-functionKey `permissionChanges` map listing only the keys whose level changed).
+- `DELETE /roles/:id`                           *(write)* — Refused with 409 when `isBuiltIn=true` OR when any user holds the role (admin must reassign first).
+
+### Integrations — `integrations` function key
+> Mount requires `integrations=read`; all write endpoints inside the file are upgraded to `integrations=write` via an inline `router.use(...)`.
 - `GET    /integrations`
 - `POST   /integrations`
 - `GET    /integrations/:id`
@@ -1242,19 +1280,31 @@ Operator-uploaded images that overlay vendor logos on each Device Map topology n
 
 Sessions are PostgreSQL-backed (`connect-pg-simple`), 8-hour max age, HttpOnly/Secure/SameSite=Lax cookies.
 
-| Role | Access |
-|------|--------|
-| `admin` | Full access to all routes |
-| `networkadmin` | Integrations, conflicts, + full CRUD on any subnet/reservation |
-| `assetsadmin` | Assets, asset conflicts, + create subnets/reservations and edit/delete their own |
-| `user` | Create subnets/reservations and edit/delete their own; read-only on everything else |
-| `readonly` | Read-only on all `requireAuth` routes |
+**Dynamic-role model (post-cutover).** RBAC is enforced via `requirePermission(functionKey, level)` from [src/api/middleware/permissions.ts](src/api/middleware/permissions.ts). Each route declares the function key it gates + the required access level; the resolver consults the caller's `Role.permissions` matrix denormalized into `req.session.roleSnapshot` at login. The matrix is `{ [functionKey]: "none" | "read" | "write" | "fullwrite" }` over a 25-key catalogue (see "Function-key catalogue" below). The five built-in roles (`admin` / `readonly` / `networkadmin` / `assetsadmin` / `user`) are seeded by `prisma/migrations/20260524000000_roles_table_cutover` so existing accounts keep their pre-cutover access exactly. Admin creates custom roles from the Roles section under Users → Manage Roles; the permissions slide-over maps directly onto the matrix.
 
-**Ownership model for networks and reservations.** `user` and `assetsadmin` callers can create subnets (`POST /subnets`, `POST /subnets/next-available`, `POST /subnets/bulk-allocate` + `/preview`) and reservations, but can only edit/delete records where `createdBy` matches their own username. `admin` and `networkadmin` bypass the ownership check. Enforced via the `requireUserOrAbove` middleware + inline `isNetworkAdminOrAbove(req)` check on PUT/DELETE handlers. The `requireNetworkAdmin` guard still applies to block CRUD. Allocation **templates** are admin-only (`POST/PUT/DELETE /allocation-templates`); `GET /allocation-templates` is open to any authenticated caller so users can pre-fill the bulk-allocate modal from saved templates without being able to create or modify them — the modal hides the Save / Delete buttons for non-admins as a UX hint, but the backend is the source of truth.
+| Built-in role | Locked? | Pre-cutover behavior preserved |
+|---|---|---|
+| `admin` | Protected — cannot be edited or deleted; hidden from the editable list | every function = `fullwrite` |
+| `readonly` | Protected | every function readable by non-admins = `read`, admin-only functions = `none` |
+| `networkadmin` | Editable, cannot delete | IP space / integrations / map-regions / discovery-conflicts write; read elsewhere |
+| `assetsadmin` | Editable, cannot delete | assets / quarantine / monitor-settings write + own-subnet/own-reservation write |
+| `user` | Editable, cannot delete | own-subnet / own-reservation write; read elsewhere |
+
+**Ownership model for networks and reservations.** `subnets` and `reservations` carry an ownership dimension: `write` lets the caller edit only rows where `createdBy` matches their username; `fullwrite` bypasses the ownership filter. Built-in `user` and `assetsadmin` are seeded with `write`, `networkadmin` and `admin` with `fullwrite` — reproducing the pre-cutover behavior. Route handlers branch on `req.permissionLevel` (set by `requireOwnership(functionKey)`) to apply or skip the createdBy filter. Allocation **templates** stay at admin (`allocationTemplates=fullwrite`); `GET /allocation-templates` requires `allocationTemplates=read` which the four non-admin built-ins all hold.
+
+**Function-key catalogue (25 keys).** Single source of truth in `src/api/middleware/permissions.ts:FUNCTION_KEYS`. Exposed at `GET /api/v1/roles/functions` so the frontend matrix UI renders without hardcoding the list. Keys: `ipBlocks`, `subnets`, `reservations`, `reservationPush`, `allocationTemplates`, `assets`, `assetsQuarantine`, `assetsProbe`, `assetMonitorSettings`, `mibDatabase`, `manufacturerProfiles`, `manufacturerAliases`, `credentials`, `integrations`, `discoveryConflicts`, `deviceMap`, `mapRegions`, `deviceIcons`, `events`, `staleReservations`, `apiTokens`, `users`, `roles`, `serverSettingsSystem`, `serverSettingsData`. Each carries a `hasOwnershipDimension` flag (only `subnets` + `reservations` today) that drives the UI's "Read-Write = own only / Full Read-Write = any" hint. Adding a new key requires a migration to seed it on every existing Role + a corresponding guard at the route layer.
+
+**Session role snapshot + cache invalidation.** `req.session` carries `roleId` + a denormalized `roleSnapshot = { id, name, isProtected, permissions, updatedAt }` stamped at login. Every `requirePermission` call hits a module-level `Map<roleId, updatedAt>` cache first (O(1)); a Role write bumps the map via `bumpRoleVersion(roleId, updatedAt)` and the next request from any session holding the stale snapshot triggers ONE Prisma fetch + `req.session.save()` to refresh. Changing a user's `roleId` takes effect on next login (the snapshot is regenerated then); changing a role's permissions takes effect on the next request for every session that holds the role. Sub-millisecond when in sync.
+
+**Region tags (storage-only in this slice).** Each `Role` and each `User` carry a `regionTags: String[]` column. Empty = unrestricted. Effective regions for a session are `union(role.regionTags, user.regionTags)`, returned by `GET /api/v1/auth/me` as `{ regionTags: { user, role, effective } }` for the frontend. The consumer (asset / subnet / reservation list filters, map view scoping) lives in a separate change — this slice owns the data model + admin-facing assignment UI only.
+
+**Bearer-token hybrid (`requireSessionOrTokenPermission`).** Routes that an external system needs to reach (the asset quarantine push surface is canonical) accept either (a) a session whose role grants the required `(functionKey, level)` OR (b) a bearer token whose scopes include the named scope (e.g. `assets:quarantine`). Lives in `permissions.ts` alongside the session-only `requirePermission`.
+
+**Last-admin invariant.** `userService.lastAdminEquivalent` refuses any operation that would leave Polaris with zero users holding `users=fullwrite` AND `roles=fullwrite` — covers both demoting the last admin away from an admin-equivalent role AND deleting the only admin user. Enforced on `PUT /users/:id/role` and `DELETE /users/:id`.
 
 Rate limiting: 10 login attempts / 15 min per IP.
 
-Azure SAML SSO is optional; users are auto-provisioned on first login with a default role.
+Azure SAML SSO is optional; users are auto-provisioned on first login with the `readonly` role.
 
 **FMG auth note:** FortiManager 7.4.7+ / 7.6.2+ removed `access_token` query string support. The service uses the Bearer `Authorization` header exclusively. The standalone FortiGate integration (`fortigateService.ts`) uses the same Bearer header pattern against a REST API Admin token.
 
@@ -1305,17 +1355,18 @@ Discovery always stamps `discoveredByIntegrationId=<integration>` on any of thes
 
 For **FortiGates**, `fortigateMonitor.addAsMonitored` is the only flag — checking it adds `monitored=true` to fresh creates only. Existing FortiGates are not touched. The polling method comes from the resolver (REST API source default for fortimanager / fortigate sources).
 
-**Auto-Monitor Interfaces (per-class):** Each `*Monitor` block above also carries an `autoMonitorInterfaces` field that pre-selects which interfaces on every discovered asset of that class are added to `Asset.monitoredInterfaces` (the "Poll 1m" pin-list scraped on the response-time cadence). Three discriminated-union modes:
+**Auto-Monitor Interfaces (per-class):** Each `*Monitor` block above also carries an `autoMonitorInterfaces` field that pre-selects which interfaces on every discovered asset of that class are added to `Asset.monitoredInterfaces` (the "Poll 1m" pin-list scraped on the response-time cadence). Multi-block union — each block is optional, presence = on, and the apply pass takes the **union** across whichever blocks are present:
 
 ```ts
-autoMonitorInterfaces:
-  | { mode: "names",    names:    string[] }                         // explicit ifNames
-  | { mode: "wildcard", patterns: string[]; onlyUp: boolean }        // shell wildcards: * and ?
-  | { mode: "type",     types:    Array<"physical"|"aggregate"|"vlan"|"loopback"|"tunnel">; onlyUp: boolean }
-  | null                                                              // disabled (default)
+autoMonitorInterfaces: {
+  byNames?:    { names: string[] }                                                    // explicit ifNames from the aggregated checklist
+  byPatterns?: { patterns: string[]; regex: boolean; onlyUp: boolean }                // wildcards (* and ?) when regex=false, raw anchor-free regex when regex=true
+  byTypes?:    { types: Array<"physical"|"aggregate"|"vlan"|"loopback"|"tunnel">; onlyUp: boolean }
+  byLldp?:     { neighborTypes: Array<"firewall"|"switch"|"access_point"|"server"|"workstation"|"router"|"printer"|"other"> }
+} | null                                                                              // null (or all keys missing) = feature off
 ```
 
-Edited from a card on each Monitoring subtab (FortiGates / FortiSwitches / FortiAPs); UI defaults to *names* / *wildcard* / *type* respectively. `onlyUp` filters candidate interfaces to those with `operStatus === "up"` on their latest `AssetInterfaceSample`; available on wildcard + type, intentionally not on names (explicit names should pin even when the link is down — that's when history matters most). Default `onlyUp: true` for type, `false` for wildcard. Apply logic lives in `autoMonitorInterfacesService.ts` (pure resolver `resolvePinnedInterfaces` + DB-bound `applyAutoMonitorForClass`); the apply pass runs as Phase 2c at the end of every successful discovery (see "Auto-Monitor Interfaces apply pass" below) and from the integration edit modal's **Save Changes** button via `POST /integrations/:id/interface-aggregate/apply`, which runs once per per-class block whose selection is non-null so operators don't have to wait for the next discovery cycle. **Strictly additive**: never strips operator-pinned interfaces, only adds. Removing a name from the selection on subsequent saves doesn't unpin it on existing assets — operator-owned. The "By name" UI pulls its checklist from `GET /integrations/:id/interface-aggregate?class=...`, which aggregates latest-per-(asset,ifName) `AssetInterfaceSample` rows and returns one row per distinct ifName with a device count and the matching device list. The card's live preview block calls `POST /integrations/:id/interface-aggregate/preview` with the in-flight selection; results above the rough warn threshold (currently 500 pinned interfaces total across the three classes — defined as `AUTO_MONITOR_INTERFACE_WARN_THRESHOLD` in `public/js/integrations.js`) trigger a confirm modal on Save Changes to keep operators from overloading the database with a `type=physical` selection on a fleet of 48-port FortiSwitches.
+Edited from a card on each Monitoring subtab (FortiGates / FortiSwitches / FortiAPs). Each block has its own master checkbox so operators can mix and match (e.g. "By pattern: `wan*` + By LLDP: switch" on FortiSwitches). `onlyUp` filters candidate interfaces to those with `operStatus === "up"` on their latest `AssetInterfaceSample`; available on byPatterns + byTypes, intentionally not on byNames (explicit names always pin even when the link is down). Default `onlyUp: true` for byTypes, `false` for byPatterns. **By LLDP** semantics: for each interface on the discovered asset, look up its `AssetLldpNeighbor` row and pin if `matchedAssetId` resolves to a Polaris asset whose `assetType` is in the selected set AND `monitored=true` — automatically tracks fleet topology (a new FortiGate uplink to a managed switch gets pinned on the next discovery, no operator action). Apply logic lives in `autoMonitorInterfacesService.ts` (pure resolver `resolvePinnedInterfaces` + DB-bound `applyAutoMonitorForClass`); the apply pass runs as Phase 2c at the end of every successful discovery and from the integration edit modal's **Save Changes** button via `POST /integrations/:id/interface-aggregate/apply`, which runs once per per-class block whose selection is non-null so operators don't have to wait for the next discovery cycle. **Strictly additive**: never strips operator-pinned interfaces, only adds. Removing a name from the selection on subsequent saves doesn't unpin it on existing assets — operator-owned. The "By name" UI pulls its checklist from `GET /integrations/:id/interface-aggregate?class=...`, which aggregates latest-per-(asset,ifName) `AssetInterfaceSample` rows and returns one row per distinct ifName with a device count and the matching device list. The card's live preview block calls `POST /integrations/:id/interface-aggregate/preview` with the in-flight selection (across all enabled blocks); the **Test against fleet** button under the By pattern block fires the same preview endpoint with *only* the patterns block populated so the operator can verify their regex without noise. Results above the rough warn threshold (currently 500 pinned interfaces total across the three classes — defined as `AUTO_MONITOR_INTERFACE_WARN_THRESHOLD` in `public/js/integrations.js`) trigger a confirm modal on Save Changes. Legacy single-mode shape (`{mode: "names"|"wildcard"|"type", ...}`) from earlier releases is auto-coerced on read (Zod preprocess + apply path + frontend renderer all call `coerceLegacySelection`) and one-shot-migrated by `migrateAutoMonitorInterfacesShape` at boot.
 
 **Decommission sweep for managed switches/APs.** Discovery tracks two new `DiscoveryResult` arrays — `switchInventoriedDevices` and `apInventoriedDevices` — listing the controller FortiGates whose `managed-switch/status` / `wifi/managed_ap` query returned successfully (including 404, which means the feature isn't licensed but the controller is reachable). At the end of the run, in the same pass that deprecates stale subnets (Phase 2), `syncDhcpSubnets` flips any switch/AP whose `discoveredByIntegrationId` matches this integration AND whose `fortinetTopology.controllerFortigate` is in the inventoried-devices set AND whose serial/hostname is no longer in the discovery's sighting set to `status="decommissioned"`. Switches/APs behind a controller whose inventory query *failed or timed out* are left alone (we didn't get a fresh answer). Re-discovery by serial number flips a decommissioned asset back to `active` (or `storage` for FortiSwitches reported as `Unauthorized`). Each decommission writes one `asset.fortiswitch.decommissioned` or `asset.fortiap.decommissioned` Event with the reason `missing-from-controller`.
 
@@ -1551,6 +1602,7 @@ Active Directory and Entra ID identify the same hybrid-joined device with two un
 | `resolveStaleReservationConflicts` | Once at startup | Idempotent cleanup. Auto-rejects pending reservation Conflict rows whose stored proposed values now match the live Reservation values on every field listed in `conflictFields` — i.e. conflicts that were raised by an old discovery run but where the values have since come back into sync. Pairs with the inline fix in `upsertConflict` that prevents new lingering conflicts going forward. |
 | `scrubLegacySidGuidTags` | Once at startup | Idempotent. Phase 4b cleanup of the multi-source asset model: strips legacy `sid:<SID>` and `ad-guid:<GUID>` entries from `Asset.tags`. Both signals now live on AssetSource and the tag mirroring is redundant. Pairs with discovery-side cuts in `syncEntraDevices` / `syncActiveDirectoryDevices` that stop writing the markers going forward. Leaves `Asset.assetTag` (entra:/ad:/fgt:) and `prev-*` breadcrumb tags untouched — those need parallel migration of searchService + conflict resolution before retirement. |
 | `migrateMonitorStatusRename` | Once at startup | Idempotent. Renames the recovery state on `Asset.monitorStatus` from the legacy value `"pending"` to `"recovering"`. The state machine in monitoringService writes `"recovering"` exclusively going forward; this catches rows stamped before the rename. Marker key `monitorStatusRenamePendingMigratedAt`. Recovery: delete the marker and restart. |
+| `migrateAutoMonitorInterfacesShape` | Once at startup | Idempotent (`autoMonitorInterfacesShapeMigratedAt` marker). Rewrites every FMG/FortiGate integration's `Integration.config.{fortigateMonitor|fortiswitchMonitor|fortiapMonitor}.autoMonitorInterfaces` from the legacy single-mode discriminated union (`{mode: "names"|"wildcard"|"type", ...}`) into the multi-block union (`{byNames?, byPatterns?, byTypes?, byLldp?}`). Pairs with the Zod-layer + apply-route + frontend-renderer `coerceLegacySelection` calls that handle the mixed state between deploy and this job running. Already-new-shape rows pass through unchanged on re-runs. Recovery: delete the marker and restart. |
 | `renameMonitorClassKeys` | Once at startup | Phase 0 of the tiered sample-retention work. Idempotent (`monitorClassKeysRenamedAt` marker). Copies legacy `fortiswitch` / `fortiap` per-class keys to the generic `switch` / `accessPoint` names in `Setting("monitorSettings")` / `Setting("manualMonitorSettings")` / every `Integration.config.monitorSettings`. Defensive — leaves old keys in place so the backwards-compat reader in `getMonitorSettings()` keeps working through the transition. |
 | `migrateRetentionTiers` | Once at startup | Phase 1 of tiered retention. Idempotent (`retentionTiersMigratedAt` marker). Seeds `*DetailRetentionDays` / `*HourlyRetentionDays` / `*DailyRetentionDays` fields into the tier-3 JSON shapes and `MonitorClassOverride` rows. Phase 5 superseded these JSON fields with the global `Setting("sampleRetention")`; the migration stays in the boot block but its writes are unused going forward. |
 | `consolidateSampleRetention` | Once at startup | Phase 5 of tiered retention. Idempotent (`sampleRetentionConsolidatedAt` marker). Pulls legacy single-tier retention values out of `manualMonitorSettings` and the legacy `monitorSettings` row into the new global `Setting("sampleRetention")` shape. Per-class breakdown (default / switch / accessPoint) preserved; hourly/daily seeded with 30/365 defaults. Safe on fresh installs. |

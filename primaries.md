@@ -387,3 +387,34 @@ Per-pattern sections:
 
 **When adding a new sync phase:**
 - Insert `phaseMark("X")` right under the `// Phase X — ...` comment. The previous phase's elapsed time is logged at the next phaseMark call; the final phase is closed by `phaseMark("__end__")` at the bottom of `syncDhcpSubnets`.
+
+---
+
+## Permission-gated route + dynamic-role function key
+
+**What it is:** A new functional area that needs its own dimension in the per-role permission matrix. Every route gate is `requirePermission(functionKey, level)` from `src/api/middleware/permissions.ts`; bearer-token surfaces use `requireSessionOrTokenPermission(functionKey, level, scope)` instead. The function-key catalogue is the single source of truth that the matrix UI consumes via `GET /api/v1/roles/functions`.
+
+**Canonical implementation:**
+- Middleware: `src/api/middleware/permissions.ts` (`requirePermission` / `requireOwnership` / `hasPermission` / `requireSessionOrTokenPermission`).
+- Function-key catalogue: `FUNCTION_KEYS` constant in `permissions.ts:54-79`.
+- CRUD service template: `src/services/roleService.ts` (built-in protection + cache-version bump + per-field diff Event).
+- Route layer template: `src/api/routes/roles.ts` (per-method `requirePermission` gates; Zod schema for permission shape).
+- Frontend matrix consumer: `public/js/users.js` `openRoleSlideover` + `regionPickerHtml`.
+
+**Key conventions:**
+- Reads + writes are gated per-route, not per-mount. Reads use `requirePermission(key, "read")`; writes use `requirePermission(key, "write")`. Mount-level guards exist only where a coarser gate is correct (the legacy `/server-settings` blanket is the last hold-out).
+- Ownership-dimensioned functions (today: `subnets`, `reservations`) use `requireOwnership(key)` which is `requirePermission(key, "write")` + sets `req.permissionLevel` for the handler to branch on (`if (req.permissionLevel !== "fullwrite" && row.createdBy !== req.session?.username) ...`).
+- Every Role write calls `bumpRoleVersion(roleId, updatedAt)` from `permissions.ts` so live session snapshots refresh on the next request without sweeping the session store.
+- Built-in roles carry `isBuiltIn=true`; the two undeletable+unrenameable ones (admin + readonly) additionally carry `isProtected=true`. Service-layer write paths enforce both invariants — never trust the frontend's hidden state.
+- Frontend capability checks go through `permAtLeast(functionKey, level)` from `public/js/app.js`; legacy `isAdmin()` / `canManageNetworks()` / `canManageAssets()` shims have been rewritten to consult the matrix, but new call sites should use `permAtLeast` directly so the code is self-documenting at a grep.
+
+**When adding a new function key:**
+- Append the row to `FUNCTION_KEYS` in `permissions.ts`. Pick a stable camelCase `key`; set `hasOwnershipDimension: true` only when "Read-Write" really means "edit own only."
+- Write a migration that adds the new key to every existing `Role.permissions` JSON (admin → fullwrite, readonly → read for readable-by-non-admin surfaces else none, the three editable built-ins → match the closest existing routes' behavior).
+- Wire the route layer guards using `requirePermission(newKey, level)`.
+- Add a CLAUDE.md "Function-key catalogue" entry. The frontend matrix UI picks the new row up automatically via `GET /roles/functions`.
+
+**When adding a new region-scoped column:**
+- Mirror the existing `Role.regionTags` / `User.regionTags` shape: `String[] @default([])` + comment `Empty = unrestricted`.
+- Validation lives in the service layer (`normalizeRegionTags` in `roleService.ts` is the template): trim, drop empties, dedupe case-insensitively, cap length + count.
+- The consumer (filter / list scoping) consults `auth.me.regionTags.effective` from the frontend or `req.session.roleSnapshot` + `req.session.userId → user.regionTags` on the backend — never branch on role NAME for region semantics.

@@ -821,6 +821,44 @@ build auto-prune + boot-time auto-build are layered on top.
 
 ---
 
+## cross-cutting/dynamic-roles-permission-matrix
+
+**What it is:** Per-route RBAC enforced by `requirePermission(functionKey, level)` against the caller's `Role.permissions` matrix (post-cutover model). The five seeded built-in roles reproduce the pre-cutover hardcoded `UserRole` enum's access exactly; operator-created custom roles fill in any per-function gap admins want. Replaces the deleted `requireAdmin` / `requireNetworkAdmin` / `requireAssetsAdmin` / `requireUserOrAbove` / `isNetworkAdminOrAbove` helpers.
+
+**Writers** (mutate the Role table OR stamp the session snapshot OR write per-user/per-role region scope):
+- `src/services/roleService.ts` — `createRole` / `updateRole` / `deleteRole` enforce built-in + protected invariants, normalize the permissions JSON, validate region tags, bump the in-process role-version cache via `bumpRoleVersion(roleId, updatedAt)`, and emit `role.created` / `role.updated` / `role.deleted` Events with per-field diffs.
+- `src/api/routes/roles.ts` — Per-method `requirePermission("roles", ...)` gates + Zod schema acceptance for the `permissions` matrix + `regionTags`.
+- `src/api/routes/users.ts` — `POST /users` + `PUT /:id/role` accept `roleId`; `PUT /:id/regions` writes `User.regionTags`; both enforce the `lastAdminEquivalent` invariant.
+- `src/api/routes/auth.ts` — Login (local + TOTP) + SAML callback load `user.role` and stamp `req.session.{roleId, roleSnapshot, role}` via `snapshotFromRole`. `/auth/me` returns the full role snapshot + `regionTags: {user, role, effective}`.
+- `src/services/azureAuthService.ts` — `findOrProvisionSamlUser` auto-provisions new users with the `readonly` role's id and includes the role in the returned object.
+- `src/api/middleware/permissions.ts` — `loadRoleSnapshot` rewrites `req.session.roleSnapshot` + persists via `req.session.save()` when the cached `updatedAt` is newer than the snapshot.
+
+**Readers** (consult the matrix or the session snapshot to gate behavior):
+- `src/api/middleware/permissions.ts` — `requirePermission` / `hasPermission` / `requireOwnership` / `requireSessionOrTokenPermission`. All route guards funnel through here.
+- Every route module under `src/api/routes/` — declares its per-route gate via `requirePermission(functionKey, level)`. Ownership-dimensioned routes (`subnets.ts`, `reservations.ts`) additionally branch on `req.permissionLevel === "fullwrite"`.
+- `src/api/routes/conflicts.ts` — `visibleEntityTypes(req)` and `canResolve(req, entityType)` consult `hasPermission(req, "discoveryConflicts", ...)` plus role NAME (`req.session.role`) for back-compat with the historical networkadmin↔reservation / assetsadmin↔asset split. Custom roles with `discoveryConflicts=write` see both entity types by default.
+- `src/app.ts` — Static-page redirect: `/users.html` / `/integrations.html` / `/server-settings.html` consult `req.session.roleSnapshot.permissions[key]` against the matching `pageRequiredPermission` entry; out-of-scope users bounce to `/`.
+- `public/js/app.js` — `permAtLeast(functionKey, level)` consumes `currentRolePermissions` populated from `auth.me.role.permissions`. The `isAdmin()` / `canManageNetworks()` / `canManageAssets()` / `isUserOrAbove()` / `canReviewConflicts()` / `canEditSubnet(subnet)` / `canEditReservation(reservation)` shims were rewritten to call `permAtLeast` and are the back-compat surface for the existing call sites across assets.js, subnets.js, reservations.js, integrations.js, events.js.
+- `public/js/users.js` — `loadRoles` consumes `GET /roles` + `GET /roles/functions`; `openRoleSlideover` renders the matrix; `openUserRegionsModal` writes `User.regionTags`.
+- `public/js/mobile/app.js` — Mobile bootstrap reads `data.role.name` and `data.role.permissions` from /auth/me, storing them on `user.role` (string) + `user.permissions` (object) for the rest of the mobile bundle. Existing mobile role-name checks (reservations-tab.js, subnet-detail.js, more-tab.js) keep working for the seeded roles.
+
+**Cache invalidation:**
+- `roleVersionMap` in `permissions.ts` — Map<roleId, ISO updatedAt>. Lazily populated on first request per role; `bumpRoleVersion` writes the new stamp after every Role write; `loadRoleSnapshot` reads it on each request and triggers ONE Prisma fetch + `req.session.save()` when the cached version is newer than the snapshot. Sub-millisecond when in sync.
+- Changing a USER's roleId takes effect on next login (the snapshot is regenerated). Changing a ROLE's permissions takes effect on next request for every session that holds the role.
+
+**Invariants:**
+- `Role.isProtected=true` (admin + readonly only) blocks all edit/delete/rename operations at the service layer regardless of frontend hidden state.
+- `Role.isBuiltIn=true` blocks delete (the three editable built-ins networkadmin/assetsadmin/user can be renamed/edited but not deleted).
+- `lastAdminEquivalent` (userService): every mutation that would leave Polaris with zero users holding `users=fullwrite` AND `roles=fullwrite` returns 409.
+- Custom role names cannot collide with `admin` / `readonly` (case-insensitive reserved-name guard).
+- Permissions JSON is normalized on every write: unknown function keys dropped, missing keys defaulted to `"none"`. The route layer never trusts the raw body shape.
+- Region tag normalization: trim → drop empties → dedupe case-insensitively → cap length (64 chars) + count (64 entries).
+
+**When extending the matrix:**
+See `primaries.md` → "Permission-gated route + dynamic-role function key" for the recipe (add to FUNCTION_KEYS, migrate every Role's permissions JSON, wire the route guards, document in CLAUDE.md).
+
+---
+
 # Per-service touches
 
 Listed alphabetically.
@@ -1045,23 +1083,28 @@ Listed alphabetically.
 
 ## services/autoMonitorInterfacesService.ts
 
-**What it owns:** Auto-monitor interface selection UI for FMG/FortiGate integration (three resolver modes: names / wildcard / type). Selection is additive only—never strips existing operator-owned pins.
+**What it owns:** Auto-monitor interface selection for FMG/FortiGate integrations. Multi-block union: `byNames`, `byPatterns` (wildcards or anchor-free regex per block flag), `byTypes`, `byLldp` (pin where the LLDP neighbor matched a monitored asset of the chosen type). Each block independent; apply pass takes the union. Strictly additive — never strips operator-owned pins.
 
-**Public API:** `compileWildcard`, `resolvePinnedInterfaces`, `getInterfaceAggregate`, `previewAutoMonitorForClass`, `applyAutoMonitorForClass`, `AutoMonitorSelection`, `AutoMonitorClass`, `ResolverInterface`, `AggregateRow`, `PreviewResult`, `ApplyResult`.
+**Public API:** `compileWildcard`, `compilePattern`, `resolvePinnedInterfaces`, `getInterfaceAggregate`, `previewAutoMonitorForClass`, `applyAutoMonitorForClass`, `coerceLegacySelection`, `AutoMonitorSelection`, `AutoMonitorClass`, `ResolverInterface`, `LldpNeighborMatch`, `LldpByIfName`, `LldpNeighborType`, `IfType`, `AggregateRow`, `PreviewResult`, `ApplyResult`, `LLDP_NEIGHBOR_TYPES`, `IF_TYPES`.
 
-**Cross-service deps:** none.
+**Cross-service deps:** none. Reads `asset_interface_samples` (latest per (assetId, ifName) via DISTINCT ON) and `asset_lldp_neighbors` JOIN `assets` (matched-asset type + monitored flag) directly via `prisma.$queryRaw`.
 
-**Used by:** `src/api/routes/integrations.ts:25` — apply auto-monitor on discovery and per-class config change (lines 961, 2197).
+**Used by:** `src/api/routes/integrations.ts` — `interface-aggregate` / preview / apply endpoints AND `syncDhcpSubnets` Phase 2c on discovery completion. `src/jobs/migrateAutoMonitorInterfacesShape.ts` — calls `coerceLegacySelection` to rewrite stored configs at boot.
 
 **Invariants:**
-- **Additive-only contract:** `applyAutoMonitorForClass()` union-merges resolved pins with existing `Asset.monitoredInterfaces`; never deletes pins. Operator hand-pins persist across discovery cycles even if auto-config would exclude them.
-- **Three resolver modes:** names (exact match set); wildcard (shell `*`/`?` patterns compiled to regex with escaping); type (ifType set matching + optional `onlyUp` filter on operStatus).
-- **Latest interface resolution:** `loadLatestInterfaces()` uses `DISTINCT ON (assetId, ifName)` ORDER BY timestamp DESC to get most-recent sample per interface; no separate inventory table.
+- **Additive-only contract:** `applyAutoMonitorForClass()` union-merges resolved pins with existing `Asset.monitoredInterfaces`; never deletes pins. Operator hand-pins persist across discovery cycles even if no block would re-select them.
+- **Multi-block union:** `resolvePinnedInterfaces()` evaluates each present block and Sets the union of all matches; no block is gated on another. A `null` selection or one with all four keys missing produces zero pins.
+- **By LLDP requires both flags:** the matched neighbor's asset must be both `monitored=true` AND have `assetType` in the chosen set. Unmatched neighbors (matchedAssetId is null) cannot satisfy By LLDP.
+- **By LLDP context:** if `selection.byLldp` is set but the caller didn't pass `lldpByIfName`, the block silently contributes nothing — does not throw. (Callers that intend to evaluate LLDP must load it; `applyAutoMonitorForClass` / `previewAutoMonitorForClass` do this conditionally via `selectionUsesLldp`.)
+- **Pattern compiler split:** wildcards (`regex=false`) are anchored by `compileWildcard`; regex (`regex=true`) compiles with no implicit anchors — operators use `^`/`$` if they want full-string match.
+- **Latest interface resolution:** `loadLatestInterfaces()` uses `DISTINCT ON (assetId, ifName)` ORDER BY timestamp DESC. No separate inventory table.
+- **Legacy shape coercion:** `coerceLegacySelection` rewrites the older `{mode: "names"|"wildcard"|"type", ...}` discriminated union to the new shape. Called by the Zod preprocess in the PUT schema, the apply route, the Phase 2c apply pass, the migration job, AND the frontend renderer (`_amonCoerceLegacy` in `public/js/integrations.js`). New-shape values pass through unchanged on every layer so re-running is safe.
 
 **When changing this:**
-- If adding resolver modes, ensure `resolvePinnedInterfaces()` remains pure (no DB, no I/O) and `applyAutoMonitorForClass()` still verifies additive contract before writing.
-- Test wildcard escaping: special chars like `[`, `]`, `^`, `$`, `.` must not become regex syntax.
-- Verify aggregation queries stay efficient: `DISTINCT ON` over many assets/interfaces can be slow if interface sample table is huge; consider pagination/filtering if discovering thousands of assets.
+- If adding a resolver block, ensure `resolvePinnedInterfaces()` remains pure (no DB, no I/O) and the new key is added to `coerceLegacySelection`'s "already new shape" guard so legacy bodies still pass through.
+- Test wildcard escaping: special chars like `[`, `]`, `^`, `$`, `.` must not become regex syntax in wildcard mode.
+- Verify the LLDP query stays bounded: at 2000 monitored switches with full neighbor tables, the JOIN is indexed on both sides (`asset_lldp_neighbors.assetId` + `assets.id`) but the per-asset row count can spike on shared media — keep the projection narrow (assetType + monitored only).
+- `applyAutoMonitorForClass` issues one `prisma.asset.update` per asset in a sequential loop; at large fleet sizes the first apply is N round-trips. Batched `$transaction` would help if this becomes a hot path.
 
 ---
 
