@@ -125,12 +125,13 @@ function renderUsersBody() {
   }
   tbody.innerHTML = rows.map(function (u) {
     var roleName = u.role ? u.role.name : "";
+    var roleKey = roleName.toLowerCase();
     var roleBadge;
-    if (roleName === "admin") roleBadge = '<span class="badge badge-admin">admin</span>';
-    else if (roleName === "networkadmin") roleBadge = '<span class="badge badge-network-admin">network admin</span>';
-    else if (roleName === "assetsadmin") roleBadge = '<span class="badge badge-assets-admin">assets admin</span>';
-    else if (roleName === "user") roleBadge = '<span class="badge badge-user">user</span>';
-    else if (roleName === "readonly") roleBadge = '<span class="badge badge-readonly">read only</span>';
+    if (roleKey === "admin") roleBadge = '<span class="badge badge-admin">admin</span>';
+    else if (roleKey === "networkadmin") roleBadge = '<span class="badge badge-network-admin">network admin</span>';
+    else if (roleKey === "assetsadmin") roleBadge = '<span class="badge badge-assets-admin">assets admin</span>';
+    else if (roleKey === "user") roleBadge = '<span class="badge badge-user">user</span>';
+    else if (roleKey === "readonly") roleBadge = '<span class="badge badge-readonly">read only</span>';
     else roleBadge = '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border)">' + escapeHtml(roleName || "—") + '</span>';
     var authBadge = u.authProvider === "azure"
       ? '<span class="badge badge-reserved" title="Azure SSO">Azure</span>'
