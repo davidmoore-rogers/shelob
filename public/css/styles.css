@@ -1546,6 +1546,8 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
 .badge-network-admin { background: rgba(255,152,0,0.12); color: #ff9800; border: 1px solid rgba(255,152,0,0.25); }
 .badge-assets-admin { background: rgba(0,188,212,0.12); color: #00bcd4; border: 1px solid rgba(0,188,212,0.25); }
 .badge-readonly { background: rgba(158,158,158,0.12); color: #9e9e9e; border: 1px solid rgba(158,158,158,0.25); }
+.badge-user      { background: rgba(0,200,83,0.18); color: var(--color-success); border: 1px solid rgba(0,200,83,0.40); }
+[data-theme="light"] .badge-user { background: rgba(46,125,50,0.14); border-color: rgba(46,125,50,0.40); }
 
 .vip-badge {
   display: inline-block;

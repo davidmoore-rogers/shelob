@@ -11,6 +11,7 @@ var _rolesRaw = [];            // last list from GET /roles
 var _rolesById = {};           // { id: role }
 var _matrixSpec = null;        // { accessLevels, functions } from GET /roles/functions
 var _regionList = [];          // cached map-region names for the region picker
+var _regionByName = {};        // name → color hex; populated alongside _regionList
 
 // Per-user TableSF prefs persistence — matches the canonical
 // polaris-prefs-<scope>-<username> convention used by assets.js / blocks.js /
@@ -128,7 +129,7 @@ function renderUsersBody() {
     if (roleName === "admin") roleBadge = '<span class="badge badge-admin">admin</span>';
     else if (roleName === "networkadmin") roleBadge = '<span class="badge badge-network-admin">network admin</span>';
     else if (roleName === "assetsadmin") roleBadge = '<span class="badge badge-assets-admin">assets admin</span>';
-    else if (roleName === "user") roleBadge = '<span class="badge badge-available">user</span>';
+    else if (roleName === "user") roleBadge = '<span class="badge badge-user">user</span>';
     else if (roleName === "readonly") roleBadge = '<span class="badge badge-readonly">read only</span>';
     else roleBadge = '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border)">' + escapeHtml(roleName || "—") + '</span>';
     var authBadge = u.authProvider === "azure"
@@ -141,11 +142,12 @@ function renderUsersBody() {
     var onlineDot = u.isOnline
       ? '<span class="ip-status-dot ip-dot-available" title="Currently logged in" style="vertical-align:middle"></span>'
       : '';
-    // Regions render on their own line under the username (plain comma-separated
-    // text, not chips) so admins can scan them without the row growing wide.
+    // Regions render on their own line under the username as one pill per
+    // region, each colored by the region's stored map-color so admins can
+    // scan scope at a glance.
     var regionsLabel = "";
     if (Array.isArray(u.regionTags) && u.regionTags.length > 0) {
-      regionsLabel = '<div style="font-size:0.78em;color:var(--color-text-tertiary);margin-top:0.15rem" title="Per-user region scope">' + escapeHtml(u.regionTags.join(", ")) + '</div>';
+      regionsLabel = '<div style="margin-top:0.25rem" title="Per-user region scope">' + regionPillsHtml(u.regionTags) + '</div>';
     }
     var passwordBtn = u.authProvider === "azure" ? '' :
       '<button class="btn btn-sm btn-secondary" data-action="password" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Password</button>';
@@ -282,8 +284,8 @@ function openUserRegionsModal(id, username) {
   var help =
     '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
       'Per-user region scope for <strong>' + escapeHtml(username) + '</strong>. ' +
-      'Empty list = unrestricted. Effective regions for the user\'s session are ' +
-      'union(role.regionTags, user.regionTags).' +
+      'Click a pill to add or remove it. Empty = unrestricted. Effective regions ' +
+      'for the user\'s session are union(role.regionTags, user.regionTags).' +
     '</p>';
   var picker = regionPickerHtml("f-user-regions", current);
   var footer = '<button class="btn btn-secondary" id="btn-cancel">Cancel</button><button class="btn btn-primary" id="btn-save">Save</button>';
@@ -1167,31 +1169,95 @@ async function loadRegionList() {
   try {
     if (api.mapRegions && typeof api.mapRegions.list === "function") {
       var regions = await api.mapRegions.list();
-      _regionList = (regions || []).map(function (r) { return r.name; }).sort();
+      _regionByName = {};
+      (regions || []).forEach(function (r) {
+        if (r && r.name) _regionByName[r.name] = r.color || "";
+      });
+      _regionList = Object.keys(_regionByName).sort();
+      // Re-render any open user table so existing rows pick up the colors.
+      if (typeof renderUsersBody === "function" && document.getElementById("users-tbody")) {
+        try { renderUsersBody(); } catch (_) {}
+      }
     }
   } catch (_) {
     // Region listing requires mapRegions=read; non-admin viewers fall
     // through to a free-text picker with no autocomplete.
     _regionList = [];
+    _regionByName = {};
   }
 }
 
-function regionPickerHtml(idPrefix, selected) {
-  var sel = Array.isArray(selected) ? selected.slice() : [];
-  var chips = sel.map(function (t) {
-    return '<span class="badge region-chip" data-region="' + escapeHtml(t) + '" style="display:inline-flex;align-items:center;gap:0.35rem;background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border);padding:0.2rem 0.5rem;margin:0.15rem 0.25rem 0.15rem 0">' +
-      escapeHtml(t) +
-      ' <button type="button" class="region-chip-remove" style="background:none;border:none;cursor:pointer;color:var(--color-text-secondary);padding:0;font-size:1.1em;line-height:1">&times;</button>' +
+// Return the stored hex color for a region name, or a neutral fallback so a
+// region tag that was hand-typed (and not in the map-regions catalogue) still
+// renders as a recognizable pill.
+function regionColorFor(name) {
+  var c = _regionByName[name];
+  if (c && /^#[0-9a-fA-F]{6}$/.test(c)) return c;
+  return "#9e9e9e";
+}
+
+// Convert a #rrggbb hex to "r, g, b" so we can drop it into rgba(...) for the
+// translucent pill background while keeping the solid border + text in full color.
+function hexToRgbTriplet(hex) {
+  var m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex || "");
+  if (!m) return "158, 158, 158";
+  return parseInt(m[1], 16) + ", " + parseInt(m[2], 16) + ", " + parseInt(m[3], 16);
+}
+
+// One badge per region, colored by the region's stored color.
+function regionPillsHtml(names) {
+  if (!Array.isArray(names) || names.length === 0) return "";
+  return names.map(function (n) {
+    var hex = regionColorFor(n);
+    var rgb = hexToRgbTriplet(hex);
+    return '<span class="badge" style="background:rgba(' + rgb + ',0.18);color:' + hex + ';border:1px solid rgba(' + rgb + ',0.45);margin-right:0.25rem">' +
+      escapeHtml(n) +
     '</span>';
   }).join("");
-  var datalistOpts = _regionList.map(function (n) { return '<option value="' + escapeHtml(n) + '">'; }).join("");
-  return '<div id="' + idPrefix + '">' +
-    '<div class="region-chips" data-region-chips style="margin-bottom:0.5rem">' + chips + '</div>' +
-    '<div style="display:flex;gap:0.5rem;align-items:center">' +
-      '<input type="text" class="region-add-input" list="' + idPrefix + '-datalist" placeholder="Add region tag…" style="flex:1">' +
-      '<button type="button" class="btn btn-sm btn-secondary region-add-btn">Add</button>' +
-    '</div>' +
-    '<datalist id="' + idPrefix + '-datalist">' + datalistOpts + '</datalist>' +
+}
+
+// Render every map-region as a clickable pill colored by the region's stored
+// color. Selected pills are filled; deselected pills are an outline of the
+// same color. Click toggles. Region tags previously assigned by hand that no
+// longer exist in the catalogue are shown at the top in gray with a remove ×
+// so admins can clean them up without losing the assignment data.
+function regionPickerHtml(idPrefix, selected) {
+  var sel = Array.isArray(selected) ? selected.slice() : [];
+  var selSet = {};
+  sel.forEach(function (n) { selSet[n.toLowerCase()] = true; });
+
+  var orphans = sel.filter(function (n) { return !_regionByName.hasOwnProperty(n); });
+  var orphanHtml = orphans.length
+    ? '<div style="margin-bottom:0.5rem">' +
+        '<div style="font-size:0.78rem;color:var(--color-text-tertiary);margin-bottom:0.25rem">Unknown region tags (no longer in the map). Click × to remove.</div>' +
+        orphans.map(function (n) {
+          return '<span class="badge region-chip" data-region="' + escapeHtml(n) + '" data-selected="1" style="display:inline-flex;align-items:center;gap:0.35rem;background:rgba(158,158,158,0.18);color:#9e9e9e;border:1px solid rgba(158,158,158,0.45);padding:0.2rem 0.5rem;margin:0.15rem 0.25rem 0.15rem 0">' +
+            escapeHtml(n) +
+            ' <button type="button" class="region-chip-remove" aria-label="Remove" style="background:none;border:none;cursor:pointer;color:inherit;padding:0;font-size:1.1em;line-height:1">&times;</button>' +
+          '</span>';
+        }).join("") +
+      '</div>'
+    : '';
+
+  var available = _regionList.length === 0
+    ? '<div style="font-size:0.85rem;color:var(--color-text-tertiary);padding:0.5rem;border:1px dashed var(--color-border);border-radius:6px">No map regions defined yet. Create regions on the Device Map first.</div>'
+    : '<div class="region-pill-grid" style="display:flex;flex-wrap:wrap;gap:0.4rem">' +
+        _regionList.map(function (n) {
+          var hex = regionColorFor(n);
+          var rgb = hexToRgbTriplet(hex);
+          var isSel = selSet[n.toLowerCase()];
+          var style = isSel
+            ? "background:rgba(" + rgb + ",0.22);color:" + hex + ";border:1px solid rgba(" + rgb + ",0.55)"
+            : "background:transparent;color:" + hex + ";border:1px solid rgba(" + rgb + ",0.45);opacity:0.75";
+          return '<button type="button" class="badge region-chip" data-region="' + escapeHtml(n) + '" data-selected="' + (isSel ? "1" : "0") + '" data-color="' + escapeHtml(hex) + '" data-rgb="' + escapeHtml(rgb) + '" style="cursor:pointer;padding:0.3rem 0.7rem;font-size:0.78rem;font-weight:600;text-transform:capitalize;' + style + '">' +
+            escapeHtml(n) +
+          '</button>';
+        }).join("") +
+      '</div>';
+
+  return '<div id="' + idPrefix + '" class="region-picker">' +
+    orphanHtml +
+    available +
   '</div>';
 }
 
@@ -1199,58 +1265,32 @@ function regionPickerHtml(idPrefix, selected) {
 document.addEventListener("click", function (e) {
   var removeBtn = e.target.closest(".region-chip-remove");
   if (removeBtn) {
-    var chip = removeBtn.closest(".region-chip");
-    if (chip) chip.remove();
+    var orphan = removeBtn.closest(".region-chip");
+    if (orphan) orphan.remove();
+    e.preventDefault();
     return;
   }
-  var addBtn = e.target.closest(".region-add-btn");
-  if (addBtn) {
-    var picker = addBtn.closest("[id^='f-role-regions'], [id^='f-user-regions']");
-    if (!picker) return;
-    var input = picker.querySelector(".region-add-input");
-    if (!input) return;
-    var v = (input.value || "").trim();
-    if (!v) return;
-    var chips = picker.querySelector("[data-region-chips]");
-    var existing = chips.querySelectorAll(".region-chip");
-    for (var i = 0; i < existing.length; i++) {
-      if (existing[i].getAttribute("data-region").toLowerCase() === v.toLowerCase()) {
-        input.value = "";
-        return;
-      }
-    }
-    var chip = document.createElement("span");
-    chip.className = "badge region-chip";
-    chip.setAttribute("data-region", v);
-    chip.style.cssText = "display:inline-flex;align-items:center;gap:0.35rem;background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border);padding:0.2rem 0.5rem;margin:0.15rem 0.25rem 0.15rem 0";
-    chip.innerHTML = escapeHtml(v) + ' <button type="button" class="region-chip-remove" style="background:none;border:none;cursor:pointer;color:var(--color-text-secondary);padding:0;font-size:1.1em;line-height:1">&times;</button>';
-    chips.appendChild(chip);
-    input.value = "";
+  var pill = e.target.closest(".region-picker .region-chip");
+  if (!pill || pill.getAttribute("data-selected") === null) return;
+  // Orphan rows have no data-color and only respond to the × button above.
+  if (!pill.hasAttribute("data-color")) return;
+  var isSel = pill.getAttribute("data-selected") === "1";
+  var hex = pill.getAttribute("data-color");
+  var rgb = pill.getAttribute("data-rgb");
+  if (isSel) {
+    pill.setAttribute("data-selected", "0");
+    pill.style.cssText = "cursor:pointer;padding:0.3rem 0.7rem;font-size:0.78rem;font-weight:600;text-transform:capitalize;background:transparent;color:" + hex + ";border:1px solid rgba(" + rgb + ",0.45);opacity:0.75";
+  } else {
+    pill.setAttribute("data-selected", "1");
+    pill.style.cssText = "cursor:pointer;padding:0.3rem 0.7rem;font-size:0.78rem;font-weight:600;text-transform:capitalize;background:rgba(" + rgb + ",0.22);color:" + hex + ";border:1px solid rgba(" + rgb + ",0.55)";
   }
 });
 
 function collectRegionPicker(idPrefix) {
   var picker = document.getElementById(idPrefix);
   if (!picker) return [];
-  // Include any unsubmitted input value too (operator forgot to click Add).
-  var input = picker.querySelector(".region-add-input");
-  if (input && input.value && input.value.trim()) {
-    var v = input.value.trim();
-    var existing = picker.querySelectorAll(".region-chip");
-    var dup = false;
-    for (var i = 0; i < existing.length; i++) {
-      if (existing[i].getAttribute("data-region").toLowerCase() === v.toLowerCase()) { dup = true; break; }
-    }
-    if (!dup) {
-      var chip = document.createElement("span");
-      chip.className = "region-chip";
-      chip.setAttribute("data-region", v);
-      picker.querySelector("[data-region-chips]").appendChild(chip);
-    }
-    input.value = "";
-  }
   var out = [];
-  picker.querySelectorAll(".region-chip").forEach(function (c) {
+  picker.querySelectorAll(".region-chip[data-selected='1']").forEach(function (c) {
     out.push(c.getAttribute("data-region"));
   });
   return out;
