@@ -120,6 +120,7 @@ const MANUAL_POLLING_DEFAULT = {
   temperaturePolling:  null,
   interfacesPolling:   null,
   lldpPolling:         null,
+  storagePolling:      null,
 };
 const FORTI_POLLING_DEFAULT = {
   responseTimePolling: "rest_api" as const,
@@ -130,6 +131,10 @@ const FORTI_POLLING_DEFAULT = {
   // FortiOS REST `lldp-neighbors` endpoint is empty on most fleets;
   // operators flip this back to rest_api when they actually have LLDP on.
   lldpPolling:         "disabled" as const,
+  // Storage defaults to "disabled" on FMG/FortiGate sources because FortiOS
+  // appliances don't expose meaningful mountable storage; operators opt in
+  // per-asset when they have a device that does.
+  storagePolling:      "disabled" as const,
 };
 
 beforeEach(() => {
