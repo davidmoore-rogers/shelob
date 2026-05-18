@@ -30,6 +30,7 @@ describe("extractApLldpAndMesh", () => {
     expect(extractApLldpAndMesh(row)).toEqual({
       lldpUplinkSwitch: "MORGAN-148E-1",
       lldpUplinkPort: "port9",
+      lldpLocalPort: "lan1",
     });
   });
 
@@ -74,6 +75,7 @@ describe("extractApLldpAndMesh", () => {
     expect(extractApLldpAndMesh(row)).toEqual({
       lldpUplinkSwitch: "MORGAN-124F-1",
       lldpUplinkPort: "port12",
+      lldpLocalPort: "lan1",
     });
   });
 
@@ -144,6 +146,7 @@ describe("extractApLldpAndMesh", () => {
     expect(extractApLldpAndMesh(row)).toEqual({
       lldpUplinkSwitch: "MORGAN-108E-3",
       lldpUplinkPort: "port4",
+      lldpLocalPort: "lan1",
       meshUplink: "mesh",
       parentApSerial: "FP234FTF23008545",
     });
