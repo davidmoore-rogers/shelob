@@ -64,13 +64,19 @@ window.PolarisTheme = {
       clearTimeout(bootTimeout);
       if (res.ok) {
         var data = await res.json();
-        // /auth/me returns { authenticated, username, role, authProvider } —
-        // a flat object, not a nested user. Translate to the shape the rest
-        // of the mobile bundle expects.
+        // /auth/me returns { authenticated, username, role: {id,name,permissions,...},
+        // authProvider, regionTags: {user, role, effective} }. Translate to
+        // the shape the rest of the mobile bundle expects — role becomes the
+        // role NAME string for back-compat with existing role-name checks in
+        // reservations-tab.js / subnet-detail.js / more-tab.js. Permissions +
+        // effective regions are passed through under explicit keys so future
+        // surfaces (e.g. region-filtered reservation list) can read them.
         if (data && data.authenticated) {
           user = {
             username:     data.username,
-            role:         data.role,
+            role:         (data.role && data.role.name) || null,
+            permissions:  (data.role && data.role.permissions) || {},
+            regions:      (data.regionTags && data.regionTags.effective) || [],
             authProvider: data.authProvider,
             displayName:  data.username,
           };

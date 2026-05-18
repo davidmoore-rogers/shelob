@@ -194,10 +194,19 @@ const api = {
     create:        (body)   => request("POST", "/users", body),
     resetPassword: (id, b)  => request("PUT", `/users/${id}/password`, b),
     updateRole:    (id, b)  => request("PUT", `/users/${id}/role`, b),
+    updateRegions: (id, b)  => request("PUT", `/users/${id}/regions`, b),
     delete:        (id)     => request("DELETE", `/users/${id}`),
     resetTotp:     (id)     => request("DELETE", `/users/${id}/totp`),
     roleReviewNotifications: ()   => request("GET", "/users/role-review-notifications"),
     dismissRoleReview:       (id) => request("DELETE", `/users/${id}/role-review`),
+  },
+  roles: {
+    list:      ()        => request("GET", "/roles"),
+    get:       (id)      => request("GET", `/roles/${id}`),
+    create:    (body)    => request("POST", "/roles", body),
+    update:    (id, b)   => request("PUT",  `/roles/${id}`, b),
+    delete:    (id)      => request("DELETE", `/roles/${id}`),
+    functions: ()        => request("GET", "/roles/functions"),
   },
   totp: {
     status:     ()     => request("GET",    "/auth/totp/status"),
@@ -332,6 +341,7 @@ const api = {
       throw err;
     }),
     installAgent:         (id, body) => request("POST",   `/assets/${id}/agent/install`, body),
+    retryInstallAgent:    (id)       => request("POST",   `/assets/${id}/agent/retry`),
     upgradeAgent:         (id, body) => request("POST",   `/assets/${id}/agent/upgrade`, body || {}),
     deleteAgent:          (id, opts) => {
       var qs = (opts && opts.force) ? "?force=true" : "";

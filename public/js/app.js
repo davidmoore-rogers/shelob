@@ -34,8 +34,23 @@ function _moonIcon() {
 }
 
 // ─── Current User ────────────────────────────────────────────────────────────
+//
+// After the dynamic-roles cutover `currentUserRole` carries the role NAME
+// (string) for the few surfaces that need role identity (visual badge,
+// sidebar polling). All real capability checks consult
+// `currentRolePermissions` via the permAtLeast(functionKey, level) helper —
+// the canX() back-compat shims have been rewritten to call it so existing
+// call sites keep working.
+//
+// `currentEffectiveRegions` is the union of role.regionTags and user.regionTags.
+// Storage-only in v1; consumers (asset/subnet/reservation list filters,
+// map view) will read it in a follow-on change.
 
-var currentUserRole = null;
+var currentUserRole = null;          // role name (string)
+var currentRolePermissions = {};     // { [functionKey]: "none"|"read"|"write"|"fullwrite" }
+var currentEffectiveRegions = [];    // string[]
+var currentUserRegions = [];         // user.regionTags
+var currentRoleRegions = [];         // role.regionTags
 var currentUsername = null;
 var _userReadyResolve = null;
 var userReady = new Promise(function (resolve) { _userReadyResolve = resolve; });
@@ -44,10 +59,19 @@ async function fetchCurrentUser() {
   try {
     var data = await fetch("/api/v1/auth/me").then(function (r) { return r.json(); });
     if (data.authenticated) {
-      currentUserRole = data.role;
+      currentUserRole = (data.role && data.role.name) || null;
+      currentRolePermissions = (data.role && data.role.permissions) || {};
       currentUsername = data.username;
+      currentUserRegions = (data.regionTags && data.regionTags.user) || [];
+      currentRoleRegions = (data.regionTags && data.regionTags.role) || [];
+      currentEffectiveRegions = (data.regionTags && data.regionTags.effective) || [];
       try {
-        localStorage.setItem("polaris-user", JSON.stringify({ role: data.role, username: data.username }));
+        localStorage.setItem("polaris-user", JSON.stringify({
+          role: currentUserRole,
+          permissions: currentRolePermissions,
+          username: data.username,
+          regions: currentEffectiveRegions,
+        }));
       } catch (_) {}
     } else {
       try { localStorage.removeItem("polaris-user"); } catch (_) {}
@@ -57,20 +81,41 @@ async function fetchCurrentUser() {
   return currentUserRole;
 }
 
+// permAtLeast(functionKey, level) — the canonical capability check.
+// none < read < write < fullwrite. Use this for any "can the user do X"
+// branch; the canX() shims below are convenience wrappers for the most
+// common patterns.
+var _PERM_RANK = { none: 0, read: 1, write: 2, fullwrite: 3 };
+function permLevel(key) { return currentRolePermissions[key] || "none"; }
+function permAtLeast(key, level) {
+  return (_PERM_RANK[permLevel(key)] || 0) >= (_PERM_RANK[level] || 0);
+}
+
+// Role-name shims — kept for places that genuinely need to know the role
+// identity (sidebar admin-only menu items, role-name display badge). DO
+// NOT use these for new capability checks — use permAtLeast(key, level).
 function isAdmin() { return currentUserRole === "admin"; }
 function isNetworkAdmin() { return currentUserRole === "networkadmin"; }
 function isAssetsAdmin() { return currentUserRole === "assetsadmin"; }
-function canManageNetworks() { return currentUserRole === "admin" || currentUserRole === "networkadmin"; }
-function canManageAssets() { return currentUserRole === "admin" || currentUserRole === "assetsadmin"; }
-function isUserOrAbove() { return currentUserRole && currentUserRole !== "readonly"; }
-function canReviewConflicts() { return canManageNetworks() || canManageAssets(); }
-function canReserveIps() { return currentUserRole === "admin" || currentUserRole === "networkadmin" || currentUserRole === "user" || currentUserRole === "assetsadmin"; }
-function canCreateNetworks() { return currentUserRole && currentUserRole !== "readonly"; }
+
+// Capability shims — rewritten to consult the permission matrix. The
+// names map to the closest function-key check that matches the old
+// hardcoded-role behavior. Custom roles with the relevant grant pass.
+function canManageNetworks() { return permAtLeast("subnets", "fullwrite"); }
+function canManageAssets() { return permAtLeast("assets", "write"); }
+function isUserOrAbove() { return permAtLeast("subnets", "write") || permAtLeast("reservations", "write"); }
+function canReviewConflicts() { return permAtLeast("discoveryConflicts", "write"); }
+function canReserveIps() { return permAtLeast("reservations", "write"); }
+function canCreateNetworks() { return permAtLeast("subnets", "write"); }
 function canEditSubnet(subnet) {
-  return canManageNetworks() || (subnet && subnet.createdBy && subnet.createdBy === currentUsername);
+  if (permAtLeast("subnets", "fullwrite")) return true;
+  if (!permAtLeast("subnets", "write")) return false;
+  return !!(subnet && subnet.createdBy && subnet.createdBy === currentUsername);
 }
 function canEditReservation(reservation) {
-  return canManageNetworks() || (reservation && reservation.createdBy && reservation.createdBy === currentUsername);
+  if (permAtLeast("reservations", "fullwrite")) return true;
+  if (!permAtLeast("reservations", "write")) return false;
+  return !!(reservation && reservation.createdBy && reservation.createdBy === currentUsername);
 }
 
 // ─── Sidebar Navigation ──────────────────────────────────────────────────────
