@@ -1572,11 +1572,23 @@
     var poly = L.polygon(region.polygon, { className: "map-region-polygon" });
     poly._polarisRegionId = region.id;
     poly._polarisRegionName = region.name;
+    poly._polarisRegionColor = region.color || null;
+    applyRegionColor(poly, region.color);
     poly.bindTooltip(escapeHtml(region.name), { permanent: true, direction: "center", className: "map-region-label" });
     poly.on("click", function () { openRegionActionsPopup(poly); });
     regionState.layer.addLayer(poly);
     regionState.polygonsByRegionId[region.id] = poly;
     enablePolygonVertexEdit(poly);
+  }
+
+  // Apply the region's color to the polygon stroke + fill. The CSS class
+  // map-region-polygon still owns stroke width / opacities; this overrides
+  // only the hue. Falls through to the CSS default (accent) when color is
+  // missing — that path exists for legacy regions that haven't been rewritten
+  // yet, though the backend back-fills a random palette pick at load time.
+  function applyRegionColor(poly, color) {
+    if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) return;
+    poly.setStyle({ color: color, fillColor: color });
   }
 
   // Turns on leaflet-draw's per-polygon vertex/midpoint handles immediately
@@ -1587,9 +1599,17 @@
   function enablePolygonVertexEdit(poly) {
     if (!poly || !poly.editing) return;
     poly.editing.enable();
+    // Recolor the freshly-created vertex/midpoint markers to match the
+    // polygon's hue. Deferred one tick so leaflet-draw has finished mounting
+    // the markers into the marker pane.
+    setTimeout(function () { colorEditMarkers(poly); }, 0);
     var saveTimer = null;
     var savedPolygon = polygonLatLngsToPairs(poly);
     poly.on("editvertex", function () {
+      // Midpoint-drag→vertex conversions add fresh markers; vertex deletions
+      // remove them. Either way, re-color so the dot set always matches the
+      // region. Deferred so the marker DOM is settled when we walk it.
+      setTimeout(function () { colorEditMarkers(poly); }, 0);
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(function () {
         saveTimer = null;
@@ -1601,9 +1621,30 @@
           window.alert("Failed to update region: " + (err && err.message ? err.message : err));
           poly.setLatLngs(savedPolygon);
           if (poly.editing) { poly.editing.disable(); poly.editing.enable(); }
+          setTimeout(function () { colorEditMarkers(poly); }, 0);
         });
       }, 800);
     });
+  }
+
+  // Per-polygon vertex/midpoint marker recoloring. leaflet-draw mounts each
+  // marker into the shared marker pane (siblings, not children of the polygon
+  // path), so we can't reach them with a CSS-variable trick — walking the
+  // handler's internal `_markerGroup` and setting borderColor inline is the
+  // only stable hook. The base shape stays from the .leaflet-editing-icon
+  // CSS class; we only override the ring hue.
+  function colorEditMarkers(poly) {
+    if (!poly || !poly.editing) return;
+    var color = poly._polarisRegionColor;
+    if (!color) return;
+    var handlers = poly.editing._verticesHandlers || [];
+    for (var h = 0; h < handlers.length; h++) {
+      var group = handlers[h] && handlers[h]._markerGroup;
+      if (!group || typeof group.eachLayer !== "function") continue;
+      group.eachLayer(function (m) {
+        if (m && m._icon) m._icon.style.borderColor = color;
+      });
+    }
   }
 
   function polygonLatLngsToPairs(poly) {
@@ -1622,10 +1663,10 @@
   async function onRegionCreated(e) {
     var layer = e.layer;
     var pairs = polygonLatLngsToPairs(layer);
-    var name = await promptRegionName("Name this region", "");
-    if (!name) return; // cancelled
+    var details = await promptRegionDetails("Name this region", "", randomRegionColor());
+    if (!details) return; // cancelled
     try {
-      var saved = await api.mapRegions.create(name, pairs);
+      var saved = await api.mapRegions.create(details.name, pairs, details.color);
       // Replace the temporary draw layer with our managed L.polygon so
       // it picks up the styled className + click handler.
       addRegionPolygon(saved);
@@ -1635,23 +1676,59 @@
     }
   }
 
+  // Palette mirrors src/services/mapRegionService.ts TAG_COLOR_PALETTE so the
+  // initial picker swatch matches the backend's random pick when an operator
+  // saves without changing the color.
+  var REGION_COLOR_PALETTE = [
+    "#4fc3f7", "#4ade80", "#f59e0b", "#f472b6", "#a78bfa",
+    "#fb923c", "#38bdf8", "#34d399", "#e879f9", "#facc15",
+    "#f87171", "#2dd4bf", "#818cf8", "#c084fc",
+  ];
+  function randomRegionColor() {
+    return REGION_COLOR_PALETTE[Math.floor(Math.random() * REGION_COLOR_PALETTE.length)];
+  }
+
   function openRegionActionsPopup(poly) {
     if (!regionState.editing) return;
     var id = poly._polarisRegionId;
     var name = poly._polarisRegionName || "";
+    var color = poly._polarisRegionColor || "";
+    var swatch = color
+      ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + escapeHtml(color) + ';margin-right:6px;vertical-align:middle"></span>'
+      : "";
     var html =
       '<div style="display:flex;flex-direction:column;gap:6px;min-width:180px">' +
-        '<div style="font-weight:600">' + escapeHtml(name) + '</div>' +
+        '<div style="font-weight:600">' + swatch + escapeHtml(name) + '</div>' +
         '<button type="button" class="btn btn-secondary" data-region-rename="' + escapeHtml(id) + '">Rename</button>' +
+        '<button type="button" class="btn btn-secondary" data-region-recolor="' + escapeHtml(id) + '">Change color</button>' +
         '<button type="button" class="btn btn-danger" data-region-delete="' + escapeHtml(id) + '">Delete</button>' +
       '</div>';
     var popup = L.popup({ closeButton: true, autoClose: true }).setLatLng(poly.getBounds().getCenter()).setContent(html).openOn(map);
     setTimeout(function () {
       var renameBtn = document.querySelector('[data-region-rename="' + id + '"]');
+      var recolorBtn = document.querySelector('[data-region-recolor="' + id + '"]');
       var deleteBtn = document.querySelector('[data-region-delete="' + id + '"]');
       if (renameBtn) renameBtn.addEventListener("click", function () { map.closePopup(popup); renameRegion(id, name); });
+      if (recolorBtn) recolorBtn.addEventListener("click", function () { map.closePopup(popup); recolorRegion(id, name, color); });
       if (deleteBtn) deleteBtn.addEventListener("click", function () { map.closePopup(popup); deleteRegion(id, name); });
     }, 0);
+  }
+
+  async function recolorRegion(id, name, currentColor) {
+    var next = await promptRegionColor("Change color for \"" + name + "\"", currentColor || randomRegionColor());
+    if (!next || next === currentColor) return;
+    try {
+      var updated = await api.mapRegions.update(id, { color: next });
+      var poly = regionState.polygonsByRegionId[id];
+      if (poly) {
+        poly._polarisRegionColor = updated.color;
+        applyRegionColor(poly, updated.color);
+        colorEditMarkers(poly);
+      }
+      setStatus("Region \"" + name + "\" recolored.");
+    } catch (err) {
+      window.alert("Failed to recolor region: " + (err && err.message ? err.message : err));
+    }
   }
 
   async function renameRegion(id, currentName) {
@@ -1684,8 +1761,7 @@
     }
   }
 
-  // Reuses the project's openModal helper from app.js. Resolves to the trimmed
-  // name or null if the operator cancels.
+  // Rename-only prompt. Resolves to the trimmed name or null if cancelled.
   function promptRegionName(title, initial) {
     return new Promise(function (resolve) {
       var bodyHtml =
@@ -1721,6 +1797,144 @@
         if (input) input.addEventListener("keydown", function (ev) {
           if (ev.key === "Enter") { ev.preventDefault(); var v = input.value.trim(); finish(v || null); }
           if (ev.key === "Escape") { ev.preventDefault(); finish(null); }
+        });
+      }, 0);
+    });
+  }
+
+  // Create-time prompt — collects name AND color. Resolves to {name, color}
+  // or null if cancelled. The color picker is a palette swatch strip plus a
+  // free-form hex input; the initial value is the caller-supplied random
+  // palette pick so the operator can save without touching it.
+  function promptRegionDetails(title, initialName, initialColor) {
+    return new Promise(function (resolve) {
+      var swatches = REGION_COLOR_PALETTE.map(function (c) {
+        var selected = c.toLowerCase() === (initialColor || "").toLowerCase() ? " region-swatch-selected" : "";
+        return '<button type="button" class="region-swatch' + selected + '" data-color="' + escapeHtml(c) + '" ' +
+          'style="width:24px;height:24px;border-radius:50%;border:2px solid var(--color-border);background:' + escapeHtml(c) + ';cursor:pointer;padding:0"></button>';
+      }).join("");
+      var bodyHtml =
+        '<label style="display:block;margin-bottom:6px;font-size:0.9rem">Region name</label>' +
+        '<input type="text" id="region-name-input" maxlength="64" value="' + escapeHtml(initialName || "") + '" ' +
+          'style="width:100%;padding:6px 8px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-bg-secondary);color:var(--color-text-primary)">' +
+        '<label style="display:block;margin:14px 0 6px;font-size:0.9rem">Color</label>' +
+        '<div id="region-swatches" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">' + swatches + '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<input type="color" id="region-color-input" value="' + escapeHtml(initialColor || "#4fc3f7") + '" style="width:48px;height:32px;padding:0;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:transparent;cursor:pointer">' +
+          '<span id="region-color-hex" style="font-family:monospace;color:var(--color-text-secondary)">' + escapeHtml(initialColor || "#4fc3f7") + '</span>' +
+        '</div>' +
+        '<p style="margin-top:12px;font-size:0.8rem;color:var(--color-text-tertiary)">Saved as the tag <code>region:&lt;name&gt;</code>. Color is chosen at random by default.</p>';
+      var footer =
+        '<button type="button" class="btn btn-secondary" id="region-cancel">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="region-save">Save</button>';
+      var resolved = false;
+      function finish(value) {
+        if (resolved) return;
+        resolved = true;
+        if (typeof closeModal === "function") closeModal();
+        resolve(value);
+      }
+      if (typeof openModal !== "function") {
+        var v = window.prompt(title + " (name):", initialName || "");
+        if (!v || !v.trim()) return resolve(null);
+        return resolve({ name: v.trim(), color: initialColor || "#4fc3f7" });
+      }
+      openModal(title, bodyHtml, footer);
+      setTimeout(function () {
+        var input = document.getElementById("region-name-input");
+        var colorInput = document.getElementById("region-color-input");
+        var hexLabel = document.getElementById("region-color-hex");
+        var cancel = document.getElementById("region-cancel");
+        var save = document.getElementById("region-save");
+        if (input) { input.focus(); input.select(); }
+        function setColor(c) {
+          if (!c) return;
+          if (colorInput) colorInput.value = c;
+          if (hexLabel) hexLabel.textContent = c.toLowerCase();
+          var swatchEls = document.querySelectorAll("#region-swatches .region-swatch");
+          for (var i = 0; i < swatchEls.length; i++) {
+            var el = swatchEls[i];
+            if ((el.getAttribute("data-color") || "").toLowerCase() === c.toLowerCase()) el.classList.add("region-swatch-selected");
+            else el.classList.remove("region-swatch-selected");
+          }
+        }
+        var swatchEls = document.querySelectorAll("#region-swatches .region-swatch");
+        for (var i = 0; i < swatchEls.length; i++) {
+          swatchEls[i].addEventListener("click", function (ev) { setColor(ev.currentTarget.getAttribute("data-color")); });
+        }
+        if (colorInput) colorInput.addEventListener("input", function () { setColor(colorInput.value); });
+        function commit() {
+          var name = input ? input.value.trim() : "";
+          if (!name) { finish(null); return; }
+          var color = colorInput ? colorInput.value : initialColor;
+          finish({ name: name, color: color });
+        }
+        if (cancel) cancel.addEventListener("click", function () { finish(null); });
+        if (save) save.addEventListener("click", commit);
+        if (input) input.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+          if (ev.key === "Escape") { ev.preventDefault(); finish(null); }
+        });
+      }, 0);
+    });
+  }
+
+  // Color-only prompt for the "Change color" popup action. Resolves to a
+  // hex string or null if cancelled.
+  function promptRegionColor(title, initialColor) {
+    return new Promise(function (resolve) {
+      var swatches = REGION_COLOR_PALETTE.map(function (c) {
+        var selected = c.toLowerCase() === (initialColor || "").toLowerCase() ? " region-swatch-selected" : "";
+        return '<button type="button" class="region-swatch' + selected + '" data-color="' + escapeHtml(c) + '" ' +
+          'style="width:24px;height:24px;border-radius:50%;border:2px solid var(--color-border);background:' + escapeHtml(c) + ';cursor:pointer;padding:0"></button>';
+      }).join("");
+      var bodyHtml =
+        '<div id="region-swatches" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">' + swatches + '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<input type="color" id="region-color-input" value="' + escapeHtml(initialColor || "#4fc3f7") + '" style="width:48px;height:32px;padding:0;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:transparent;cursor:pointer">' +
+          '<span id="region-color-hex" style="font-family:monospace;color:var(--color-text-secondary)">' + escapeHtml(initialColor || "#4fc3f7") + '</span>' +
+        '</div>';
+      var footer =
+        '<button type="button" class="btn btn-secondary" id="region-cancel">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="region-save">Save</button>';
+      var resolved = false;
+      function finish(value) {
+        if (resolved) return;
+        resolved = true;
+        if (typeof closeModal === "function") closeModal();
+        resolve(value);
+      }
+      if (typeof openModal !== "function") {
+        var v = window.prompt(title + " (hex color like #4fc3f7):", initialColor || "");
+        if (!v || !/^#[0-9a-fA-F]{6}$/.test(v.trim())) return resolve(null);
+        return resolve(v.trim().toLowerCase());
+      }
+      openModal(title, bodyHtml, footer);
+      setTimeout(function () {
+        var colorInput = document.getElementById("region-color-input");
+        var hexLabel = document.getElementById("region-color-hex");
+        var cancel = document.getElementById("region-cancel");
+        var save = document.getElementById("region-save");
+        function setColor(c) {
+          if (!c) return;
+          if (colorInput) colorInput.value = c;
+          if (hexLabel) hexLabel.textContent = c.toLowerCase();
+          var swatchEls = document.querySelectorAll("#region-swatches .region-swatch");
+          for (var i = 0; i < swatchEls.length; i++) {
+            var el = swatchEls[i];
+            if ((el.getAttribute("data-color") || "").toLowerCase() === c.toLowerCase()) el.classList.add("region-swatch-selected");
+            else el.classList.remove("region-swatch-selected");
+          }
+        }
+        var swatchEls = document.querySelectorAll("#region-swatches .region-swatch");
+        for (var i = 0; i < swatchEls.length; i++) {
+          swatchEls[i].addEventListener("click", function (ev) { setColor(ev.currentTarget.getAttribute("data-color")); });
+        }
+        if (colorInput) colorInput.addEventListener("input", function () { setColor(colorInput.value); });
+        if (cancel) cancel.addEventListener("click", function () { finish(null); });
+        if (save) save.addEventListener("click", function () {
+          var c = colorInput ? colorInput.value : initialColor;
+          finish(c || null);
         });
       }, 0);
     });

@@ -22,14 +22,18 @@ const PolygonSchema = z
   .min(3, "Polygon must have at least 3 vertices")
   .max(1000, "Polygon cannot have more than 1000 vertices");
 
+const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color must be a hex string like "#4fc3f7"');
+
 const CreateRegionSchema = z.object({
   name: z.string().min(1, "Region name is required").max(64),
   polygon: PolygonSchema,
+  color: HexColorSchema.optional(),
 });
 
 const UpdateRegionSchema = z.object({
   name: z.string().min(1).max(64).optional(),
   polygon: PolygonSchema.optional(),
+  color: HexColorSchema.optional(),
 });
 
 // GET /map/regions
@@ -48,6 +52,7 @@ router.post("/", requirePermission("mapRegions", "write"), async (req, res, next
     const created = await service.createRegion({
       name: input.name,
       polygon: input.polygon,
+      color: input.color,
       actor: req.session?.username ?? null,
     });
     const summary = await service.applyOneRegion(created);

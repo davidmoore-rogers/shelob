@@ -41,6 +41,8 @@ export interface MapRegion {
   name: string;
   /** [[lat, lng], ...]; >=3 points, <=1000 vertices */
   polygon: LatLng[];
+  /** Hex color "#rrggbb" used for the polygon stroke + fill on the map. */
+  color: string;
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
@@ -50,6 +52,7 @@ export interface SaveRegionInput {
   id?: string;
   name?: string;
   polygon?: LatLng[];
+  color?: string;
   actor?: string | null;
 }
 
@@ -67,7 +70,14 @@ async function loadAll(): Promise<MapRegion[]> {
   if (!row?.value) return [];
   const val = row.value as unknown;
   if (!Array.isArray(val)) return [];
-  return val as MapRegion[];
+  // Legacy regions pre-date the color field — back-fill at read time with a
+  // random palette pick so the UI has something to render. Persist back on
+  // the next write through updateRegion; we deliberately don't write here
+  // (a read shouldn't mutate the Setting blob).
+  return (val as Partial<MapRegion>[]).map((r) => ({
+    ...(r as MapRegion),
+    color: typeof r.color === "string" && HEX_COLOR_RE.test(r.color) ? r.color.toLowerCase() : randomTagColor(),
+  }));
 }
 
 async function persistAll(regions: MapRegion[]): Promise<void> {
@@ -95,6 +105,17 @@ function validateName(name: unknown): string {
     throw new AppError(400, "Region name cannot contain control characters");
   }
   return trimmed;
+}
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+function validateColor(color: unknown): string {
+  if (typeof color !== "string") throw new AppError(400, "Color must be a hex string");
+  const trimmed = color.trim();
+  if (!HEX_COLOR_RE.test(trimmed)) {
+    throw new AppError(400, 'Color must be a 7-character hex string like "#4fc3f7"');
+  }
+  return trimmed.toLowerCase();
 }
 
 function validatePolygon(polygon: unknown): LatLng[] {
@@ -265,6 +286,7 @@ export async function getRegion(id: string): Promise<MapRegion | null> {
 export async function createRegion(input: SaveRegionInput): Promise<MapRegion> {
   const name = validateName(input.name);
   const polygon = validatePolygon(input.polygon);
+  const color = input.color !== undefined ? validateColor(input.color) : randomTagColor();
   const all = await loadAll();
   if (all.some((r) => r.name.toLowerCase() === name.toLowerCase())) {
     throw new AppError(409, `A region named "${name}" already exists`);
@@ -274,6 +296,7 @@ export async function createRegion(input: SaveRegionInput): Promise<MapRegion> {
     id: randomUUID(),
     name,
     polygon,
+    color,
     createdBy: input.actor ?? null,
     createdAt: now,
     updatedAt: now,
@@ -295,6 +318,7 @@ export async function updateRegion(
 
   const name = input.name !== undefined ? validateName(input.name) : existing.name;
   const polygon = input.polygon !== undefined ? validatePolygon(input.polygon) : existing.polygon;
+  const color = input.color !== undefined ? validateColor(input.color) : existing.color;
 
   const renamed = name.toLowerCase() !== existing.name.toLowerCase();
   if (renamed && all.some((r, i) => i !== idx && r.name.toLowerCase() === name.toLowerCase())) {
@@ -308,6 +332,7 @@ export async function updateRegion(
     ...existing,
     name,
     polygon,
+    color,
     updatedAt: new Date().toISOString(),
   };
   all[idx] = updated;

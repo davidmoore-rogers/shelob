@@ -933,6 +933,7 @@ Listed alphabetically.
 **Invariants:**
 - Region name unique case-insensitively, 1..64 chars, no control characters.
 - Polygon ≥3 vertices and ≤1000; lat in [-90,90]; lng in [-180,180]; finite numbers only.
+- `color` is a 7-char hex string (`/^#[0-9a-fA-F]{6}$/`). On create it defaults to a random pick from the shared `TAG_COLOR_PALETTE`; on read, legacy rows missing the field are filled in with a random pick (not persisted until the next update).
 - Reconciler is **add-only**: only the rename + delete CRUD paths strip a region tag. Manual operator attachments to out-of-polygon assets persist across runs.
 - Manually removing a region tag from an in-polygon asset will be re-added on the next reconcile (polygon membership is authoritative in the additive direction).
 - Tag-registry rows under category "Map Regions" stay in 1:1 correspondence with region names (create upserts; rename rotates; delete removes).

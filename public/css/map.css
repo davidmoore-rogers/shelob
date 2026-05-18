@@ -3,9 +3,15 @@
 .map-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   margin-bottom: 0.75rem;
+}
+
+/* Edit-regions toggle (label flips to "Done editing" while active) lives on
+   the far right of the toolbar — operators reach for it last in the flow. */
+#map-edit-regions {
+  margin-left: auto;
+  order: 99;
 }
 
 /* Per-user map theme toggle. Visually a square icon button matching
@@ -65,6 +71,32 @@
   pointer-events: none;
 }
 .map-region-label::before { display: none; } /* hide tooltip arrow */
+
+/* leaflet-draw renders vertex + midpoint markers as 8px white squares by
+   default; restyle them as small filled circles so they read as "handle dots"
+   rather than UI chrome on top of the polygon. Midpoint markers (the ones
+   between vertices that you drag to insert a new vertex) inherit the same
+   look — leaflet-draw drops their opacity to ~0.6 inline, which we leave
+   alone so vertices and midpoints stay visually distinct. */
+/* Color-palette swatches in the region create / recolor modal. The selected
+   swatch gets a thicker accent-colored ring so the operator can see which
+   palette pick is currently committed. */
+.region-swatch-selected {
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.leaflet-editing-icon {
+  width: 10px !important;
+  height: 10px !important;
+  margin-top: -5px !important;
+  margin-left: -5px !important;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
 
 .map-canvas {
   width: 100%;
