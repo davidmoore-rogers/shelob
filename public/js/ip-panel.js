@@ -402,6 +402,16 @@ function _renderIpList(data) {
         ? '<button class="btn btn-sm ' + reserveBtnClass + ' ip-vip-reserve-btn" data-rid="' + escapeHtml(r.id) + '" title="' + reserveTitle + '">Reserve</button>'
         : '';
       actions = vipReserveBtn + assetBtn + editBtn;
+    } else if (r && r.status === "active" && r.sourceType === "dns_resolved") {
+      // DNS-resolved is a system-created placeholder for assets whose IP falls
+      // inside a known subnet. Reserve promotes it to a real manual reservation;
+      // createReservation calls releaseDnsResolvedAt() server-side so the
+      // unique-on-active constraint stays satisfied. No Release button — the
+      // row will reappear on the next reconcile while the asset still holds the IP.
+      var dnsReserveBtn = canReserveIps()
+        ? '<button class="btn btn-sm ' + reserveBtnClass + ' ip-dns-reserve-btn" data-ip="' + escapeHtml(ip.address) + '" data-mac="' + escapeHtml(macRaw || "") + '" data-hostname="' + escapeHtml(r.hostname || "") + '" title="' + reserveTitle + '">Reserve</button>'
+        : '';
+      actions = dnsReserveBtn + assetBtn + editBtn;
     } else if (r && r.status === "active") {
       actions = retryBtn + freeBtn + assetBtn + editBtn;
     } else if (r && r.status === "expired") {
@@ -524,6 +534,14 @@ function _renderIpList(data) {
   body.querySelectorAll(".ip-vip-reserve-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
       _openVipReserveModal(btn.getAttribute("data-rid"));
+    });
+  });
+  body.querySelectorAll(".ip-dns-reserve-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      _openReserveModal(_ipPanelSubnetId, btn.getAttribute("data-ip"), {
+        hostname: btn.getAttribute("data-hostname"),
+        mac: btn.getAttribute("data-mac"),
+      });
     });
   });
   body.querySelectorAll(".ip-retry-btn").forEach(function (btn) {
@@ -855,10 +873,12 @@ function _openRefreshConfirmModal(s) {
   });
 }
 
-function _openReserveModal(subnetId, ipAddress) {
+function _openReserveModal(subnetId, ipAddress, prefill) {
   var s = _ipPanelData ? _ipPanelData.subnet : null;
   var subnetLabel = s ? escapeHtml(s.name) + ' (' + escapeHtml(s.cidr) + ')' : subnetId;
   var pushEligible = !!(s && s.pushEligible);
+  var prefillHostname = (prefill && prefill.hostname) || '';
+  var prefillMac = (prefill && prefill.mac) || '';
 
   var macLabel = pushEligible ? 'MAC Address *' : 'MAC Address';
   var macHint = pushEligible
@@ -871,8 +891,8 @@ function _openReserveModal(subnetId, ipAddress) {
         ? '<input type="text" value="' + escapeHtml(ipAddress) + '" disabled>'
         : '<input type="text" id="f-ipAddress" placeholder="e.g. ' + (s ? escapeHtml(s.cidr.replace(/\/.*/, '').replace(/\.0$/, '.10')) : '10.0.1.10') + '">') +
     '</div>' +
-    '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" placeholder="e.g. web-server-01"></div>' +
-    _macFieldMarkup(macLabel, macHint) +
+    '<div class="form-group"><label>Hostname *</label><input type="text" id="f-hostname" value="' + escapeHtml(prefillHostname) + '" placeholder="e.g. web-server-01"></div>' +
+    _macFieldMarkup(macLabel, macHint, prefillMac ? ' value="' + escapeHtml(prefillMac) + '"' : '') +
     '<div class="form-group"><label>Owner</label><input type="text" id="f-owner" placeholder="e.g. platform-team"></div>' +
     '<div class="form-group"><label>Project Ref</label><input type="text" id="f-projectRef" placeholder="e.g. INFRA-001"></div>' +
     '<div class="form-group"><label>Expires At</label><input type="datetime-local" id="f-expiresAt"><p class="hint">Optional TTL</p></div>' +
