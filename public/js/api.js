@@ -187,7 +187,21 @@ const api = {
     subnet:  (id) => request("GET", `/utilization/subnets/${id}`),
   },
   dashboard: {
-    summary: () => request("GET", "/dashboard/summary"),
+    // Optional `sourceTypes` array narrows the recentReservations slice of
+    // the response. Omitted = the back-compat default (manual only).
+    summary: (opts) => {
+      var q = "";
+      if (opts && Array.isArray(opts.sourceTypes) && opts.sourceTypes.length) {
+        q = "?recentSourceTypes=" + encodeURIComponent(opts.sourceTypes.join(","));
+      }
+      return request("GET", "/dashboard/summary" + q);
+    },
+  },
+  me: {
+    dashboard: {
+      get: () => request("GET", "/me/dashboard"),
+      put: (layout) => request("PUT", "/me/dashboard", layout),
+    },
   },
   users: {
     list:          ()       => request("GET", "/users"),

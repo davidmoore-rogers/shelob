@@ -17,11 +17,38 @@ const router = Router();
 
 const MONITOR_ALERT_CAP = 50;
 
-router.get("/summary", async (_req, res, next) => {
+// Recognized reservation source types — the same enum the Reservation
+// model carries. Anything in the query that isn't one of these is dropped
+// silently so a typo doesn't error out the whole summary.
+const RESERVATION_SOURCE_TYPES = new Set([
+  "manual",
+  "dhcp_reservation",
+  "dhcp_lease",
+  "interface_ip",
+  "vip",
+  "fortiswitch",
+  "fortinap",
+  "fortimanager",
+  "fortigate",
+  "dns_resolved",
+]);
+
+function parseSourceTypesParam(raw: unknown): string[] | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const validated = parts.filter((s) => RESERVATION_SOURCE_TYPES.has(s));
+  // Caller asked for a filter but every value was unrecognized — match the
+  // server-side empty-array convention (= no filter) so the widget still
+  // gets data rather than 0 rows.
+  return validated.length === 0 ? [] : validated;
+}
+
+router.get("/summary", async (req, res, next) => {
   try {
+    const sourceTypes = parseSourceTypesParam(req.query.recentSourceTypes);
     const [global, recentReservations, assetTypeCountsRaw, monitorAlertsRaw] = await Promise.all([
       utilizationService.getGlobalUtilization(),
-      utilizationService.getRecentManualReservations(10),
+      utilizationService.getRecentManualReservations(10, sourceTypes),
       prisma.asset.groupBy({
         by: ["assetType"],
         _count: { _all: true },

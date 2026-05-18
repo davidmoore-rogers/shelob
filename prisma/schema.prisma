@@ -1429,8 +1429,26 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  dashboard UserDashboard?
+
   @@index([roleId])
   @@map("users")
+}
+
+// Per-user dashboard layout. One row per user; absent row = "empty
+// dashboard" (Use the + Widget button to get started). `layout` is the
+// JSON blob shape `{ version: 1, widgets: WidgetInstance[] }` validated
+// at the route layer by Zod — see src/api/routes/userDashboard.ts.
+// Persists server-side so layouts follow operators across browsers and
+// devices; localStorage continues to hold ephemeral UI state (chart
+// ranges, theme) per the existing convention.
+model UserDashboard {
+  userId    String   @id @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  layout    Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("user_dashboards")
 }
 
 // Role: identity + permission matrix consulted by the per-route

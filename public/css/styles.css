@@ -3207,3 +3207,222 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   color: var(--color-text-primary);
   border: 1px solid rgba(255,23,68,0.30);
 }
+
+/* ─── Dashboard widget canvas ─────────────────────────────────────────────── */
+
+.dashboard-empty {
+  margin-top: 18vh;
+  text-align: center;
+  font-size: 1.05rem;
+  color: var(--color-text-tertiary);
+  letter-spacing: 0.3px;
+}
+
+.dashboard-canvas {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: 280px;
+  gap: 16px;
+  align-items: start;
+  position: relative;
+  min-height: 280px;
+}
+.dashboard-canvas.drop-target {
+  outline: 2px dashed rgba(79,195,247,0.40);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+.dashboard-widget {
+  position: relative;
+  background: var(--color-bg-elevated, #1c1f24);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.08));
+  border-radius: 6px;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;          /* allow body to shrink */
+  overflow: hidden;
+}
+.dashboard-widget.dragging {
+  opacity: 0.45;
+  outline: 2px dashed rgba(79,195,247,0.55);
+}
+.dashboard-widget.shifting {
+  transition: transform 180ms ease-out;
+}
+.dashboard-widget-placeholder {
+  background: rgba(79,195,247,0.08);
+  border: 2px dashed rgba(79,195,247,0.55);
+  border-radius: 6px;
+  pointer-events: none;
+  transition: transform 180ms ease-out;
+}
+
+.dashboard-widget-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.dashboard-widget-title {
+  flex: 1;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  letter-spacing: 0.2px;
+  cursor: grab;
+  user-select: none;
+}
+.dashboard-widget-header[data-dragging="true"] .dashboard-widget-title { cursor: grabbing; }
+.dashboard-widget-action {
+  background: transparent;
+  border: 0;
+  color: var(--color-text-tertiary);
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.dashboard-widget-action:hover {
+  color: var(--color-text-primary);
+  background: rgba(255,255,255,0.06);
+}
+
+.dashboard-widget-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dashboard-widget-resize {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(135deg, transparent 50%, var(--color-text-tertiary) 50%, var(--color-text-tertiary) 60%, transparent 60%, transparent 70%, var(--color-text-tertiary) 70%, var(--color-text-tertiary) 80%, transparent 80%);
+  opacity: 0.5;
+  border-radius: 0 0 6px 0;
+}
+.dashboard-widget-resize:hover { opacity: 0.85; }
+
+/* Widget-specific body wrappers reuse the rolled-up styles from the old
+   dashboard surface — kept under .dashboard-widget-body so layout still
+   scopes correctly inside the new canvas. */
+.dashboard-widget-body .dash-alert-row,
+.dashboard-widget-body .recent-item,
+.dashboard-widget-body .block-util-item {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* Widget config popover (gear icon) — small, anchored, NOT a full modal. */
+.widget-config-popover {
+  position: absolute;
+  z-index: 1200;
+  min-width: 240px;
+  max-width: 320px;
+  padding: 12px;
+  background: var(--color-bg-elevated, #1c1f24);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.10));
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.40);
+}
+.widget-config-popover h4 {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.widget-config-popover label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  margin: 8px 0 4px;
+}
+.widget-config-popover select,
+.widget-config-popover input[type="text"] {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 0.9rem;
+  background: var(--color-bg, #0f1115);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.10));
+  border-radius: 4px;
+}
+.widget-config-popover-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border, rgba(255,255,255,0.08));
+}
+
+/* Widget library slide-in cards. Reuses .slideover-* for the panel chrome;
+   these styles only cover the per-widget catalog entries. */
+.widget-library-card {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 12px;
+  align-items: stretch;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--color-bg-elevated, #1c1f24);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.08));
+  border-radius: 6px;
+  cursor: grab;
+}
+.widget-library-card:hover {
+  border-color: rgba(79,195,247,0.40);
+}
+.widget-library-card[draggable="true"]:active { cursor: grabbing; }
+.widget-library-card-info {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+.widget-library-card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.widget-library-card-desc {
+  font-size: 0.82rem;
+  color: var(--color-text-secondary);
+  line-height: 1.35;
+}
+.widget-library-card-tag {
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.widget-library-preview {
+  width: 240px;
+  height: 150px;
+  background: var(--color-bg, #0f1115);
+  border: 1px solid var(--color-border, rgba(255,255,255,0.06));
+  border-radius: 4px;
+  padding: 10px;
+  overflow: hidden;
+  pointer-events: none;
+  position: relative;
+  font-size: 0.72rem;
+}
+
+/* Small status-pill colors used in the Capacity Health + Discovery Activity widgets.
+   Matches the severity palette used elsewhere (capacity reasons, monitor alerts). */
+.widget-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.3px; }
+.widget-pill-ok    { background: rgba(76,175,80,0.18);  color: #81c784; }
+.widget-pill-watch { background: rgba(79,195,247,0.18); color: #4fc3f7; }
+.widget-pill-amber { background: rgba(255,193,7,0.18);  color: #ffd54f; }
+.widget-pill-red   { background: rgba(255,23,68,0.20);  color: #ef5350; }
+

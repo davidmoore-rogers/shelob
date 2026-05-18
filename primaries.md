@@ -29,6 +29,7 @@ Per-pattern sections:
 - [Per-instance single-consumer serial worker](#per-instance-single-consumer-serial-worker)
 - [Cross-asset graph derivation + persisted DAG](#cross-asset-graph-derivation--persisted-dag)
 - [Setting-backed admin CRUD with periodic + on-demand reconciler](#setting-backed-admin-crud-with-periodic--on-demand-reconciler)
+- [Operator-customizable widget surface](#operator-customizable-widget-surface)
 
 ---
 
@@ -418,3 +419,31 @@ Per-pattern sections:
 - Mirror the existing `Role.regionTags` / `User.regionTags` shape: `String[] @default([])` + comment `Empty = unrestricted`.
 - Validation lives in the service layer (`normalizeRegionTags` in `roleService.ts` is the template): trim, drop empties, dedupe case-insensitively, cap length + count.
 - The consumer (filter / list scoping) consults `auth.me.regionTags.effective` from the frontend or `req.session.roleSnapshot` + `req.session.userId → user.regionTags` on the backend — never branch on role NAME for region semantics.
+
+---
+
+## Operator-customizable widget surface
+
+**What it is:** A page where the operator chooses which cards (widgets) appear, drags them onto a snap-to-grid canvas, resizes them, and configures per-widget options via a gear popover. Layout persists server-side per user. Empty state on a fresh sign-in with a prompt to open a slide-in widget library showing real rendered mini-previews. The Dashboard home page is the first instance; future operator-customizable surfaces should match this shape.
+
+**Canonical implementation:** Dashboard home page — entry point is `public/js/dashboard.js` (orchestrator), backed by:
+- HTML: `public/index.html` — `#dashboard-empty-state`, `#dashboard-canvas`, `#dashboard-add-widget` button, and the `#widget-library-overlay` slide-in.
+- CSS: `public/css/styles.css` — `.dashboard-canvas` (12-col CSS grid, row height 280px), `.dashboard-widget*`, `.widget-library-*`, `.widget-config-popover`.
+- Widget modules: `public/js/widgets/*.js` — each self-registers via `PolarisWidgets.register({...})` (registry in `public/js/widgets/index.js`).
+- Slide-in: `public/js/widget-library.js` — `WidgetLibrary.open(onAdd)` / `WidgetLibrary.close()` / `isOpen()`.
+- Persistence: `UserDashboard` Prisma model + `src/services/userDashboardService.ts` + `src/api/routes/userDashboard.ts` (GET/PUT `/me/dashboard`); client at `api.me.dashboard.{get,put}`.
+
+**Key conventions:**
+- **Grid model.** 12 columns × N rows. Widget widths ∈ `{3, 4, 6, 12}`, heights ∈ `{1, 2}`. Row height in pixels is fixed at the canvas-CSS layer (`grid-auto-rows`); widget `width`/`height` are grid-cell spans, never pixels.
+- **Order-based layout.** The widget array IS the layout — `col` and `row` are derived. Every state mutation (add / move / remove / resize) reflows via `reflow(widgets)`: row-major packer, leftmost-topmost free slot wins. Drop position in the canvas is translated to an *insertion index* in the ordered array (`insertIndexFromCursor()`), never to absolute coordinates. This is why "drop in front of a widget shifts the others over" falls out naturally — the reflow handles it after every insertion.
+- **Module shape.** A widget exports `{ type, label, description, defaultSize, minSize?, defaultConfig?, requiredPermission?, fetchData?, renderInstance(el, config, data, ctx), renderPreview(el), renderConfig?(el, config, onChange), onMount?, onUnmount? }`. `ctx.onUnmount(fn)` is how a widget registers cleanup for its own timers / observers; the orchestrator runs them when the widget is removed or re-rendered.
+- **Mini-previews are real renders, not screenshots.** Each widget's `renderPreview(el)` calls the same DOM-emitting code as `renderInstance`, just with module-local mock data. Keeps the library card honest about how the widget actually looks.
+- **Shared data fetch.** Built-in widgets that read `/dashboard/summary` accept the summary via the `summary` arg on `fetchData(config, summary)` — the orchestrator fetches once per canvas render and passes the slice. Independent widgets own their own fetch and just ignore the arg.
+- **Role gating.** A widget's `requiredPermission: { key, level }` is checked client-side against the cached `polaris-user` permission matrix (`permAtLeast(key, level)` in app.js). The library card is hidden when the user lacks the permission; the underlying API call would also fail, so this is convenience, not security.
+- **Persistence is cross-device.** Layouts live in the `UserDashboard` Prisma model (per-user JSON blob). PUT is debounced 800ms in the orchestrator so a flurry of drags/resizes is one save. Validation lives at the route layer via Zod (`LayoutSchema` in `userDashboard.ts`) — the service round-trips the blob untouched. Do NOT pivot to localStorage for this pattern — operator switching between desk and laptop is the explicit user expectation.
+
+**When adding a new operator-customizable surface (or a new widget to the existing Dashboard):**
+- **New widget on the existing Dashboard:** add `public/js/widgets/<type>.js`; self-register via `PolarisWidgets.register`; include a `renderPreview` with mock data; add the `<script src>` line to `public/index.html`. Wire `requiredPermission` if the widget reads a permission-gated endpoint. No backend or registry changes needed.
+- **New customizable surface elsewhere:** model the canvas + slide-in + per-user storage after this Dashboard. Use a sibling `UserSurfacePreference`-style table keyed on `(userId, surfaceKey)` rather than overloading `UserDashboard`. Reuse `PolarisWidgets.register` for that surface's widgets — the registry is global by design so cross-surface widget reuse is one-line.
+- **Don't bake widget positions into seeded defaults** unless you genuinely want every user to see the same starting view — the precedent here is "empty = invitation to customize." Operators have explicitly told us they prefer a clean slate.
+- **Don't add a Save button.** Debounced auto-save is what makes the drag/resize/gear interactions feel responsive; a confirm step kills the loop.

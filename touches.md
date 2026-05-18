@@ -2130,20 +2130,40 @@ Listed alphabetically.
 
 **What it owns:** Aggregates subnet usage statistics (blocks, subnets, reservations) for dashboards.
 
-**Public API:** getGlobalUtilization, getBlockUtilization.
+**Public API:** getGlobalUtilization, getBlockUtilization, getRecentManualReservations.
 
-**Used by:** src/api/routes/utilization.ts:6 (GET / for dashboard, GET /blocks/:id for per-block drill-down).
+**Used by:** src/api/routes/utilization.ts:6 (GET / for dashboard, GET /blocks/:id for per-block drill-down). `src/api/routes/dashboard.ts` (`/dashboard/summary` consumes `getGlobalUtilization` for `blockUtilization` and `getRecentManualReservations` for `recentReservations`).
 
 **Invariants:**
 - Global utilization counts all blocks, subnets, and active reservations in one query set
 - IPv6 block addresses capped at Number.MAX_SAFE_INTEGER to avoid precision loss
 - Deprecated subnets excluded from allocatedAddresses calculation
 - Subnet status grouping: available, reserved, deprecated
+- `getRecentManualReservations(limit, sourceTypes?)` — default `sourceTypes=undefined` filters to `["manual"]` (back-compat); explicit array narrows or broadens; empty array disables the filter entirely. Caller (the dashboard route) validates source-type values against the known enum before passing through.
 
 **When changing this:**
 - Test large fleet performance (blocks query with full subnet tree may be slow with 100k+ subnets)
 - Verify usagePercent calculation (allocatedAddresses / blockAddresses) matches business intent
 - Check that deprecated subnets are correctly filtered from block capacity
+
+---
+
+## services/userDashboardService.ts
+
+**What it owns:** Per-user dashboard layout persistence. Wraps the `UserDashboard` Prisma model.
+
+**Public API:** `getLayoutForUser(userId)` (returns `EMPTY_LAYOUT` when no row exists — never throws on absence), `saveLayoutForUser(userId, layout)` (upserts, returns the saved layout), `EMPTY_LAYOUT` constant, `DashboardLayout` / `DashboardWidgetInstance` types.
+
+**Used by:** `src/api/routes/userDashboard.ts` (GET + PUT `/me/dashboard`).
+
+**Invariants:**
+- Absent row = empty dashboard (no defaults seeded; fresh sign-in is a clean slate so the "Use the + Widget button to get started" empty-state renders).
+- Layout JSON is round-tripped untouched — the service does NOT validate shape. Validation lives at the route layer via Zod (`LayoutSchema` in `src/api/routes/userDashboard.ts`); never call `saveLayoutForUser` with un-validated input.
+- Per-user only; admins do NOT have an override path (UI preference, not security-relevant). No Event audit log.
+
+**When changing this:**
+- If you add fields to the layout shape, bump `version` and add a migration path in the route (currently `z.literal(1)`).
+- The User model has a `dashboard UserDashboard?` back-relation — drop-on-cascade is handled by the Prisma FK, no extra cleanup needed when a user is deleted.
 
 ---
 
