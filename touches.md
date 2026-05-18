@@ -25,7 +25,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ## Sections
 
-- [Cross-cutting concerns](#cross-cutting-concerns) (16)
+- [Cross-cutting concerns](#cross-cutting-concerns) (17)
 - [Per-service touches](#per-service-touches) — alphabetical, 42 services in `src/services/`
 
 ---
@@ -349,9 +349,66 @@ build auto-prune + boot-time auto-build are layered on top.
 
 ---
 
+## cross-cutting/integration-type-onboarding
+
+**What it is:** The complete callsite catalogue for adding a new integration type (Palo Alto firewall, future device families). Every new type touches the same ~30 callsites across backend dispatch, frontend modal, polling compatibility, asset projection, and source-default polling. Without this checklist a new type drifts on tab layout, config-blob keys, transport dispatch, and projection priority; with it, every integration feels uniform.
+
+The canonical to mirror for a standalone-device-with-its-own-API type (most common new case) is **standalone FortiGate**. For a manager-that-fronts-many-devices type, mirror **FortiManager**. For asset-only types (no subnets/reservations), mirror **Entra ID / Active Directory**. See [primaries.md → Integration type](primaries.md#integration-type-config--discovery--sync--frontend-modal) for the model-after instruction. This entry is the authoritative checklist.
+
+**Writers** (files that need a per-type branch):
+- `src/services/<type>Service.ts` — NEW. Exports `testConnection(config)`, `discoverDhcpSubnets(config, signal?, onProgress?, ...)` returning the shared `DiscoveryResult` shape from `fortimanagerService.ts`, `proxyQuery(config, method, path, query?, body?)` for the manual /query route, and any per-type helpers (e.g. an `xxxRequest()` low-level fetcher used internally).
+- `src/api/routes/integrations.ts` — TYPE-SPECIFIC CONFIG SCHEMA: define `<Type>ConfigSchema` (Zod object) at the top of the file. Must include the four uniform top-level keys (`host`, `port`, `verifySsl`, `verboseLogging`) plus `monitorSettings`, `deviceInclude` / `deviceExclude` / `interfaceInclude` / `interfaceExclude` (when applicable), and type-specific credentials. Mirrors `FortiGateConfigSchema` at line ~376 (standalone-device template) or `FortiManagerConfigSchema` at line ~318 (manager-fronted template).
+- `src/api/routes/integrations.ts:CreateIntegrationSchema` (line ~438) — DISCRIMINATED UNION BRANCH: add `z.object({ type: z.literal("<type>"), name: ..., config: <Type>ConfigSchema, enabled, autoDiscover, pollInterval })`.
+- `src/api/routes/integrations.ts:testConnection handler` (line ~920) — add `else if (integration.type === "<type>")` calling `<type>Service.testConnection(config as any)`.
+- `src/api/routes/integrations.ts:discover handler` (line ~710) — add a branch calling `<type>Service.discoverDhcpSubnets(...)` (or `syncXxxDevices()` for asset-only types) and pass the resulting `DiscoveryResult` to `syncDhcpSubnets(input.type, result, ...)` at line 721.
+- `src/api/routes/integrations.ts:syncDhcpSubnets` (line ~2246) — update the `integrationLabel` ternary at line ~2291 with the human-readable label (`"Palo Alto"`, etc.). Function body is generic across types; no other branch needed inside.
+- `src/api/routes/integrations.ts:/query proxy route` (line ~1030) — add `if (integration.type === "<type>")` calling `<type>Service.proxyQuery(...)`. Define the per-type request body shape (Fortinet uses `{ method, path, query? }`; PAN-OS would use `{ method, path, query?, xpath? }`).
+- `src/api/routes/integrations.ts:credential validation` (line ~595, ~779, ~874, ~1396, ~1450, ~1538) — extend the `(input.type === "fortimanager" || input.type === "fortigate")` predicates to include the new type when it uses the same credential model (SNMP/SSH credential overrides).
+- `src/api/routes/integrations.ts:masked-secret restore` (line ~1662) — add the new type's secret field names (`apiToken`, `clientSecret`, etc.) to the list `isMaskedSecretSentinel` checks against on PUT.
+- `src/api/routes/integrations.ts:discoveryScheduler dispatch` (line ~1538–1605) — add the new type's auto-discovery branch alongside the FMG/FortiGate/Windows/Entra/AD branches.
+- `src/utils/pollingCompatibility.ts` — UNION `AssetSourceKind` (line ~34): add `| "<type>-firewall"` (or similar). MATRIX `COMPATIBILITY` (line ~50): add the set of allowed polling methods. SWITCH `assetSourceKindFromIntegrationType` (line ~64): map `case "<type>": return "<type>-firewall"`.
+- `src/utils/assetProjection.ts` — UNION `AssetSourceKind` (line ~56): add the new source kind. RULES `HOSTNAME_RULES`, `SERIAL_RULES`, `MANUFACTURER_RULES`, `MODEL_RULES`, `OS_VERSION_RULES`, `IP_ADDRESS_RULES` (lines ~121–290): add an entry per field at the position matching the source's trustworthiness for that field. Manufacturer rules typically pick a fixed string (`"Palo Alto Networks"`) ignoring the observed blob.
+- `src/services/monitoringService.ts:defaultPollingForSource` (line ~595) — add a per-stream defaults branch for the new source kind. REST-capable appliances mirror FortiGate (`rest_api` on probe/telemetry/interfaces, `disabled` on LLDP); identity sources mirror AD (`icmp` on probe, `not_delivered` on the heavy streams).
+- `src/services/monitoringService.ts:transport dispatch` (~lines 1208–1358, ~2367) — extend `isFortinetSrc`-style branching only when the new type uses a different credential model than FortiOS (e.g. a header-key auth scheme instead of bearer). If the new type's `config` has `apiToken` like FortiGate, no transport-dispatch change is needed.
+- `public/js/integrations.js:_POLLING_COMPAT` (line ~31) — add the new type's allowed polling methods, mirroring its backend pollingCompatibility entry.
+- `public/js/integrations.js:_SOURCE_TELEMETRY_MIB` (line ~96) — add the per-type telemetry MIB default (or null if the type doesn't expose SNMP telemetry).
+- `public/js/integrations.js:<type>GeneralHTML(defaults)` — NEW form helper. Mirrors `fortiGateGeneralHTML` (line ~1758) or `fortiManagerGeneralHTML` (line ~1594). Append `verboseLoggingFormHTML(d)` at the bottom of the returned string so the Debug section stays uniform.
+- `public/js/integrations.js:<type>FiltersHTML(defaults)` — NEW (when applicable). Mirrors `fortiGateFiltersHTML` (line ~1794) for device/interface/DHCP include/exclude wildcards.
+- `public/js/integrations.js:<type>FormHTML(defaults)` — NEW. Combines General + Filters, mirrors `fortiGateFormHTML` (line ~1845).
+- `public/js/integrations.js:get<Type>FormConfig()` — NEW reader. Returns the config object parsed from the modal's input fields. Must include `verboseLogging: readVerboseLoggingFromForm()` so the Debug section roundtrips.
+- `public/js/integrations.js:form dispatch ternaries` (lines ~2110, 2118, 2144, 2157, 2531–2532) — extend each to include the new type. These switch on `type === "<value>"` for form HTML selection, config reader selection, label rendering, and per-type booleans.
+- `public/js/integrations.js:openCreateModal tab visibility` (line ~2169) — if the new type supports DHCP Push / Quarantine Push, extend `isFmg || isFgt` to include it. If not, add a separate branch alongside `isAd || isEntra || isWin` (Monitoring tab only).
+- `public/js/integrations.js:openCreateModal edit branch tab visibility` (line ~2499) — same extension on the edit path.
+- `public/js/integrations.js:type-list picker grid` (line ~2100) — NEW button (`pick-<type>`) + its click listener calling `openCreateModal("<type>")`.
+- `public/js/integrations.js:type-label ternaries` (line ~429, 2144) — `intg.type === "<type>" ? "<HumanLabel>" : ...` in both places (integrations list + modal title).
+- `public/js/integrations.js:Monitoring tab visibility` (line ~1312) — if the new type owns devices that can be monitored as a class (FortiSwitch / FortiAP style), extend `isFmgFgt`. Most new types skip this — only the FMG-FortiGate-managed-device pattern needs the class-level auto-monitor cards.
+
+**Readers** (files that consume the new type without needing a new code branch):
+- `src/api/routes/integrations.ts:syncDhcpSubnets` body — consumes `DiscoveryResult` generically; new types ride it for free if their service returns the exact shape.
+- `src/services/searchService.ts` — surfaces firewall assets through the asset table; no new-type branch needed.
+- Monitor settings hierarchy resolver (`resolveMonitorSettings` in `monitoringService.ts`) — generic across types; consumes `Integration.config.monitorSettings` blob.
+- `src/utils/integrationFilter.ts:assetMatchesIntegrationFilter` — handles `deviceInclude` / `deviceExclude` for any type that stamps them in config (FMG/FortiGate convention); add a per-type branch only if the filter semantics differ (e.g. AD uses `ouInclude` / `ouExclude` instead).
+- `public/js/assets.js:integration filter dropdown` — populated from `GET /integrations`; new types appear automatically.
+
+**Invariants:**
+- Every new device-and-network integration type produces the **exact** `DiscoveryResult` shape — empty arrays for concepts the type doesn't have, never undefined / null. Per-query success flags (`switchInventoriedDevices`, `vipInventoriedDevices`, etc.) MUST be populated so `syncDhcpSubnets` Phase 5b sweeps skip stale-row deprecation for concepts the new type doesn't own.
+- The four uniform top-level config keys (`host`, `port`, `verifySsl`, `verboseLogging`) appear on EVERY integration type's config schema. Push toggles (`pushReservations`, `pushQuarantine`, `useProxy`) only appear on types that support them; their absence is the signal to hide the corresponding modal tab.
+- `Integration.type` Postgres column value matches the Zod `z.literal` value matches the frontend ternary key. Don't introduce a separate display-name → key mapping; the literal IS the type-string.
+- Frontend modal tab order is fixed across types: General → Filters (when applicable) → Monitoring → DHCP Push (when applicable) → Quarantine Push (when applicable). Don't reorder; don't add a new tab unless the underlying concept is uniform across all types that show it.
+- Verbose Debug section is the LAST element in every General tab. Same checkbox id (`f-verboseLogging`) across types so `readVerboseLoggingFromForm()` works without per-type branching.
+- AssetSource projection priorities for a new firewall type slot in **at the same trust level** as the existing firewall types — don't elevate a new vendor above existing ones without reason. Manufacturer rules ignore the observed blob and pick a constant string so misreported fields can't pollute the projection.
+
+**When adding a new integration type:**
+- Pick the canonical (standalone-device vs manager-fronted vs asset-only) per [primaries.md → Integration type](primaries.md#integration-type-config--discovery--sync--frontend-modal).
+- Walk this Writers list top-to-bottom, adding one branch per callsite. Don't shortcut — every callsite is load-bearing for one piece of the operator experience.
+- Run the parallel test plan: (1) Create integration via the new picker button, save, reload — config roundtrips. (2) Test Connection succeeds + writes the expected `lastTestAt` / `lastTestOk`. (3) Discover writes the expected `DiscoveryResult` shape — verify via DB. (4) Discovered assets project correctly — hostname / serial / manufacturer / model resolve from the new source kind. (5) Resolved polling method matches the source default — verify via `GET /assets/:id/effective-monitor-settings`. (6) Asset shows up under the integration filter on `/assets.html`.
+- If you discover a callsite that wasn't in this Writers list, ADD IT to touches.md in the same commit. The index only stays trustworthy if every contributor extends it as they touch new code.
+
+---
+
 ## cross-cutting/fmg-fortigate-parity-surfaces
 
-**What it is:** FMG and standalone FortiGate integrations share feature surfaces that must move together: integration modal tabs (General / Filters / Monitoring / DHCP Push / Quarantine Push), transport dispatch via buildTransportForIntegration(), and filter helpers.
+**What it is:** FMG and standalone FortiGate integrations share feature surfaces that must move together: integration modal tabs (General / Filters / Monitoring / DHCP Push / Quarantine Push), transport dispatch via buildTransportForIntegration(), and filter helpers. This entry is narrower than [cross-cutting/integration-type-onboarding](#cross-cuttingintegration-type-onboarding) — that one covers adding any new type; this one covers the FMG↔FortiGate paired-feature parity that must move together once both types exist.
 
 **Writers** (files that mutate or emit this state):
 - `src/api/routes/integrations.ts` — POST / PUT integration handlers parse both fortimanager and fortigate integration types, store config.pushReservations / pushQuarantine / monitorSettings / deviceInclude/Exclude in the same JSON shape
