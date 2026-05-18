@@ -2,14 +2,18 @@
  * src/api/middleware/auth.ts — Session + bearer-token authentication
  *
  * Two parallel auth surfaces:
- *   - Session (UI / browser): cookie-bearing requests, RBAC by `req.session.role`.
+ *   - Session (UI / browser): cookie-bearing requests. RBAC is enforced by
+ *     `requirePermission(functionKey, level)` from ./permissions.ts, which
+ *     consults the session's role snapshot.
  *   - Bearer token (external): `Authorization: Bearer polaris_<...>` from a
  *     long-lived API token, scoped to a fixed list of capabilities.
  *
- * Most routes use the session-only guards (requireAuth, requireAdmin, etc.).
- * Routes that an external system needs to call use the hybrid guards
- * (requireSessionOrTokenScope) which accept either a qualifying session OR
- * a bearer token whose scopes include the required capability.
+ * The five hardcoded-role helpers (requireAdmin / requireNetworkAdmin /
+ * requireAssetsAdmin / requireUserOrAbove / isNetworkAdminOrAbove) were
+ * retired in the dynamic-roles cutover (migration
+ * 20260524000000_roles_table_cutover). Routes that need the bearer-or-
+ * session hybrid now use `requireSessionOrTokenPermission` from
+ * ./permissions.ts.
  */
 
 import { Request, Response, NextFunction } from "express";
@@ -22,58 +26,6 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction) {
     return next();
   }
   next(new AppError(401, "Unauthorized — please log in"));
-}
-
-export function requireAdmin(req: Request, _res: Response, next: NextFunction) {
-  if (req.session?.role === "admin") {
-    return next();
-  }
-  next(new AppError(403, "Forbidden — admin access required"));
-}
-
-export function requireNetworkAdmin(req: Request, _res: Response, next: NextFunction) {
-  if (req.session?.role === "admin" || req.session?.role === "networkadmin") {
-    return next();
-  }
-  next(new AppError(403, "Forbidden — network admin access required"));
-}
-
-export function requireAssetsAdmin(req: Request, _res: Response, next: NextFunction) {
-  if (req.session?.role === "admin" || req.session?.role === "assetsadmin") {
-    return next();
-  }
-  next(new AppError(403, "Forbidden — assets admin access required"));
-}
-
-// Same allowlist as `requireAssetsAdmin`, named after the surface that asks
-// for it: the MIB Database browse + walk endpoints are reachable to admin
-// AND to assets-admin so the team that owns asset onboarding can use the
-// MIB-aware walk without an admin in the loop. Distinct identity is kept
-// to make the call sites self-documenting at a grep.
-export function requireAdminOrAssetsAdmin(req: Request, _res: Response, next: NextFunction) {
-  if (req.session?.role === "admin" || req.session?.role === "assetsadmin") {
-    return next();
-  }
-  next(new AppError(403, "Forbidden — admin or assets admin access required"));
-}
-
-// Allows any authenticated role except `readonly`. Used on write routes that
-// regular users are allowed to perform (create subnet/reservation, edit/delete
-// their own records).
-export function requireUserOrAbove(req: Request, _res: Response, next: NextFunction) {
-  const role = req.session?.role;
-  if (role === "admin" || role === "networkadmin" || role === "assetsadmin" || role === "user") {
-    return next();
-  }
-  next(new AppError(403, "Forbidden — read-only users cannot modify data"));
-}
-
-// True when the caller may edit/delete any network resource regardless of
-// ownership. Readers should fall back to ownership (createdBy) when this
-// returns false.
-export function isNetworkAdminOrAbove(req: Request): boolean {
-  const role = req.session?.role;
-  return role === "admin" || role === "networkadmin";
 }
 
 // ─── Bearer-token auth ────────────────────────────────────────────────
@@ -132,28 +84,6 @@ export async function requireAgentBearer(req: Request, _res: Response, next: Nex
   }
 }
 
-/**
- * Hybrid guard: pass if either
- *   (a) the request has a session whose role is in `allowedRoles`, OR
- *   (b) the request has a bearer token whose scopes include `requiredScope`.
- *
- * 401 if neither is present; 403 if present but not authorized.
- */
-export function requireSessionOrTokenScope(
-  allowedRoles: string[],
-  requiredScope: string,
-) {
-  return (req: Request, _res: Response, next: NextFunction) => {
-    if (req.session?.userId && req.session.role && allowedRoles.includes(req.session.role)) {
-      return next();
-    }
-    if (req.apiToken) {
-      if (req.apiToken.scopes.includes(requiredScope)) return next();
-      return next(new AppError(403, `Forbidden — token "${req.apiToken.name}" lacks scope "${requiredScope}"`));
-    }
-    if (req.session?.userId) {
-      return next(new AppError(403, "Forbidden — your role is not authorized for this action"));
-    }
-    next(new AppError(401, "Unauthorized — session login or bearer token required"));
-  };
-}
+// requireSessionOrTokenScope retired — see `requireSessionOrTokenPermission`
+// in ./permissions.ts which takes a `(functionKey, level, scope)` triple
+// and consults the session's role snapshot.

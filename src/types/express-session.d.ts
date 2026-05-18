@@ -1,10 +1,19 @@
 import "express-session";
+import type { SessionRoleSnapshot, AccessLevel } from "../api/middleware/permissions.js";
 
 declare module "express-session" {
   interface SessionData {
     userId: string;
     username: string;
+    // Legacy convenience field — mirrors roleSnapshot.name so the few
+    // read paths that just need a display string (sidebar polling
+    // projection, audit Event actor enrichment) don't have to deref the
+    // snapshot. ALWAYS in sync with roleSnapshot.name; permission
+    // checks must consult roleSnapshot via requirePermission /
+    // hasPermission, never branch on this field's value.
     role: string;
+    roleId: string;
+    roleSnapshot: SessionRoleSnapshot;
     authProvider: string;   // "local" or "azure"
     samlRelayState: string;   // CSRF token for SAML flow
     samlNameID: string;       // SAML NameID for logout
@@ -29,6 +38,12 @@ declare global {
       // hit a dedicated /api/v1/agents/* surface and never have either.
       // assetId is the asset the bearer was bound to at issuance.
       managedAgent?: { managedAgentId: string; assetId: string };
+
+      // Set by `requirePermission` / `requireOwnership` after a successful
+      // permission check. Lets handlers branch on the resolved access
+      // level — chiefly the subnets/reservations ownership filter, which
+      // skips when this is "fullwrite".
+      permissionLevel?: AccessLevel;
     }
   }
 }
