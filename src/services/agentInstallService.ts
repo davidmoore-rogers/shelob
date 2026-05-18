@@ -384,6 +384,7 @@ async function runUninstall(input: StartUninstallInput): Promise<void> {
         temperaturePolling:  null,
         interfacesPolling:   null,
         lldpPolling:         null,
+        storagePolling:      null,
       },
     }),
   ]);

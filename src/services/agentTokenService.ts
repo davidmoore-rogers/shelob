@@ -152,6 +152,7 @@ export async function consumeEnrollmentToken(
           temperaturePolling:  "agent",
           interfacesPolling:   "agent",
           lldpPolling:         "agent",
+          storagePolling:      "agent",
         },
       }),
     ]);

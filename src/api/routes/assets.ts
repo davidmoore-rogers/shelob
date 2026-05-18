@@ -178,6 +178,7 @@ const UpdateAssetSchema = CreateAssetSchema.partial().extend({
   temperaturePolling:    PollingMethodEnum.nullable().optional(),
   interfacesPolling:     PollingMethodEnum.nullable().optional(),
   lldpPolling:           PollingMethodEnum.nullable().optional(),
+  storagePolling:        PollingMethodEnum.nullable().optional(),
   // Per-asset cadence overrides for the System tab. Null falls back to the
   // resolved tier-3 cadence (cpuMemory / temperature / system-info).
   cpuMemoryIntervalSec:   z.number().int().min(15).max(86400).nullable().optional(),
@@ -553,6 +554,7 @@ router.get("/:id/effective-monitor-settings", requirePermission("assets", "read"
         temperaturePolling:         true,
         interfacesPolling:          true,
         lldpPolling:                true,
+        storagePolling:             true,
         responseTimeMibId:          true,
         cpuMemoryMibId:             true,
         temperatureMibId:           true,
@@ -1434,12 +1436,13 @@ router.put("/:id", requirePermission("assets", "write"), async (req, res, next) 
     // confused about why their selection didn't take.
     {
       const sourceKind = assetSourceKindFromIntegrationType(existing.discoveredByIntegration?.type ?? null);
-      const fields: Array<["responseTimePolling" | "cpuMemoryPolling" | "temperaturePolling" | "interfacesPolling" | "lldpPolling", PollingMethod | null | undefined]> = [
+      const fields: Array<["responseTimePolling" | "cpuMemoryPolling" | "temperaturePolling" | "interfacesPolling" | "lldpPolling" | "storagePolling", PollingMethod | null | undefined]> = [
         ["responseTimePolling", input.responseTimePolling],
         ["cpuMemoryPolling",    input.cpuMemoryPolling],
         ["temperaturePolling",  input.temperaturePolling],
         ["interfacesPolling",   input.interfacesPolling],
         ["lldpPolling",         input.lldpPolling],
+        ["storagePolling",      input.storagePolling],
       ];
       for (const [name, value] of fields) {
         if (!value) continue;
@@ -3147,6 +3150,7 @@ router.delete("/:id/agent", requirePermission("assets", "write"), async (req, re
             temperaturePolling:  null,
             interfacesPolling:   null,
             lldpPolling:         null,
+            storagePolling:      null,
           },
         }),
       ]);

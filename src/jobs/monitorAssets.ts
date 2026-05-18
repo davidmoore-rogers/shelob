@@ -131,6 +131,7 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       temperaturePolling:  true,
       interfacesPolling:   true,
       lldpPolling:         true,
+      storagePolling:      true,
       monitoredInterfaces: true,
       monitoredStorage: true,
       monitoredIpsecTunnels: true,
@@ -183,8 +184,16 @@ async function publishDueWork(cadences: MonitorCadence[]): Promise<void> {
       eff.cpuMemoryPolling !== "winrm" &&
       eff.cpuMemoryPolling !== "ssh"   &&
       !(eff.cpuMemoryPolling === "rest_api" && isManagedSwitchOrAp);
+    // systemInfo carries three streams (interfaces / lldp / storage). Treat
+    // the cadence as runnable when ANY is enabled — collectSystemInfo gates
+    // each stream internally. Mirrors the matching block in
+    // monitoringService.runMonitorPass; keep them in sync.
+    const anySysInfoStream =
+      eff.interfacesPolling !== null ||
+      eff.lldpPolling       !== null ||
+      eff.storagePolling    !== null;
     const canSystemInfo =
-      eff.interfacesPolling !== null &&
+      anySysInfoStream &&
       !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
 
     // Heavy-cadence suppression: only "up" AND not dependency-suppressed
