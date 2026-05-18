@@ -1508,21 +1508,44 @@
   };
 
   function wireRegionEditing() {
-    var btn = document.getElementById("map-edit-regions");
-    if (!btn) return;
+    var editBtn    = document.getElementById("map-edit-regions");
+    var saveBtn    = document.getElementById("map-save-regions");
+    var discardBtn = document.getElementById("map-discard-regions");
+    if (!editBtn) return;
     if (typeof canManageNetworks === "function" && !canManageNetworks()) return;
-    btn.hidden = false;
-    btn.addEventListener("click", function () {
-      if (regionState.editing) {
-        exitRegionEditMode().catch(function (err) {
-          setStatus("Failed to finalize region edits: " + (err && err.message ? err.message : err));
-        });
-      } else {
-        enterRegionEditMode().catch(function (err) {
-          setStatus("Failed to load regions: " + (err && err.message ? err.message : err));
-        });
-      }
+    editBtn.hidden = false;
+    // Save + Discard stay hidden until the operator enters edit mode; they're
+    // only meaningful while there are in-flight vertex changes to commit or
+    // revert. Visibility flips in setEditModeButtons.
+    editBtn.addEventListener("click", function () {
+      enterRegionEditMode().catch(function (err) {
+        setStatus("Failed to load regions: " + (err && err.message ? err.message : err));
+      });
     });
+    if (saveBtn) {
+      saveBtn.addEventListener("click", function () {
+        saveAndExitRegionEditMode().catch(function (err) {
+          setStatus("Failed to save regions: " + (err && err.message ? err.message : err));
+        });
+      });
+    }
+    if (discardBtn) {
+      discardBtn.addEventListener("click", function () {
+        discardAndExitRegionEditMode();
+      });
+    }
+  }
+
+  // Swap the three toolbar buttons between view ("Edit regions" visible) and
+  // edit ("Save Regions" + "Discard Changes" visible) modes. Single helper so
+  // the visibility rule lives in one place.
+  function setEditModeButtons(editing) {
+    var editBtn    = document.getElementById("map-edit-regions");
+    var saveBtn    = document.getElementById("map-save-regions");
+    var discardBtn = document.getElementById("map-discard-regions");
+    if (editBtn)    editBtn.hidden    = editing;
+    if (saveBtn)    saveBtn.hidden    = !editing;
+    if (discardBtn) discardBtn.hidden = !editing;
   }
 
   async function enterRegionEditMode() {
@@ -1556,33 +1579,80 @@
 
     map.on(L.Draw.Event.CREATED, onRegionCreated);
 
-    var btn = document.getElementById("map-edit-regions");
-    if (btn) btn.textContent = "Done editing";
-    setStatus("Editing regions: draw a polygon, drag any vertex to reshape, click an existing region to rename/delete, or right-click-drag to pan. Click \"Done editing\" to hide.");
+    setEditModeButtons(true);
+    setStatus("Editing regions: draw a polygon, drag any vertex to reshape, click an existing region to rename/delete, or right-click-drag to pan. Click \"Save Regions\" to commit changes or \"Discard Changes\" to revert.");
   }
 
-  async function exitRegionEditMode() {
-    // Flush any pending debounced vertex-drag saves before tearing the
-    // polygon layer down. Without this, clicking "Done editing" within
-    // 800 ms of releasing a vertex silently loses the change.
-    var pendingFlushes = [];
+  // Walk every region polygon in edit mode and PUT the ones whose vertices
+  // were dragged this session. On all-success, exit edit mode. On any
+  // failure, surface the count, keep the failed polygons marked dirty, and
+  // leave the operator in edit mode so they can retry. Polygons whose
+  // drag-end shape matches the loaded shape (no net change) are skipped.
+  async function saveAndExitRegionEditMode() {
+    var dirty = [];
     for (var rid in regionState.polygonsByRegionId) {
       var p = regionState.polygonsByRegionId[rid];
-      if (p && typeof p._polarisFlushSave === "function") {
-        try { pendingFlushes.push(p._polarisFlushSave()); } catch (e) { /* best-effort */ }
+      if (p && p._polarisDirty) dirty.push(p);
+    }
+    if (dirty.length === 0) {
+      teardownRegionEditMode();
+      setStatus("");
+      return;
+    }
+    setStatus("Saving " + dirty.length + " region change" + (dirty.length === 1 ? "" : "s") + "…");
+    var failures = 0;
+    await Promise.all(dirty.map(function (poly) {
+      var pairs = polygonLatLngsToPairs(poly);
+      return api.mapRegions.update(poly._polarisRegionId, { polygon: pairs }).then(function () {
+        poly._polarisSavedPolygon = pairs;
+        poly._polarisDirty = false;
+      }).catch(function (err) {
+        failures++;
+        // Per-polygon alert so the operator knows exactly which one failed.
+        window.alert("Failed to save region \"" + (poly._polarisRegionName || "") + "\": " + (err && err.message ? err.message : err));
+      });
+    }));
+    if (failures > 0) {
+      setStatus(failures + " region" + (failures === 1 ? "" : "s") + " failed to save — still in edit mode, click Save Regions to retry or Discard Changes to abandon.");
+      return;
+    }
+    teardownRegionEditMode();
+    setStatus(dirty.length + " region" + (dirty.length === 1 ? "" : "s") + " saved.");
+  }
+
+  // Revert every dirty polygon to the shape it had when edit mode opened
+  // (or to the shape from the last successful save during this session).
+  // Doesn't touch polygons created or deleted this session — those went
+  // through their own explicit PUT/DELETE and aren't tracked here.
+  function discardAndExitRegionEditMode() {
+    var reverted = 0;
+    for (var rid in regionState.polygonsByRegionId) {
+      var p = regionState.polygonsByRegionId[rid];
+      if (!p || !p._polarisDirty) continue;
+      if (Array.isArray(p._polarisSavedPolygon)) {
+        p.setLatLngs(p._polarisSavedPolygon);
+        // Re-enable editing to refresh the marker positions; without this,
+        // the vertex handles still sit at the dragged locations even though
+        // the polygon outline snapped back.
+        if (p.editing) { p.editing.disable(); p.editing.enable(); }
+        setTimeout((function (pp) { return function () { colorEditMarkers(pp); }; })(p), 0);
       }
+      p._polarisDirty = false;
+      reverted++;
     }
-    if (pendingFlushes.length > 0) {
-      try { await Promise.all(pendingFlushes); } catch (e) { /* per-save errors already surfaced via alert */ }
-    }
+    teardownRegionEditMode();
+    setStatus(reverted > 0 ? reverted + " region change" + (reverted === 1 ? "" : "s") + " discarded." : "");
+  }
+
+  // Tear-down only — shared by both save and discard paths. No network I/O
+  // happens here.
+  function teardownRegionEditMode() {
     regionState.editing = false;
     map.off(L.Draw.Event.CREATED, onRegionCreated);
     if (regionState.drawControl) { map.removeControl(regionState.drawControl); regionState.drawControl = null; }
     if (regionState.layer) { map.removeLayer(regionState.layer); regionState.layer = null; }
     regionState.polygonsByRegionId = {};
-    var btn = document.getElementById("map-edit-regions");
-    if (btn) btn.textContent = "Edit regions";
-    setStatus("");
+    setEditModeButtons(false);
   }
 
   function addRegionPolygon(region) {
@@ -1621,39 +1691,17 @@
     // polygon's hue. Deferred one tick so leaflet-draw has finished mounting
     // the markers into the marker pane.
     setTimeout(function () { colorEditMarkers(poly); }, 0);
-    var saveTimer = null;
-    var savedPolygon = polygonLatLngsToPairs(poly);
-    function performSave() {
-      var pairs = polygonLatLngsToPairs(poly);
-      return api.mapRegions.update(poly._polarisRegionId, { polygon: pairs }).then(function () {
-        savedPolygon = pairs;
-        setStatus("Region \"" + (poly._polarisRegionName || "") + "\" updated.");
-      }).catch(function (err) {
-        window.alert("Failed to update region: " + (err && err.message ? err.message : err));
-        poly.setLatLngs(savedPolygon);
-        if (poly.editing) { poly.editing.disable(); poly.editing.enable(); }
-        setTimeout(function () { colorEditMarkers(poly); }, 0);
-      });
-    }
-    // Exposed so exitRegionEditMode can flush a pending debounced save before
-    // tearing the polygon layer down — otherwise clicking "Done editing"
-    // within 800 ms of a vertex drag loses the change.
-    poly._polarisFlushSave = function () {
-      if (!saveTimer) return Promise.resolve();
-      clearTimeout(saveTimer);
-      saveTimer = null;
-      return performSave();
-    };
+    // Capture the loaded shape so Discard Changes can revert in-place. Any
+    // editvertex fired afterward marks the polygon dirty so the Save / Discard
+    // paths know which ones need attention; clean polygons are skipped.
+    poly._polarisSavedPolygon = polygonLatLngsToPairs(poly);
+    poly._polarisDirty = false;
     poly.on("editvertex", function () {
       // Midpoint-drag→vertex conversions add fresh markers; vertex deletions
       // remove them. Either way, re-color so the dot set always matches the
       // region. Deferred so the marker DOM is settled when we walk it.
       setTimeout(function () { colorEditMarkers(poly); }, 0);
-      if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(function () {
-        saveTimer = null;
-        performSave();
-      }, 800);
+      poly._polarisDirty = true;
     });
   }
 
