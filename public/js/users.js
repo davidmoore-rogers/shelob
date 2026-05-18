@@ -2,96 +2,169 @@
  * public/js/users.js — User management page
  */
 
+// Module-scoped state ─────────────────────────────────────────────────────
+var _usersRaw = [];           // last list from GET /users
+var _usersSF = null;           // TableSF instance
+var _usersPage = 1;            // unused today (no pagination) but matches the
+                               //  callback shape the canonical implementations use
+var _rolesRaw = [];            // last list from GET /roles
+var _rolesById = {};           // { id: role }
+var _matrixSpec = null;        // { accessLevels, functions } from GET /roles/functions
+var _regionList = [];          // cached map-region names for the region picker
+
 document.addEventListener("DOMContentLoaded", function () {
+  _usersSF = new TableSF("users-tbody", function () { _usersPage = 1; renderUsersBody(); });
   loadUsers();
+  loadRoles();          // also drives the role dropdowns in the user modals
+  loadRegionList();     // best-effort; used by the region pickers
   initAuthSettingsButton();
   document.getElementById("btn-add-user").addEventListener("click", openCreateModal);
+  var btnAddRole = document.getElementById("btn-add-role");
+  if (btnAddRole) btnAddRole.addEventListener("click", function () { openRoleSlideover(null); });
 
-  // Event delegation for table action buttons
+  // Event delegation for users-table action buttons
   document.getElementById("users-tbody").addEventListener("click", function (e) {
     var btn = e.target.closest("[data-action]");
     if (!btn) return;
     var action = btn.getAttribute("data-action");
     var id = btn.getAttribute("data-id");
     var username = btn.getAttribute("data-username");
-    var role = btn.getAttribute("data-role");
-    if (action === "role") openChangeRoleModal(id, username, role);
+    var roleId = btn.getAttribute("data-role-id");
+    if (action === "role") openChangeRoleModal(id, username, roleId);
+    else if (action === "regions") openUserRegionsModal(id, username);
     else if (action === "password") openResetPasswordModal(id, username);
     else if (action === "delete") confirmDelete(id, username);
     else if (action === "totp-self") openTotpSelfModal();
     else if (action === "totp-reset") confirmTotpReset(id, username);
   });
+
+  // Event delegation for roles-table action buttons
+  var rolesTbody = document.getElementById("roles-tbody");
+  if (rolesTbody) {
+    rolesTbody.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-role-action]");
+      if (!btn) return;
+      var action = btn.getAttribute("data-role-action");
+      var id = btn.getAttribute("data-role-id");
+      if (action === "edit") openRoleSlideover(id);
+      else if (action === "delete") confirmDeleteRole(id);
+    });
+  }
 });
 
 async function loadUsers() {
   var tbody = document.getElementById("users-tbody");
   try {
-    var users = await api.users.list();
-    if (users.length === 0) {
+    _usersRaw = await api.users.list();
+    if (_usersRaw.length === 0) {
       tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No users found.</td></tr>';
       return;
     }
-    tbody.innerHTML = users.map(function (u) {
-      var roleBadge;
-      if (u.role === "admin") roleBadge = '<span class="badge badge-admin">admin</span>';
-      else if (u.role === "networkadmin") roleBadge = '<span class="badge badge-network-admin">network admin</span>';
-      else if (u.role === "assetsadmin") roleBadge = '<span class="badge badge-assets-admin">assets admin</span>';
-      else if (u.role === "user") roleBadge = '<span class="badge badge-available">user</span>';
-      else roleBadge = '<span class="badge badge-readonly">read only</span>';
-      var authBadge = u.authProvider === "azure"
-        ? '<span class="badge badge-reserved" title="Azure SSO">Azure</span>'
-        : '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-secondary)">Local</span>';
-      var lastLogin = u.lastLogin
-        ? '<span title="' + escapeHtml(new Date(u.lastLogin).toLocaleString()) + '">' + timeAgo(u.lastLogin) + '</span>'
-        : '<span style="color:var(--color-text-tertiary)">Never</span>';
-      var displayName = u.displayName ? ' <span style="color:var(--color-text-tertiary);font-size:0.85em">(' + escapeHtml(u.displayName) + ')</span>' : '';
-      var onlineDot = u.isOnline
-        ? '<span class="ip-status-dot ip-dot-available" title="Currently logged in" style="vertical-align:middle"></span>'
-        : '';
-      var passwordBtn = u.authProvider === "azure" ? '' :
-        '<button class="btn btn-sm btn-secondary" data-action="password" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Password</button>';
-      var totpCell;
-      if (u.authProvider === "azure") {
-        totpCell = '<span style="color:var(--color-text-tertiary);font-size:0.85em" title="Handled by your identity provider">IdP-managed</span>';
-      } else if (u.totpEnabled) {
-        totpCell = '<span class="badge" style="background:rgba(76,175,80,0.15);color:var(--color-success,#4caf50)">Enabled</span>';
-      } else {
-        totpCell = '<span style="color:var(--color-text-tertiary)">Not set</span>';
-      }
-      var isSelf = currentUsername === u.username;
-      var totpBtn = "";
-      if (u.authProvider !== "azure") {
-        if (isSelf) {
-          totpBtn = '<button class="btn btn-sm btn-secondary" data-action="totp-self" title="Manage your two-factor authentication">2FA</button>';
-        } else if (u.totpEnabled) {
-          totpBtn = '<button class="btn btn-sm btn-secondary" data-action="totp-reset" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" title="Reset 2FA (e.g. lost device)">Reset 2FA</button>';
-        }
-      }
-      return '<tr>' +
-        '<td style="text-align:center">' + onlineDot + '</td>' +
-        '<td><strong>' + escapeHtml(u.username) + '</strong>' + displayName + '</td>' +
-        '<td>' + authBadge + '</td>' +
-        '<td>' + roleBadge + '</td>' +
-        '<td>' + totpCell + '</td>' +
-        '<td>' + lastLogin + '</td>' +
-        '<td>' + formatDate(u.createdAt) + '</td>' +
-        '<td class="actions">' +
-          '<button class="btn btn-sm btn-secondary" data-action="role" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" data-role="' + escapeHtml(u.role) + '">Role</button>' +
-          passwordBtn +
-          totpBtn +
-          '<button class="btn btn-sm btn-danger" data-action="delete" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Delete</button>' +
-        '</td></tr>';
-    }).join("");
+    // Decorate each row with a stable `totpEnabledSort` string so TableSF
+    // can sort the 2FA column lexically (Enabled / Not set / IdP-managed).
+    _usersRaw.forEach(function (u) {
+      u.totpEnabledSort = u.authProvider === "azure"
+        ? "IdP-managed"
+        : (u.totpEnabled ? "Enabled" : "Not set");
+    });
+    renderUsersBody();
   } catch (err) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
   }
+}
+
+function renderUsersBody() {
+  var tbody = document.getElementById("users-tbody");
+  var rows = _usersSF ? _usersSF.apply(_usersRaw) : _usersRaw;
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No users match the current filters.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(function (u) {
+    var roleName = u.role ? u.role.name : "";
+    var roleBadge;
+    if (roleName === "admin") roleBadge = '<span class="badge badge-admin">admin</span>';
+    else if (roleName === "networkadmin") roleBadge = '<span class="badge badge-network-admin">network admin</span>';
+    else if (roleName === "assetsadmin") roleBadge = '<span class="badge badge-assets-admin">assets admin</span>';
+    else if (roleName === "user") roleBadge = '<span class="badge badge-available">user</span>';
+    else if (roleName === "readonly") roleBadge = '<span class="badge badge-readonly">read only</span>';
+    else roleBadge = '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border)">' + escapeHtml(roleName || "—") + '</span>';
+    var authBadge = u.authProvider === "azure"
+      ? '<span class="badge badge-reserved" title="Azure SSO">Azure</span>'
+      : '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-secondary)">Local</span>';
+    var lastLogin = u.lastLogin
+      ? '<span title="' + escapeHtml(new Date(u.lastLogin).toLocaleString()) + '">' + timeAgo(u.lastLogin) + '</span>'
+      : '<span style="color:var(--color-text-tertiary)">Never</span>';
+    var displayName = u.displayName ? ' <span style="color:var(--color-text-tertiary);font-size:0.85em">(' + escapeHtml(u.displayName) + ')</span>' : '';
+    var onlineDot = u.isOnline
+      ? '<span class="ip-status-dot ip-dot-available" title="Currently logged in" style="vertical-align:middle"></span>'
+      : '';
+    var regionsLabel = "";
+    if (Array.isArray(u.regionTags) && u.regionTags.length > 0) {
+      regionsLabel = ' <span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-secondary);font-size:0.7em;margin-left:0.25rem" title="Per-user region scope">' + escapeHtml(u.regionTags.join(", ")) + '</span>';
+    }
+    var passwordBtn = u.authProvider === "azure" ? '' :
+      '<button class="btn btn-sm btn-secondary" data-action="password" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Password</button>';
+    var totpCell;
+    if (u.authProvider === "azure") {
+      totpCell = '<span style="color:var(--color-text-tertiary);font-size:0.85em" title="Handled by your identity provider">IdP-managed</span>';
+    } else if (u.totpEnabled) {
+      totpCell = '<span class="badge" style="background:rgba(76,175,80,0.15);color:var(--color-success,#4caf50)">Enabled</span>';
+    } else {
+      totpCell = '<span style="color:var(--color-text-tertiary)">Not set</span>';
+    }
+    var isSelf = currentUsername === u.username;
+    var totpBtn = "";
+    if (u.authProvider !== "azure") {
+      if (isSelf) {
+        totpBtn = '<button class="btn btn-sm btn-secondary" data-action="totp-self" title="Manage your two-factor authentication">2FA</button>';
+      } else if (u.totpEnabled) {
+        totpBtn = '<button class="btn btn-sm btn-secondary" data-action="totp-reset" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" title="Reset 2FA (e.g. lost device)">Reset 2FA</button>';
+      }
+    }
+    var roleId = u.role ? u.role.id : "";
+    return '<tr>' +
+      '<td style="text-align:center">' + onlineDot + '</td>' +
+      '<td><strong>' + escapeHtml(u.username) + '</strong>' + displayName + regionsLabel + '</td>' +
+      '<td>' + authBadge + '</td>' +
+      '<td>' + roleBadge + '</td>' +
+      '<td>' + totpCell + '</td>' +
+      '<td>' + lastLogin + '</td>' +
+      '<td>' + formatDate(u.createdAt) + '</td>' +
+      '<td class="actions">' +
+        '<button class="btn btn-sm btn-secondary" data-action="role" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" data-role-id="' + escapeHtml(roleId) + '">Role</button>' +
+        '<button class="btn btn-sm btn-secondary" data-action="regions" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '" title="Per-user region scope">Regions</button>' +
+        passwordBtn +
+        totpBtn +
+        '<button class="btn btn-sm btn-danger" data-action="delete" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Delete</button>' +
+      '</td></tr>';
+  }).join("");
+}
+
+// Build a <select> of roles. `selectedId` pre-selects a row; `defaultName`
+// (e.g. "readonly") falls back to a name-match when no id is given.
+function roleSelectHtml(selectId, selectedId, defaultName) {
+  if (_rolesRaw.length === 0) {
+    return '<select id="' + selectId + '"><option value="" selected>Loading…</option></select>';
+  }
+  var fallbackId = selectedId;
+  if (!fallbackId && defaultName) {
+    var d = _rolesRaw.filter(function (r) { return r.name === defaultName; })[0];
+    if (d) fallbackId = d.id;
+  }
+  var opts = _rolesRaw.map(function (r) {
+    var label = r.name + (r.isBuiltIn ? "" : " (custom)");
+    var selected = r.id === fallbackId ? " selected" : "";
+    return '<option value="' + escapeHtml(r.id) + '"' + selected + '>' + escapeHtml(label) + '</option>';
+  }).join("");
+  return '<select id="' + selectId + '">' + opts + '</select>';
 }
 
 function openCreateModal() {
   var body = '<div class="form-group"><label>Username *</label><input type="text" id="f-username" placeholder="e.g. jsmith"></div>' +
     '<div class="form-group"><label>Password *</label><input type="password" id="f-password" placeholder="Enter password">' + passwordChecksHTML("f-pw-checks") + '<p class="hint">The user can change this after first login.</p></div>' +
     '<div class="form-group"><label>Confirm Password *</label><input type="password" id="f-password-confirm" placeholder="Re-enter password">' + passwordMatchHTML("f-pw-match") + '</div>' +
-    '<div class="form-group"><label>Role</label><select id="f-role"><option value="readonly" selected>Read Only</option><option value="user">User</option><option value="networkadmin">Network Admin</option><option value="assetsadmin">Assets Admin</option><option value="admin">Admin</option></select></div>';
+    '<div class="form-group"><label>Role</label>' + roleSelectHtml("f-role", null, "readonly") + '</div>';
   var footer = '<button class="btn btn-secondary" id="btn-cancel">Cancel</button><button class="btn btn-primary" id="btn-save">Create User</button>';
   openModal("Add User", body, footer);
   wirePasswordChecks("f-password", "f-pw-checks");
@@ -112,17 +185,19 @@ function openCreateModal() {
       showToast("Passwords do not match", "error");
       return;
     }
+    var roleId = val("f-role");
+    if (!roleId) { showToast("Pick a role", "error"); return; }
     btn.disabled = true;
     try {
-      var input = {
+      await api.users.create({
         username: val("f-username"),
         password: val("f-password"),
-        role: val("f-role"),
-      };
-      await api.users.create(input);
+        roleId: roleId,
+      });
       closeModal();
       showToast("User created");
       loadUsers();
+      loadRoles();
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -131,26 +206,53 @@ function openCreateModal() {
   });
 }
 
-function openChangeRoleModal(id, username, currentRole) {
+function openChangeRoleModal(id, username, currentRoleId) {
   var body = '<p style="font-size:0.9rem;color:var(--color-text-secondary);margin-bottom:1rem">Change role for <strong>' + escapeHtml(username) + '</strong></p>' +
-    '<div class="form-group"><label>Role</label><select id="f-role">' +
-      '<option value="readonly"' + (currentRole === "readonly" ? " selected" : "") + '>Read Only</option>' +
-      '<option value="user"' + (currentRole === "user" ? " selected" : "") + '>User</option>' +
-      '<option value="networkadmin"' + (currentRole === "networkadmin" ? " selected" : "") + '>Network Admin</option>' +
-      '<option value="assetsadmin"' + (currentRole === "assetsadmin" ? " selected" : "") + '>Assets Admin</option>' +
-      '<option value="admin"' + (currentRole === "admin" ? " selected" : "") + '>Admin</option>' +
-    '</select></div>';
+    '<div class="form-group"><label>Role</label>' + roleSelectHtml("f-role", currentRoleId, null) + '</div>';
   var footer = '<button class="btn btn-secondary" id="btn-cancel">Cancel</button><button class="btn btn-primary" id="btn-save">Update Role</button>';
   openModal("Change Role", body, footer);
   document.getElementById("btn-cancel").addEventListener("click", closeModal);
 
   document.getElementById("btn-save").addEventListener("click", async function () {
     var btn = this;
+    var roleId = val("f-role");
+    if (!roleId) { showToast("Pick a role", "error"); return; }
     btn.disabled = true;
     try {
-      await api.users.updateRole(id, { role: val("f-role") });
+      await api.users.updateRole(id, { roleId: roleId });
       closeModal();
       showToast("Role updated for " + username);
+      loadUsers();
+      loadRoles();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function openUserRegionsModal(id, username) {
+  var user = _usersRaw.filter(function (u) { return u.id === id; })[0];
+  var current = (user && Array.isArray(user.regionTags)) ? user.regionTags.slice() : [];
+  var help =
+    '<p style="font-size:0.85rem;color:var(--color-text-secondary);margin-bottom:1rem">' +
+      'Per-user region scope for <strong>' + escapeHtml(username) + '</strong>. ' +
+      'Empty list = unrestricted. Effective regions for the user\'s session are ' +
+      'union(role.regionTags, user.regionTags).' +
+    '</p>';
+  var picker = regionPickerHtml("f-user-regions", current);
+  var footer = '<button class="btn btn-secondary" id="btn-cancel">Cancel</button><button class="btn btn-primary" id="btn-save">Save</button>';
+  openModal("User Regions", help + picker, footer);
+  document.getElementById("btn-cancel").addEventListener("click", closeModal);
+  document.getElementById("btn-save").addEventListener("click", async function () {
+    var btn = this;
+    btn.disabled = true;
+    try {
+      var regionTags = collectRegionPicker("f-user-regions");
+      await api.users.updateRegions(id, { regionTags: regionTags });
+      closeModal();
+      showToast("Region scope updated for " + username);
       loadUsers();
     } catch (err) {
       showToast(err.message, "error");
@@ -742,4 +844,368 @@ function checkPasswordMatch(pw, confirm, containerId) {
   el.querySelector(".pw-icon").innerHTML = matched ? "&#10003;" : "&#9675;";
   el.style.color = matched ? "var(--color-success, #4caf50)" : "var(--color-text-tertiary)";
   return matched;
+}
+
+// ─── Roles section ─────────────────────────────────────────────────────────
+
+async function loadRoles() {
+  var section = document.getElementById("roles-section");
+  if (!section) return;
+  // Roles management is admin-only. The backend will 403 non-admin callers;
+  // hiding the section client-side avoids a misleading empty card.
+  if (typeof isAdmin === "function" && !isAdmin()) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  var tbody = document.getElementById("roles-tbody");
+  try {
+    _rolesRaw = await api.roles.list();
+    _rolesById = {};
+    _rolesRaw.forEach(function (r) { _rolesById[r.id] = r; });
+    if (!_matrixSpec) {
+      try { _matrixSpec = await api.roles.functions(); } catch (_) { _matrixSpec = null; }
+    }
+    renderRolesBody();
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Error: ' + escapeHtml(err.message) + '</td></tr>';
+  }
+}
+
+function renderRolesBody() {
+  var tbody = document.getElementById("roles-tbody");
+  // Hide the two protected built-ins (admin + readonly) from the editable
+  // list — they're always-locked-and-pre-populated by definition. Custom
+  // roles + the three editable built-ins (networkadmin / assetsadmin /
+  // user) show up here.
+  var visible = _rolesRaw.filter(function (r) { return !r.isProtected; });
+  if (visible.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No editable roles. Click "+ Add Role" to create one.</td></tr>';
+    return;
+  }
+  visible.sort(function (a, b) {
+    // Built-ins first, then custom; alphabetical within each tier.
+    if (a.isBuiltIn !== b.isBuiltIn) return a.isBuiltIn ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  tbody.innerHTML = visible.map(function (r) {
+    var nameCell = '<button class="btn btn-link" data-role-action="edit" data-role-id="' + escapeHtml(r.id) + '" style="padding:0;font-weight:600;color:var(--color-accent);background:none;border:none;cursor:pointer">' + escapeHtml(r.name) + '</button>';
+    var descCell = '<span style="color:var(--color-text-secondary);font-size:0.88em">' + escapeHtml(r.description || "—") + '</span>';
+    var usersCell = '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-primary)">' + r.userCount + '</span>';
+    var builtInCell = r.isBuiltIn
+      ? '<span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-secondary)">Built-in</span>'
+      : '<span style="color:var(--color-text-tertiary)">—</span>';
+    var delBtn = r.isBuiltIn || r.userCount > 0
+      ? '<button class="btn btn-sm btn-secondary" disabled title="' + (r.isBuiltIn ? "Built-in roles cannot be deleted" : "Reassign users first") + '">Delete</button>'
+      : '<button class="btn btn-sm btn-danger" data-role-action="delete" data-role-id="' + escapeHtml(r.id) + '">Delete</button>';
+    return '<tr>' +
+      '<td>' + nameCell + '</td>' +
+      '<td>' + descCell + '</td>' +
+      '<td>' + usersCell + '</td>' +
+      '<td>' + builtInCell + '</td>' +
+      '<td class="actions">' +
+        '<button class="btn btn-sm btn-secondary" data-role-action="edit" data-role-id="' + escapeHtml(r.id) + '">Edit</button>' +
+        delBtn +
+      '</td></tr>';
+  }).join("");
+}
+
+async function confirmDeleteRole(id) {
+  var role = _rolesById[id];
+  if (!role) return;
+  var ok = await showConfirm('Delete role "' + role.name + '"? This cannot be undone.');
+  if (!ok) return;
+  try {
+    await api.roles.delete(id);
+    showToast("Role deleted");
+    loadRoles();
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+// ─── Permissions slide-over ────────────────────────────────────────────────
+
+var _PERM_LEVELS = ["none", "read", "write", "fullwrite"];
+var _PERM_LABELS = { none: "No Access", read: "Read-Only", write: "Read-Write", fullwrite: "Full Read-Write" };
+
+async function openRoleSlideover(roleId) {
+  if (!_matrixSpec) {
+    try { _matrixSpec = await api.roles.functions(); }
+    catch (err) { showToast("Could not load permission catalogue: " + err.message, "error"); return; }
+  }
+  var role = roleId ? _rolesById[roleId] : null;
+  var isCreate = !role;
+  var isProtected = !!(role && role.isProtected);
+  var permissions = role ? Object.assign({}, role.permissions) : {};
+  // Pre-fill new roles with all-none.
+  _matrixSpec.functions.forEach(function (f) {
+    if (!(f.key in permissions)) permissions[f.key] = "none";
+  });
+
+  var mount = document.getElementById("role-slideover-mount");
+  if (!mount) return;
+  mount.innerHTML = buildRoleSlideoverHtml(role, isCreate, isProtected, permissions);
+
+  var overlay = document.getElementById("role-slideover-overlay");
+  var panel = document.getElementById("role-slideover-panel");
+  if (typeof initSlideoverResize === "function") {
+    initSlideoverResize(panel, "polaris.panel.width.role-permissions");
+  }
+  requestAnimationFrame(function () { overlay.classList.add("open"); });
+
+  overlay.addEventListener("click", function (e) {
+    if (e.target === overlay) closeRoleSlideover();
+  });
+  document.getElementById("role-slideover-close").addEventListener("click", closeRoleSlideover);
+  document.getElementById("role-slideover-cancel").addEventListener("click", closeRoleSlideover);
+
+  // "Set all to …" bulk action
+  document.getElementById("role-bulk-set").addEventListener("change", function () {
+    var lvl = this.value;
+    if (!lvl) return;
+    _matrixSpec.functions.forEach(function (f) {
+      var radio = document.querySelector('input[type="radio"][name="perm-' + f.key + '"][value="' + lvl + '"]');
+      if (radio && !radio.disabled) radio.checked = true;
+    });
+    this.value = "";
+  });
+
+  if (isProtected) {
+    // Don't expose Save for protected roles — read-only view.
+    var saveBtn = document.getElementById("role-slideover-save");
+    if (saveBtn) saveBtn.style.display = "none";
+    return;
+  }
+
+  document.getElementById("role-slideover-save").addEventListener("click", async function () {
+    var btn = this;
+    var name = (document.getElementById("f-role-name").value || "").trim();
+    var description = (document.getElementById("f-role-description").value || "").trim();
+    if (!/^[A-Za-z0-9_-]{2,32}$/.test(name)) {
+      showToast("Role name must be 2-32 chars: letters / digits / dash / underscore", "error");
+      return;
+    }
+    var perms = {};
+    _matrixSpec.functions.forEach(function (f) {
+      var checked = document.querySelector('input[type="radio"][name="perm-' + f.key + '"]:checked');
+      perms[f.key] = checked ? checked.value : "none";
+    });
+    var regionTags = collectRegionPicker("f-role-regions");
+    btn.disabled = true;
+    try {
+      if (isCreate) {
+        await api.roles.create({ name: name, description: description, permissions: perms, regionTags: regionTags });
+        showToast('Role "' + name + '" created');
+      } else {
+        await api.roles.update(role.id, { name: name, description: description, permissions: perms, regionTags: regionTags });
+        showToast('Role "' + name + '" saved');
+      }
+      closeRoleSlideover();
+      loadRoles();
+      loadUsers();  // user-list role badges may rename if a built-in name changed
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function closeRoleSlideover() {
+  var overlay = document.getElementById("role-slideover-overlay");
+  if (!overlay) return;
+  overlay.classList.remove("open");
+  setTimeout(function () {
+    var mount = document.getElementById("role-slideover-mount");
+    if (mount) mount.innerHTML = "";
+  }, 250);
+}
+
+function buildRoleSlideoverHtml(role, isCreate, isProtected, permissions) {
+  var titleText = isCreate ? "New Role" : ("Role: " + (role ? role.name : ""));
+  var builtInBadge = role && role.isBuiltIn ? ' <span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-secondary);font-size:0.7em">Built-in</span>' : "";
+  var protectedBadge = isProtected ? ' <span class="badge" style="background:rgba(239,68,68,0.15);color:var(--color-danger);font-size:0.7em">Locked</span>' : "";
+  var userCountMeta = role ? (role.userCount + " user(s) hold this role") : "Not yet assigned";
+
+  var matrixRows = _matrixSpec.functions.map(function (f) {
+    var current = permissions[f.key] || "none";
+    var cells = _PERM_LEVELS.map(function (lvl) {
+      var disabled = isProtected ? " disabled" : "";
+      var checked = current === lvl ? " checked" : "";
+      return '<td style="text-align:center">' +
+        '<label style="cursor:' + (isProtected ? "default" : "pointer") + ';display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;padding:0.5rem 0">' +
+          '<input type="radio" name="perm-' + escapeHtml(f.key) + '" value="' + lvl + '"' + checked + disabled + '>' +
+        '</label>' +
+      '</td>';
+    }).join("");
+    var ownershipNote = f.hasOwnershipDimension
+      ? ' <span title="Read-Write = edit own only; Full Read-Write = edit any" style="color:var(--color-text-tertiary);font-size:0.85em">(own / any)</span>'
+      : '';
+    return '<tr>' +
+      '<td>' +
+        '<div style="font-weight:600">' + escapeHtml(f.label) + ownershipNote + '</div>' +
+        '<div style="font-size:0.78em;color:var(--color-text-tertiary)">' + escapeHtml(f.description) + '</div>' +
+      '</td>' +
+      cells +
+    '</tr>';
+  }).join("");
+
+  var headerCells = _PERM_LEVELS.map(function (lvl) {
+    return '<th style="text-align:center;font-size:0.8em">' + escapeHtml(_PERM_LABELS[lvl]) + '</th>';
+  }).join("");
+
+  var bulkSet = isProtected
+    ? ''
+    : '<div style="margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem">' +
+        '<label style="font-size:0.85em;color:var(--color-text-secondary)">Set every row to:</label>' +
+        '<select id="role-bulk-set" style="width:auto">' +
+          '<option value="">—</option>' +
+          _PERM_LEVELS.map(function (lvl) { return '<option value="' + lvl + '">' + escapeHtml(_PERM_LABELS[lvl]) + '</option>'; }).join("") +
+        '</select>' +
+      '</div>';
+
+  var nameRow = '<div class="form-group">' +
+    '<label>Name *</label>' +
+    '<input type="text" id="f-role-name" maxlength="32" value="' + escapeHtml(role ? role.name : "") + '"' + (isProtected ? " disabled" : "") + '>' +
+    '<p class="hint">2-32 characters; letters, digits, dash, underscore.</p>' +
+  '</div>';
+  var descRow = '<div class="form-group">' +
+    '<label>Description</label>' +
+    '<input type="text" id="f-role-description" maxlength="200" value="' + escapeHtml(role ? (role.description || "") : "") + '"' + (isProtected ? " disabled" : "") + '>' +
+  '</div>';
+  var regionsRow = '<div class="form-group">' +
+    '<label>Region Scope</label>' +
+    '<p class="hint" style="margin-top:0">Empty = unrestricted. Combined with each user\'s own region tags at session time.</p>' +
+    regionPickerHtml("f-role-regions", role ? (role.regionTags || []) : []) +
+  '</div>';
+
+  var footerHtml = isProtected
+    ? '<button class="btn btn-secondary" id="role-slideover-cancel">Close</button>'
+    : '<button class="btn btn-secondary" id="role-slideover-cancel">Cancel</button>' +
+      '<button class="btn btn-primary" id="role-slideover-save">' + (isCreate ? "Create Role" : "Save Changes") + '</button>';
+
+  return '' +
+    '<div class="slideover-overlay" id="role-slideover-overlay">' +
+      '<div class="slideover" id="role-slideover-panel">' +
+        '<div class="slideover-resize-handle"></div>' +
+        '<div class="slideover-header">' +
+          '<div class="slideover-header-top">' +
+            '<h3>' + escapeHtml(titleText) + builtInBadge + protectedBadge + '</h3>' +
+            '<button class="btn-icon" id="role-slideover-close">&times;</button>' +
+          '</div>' +
+          '<div class="slideover-meta">' + escapeHtml(userCountMeta) + '</div>' +
+        '</div>' +
+        '<div class="slideover-body">' +
+          nameRow +
+          descRow +
+          regionsRow +
+          '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+          '<h4 style="margin:0 0 0.5rem;font-size:0.95rem">Permissions</h4>' +
+          bulkSet +
+          '<div style="overflow:auto">' +
+            '<table style="width:100%;border-collapse:collapse">' +
+              '<thead><tr><th style="text-align:left">Function</th>' + headerCells + '</tr></thead>' +
+              '<tbody>' + matrixRows + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>' +
+        '<div class="slideover-footer">' + footerHtml + '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+// ─── Region tag picker (shared by user-regions modal + role slide-over) ──
+
+async function loadRegionList() {
+  try {
+    if (api.mapRegions && typeof api.mapRegions.list === "function") {
+      var regions = await api.mapRegions.list();
+      _regionList = (regions || []).map(function (r) { return r.name; }).sort();
+    }
+  } catch (_) {
+    // Region listing requires mapRegions=read; non-admin viewers fall
+    // through to a free-text picker with no autocomplete.
+    _regionList = [];
+  }
+}
+
+function regionPickerHtml(idPrefix, selected) {
+  var sel = Array.isArray(selected) ? selected.slice() : [];
+  var chips = sel.map(function (t) {
+    return '<span class="badge region-chip" data-region="' + escapeHtml(t) + '" style="display:inline-flex;align-items:center;gap:0.35rem;background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border);padding:0.2rem 0.5rem;margin:0.15rem 0.25rem 0.15rem 0">' +
+      escapeHtml(t) +
+      ' <button type="button" class="region-chip-remove" style="background:none;border:none;cursor:pointer;color:var(--color-text-secondary);padding:0;font-size:1.1em;line-height:1">&times;</button>' +
+    '</span>';
+  }).join("");
+  var datalistOpts = _regionList.map(function (n) { return '<option value="' + escapeHtml(n) + '">'; }).join("");
+  return '<div id="' + idPrefix + '">' +
+    '<div class="region-chips" data-region-chips style="margin-bottom:0.5rem">' + chips + '</div>' +
+    '<div style="display:flex;gap:0.5rem;align-items:center">' +
+      '<input type="text" class="region-add-input" list="' + idPrefix + '-datalist" placeholder="Add region tag…" style="flex:1">' +
+      '<button type="button" class="btn btn-sm btn-secondary region-add-btn">Add</button>' +
+    '</div>' +
+    '<datalist id="' + idPrefix + '-datalist">' + datalistOpts + '</datalist>' +
+  '</div>';
+}
+
+// Event delegation for any region picker on the page (handles dynamic create).
+document.addEventListener("click", function (e) {
+  var removeBtn = e.target.closest(".region-chip-remove");
+  if (removeBtn) {
+    var chip = removeBtn.closest(".region-chip");
+    if (chip) chip.remove();
+    return;
+  }
+  var addBtn = e.target.closest(".region-add-btn");
+  if (addBtn) {
+    var picker = addBtn.closest("[id^='f-role-regions'], [id^='f-user-regions']");
+    if (!picker) return;
+    var input = picker.querySelector(".region-add-input");
+    if (!input) return;
+    var v = (input.value || "").trim();
+    if (!v) return;
+    var chips = picker.querySelector("[data-region-chips]");
+    var existing = chips.querySelectorAll(".region-chip");
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i].getAttribute("data-region").toLowerCase() === v.toLowerCase()) {
+        input.value = "";
+        return;
+      }
+    }
+    var chip = document.createElement("span");
+    chip.className = "badge region-chip";
+    chip.setAttribute("data-region", v);
+    chip.style.cssText = "display:inline-flex;align-items:center;gap:0.35rem;background:var(--color-bg-secondary);color:var(--color-text-primary);border:1px solid var(--color-border);padding:0.2rem 0.5rem;margin:0.15rem 0.25rem 0.15rem 0";
+    chip.innerHTML = escapeHtml(v) + ' <button type="button" class="region-chip-remove" style="background:none;border:none;cursor:pointer;color:var(--color-text-secondary);padding:0;font-size:1.1em;line-height:1">&times;</button>';
+    chips.appendChild(chip);
+    input.value = "";
+  }
+});
+
+function collectRegionPicker(idPrefix) {
+  var picker = document.getElementById(idPrefix);
+  if (!picker) return [];
+  // Include any unsubmitted input value too (operator forgot to click Add).
+  var input = picker.querySelector(".region-add-input");
+  if (input && input.value && input.value.trim()) {
+    var v = input.value.trim();
+    var existing = picker.querySelectorAll(".region-chip");
+    var dup = false;
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i].getAttribute("data-region").toLowerCase() === v.toLowerCase()) { dup = true; break; }
+    }
+    if (!dup) {
+      var chip = document.createElement("span");
+      chip.className = "region-chip";
+      chip.setAttribute("data-region", v);
+      picker.querySelector("[data-region-chips]").appendChild(chip);
+    }
+    input.value = "";
+  }
+  var out = [];
+  picker.querySelectorAll(".region-chip").forEach(function (c) {
+    out.push(c.getAttribute("data-region"));
+  });
+  return out;
 }
