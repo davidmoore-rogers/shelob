@@ -35,12 +35,15 @@
       // No level filter on the API — pull 50 and filter client-side so the
       // widget can show "what's noisy lately" across multiple severity mixes
       // without changing the request.
-      return api.events.list({ limit: 50 }).catch(function () { return []; });
+      return api.events.list({ limit: 50 })
+        .then(function (resp) { return (resp && Array.isArray(resp.events)) ? resp.events : (Array.isArray(resp) ? resp : []); })
+        .catch(function () { return []; });
     },
 
     renderInstance: function (el, config, data) {
       var levels = (config && Array.isArray(config.levels) && config.levels.length) ? config.levels : ["warning", "error"];
-      renderRows(el, data || [], levels);
+      var rows = Array.isArray(data) ? data : (data && Array.isArray(data.events) ? data.events : []);
+      renderRows(el, rows, levels);
     },
 
     renderPreview: function (el) {
