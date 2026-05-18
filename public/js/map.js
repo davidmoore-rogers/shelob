@@ -1513,10 +1513,15 @@
     if (typeof canManageNetworks === "function" && !canManageNetworks()) return;
     btn.hidden = false;
     btn.addEventListener("click", function () {
-      if (regionState.editing) exitRegionEditMode();
-      else enterRegionEditMode().catch(function (err) {
-        setStatus("Failed to load regions: " + (err && err.message ? err.message : err));
-      });
+      if (regionState.editing) {
+        exitRegionEditMode().catch(function (err) {
+          setStatus("Failed to finalize region edits: " + (err && err.message ? err.message : err));
+        });
+      } else {
+        enterRegionEditMode().catch(function (err) {
+          setStatus("Failed to load regions: " + (err && err.message ? err.message : err));
+        });
+      }
     });
   }
 
@@ -1556,7 +1561,20 @@
     setStatus("Editing regions: draw a polygon, drag any vertex to reshape, click an existing region to rename/delete, or right-click-drag to pan. Click \"Done editing\" to hide.");
   }
 
-  function exitRegionEditMode() {
+  async function exitRegionEditMode() {
+    // Flush any pending debounced vertex-drag saves before tearing the
+    // polygon layer down. Without this, clicking "Done editing" within
+    // 800 ms of releasing a vertex silently loses the change.
+    var pendingFlushes = [];
+    for (var rid in regionState.polygonsByRegionId) {
+      var p = regionState.polygonsByRegionId[rid];
+      if (p && typeof p._polarisFlushSave === "function") {
+        try { pendingFlushes.push(p._polarisFlushSave()); } catch (e) { /* best-effort */ }
+      }
+    }
+    if (pendingFlushes.length > 0) {
+      try { await Promise.all(pendingFlushes); } catch (e) { /* per-save errors already surfaced via alert */ }
+    }
     regionState.editing = false;
     map.off(L.Draw.Event.CREATED, onRegionCreated);
     if (regionState.drawControl) { map.removeControl(regionState.drawControl); regionState.drawControl = null; }
@@ -1605,6 +1623,27 @@
     setTimeout(function () { colorEditMarkers(poly); }, 0);
     var saveTimer = null;
     var savedPolygon = polygonLatLngsToPairs(poly);
+    function performSave() {
+      var pairs = polygonLatLngsToPairs(poly);
+      return api.mapRegions.update(poly._polarisRegionId, { polygon: pairs }).then(function () {
+        savedPolygon = pairs;
+        setStatus("Region \"" + (poly._polarisRegionName || "") + "\" updated.");
+      }).catch(function (err) {
+        window.alert("Failed to update region: " + (err && err.message ? err.message : err));
+        poly.setLatLngs(savedPolygon);
+        if (poly.editing) { poly.editing.disable(); poly.editing.enable(); }
+        setTimeout(function () { colorEditMarkers(poly); }, 0);
+      });
+    }
+    // Exposed so exitRegionEditMode can flush a pending debounced save before
+    // tearing the polygon layer down — otherwise clicking "Done editing"
+    // within 800 ms of a vertex drag loses the change.
+    poly._polarisFlushSave = function () {
+      if (!saveTimer) return Promise.resolve();
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      return performSave();
+    };
     poly.on("editvertex", function () {
       // Midpoint-drag→vertex conversions add fresh markers; vertex deletions
       // remove them. Either way, re-color so the dot set always matches the
@@ -1613,16 +1652,7 @@
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(function () {
         saveTimer = null;
-        var pairs = polygonLatLngsToPairs(poly);
-        api.mapRegions.update(poly._polarisRegionId, { polygon: pairs }).then(function () {
-          savedPolygon = pairs;
-          setStatus("Region \"" + (poly._polarisRegionName || "") + "\" updated.");
-        }).catch(function (err) {
-          window.alert("Failed to update region: " + (err && err.message ? err.message : err));
-          poly.setLatLngs(savedPolygon);
-          if (poly.editing) { poly.editing.disable(); poly.editing.enable(); }
-          setTimeout(function () { colorEditMarkers(poly); }, 0);
-        });
+        performSave();
       }, 800);
     });
   }
