@@ -1097,17 +1097,19 @@ function buildRoleSlideoverHtml(role, isCreate, isProtected, permissions) {
           '<div class="slideover-meta">' + escapeHtml(userCountMeta) + '</div>' +
         '</div>' +
         '<div class="slideover-body">' +
-          nameRow +
-          descRow +
-          regionsRow +
-          '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
-          '<h4 style="margin:0 0 0.5rem;font-size:0.95rem">Permissions</h4>' +
-          bulkSet +
-          '<div style="overflow:auto">' +
-            '<table style="width:100%;border-collapse:collapse">' +
-              '<thead><tr><th style="text-align:left">Function</th>' + headerCells + '</tr></thead>' +
-              '<tbody>' + matrixRows + '</tbody>' +
-            '</table>' +
+          '<div class="role-panel-content">' +
+            nameRow +
+            descRow +
+            regionsRow +
+            '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">' +
+            '<h4 style="margin:0 0 0.5rem;font-size:0.95rem">Permissions</h4>' +
+            bulkSet +
+            '<div style="overflow:auto">' +
+              '<table style="width:100%;border-collapse:collapse">' +
+                '<thead><tr><th style="text-align:left">Function</th>' + headerCells + '</tr></thead>' +
+                '<tbody>' + matrixRows + '</tbody>' +
+              '</table>' +
+            '</div>' +
           '</div>' +
         '</div>' +
         '<div class="slideover-footer">' + footerHtml + '</div>' +

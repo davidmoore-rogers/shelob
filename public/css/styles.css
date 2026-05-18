@@ -2761,6 +2761,13 @@ select option { background: var(--color-bg-secondary); color: var(--color-text-p
   padding-left: 2.5rem;
 }
 
+/* Role permissions slide-over content padding — matches `.asset-panel-content`
+   so the matrix table headers / rows align with the slide-over's own header
+   (whose padding is `1rem 1.25rem 1rem 2.5rem`). */
+.role-panel-content {
+  padding: 1rem 1.25rem 1rem 2.5rem;
+}
+
 /* IP list table inside the slide-over */
 .ip-table {
   width: 100%;
