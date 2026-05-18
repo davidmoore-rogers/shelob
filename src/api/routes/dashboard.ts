@@ -58,6 +58,7 @@ router.get("/summary", async (req, res, next) => {
         where: {
           monitored: true,
           monitorStatus: { in: ["warning", "down"] },
+          dependencySuppressed: false,
         },
         select: {
           id: true,
