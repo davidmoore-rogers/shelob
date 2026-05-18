@@ -1474,10 +1474,10 @@ function assetMonitorBadge(asset) {
   // path / out-of-band management) — that's why monitorStatus AND
   // dependencySuppressed are separate columns. Down + suppressed shows
   // "Down" since the probe proves it; otherwise "Dep. Down" with the
-  // layer in the tooltip.
+  // level in the tooltip.
   if (asset.dependencySuppressed && s !== "down") {
     var depBits = bits.slice();
-    if (asset.dependencyLayer != null) depBits.unshift("Layer " + asset.dependencyLayer + " — upstream parent is down");
+    if (asset.dependencyLayer != null) depBits.unshift("Level " + asset.dependencyLayer + " — upstream parent is down");
     else                                depBits.unshift("Upstream dependency is down");
     var depTitle = ' title="' + escapeHtml(depBits.join("\n")) + '"';
     return '<span class="badge badge-monitor-dep-down' + clickCls + '"' + depTitle + toggleAttrs + '>Dep. Down</span>';
@@ -9744,8 +9744,8 @@ function _depTreeNodeRow(node, opts) {
   var pip = _depTreeStatusPip(node);
   var hostHTML;
   if (opts.self) {
-    // Current asset — bold + non-clickable, with the layer annotation.
-    var layerBit = (node.dependencyLayer != null) ? ' <span class="dep-tree-self-meta">— layer ' + node.dependencyLayer + '</span>' : "";
+    // Current asset — bold + non-clickable, with the level annotation.
+    var layerBit = (node.dependencyLayer != null) ? ' <span class="dep-tree-self-meta">— level ' + node.dependencyLayer + '</span>' : "";
     hostHTML = '<strong class="dep-tree-self">' + safeName + '</strong>' + layerBit;
   } else {
     hostHTML = '<button type="button" class="dep-tree-link" data-asset-id="' + escapeHtml(node.id) + '" title="Open ' + safeName + '">' + safeName + '</button>';
@@ -9781,12 +9781,12 @@ function renderDependencyTreeBlock(payload, selfId) {
   }
 
   var subtitle;
-  if (parents.length === 0) subtitle = "Layer 1 — root of the dependency tree";
+  if (parents.length === 0) subtitle = "Level 1 — root of the dependency tree";
   else if (parents.length === 1) {
     var p0 = parents[0].parent;
-    subtitle = "Layer " + (self.dependencyLayer != null ? self.dependencyLayer : "?") + " · directly under " + escapeHtml(p0.hostname || p0.id);
+    subtitle = "Level " + (self.dependencyLayer != null ? self.dependencyLayer : "?") + " · directly under " + escapeHtml(p0.hostname || p0.id);
   } else {
-    subtitle = "Layer " + (self.dependencyLayer != null ? self.dependencyLayer : "?") + " · " + parents.length + " parents";
+    subtitle = "Level " + (self.dependencyLayer != null ? self.dependencyLayer : "?") + " · " + parents.length + " parents";
   }
 
   var parentsHTML = "";
