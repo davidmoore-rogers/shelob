@@ -141,9 +141,11 @@ function renderUsersBody() {
     var onlineDot = u.isOnline
       ? '<span class="ip-status-dot ip-dot-available" title="Currently logged in" style="vertical-align:middle"></span>'
       : '';
+    // Regions render on their own line under the username (plain comma-separated
+    // text, not chips) so admins can scan them without the row growing wide.
     var regionsLabel = "";
     if (Array.isArray(u.regionTags) && u.regionTags.length > 0) {
-      regionsLabel = ' <span class="badge" style="background:var(--color-bg-secondary);color:var(--color-text-secondary);font-size:0.7em;margin-left:0.25rem" title="Per-user region scope">' + escapeHtml(u.regionTags.join(", ")) + '</span>';
+      regionsLabel = '<div style="font-size:0.78em;color:var(--color-text-tertiary);margin-top:0.15rem" title="Per-user region scope">' + escapeHtml(u.regionTags.join(", ")) + '</div>';
     }
     var passwordBtn = u.authProvider === "azure" ? '' :
       '<button class="btn btn-sm btn-secondary" data-action="password" data-id="' + escapeHtml(u.id) + '" data-username="' + escapeHtml(u.username) + '">Password</button>';
