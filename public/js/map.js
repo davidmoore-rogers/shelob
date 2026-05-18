@@ -87,6 +87,9 @@
 
     markerCluster = L.markerClusterGroup({
       showCoverageOnHover: false,
+      maxClusterRadius: 40,
+      disableClusteringAtZoom: 11,
+      spiderfyOnMaxZoom: false,
       // Default markercluster coloring buckets by child count (small/medium/large
       // → green/yellow/orange). That's misleading here: a cluster of 100 healthy
       // FortiGates would show orange. Roll up the worst monitor health among
