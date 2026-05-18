@@ -12,8 +12,50 @@ var _rolesById = {};           // { id: role }
 var _matrixSpec = null;        // { accessLevels, functions } from GET /roles/functions
 var _regionList = [];          // cached map-region names for the region picker
 
-document.addEventListener("DOMContentLoaded", function () {
-  _usersSF = new TableSF("users-tbody", function () { _usersPage = 1; renderUsersBody(); });
+// Per-user TableSF prefs persistence — matches the canonical
+// polaris-prefs-<scope>-<username> convention used by assets.js / blocks.js /
+// subnets.js. Sort + filter state survives reload and is scoped per logged-in
+// username so multiple operators sharing a workstation don't trample each
+// other's settings. Save fires from the TableSF onChange callback; restore
+// runs once after `userReady` resolves so currentUsername is populated.
+function _saveUsersPrefs() {
+  if (!currentUsername) return;
+  try {
+    localStorage.setItem("polaris-prefs-users-" + currentUsername, JSON.stringify({
+      sortKey: _usersSF ? _usersSF._sortKey : null,
+      sortDir: _usersSF ? _usersSF._sortDir : "asc",
+      sfFilters: _usersSF ? Object.assign({}, _usersSF._filters) : {},
+    }));
+  } catch (_) {}
+}
+
+function _restoreUsersPrefs() {
+  if (!currentUsername) return;
+  var raw;
+  try { raw = localStorage.getItem("polaris-prefs-users-" + currentUsername); } catch (_) { return; }
+  if (!raw) return;
+  try {
+    var p = JSON.parse(raw);
+    if (_usersSF) {
+      if (p.sortKey) _usersSF._sortKey = p.sortKey;
+      if (p.sortDir) _usersSF._sortDir = p.sortDir;
+      if (p.sfFilters) {
+        _usersSF._filters = p.sfFilters;
+        _usersSF.restoreFilterUI();
+      }
+      _usersSF._updateIcons();
+    }
+  } catch (_) {}
+}
+
+document.addEventListener("DOMContentLoaded", async function () {
+  _usersSF = new TableSF("users-tbody", function () {
+    _usersPage = 1;
+    renderUsersBody();
+    _saveUsersPrefs();
+  });
+  await userReady;
+  _restoreUsersPrefs();
   loadUsers();
   loadRoles();          // also drives the role dropdowns in the user modals
   loadRegionList();     // best-effort; used by the region pickers
