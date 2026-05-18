@@ -47,10 +47,14 @@
    the operator clicks "Edit regions". Styles target the leaflet-draw layers
    (built off L.polygon) and the permanent name label rendered as a tooltip
    at each polygon's centroid. */
+/* Region polygons get their hue per-region via Leaflet's SVG presentation
+   attributes (stroke="..." fill="...") set in JS by applyRegionColor. CSS
+   here only owns the geometric / interactive properties — declaring fill or
+   stroke colors here would override Leaflet's attributes (CSS beats SVG
+   presentation attributes for specificity) and every polygon would render
+   the same accent color regardless of the saved region.color. */
 .map-region-polygon {
-  fill: var(--color-accent);
   fill-opacity: 0.12;
-  stroke: var(--color-accent);
   stroke-width: 2;
   stroke-opacity: 0.85;
   cursor: pointer;
@@ -78,6 +82,37 @@
    between vertices that you drag to insert a new vertex) inherit the same
    look — leaflet-draw drops their opacity to ~0.6 inline, which we leave
    alone so vertices and midpoints stay visually distinct. */
+/* Leaflet's bundled popup styles assume a white bubble — fine for the OSM
+   light basemap, jarring against CartoDB Dark Matter. Theme-aware overrides
+   here flip the bubble surface + arrow + close-button hue to match the app
+   theme. Scoped tightly so we don't restyle Leaflet tooltips (the permanent
+   region name labels use .map-region-label which already owns its surface). */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.leaflet-popup-tip {
+  /* Tip arrow inherits the border on two of its visible edges; with a 1px
+     border on the wrapper above, leaflet's default tip looks unbalanced.
+     Drop the border on the tip so the bubble's border carries the outline. */
+  border: none;
+}
+.leaflet-popup-content {
+  color: var(--color-text-primary);
+}
+.leaflet-popup-content a {
+  color: var(--color-accent);
+}
+.leaflet-container a.leaflet-popup-close-button {
+  color: var(--color-text-tertiary);
+}
+.leaflet-container a.leaflet-popup-close-button:hover {
+  color: var(--color-text-primary);
+}
+
 /* Color-palette swatches in the region create / recolor modal. The selected
    swatch gets a thicker accent-colored ring so the operator can see which
    palette pick is currently committed. */

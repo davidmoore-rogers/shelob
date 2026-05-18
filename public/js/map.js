@@ -1701,17 +1701,33 @@
         '<div style="font-weight:600">' + swatch + escapeHtml(name) + '</div>' +
         '<button type="button" class="btn btn-secondary" data-region-rename="' + escapeHtml(id) + '">Rename</button>' +
         '<button type="button" class="btn btn-secondary" data-region-recolor="' + escapeHtml(id) + '">Change color</button>' +
+        '<button type="button" class="btn btn-secondary" data-region-back="' + escapeHtml(id) + '" title="Send this polygon behind the others so an overlapping region underneath can be clicked. Resets on page reload.">Send to Bottom Layer</button>' +
         '<button type="button" class="btn btn-danger" data-region-delete="' + escapeHtml(id) + '">Delete</button>' +
       '</div>';
     var popup = L.popup({ closeButton: true, autoClose: true }).setLatLng(poly.getBounds().getCenter()).setContent(html).openOn(map);
     setTimeout(function () {
       var renameBtn = document.querySelector('[data-region-rename="' + id + '"]');
       var recolorBtn = document.querySelector('[data-region-recolor="' + id + '"]');
+      var backBtn = document.querySelector('[data-region-back="' + id + '"]');
       var deleteBtn = document.querySelector('[data-region-delete="' + id + '"]');
       if (renameBtn) renameBtn.addEventListener("click", function () { map.closePopup(popup); renameRegion(id, name); });
       if (recolorBtn) recolorBtn.addEventListener("click", function () { map.closePopup(popup); recolorRegion(id, name, color); });
+      if (backBtn) backBtn.addEventListener("click", function () { map.closePopup(popup); sendRegionToBack(id, name); });
       if (deleteBtn) deleteBtn.addEventListener("click", function () { map.closePopup(popup); deleteRegion(id, name); });
     }, 0);
+  }
+
+  // Per-session layer-order override. Polygons drawn later naturally sit on
+  // top of earlier ones, which hides an inner region beneath a larger outer
+  // one. "Send to Bottom Layer" pushes this polygon behind every other layer
+  // in the region featureGroup so the operator can click the previously-
+  // obscured polygon. Not persisted — resets on page reload, since the
+  // saved region order on the server is just insertion order.
+  function sendRegionToBack(id, name) {
+    var poly = regionState.polygonsByRegionId[id];
+    if (!poly || typeof poly.bringToBack !== "function") return;
+    poly.bringToBack();
+    setStatus("Region \"" + name + "\" sent to bottom layer.");
   }
 
   async function recolorRegion(id, name, currentColor) {
