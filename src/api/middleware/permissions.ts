@@ -195,7 +195,30 @@ export function snapshotFromRole(role: {
  * across the response cycle.
  */
 async function resolveSnapshot(req: Request): Promise<SessionRoleSnapshot | null> {
-  if (!req.session?.userId || !req.session.roleId) return null;
+  if (!req.session?.userId) return null;
+  // Old-session self-heal: a session issued before the dynamic-roles
+  // cutover (`829b80a`) carries `req.session.userId` + a string
+  // `req.session.role` but no `roleId` / `roleSnapshot`. Without this
+  // fallback, the operator's existing session 403s on every guarded
+  // route until they log out and back in — including the page-level
+  // redirect in app.ts, which silently bounces them home. Look up
+  // the user, stamp the new fields, and continue. One DB hit per
+  // surviving old session; subsequent requests use the snapshot.
+  if (!req.session.roleId) {
+    const u = await prisma.user.findUnique({
+      where: { id: req.session.userId },
+      include: { role: true },
+    });
+    if (!u) return null;
+    const fresh = snapshotFromRole(u.role);
+    req.session.roleId = u.roleId;
+    req.session.roleSnapshot = fresh;
+    req.session.role = u.role.name;
+    await new Promise<void>((resolve, reject) => {
+      req.session.save(err => (err ? reject(err) : resolve()));
+    });
+    return fresh;
+  }
   const snap = req.session.roleSnapshot;
   if (snap && snap.id === req.session.roleId) {
     const cached = roleVersionMap.get(snap.id);
@@ -220,6 +243,17 @@ async function resolveSnapshot(req: Request): Promise<SessionRoleSnapshot | null
     req.session.save(err => (err ? reject(err) : resolve()));
   });
   return fresh;
+}
+
+/**
+ * Exported wrapper around `resolveSnapshot` for callers outside the
+ * middleware factories that need the same old-session self-heal — most
+ * notably the page-level static-HTML redirect in `app.ts`, which runs
+ * before the API router and doesn't go through `requirePermission`.
+ * Returns the snapshot or null when the caller has no session at all.
+ */
+export async function ensureSessionRoleSnapshot(req: Request): Promise<SessionRoleSnapshot | null> {
+  return resolveSnapshot(req);
 }
 
 function rankMeets(actual: AccessLevel, required: AccessLevel): boolean {
