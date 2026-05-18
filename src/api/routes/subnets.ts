@@ -6,7 +6,7 @@ import { Router } from "express";
 import { z } from "zod";
 import * as subnetService from "../../services/subnetService.js";
 import { refreshSubnet } from "../../services/subnetRefreshService.js";
-import { requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
+import { requirePermission, requireOwnership } from "../middleware/permissions.js";
 import { AppError } from "../../utils/errors.js";
 import { logEvent, buildChanges } from "./events.js";
 
@@ -62,7 +62,7 @@ const UpdateSubnetSchema = z.object({
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 // GET /subnets?blockId=&status=&tag=&limit=&offset=
-router.get("/", async (req, res, next) => {
+router.get("/", requirePermission("subnets", "read"), async (req, res, next) => {
   try {
     const { blockId, status, tag, createdBy } = req.query as Record<string, string>;
     const limit = parseInt(req.query.limit as string, 10) || undefined;
@@ -75,7 +75,7 @@ router.get("/", async (req, res, next) => {
 });
 
 // POST /subnets/next-available  (must come before /:id)
-router.post("/next-available", requireUserOrAbove, async (req, res, next) => {
+router.post("/next-available", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const { blockId, prefixLength, ...metadata } = AllocateNextSchema.parse(req.body);
     const subnet = await subnetService.allocateNextSubnet(blockId, prefixLength, { ...metadata, createdBy: req.session?.username ?? undefined });
@@ -96,7 +96,7 @@ const PreviewEntrySchema = z.object({
   prefixLength: z.number().int().min(8).max(32),
   vlan:         z.number().int().min(1).max(4094).nullable().optional(),
 });
-router.post("/bulk-allocate/preview", requireUserOrAbove, async (req, res, next) => {
+router.post("/bulk-allocate/preview", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const schema = z.object({
       blockId:      z.string().uuid(),
@@ -111,7 +111,7 @@ router.post("/bulk-allocate/preview", requireUserOrAbove, async (req, res, next)
 });
 
 // POST /subnets/bulk-allocate  (must come before /:id)
-router.post("/bulk-allocate", requireUserOrAbove, async (req, res, next) => {
+router.post("/bulk-allocate", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const input = BulkAllocateSchema.parse(req.body);
     const result = await subnetService.bulkAllocate({ ...input, createdBy: req.session?.username ?? undefined });
@@ -136,7 +136,7 @@ router.post("/bulk-allocate", requireUserOrAbove, async (req, res, next) => {
 // Requires user-or-above so the same role that can reserve IPs can also kick
 // a per-subnet refresh; full-fleet discovery still requires networkadmin via
 // /integrations/:id/discover.
-router.post("/:id/refresh", requireUserOrAbove, async (req, res, next) => {
+router.post("/:id/refresh", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const result = await refreshSubnet(id, req.session?.username ?? null);
@@ -147,7 +147,7 @@ router.post("/:id/refresh", requireUserOrAbove, async (req, res, next) => {
 });
 
 // GET /subnets/:id/ips?page=&pageSize=
-router.get("/:id/ips", async (req, res, next) => {
+router.get("/:id/ips", requirePermission("subnets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
@@ -159,7 +159,7 @@ router.get("/:id/ips", async (req, res, next) => {
 });
 
 // GET /subnets/:id
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", requirePermission("subnets", "read"), async (req, res, next) => {
   try {
     res.json(await subnetService.getSubnet(req.params.id as string));
   } catch (err) {
@@ -168,7 +168,7 @@ router.get("/:id", async (req, res, next) => {
 });
 
 // POST /subnets
-router.post("/", requireUserOrAbove, async (req, res, next) => {
+router.post("/", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const input = CreateSubnetSchema.parse(req.body);
     const subnet = await subnetService.createSubnet({ ...input, createdBy: req.session?.username ?? undefined });
@@ -180,12 +180,12 @@ router.post("/", requireUserOrAbove, async (req, res, next) => {
 });
 
 // PUT /subnets/:id
-router.put("/:id", requireUserOrAbove, async (req, res, next) => {
+router.put("/:id", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const input = UpdateSubnetSchema.parse(req.body);
     const before = await subnetService.getSubnet(id);
-    if (!isNetworkAdminOrAbove(req) && before.createdBy !== req.session?.username) {
+    if (req.permissionLevel !== "fullwrite" && before.createdBy !== req.session?.username) {
       throw new AppError(403, "Forbidden — you can only edit networks you created");
     }
     const subnet = await subnetService.updateSubnet(id, { ...input, vlan: input.vlan ?? undefined });
@@ -201,10 +201,10 @@ router.put("/:id", requireUserOrAbove, async (req, res, next) => {
 });
 
 // DELETE /subnets/:id
-router.delete("/:id", requireUserOrAbove, async (req, res, next) => {
+router.delete("/:id", requireOwnership("subnets"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
-    if (!isNetworkAdminOrAbove(req)) {
+    if (req.permissionLevel !== "fullwrite") {
       const existing = await subnetService.getSubnet(id);
       if (existing.createdBy !== req.session?.username) {
         throw new AppError(403, "Forbidden — you can only delete networks you created");

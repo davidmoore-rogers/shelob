@@ -12,7 +12,7 @@ import { z } from "zod";
 import * as reservationService from "../../services/reservationService.js";
 import * as staleService from "../../services/reservationStaleService.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAdmin, requireNetworkAdmin, requireUserOrAbove, isNetworkAdminOrAbove } from "../middleware/auth.js";
+import { requirePermission, requireOwnership } from "../middleware/permissions.js";
 import { logEvent, buildChanges } from "./events.js";
 
 const router = Router();
@@ -80,13 +80,13 @@ const StaleSettingsSchema = z.object({
   staleAfterDays: z.number().int().min(0).max(3650),
 });
 
-router.get("/stale-settings", async (_req, res, next) => {
+router.get("/stale-settings", requirePermission("staleReservations", "read"), async (_req, res, next) => {
   try {
     res.json(await staleService.getStaleSettings());
   } catch (err) { next(err); }
 });
 
-router.put("/stale-settings", requireAdmin, async (req, res, next) => {
+router.put("/stale-settings", requirePermission("staleReservations", "write"), async (req, res, next) => {
   try {
     const input = StaleSettingsSchema.parse(req.body);
     const updated = await staleService.updateStaleSettings(input);
@@ -101,7 +101,7 @@ router.put("/stale-settings", requireAdmin, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get("/alerts", async (req, res, next) => {
+router.get("/alerts", requirePermission("staleReservations", "read"), async (req, res, next) => {
   try {
     const show = req.query.show === "ignored" ? "ignored" : "active";
     const alerts = await staleService.listStaleReservations(show);
@@ -111,7 +111,7 @@ router.get("/alerts", async (req, res, next) => {
 
 // Badge count is always the active list — ignored rows are silenced by the
 // operator and shouldn't drive a sidebar badge.
-router.get("/alerts/count", async (_req, res, next) => {
+router.get("/alerts/count", requirePermission("staleReservations", "read"), async (_req, res, next) => {
   try {
     const alerts = await staleService.listStaleReservations("active");
     res.json({ count: alerts.length });
@@ -123,7 +123,7 @@ router.get("/alerts/count", async (_req, res, next) => {
 // alert list and the job won't re-fire until the snooze expires (or until
 // discovery sees the IP active again, which clears the snooze automatically).
 // Open to any user-or-above so operators can quiet noise without admin escalation.
-router.post("/:id/snooze", requireUserOrAbove, async (req, res, next) => {
+router.post("/:id/snooze", requirePermission("staleReservations", "write"), async (req, res, next) => {
   try {
     const result = await staleService.snoozeReservation(req.params.id as string);
     logEvent({
@@ -142,7 +142,7 @@ router.post("/:id/snooze", requireUserOrAbove, async (req, res, next) => {
 // row is suppressed from the active alert list and the job won't ever
 // re-fire on it, even if it later goes online and offline again — operator's
 // intent is durable. Reachable via the admin filter view in the Alerts panel.
-router.post("/:id/stale-ignore", requireNetworkAdmin, async (req, res, next) => {
+router.post("/:id/stale-ignore", requirePermission("staleReservations", "write"), async (req, res, next) => {
   try {
     const result = await staleService.setStaleIgnored(req.params.id as string, true);
     logEvent({
@@ -156,7 +156,7 @@ router.post("/:id/stale-ignore", requireNetworkAdmin, async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
-router.delete("/:id/stale-ignore", requireNetworkAdmin, async (req, res, next) => {
+router.delete("/:id/stale-ignore", requirePermission("staleReservations", "write"), async (req, res, next) => {
   try {
     const result = await staleService.setStaleIgnored(req.params.id as string, false);
     logEvent({
@@ -171,7 +171,7 @@ router.delete("/:id/stale-ignore", requireNetworkAdmin, async (req, res, next) =
 });
 
 // POST /reservations/next-available  (must come before /:id)
-router.post("/next-available", requireUserOrAbove, async (req, res, next) => {
+router.post("/next-available", requireOwnership("reservations"), async (req, res, next) => {
   try {
     const input = NextAvailableSchema.parse(req.body);
     const reservation = await reservationService.nextAvailableReservation({
@@ -188,7 +188,7 @@ router.post("/next-available", requireUserOrAbove, async (req, res, next) => {
   }
 });
 
-router.get("/", async (req, res, next) => {
+router.get("/", requirePermission("reservations", "read"), async (req, res, next) => {
   try {
     const { subnetId, owner, projectRef, status } = req.query as Record<string, string>;
     const limit = parseInt(req.query.limit as string, 10) || undefined;
@@ -206,15 +206,15 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", requirePermission("reservations", "read"), async (req, res, next) => {
   try {
-    res.json(await reservationService.getReservation(req.params.id));
+    res.json(await reservationService.getReservation(req.params.id as string));
   } catch (err) {
     next(err);
   }
 });
 
-router.post("/", requireUserOrAbove, async (req, res, next) => {
+router.post("/", requireOwnership("reservations"), async (req, res, next) => {
   try {
     const input = CreateReservationSchema.parse(req.body);
     const reservation = await reservationService.createReservation({
@@ -231,11 +231,11 @@ router.post("/", requireUserOrAbove, async (req, res, next) => {
   }
 });
 
-router.put("/:id", requireUserOrAbove, async (req, res, next) => {
+router.put("/:id", requireOwnership("reservations"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const before = await reservationService.getReservation(id);
-    if (!isNetworkAdminOrAbove(req) && before.createdBy !== req.session?.username) {
+    if (req.permissionLevel !== "fullwrite" && before.createdBy !== req.session?.username) {
       throw new AppError(403, "Forbidden — you can only edit reservations you created");
     }
     const input = UpdateReservationSchema.parse(req.body);
@@ -253,10 +253,10 @@ router.put("/:id", requireUserOrAbove, async (req, res, next) => {
   }
 });
 
-router.delete("/:id", requireUserOrAbove, async (req, res, next) => {
+router.delete("/:id", requireOwnership("reservations"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
-    if (!isNetworkAdminOrAbove(req)) {
+    if (req.permissionLevel !== "fullwrite") {
       const existing = await reservationService.getReservation(id);
       if (existing.createdBy !== req.session?.username) {
         throw new AppError(403, "Forbidden — you can only release reservations you created");

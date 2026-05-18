@@ -6,7 +6,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
-import { requireNetworkAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import * as fortimanager from "../../services/fortimanagerService.js";
 import { getFmgWorker } from "../../services/fmgWorker.js";
 import * as fortigate from "../../services/fortigateService.js";
@@ -189,10 +189,11 @@ function inferAssetTypeFromOs(os: string | null | undefined): "workstation" | "s
   return "other";
 }
 
-// Pre-compile every wildcard pattern in fortigate/switch/ap autoMonitor blocks
-// so a syntactically broken pattern fails the save with a clear label instead
-// of throwing later inside the apply pass. Idempotent on configs without any
-// wildcard selections.
+// Pre-compile every pattern in fortigate/switch/ap autoMonitor blocks so a
+// syntactically broken pattern fails the save with a clear label instead of
+// throwing later inside the apply pass. Dispatches on the block's `regex`
+// flag — wildcards via compileWildcard, raw regex via compilePattern.
+// Idempotent on configs without any byPatterns block.
 function validateAutoMonitorPatterns(cfg: any): void {
   if (!cfg || typeof cfg !== "object") return;
   const labels: Record<string, string> = {
@@ -202,46 +203,72 @@ function validateAutoMonitorPatterns(cfg: any): void {
   };
   for (const field of Object.keys(labels)) {
     const sel = cfg[field]?.autoMonitorInterfaces;
-    if (!sel || sel.mode !== "wildcard" || !Array.isArray(sel.patterns)) continue;
-    for (const pat of sel.patterns) {
+    const byPatterns = sel?.byPatterns;
+    if (!byPatterns || !Array.isArray(byPatterns.patterns)) continue;
+    const isRegex = byPatterns.regex === true;
+    for (const pat of byPatterns.patterns) {
       try {
-        autoMonitor.compileWildcard(pat);
+        autoMonitor.compilePattern(pat, isRegex);
       } catch (err: any) {
-        throw new AppError(400, `${labels[field]} — invalid pattern "${pat}": ${err?.message || "compile failed"}`);
+        const flavor = isRegex ? "regex" : "pattern";
+        throw new AppError(400, `${labels[field]} — invalid ${flavor} "${pat}": ${err?.message || "compile failed"}`);
       }
     }
   }
 }
 
-// All integration routes require network admin or admin
-router.use(requireNetworkAdmin);
+// /integrations is mounted with `integrations=read` at router.ts so any
+// authenticated caller with read access can see the integration list. Every
+// route below this line is a write — escalate the bar to `integrations=write`.
+router.use(requirePermission("integrations", "write"));
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
-// "Auto-Monitor Interfaces" selection persisted on each *Monitor block. null
-// = disabled (default). Three modes; the apply pass is strictly additive
-// (never strips Asset.monitoredInterfaces). `.strict()` on each branch makes
-// `{mode:"names", onlyUp:true}` and similar mistakes a 400 instead of a
-// silently-stripped field.
-const AutoMonitorByNamesSchema = z.object({
-  mode:  z.literal("names"),
+// "Auto-Monitor Interfaces" selection persisted on each *Monitor block. The
+// shape is a multi-block union — each key is optional, presence = block on,
+// and the apply pass takes the UNION across whichever blocks are present.
+// `null` (or all keys missing) means the whole feature is off for that class.
+// Strictly additive: discovery never strips an asset's monitoredInterfaces.
+//
+// `.strict()` on each block catches accidental fields (e.g. `onlyUp` on
+// byNames) as a 400 instead of silent strip. The outer preprocess coerces
+// the legacy single-mode shape (`{mode:"names"|"wildcard"|"type", ...}`)
+// produced by older clients / stored configs into the new shape so PUTs
+// from older UIs and migration-pending rows keep working.
+const ByNamesSchema = z.object({
   names: z.array(z.string().trim().min(1)).min(1, "Pick at least one interface name").max(200, "Too many names — pick at most 200"),
 }).strict();
-const AutoMonitorByWildcardSchema = z.object({
-  mode:     z.literal("wildcard"),
+const ByPatternsSchema = z.object({
   patterns: z.array(z.string().trim().min(1)).min(1, "Add at least one pattern").max(50, "Too many patterns — keep it under 50"),
+  regex:    z.boolean().optional().default(false),
   onlyUp:   z.boolean().optional().default(false),
 }).strict();
-const AutoMonitorByTypeSchema = z.object({
-  mode:   z.literal("type"),
+const ByTypesSchema = z.object({
   types:  z.array(z.enum(["physical", "aggregate", "vlan", "loopback", "tunnel"])).min(1),
   onlyUp: z.boolean().optional().default(true),
 }).strict();
-const AutoMonitorInterfacesSchema = z.discriminatedUnion("mode", [
-  AutoMonitorByNamesSchema,
-  AutoMonitorByWildcardSchema,
-  AutoMonitorByTypeSchema,
-]).nullable().optional().default(null);
+const ByLldpSchema = z.object({
+  neighborTypes: z.array(z.enum(["firewall", "switch", "access_point", "server", "workstation", "router", "printer", "other"])).min(1),
+}).strict();
+
+const AutoMonitorInterfacesSchema = z.preprocess(
+  // Coerce the legacy single-mode shape into the multi-block shape so older
+  // saved bodies parse cleanly. New-shape bodies fall through unchanged.
+  (val: any) => {
+    if (!val || typeof val !== "object") return val;
+    if ("byNames" in val || "byPatterns" in val || "byTypes" in val || "byLldp" in val) return val;
+    if (val.mode === "names"    && Array.isArray(val.names))    return { byNames: { names: val.names } };
+    if (val.mode === "wildcard" && Array.isArray(val.patterns)) return { byPatterns: { patterns: val.patterns, regex: false, onlyUp: val.onlyUp === true } };
+    if (val.mode === "type"     && Array.isArray(val.types))    return { byTypes:    { types: val.types, onlyUp: val.onlyUp !== false } };
+    return val;
+  },
+  z.object({
+    byNames:    ByNamesSchema.optional(),
+    byPatterns: ByPatternsSchema.optional(),
+    byTypes:    ByTypesSchema.optional(),
+    byLldp:     ByLldpSchema.optional(),
+  }).strict().nullable().optional().default(null),
+);
 
 // Per-integration switch/AP monitor stamping. When `enabled` is true,
 // discovery sets each newly-found FortiSwitch/FortiAP's monitorType to
@@ -1097,27 +1124,13 @@ router.post("/:id/query", async (req, res, next) => {
 
 const ClassQuerySchema = z.enum(["fortigate", "fortiswitch", "fortiap"]);
 
-// Mirrors AutoMonitorInterfacesSchema from the top of the file but accepts a
-// client-supplied selection that hasn't been persisted yet (the live preview
-// fires on every keystroke before Save). Same shape, same validation rules.
+// Mirrors AutoMonitorInterfacesSchema from the top of the file but for the
+// in-flight live preview that fires on every keystroke before Save. Same
+// multi-block shape, same legacy-shape coercion, so an older UI build that
+// posts the single-mode form still gets a useful preview.
 const PreviewBodySchema = z.object({
   class:     ClassQuerySchema,
-  selection: z.discriminatedUnion("mode", [
-    z.object({
-      mode:  z.literal("names"),
-      names: z.array(z.string().trim().min(1)).min(1).max(200),
-    }).strict(),
-    z.object({
-      mode:     z.literal("wildcard"),
-      patterns: z.array(z.string().trim().min(1)).min(1).max(50),
-      onlyUp:   z.boolean().optional().default(false),
-    }).strict(),
-    z.object({
-      mode:   z.literal("type"),
-      types:  z.array(z.enum(["physical", "aggregate", "vlan", "loopback", "tunnel"])).min(1),
-      onlyUp: z.boolean().optional().default(true),
-    }).strict(),
-  ]).nullable(),
+  selection: AutoMonitorInterfacesSchema,
 });
 
 router.get("/:id/interface-aggregate", async (req, res, next) => {
@@ -1137,13 +1150,14 @@ router.post("/:id/interface-aggregate/preview", async (req, res, next) => {
     const body = PreviewBodySchema.parse(req.body);
     const integ = await prisma.integration.findUnique({ where: { id: req.params.id } });
     if (!integ) throw new AppError(404, "Integration not found");
-    // Cross-check wildcard patterns syntactically here too — the resolver
-    // would throw on the first call inside previewAutoMonitorForClass, but
-    // doing it up front means a clearer 400 in the editor.
-    if (body.selection?.mode === "wildcard") {
-      for (const pat of body.selection.patterns) autoMonitor.compileWildcard(pat);
+    // Cross-check patterns syntactically here too — the resolver would throw
+    // on the first call inside previewAutoMonitorForClass, but doing it up
+    // front means a clearer 400 in the editor.
+    const byPatterns = body.selection?.byPatterns;
+    if (byPatterns) {
+      for (const pat of byPatterns.patterns) autoMonitor.compilePattern(pat, byPatterns.regex === true);
     }
-    const result = await autoMonitor.previewAutoMonitorForClass(req.params.id, body.class, body.selection);
+    const result = await autoMonitor.previewAutoMonitorForClass(req.params.id, body.class, body.selection ?? null);
     res.json(result);
   } catch (err) {
     next(err);
@@ -1159,7 +1173,9 @@ router.post("/:id/interface-aggregate/apply", async (req, res, next) => {
     const blockKey = klass === "fortigate" ? "fortigateMonitor"
                     : klass === "fortiswitch" ? "fortiswitchMonitor"
                     : "fortiapMonitor";
-    const selection = (cfg[blockKey]?.autoMonitorInterfaces ?? null) as autoMonitor.AutoMonitorSelection;
+    // Coerce legacy `{mode, ...}` rows on the fly so apply works even before
+    // the one-shot migration job has rewritten this integration's config.
+    const selection = autoMonitor.coerceLegacySelection(cfg[blockKey]?.autoMonitorInterfaces ?? null);
     const result = await autoMonitor.applyAutoMonitorForClass(req.params.id, klass, selection, (req as any).session?.username);
     if (result.interfacesAdded > 0) {
       logEvent({
@@ -2818,7 +2834,9 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
       ["fortiswitch", "fortiswitchMonitor"],
       ["fortiap",     "fortiapMonitor"],
     ] as const) {
-      const selection = (cfg[blockKey]?.autoMonitorInterfaces ?? null) as autoMonitor.AutoMonitorSelection;
+      // Same legacy-shape coercion as the on-demand apply route, for the
+      // window between deploy and the one-shot migration sweeping configs.
+      const selection = autoMonitor.coerceLegacySelection(cfg[blockKey]?.autoMonitorInterfaces ?? null);
       if (!selection) continue;
       try {
         const r = await autoMonitor.applyAutoMonitorForClass(integrationId, klass, selection, actor);

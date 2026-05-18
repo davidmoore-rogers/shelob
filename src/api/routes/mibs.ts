@@ -4,7 +4,7 @@
  * Mounted at `/api/v1/server-settings/mibs` ahead of the rest of the
  * /server-settings router so this guard chain (admin-OR-assets-admin on
  * reads, admin-only on writes) takes precedence over the blanket
- * `requireAdmin` on /server-settings.
+ * `requirePermission("mibDatabase", "write")` on /server-settings.
  *
  * The MIB-aware walk endpoint lets operators pick a MIB object by name
  * (resolved via oidRegistry's scope lookup) and walk an asset, returning
@@ -17,7 +17,7 @@ import multer from "multer";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAdmin, requireAdminOrAssetsAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import {
   listMibs,
   getMib,
@@ -40,7 +40,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 102
 
 // ─── List + facets + profile status ───────────────────────────────────────
 
-router.get("/facets", requireAdminOrAssetsAdmin, async (_req, res, next) => {
+router.get("/facets", requirePermission("mibDatabase", "read"), async (_req, res, next) => {
   try {
     res.json(await getMibFacets());
   } catch (err) {
@@ -48,7 +48,7 @@ router.get("/facets", requireAdminOrAssetsAdmin, async (_req, res, next) => {
   }
 });
 
-router.get("/profile-status", requireAdminOrAssetsAdmin, async (_req, res, next) => {
+router.get("/profile-status", requirePermission("mibDatabase", "read"), async (_req, res, next) => {
   try {
     res.json(await getProfileStatus());
   } catch (err) {
@@ -56,7 +56,7 @@ router.get("/profile-status", requireAdminOrAssetsAdmin, async (_req, res, next)
   }
 });
 
-router.get("/", requireAdminOrAssetsAdmin, async (req, res, next) => {
+router.get("/", requirePermission("mibDatabase", "read"), async (req, res, next) => {
   try {
     const scopeRaw = typeof req.query.scope === "string" ? req.query.scope : "all";
     const scope: "all" | "device" | "generic" =
@@ -73,7 +73,7 @@ router.get("/", requireAdminOrAssetsAdmin, async (req, res, next) => {
   }
 });
 
-router.get("/:id/download", requireAdminOrAssetsAdmin, async (req, res, next) => {
+router.get("/:id/download", requirePermission("mibDatabase", "read"), async (req, res, next) => {
   try {
     const row = await getMib(req.params.id as string);
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -84,7 +84,7 @@ router.get("/:id/download", requireAdminOrAssetsAdmin, async (req, res, next) =>
   }
 });
 
-router.get("/:id/structure", requireAdminOrAssetsAdmin, async (req, res, next) => {
+router.get("/:id/structure", requirePermission("mibDatabase", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const row = await getMib(id);
@@ -117,7 +117,7 @@ router.get("/:id/structure", requireAdminOrAssetsAdmin, async (req, res, next) =
   }
 });
 
-router.get("/:id", requireAdminOrAssetsAdmin, async (req, res, next) => {
+router.get("/:id", requirePermission("mibDatabase", "read"), async (req, res, next) => {
   try {
     res.json(await getMib(req.params.id as string));
   } catch (err) {
@@ -127,7 +127,7 @@ router.get("/:id", requireAdminOrAssetsAdmin, async (req, res, next) => {
 
 // ─── Upload + delete (admin only) ─────────────────────────────────────────
 
-router.post("/", requireAdmin, upload.single("file"), async (req, res, next) => {
+router.post("/", requirePermission("mibDatabase", "write"), upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new AppError(400, "No MIB file uploaded");
     const text = req.file.buffer.toString("utf-8");
@@ -155,7 +155,7 @@ router.post("/", requireAdmin, upload.single("file"), async (req, res, next) => 
   }
 });
 
-router.delete("/:id", requireAdmin, async (req, res, next) => {
+router.delete("/:id", requirePermission("mibDatabase", "write"), async (req, res, next) => {
   try {
     const row = await getMib(req.params.id as string);
     await deleteMib(req.params.id as string);
@@ -260,7 +260,7 @@ function formatTimeTicks(ticks: number): string {
   return parts.join(" ");
 }
 
-router.post("/:id/walk", requireAdminOrAssetsAdmin, async (req, res, next) => {
+router.post("/:id/walk", requirePermission("mibDatabase", "read"), async (req, res, next) => {
   try {
     const parsed = WalkSchema.safeParse(req.body);
     if (!parsed.success) {

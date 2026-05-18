@@ -26,10 +26,11 @@
  *   others        — no access (empty list, 403 on resolve)
  */
 
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { requireAuth } from "../middleware/auth.js";
+import { hasPermission } from "../middleware/permissions.js";
 import { logEvent } from "./events.js";
 import { clampAcquiredToLastSeen } from "../../utils/assetInvariants.js";
 import { normalizeManufacturer } from "../../utils/manufacturerNormalize.js";
@@ -51,18 +52,26 @@ function assetTagPrefixFor(proposed: Record<string, any>): string {
   return ENTRA_ASSET_TAG_PREFIX;
 }
 
-function visibleEntityTypes(role: string | undefined): ("reservation" | "asset")[] {
-  if (role === "admin") return ["reservation", "asset"];
-  if (role === "networkadmin") return ["reservation"];
-  if (role === "assetsadmin") return ["asset"];
-  return [];
+// Per-entity-type visibility. Built-in non-admin roles keep the historical
+// split (networkadmin sees reservation conflicts; assetsadmin sees asset
+// conflicts). Custom roles with discoveryConflicts permission see both
+// types — admins who create a custom role can scope to a single entity
+// type via the matrix description if they want, since the role-name
+// partition only applies to the two seeded built-ins.
+function visibleEntityTypes(req: Request): ("reservation" | "asset")[] {
+  if (!hasPermission(req, "discoveryConflicts", "read")) return [];
+  const roleName = req.session?.role;
+  if (roleName === "networkadmin") return ["reservation"];
+  if (roleName === "assetsadmin") return ["asset"];
+  return ["reservation", "asset"];
 }
 
-function canResolve(role: string | undefined, entityType: string): boolean {
-  if (role === "admin") return true;
-  if (role === "networkadmin" && entityType === "reservation") return true;
-  if (role === "assetsadmin" && entityType === "asset") return true;
-  return false;
+function canResolve(req: Request, entityType: string): boolean {
+  if (!hasPermission(req, "discoveryConflicts", "write")) return false;
+  const roleName = req.session?.role;
+  if (roleName === "networkadmin") return entityType === "reservation";
+  if (roleName === "assetsadmin") return entityType === "asset";
+  return true;
 }
 
 // GET /api/v1/conflicts — list conflicts visible to the current role
@@ -72,7 +81,7 @@ router.get("/", async (req, res, next) => {
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 5000);
     const offset = parseInt(req.query.offset as string, 10) || 0;
 
-    const entityTypes = visibleEntityTypes(req.session?.role);
+    const entityTypes = visibleEntityTypes(req);
     if (entityTypes.length === 0) {
       res.json({ conflicts: [], total: 0, limit, offset });
       return;
@@ -114,7 +123,7 @@ router.get("/", async (req, res, next) => {
 // GET /api/v1/conflicts/count — pending count for nav badge, scoped to role
 router.get("/count", async (req, res, next) => {
   try {
-    const entityTypes = visibleEntityTypes(req.session?.role);
+    const entityTypes = visibleEntityTypes(req);
     if (entityTypes.length === 0) {
       res.json({ count: 0 });
       return;
@@ -137,7 +146,7 @@ router.post("/:id/accept", async (req, res, next) => {
     });
     if (!conflict) throw new AppError(404, "Conflict not found");
     if (conflict.status !== "pending") throw new AppError(409, "Conflict is already resolved");
-    if (!canResolve(req.session?.role, conflict.entityType)) {
+    if (!canResolve(req, conflict.entityType)) {
       throw new AppError(403, "You do not have permission to resolve this conflict");
     }
 
@@ -175,7 +184,7 @@ router.post("/:id/merge", async (req, res, next) => {
     if (conflict.entityType !== "asset") {
       throw new AppError(400, "Merge with per-field selection is only supported for asset conflicts");
     }
-    if (!canResolve(req.session?.role, conflict.entityType)) {
+    if (!canResolve(req, conflict.entityType)) {
       throw new AppError(403, "You do not have permission to resolve this conflict");
     }
 
@@ -207,7 +216,7 @@ router.post("/:id/reject", async (req, res, next) => {
     });
     if (!conflict) throw new AppError(404, "Conflict not found");
     if (conflict.status !== "pending") throw new AppError(409, "Conflict is already resolved");
-    if (!canResolve(req.session?.role, conflict.entityType)) {
+    if (!canResolve(req, conflict.entityType)) {
       throw new AppError(403, "You do not have permission to resolve this conflict");
     }
 

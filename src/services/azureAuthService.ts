@@ -179,7 +179,7 @@ export async function findOrProvisionSamlUser(profile: Profile) {
   if (!oid) throw new Error("SAML assertion missing user identifier");
 
   // Look up by Azure OID
-  const existing = await prisma.user.findUnique({ where: { azureOid: oid } });
+  const existing = await prisma.user.findUnique({ where: { azureOid: oid }, include: { role: true } });
   if (existing) {
     const isFirstLogin = existing.lastLogin === null;
     return prisma.user.update({
@@ -190,6 +190,7 @@ export async function findOrProvisionSamlUser(profile: Profile) {
         lastLogin: new Date(),
         ...(isFirstLogin ? { needsRoleReview: true } : {}),
       },
+      include: { role: true },
     });
   }
 
@@ -205,14 +206,20 @@ export async function findOrProvisionSamlUser(profile: Profile) {
     if (collision2) username = `azure-${oid.slice(0, 12)}`;
   }
 
-  // Create with a random password hash (SAML users never use it)
+  // Create with a random password hash (SAML users never use it). Default
+  // role is `readonly` (matches pre-cutover SAML auto-provision behavior);
+  // admin reassigns via the Users page once needsRoleReview surfaces them.
   const placeholderHash = await hashPassword(randomBytes(32).toString("hex"));
+  const defaultRole = await prisma.role.findUnique({ where: { name: "readonly" } });
+  if (!defaultRole) {
+    throw new Error("SAML auto-provision: built-in 'readonly' role not found — Polaris is mis-seeded");
+  }
 
   return prisma.user.create({
     data: {
       username,
       passwordHash: placeholderHash,
-      role: "readonly",
+      roleId: defaultRole.id,
       authProvider: "azure",
       azureOid: oid,
       displayName: displayName || null,
@@ -220,5 +227,6 @@ export async function findOrProvisionSamlUser(profile: Profile) {
       lastLogin: new Date(),
       needsRoleReview: true,
     },
+    include: { role: true },
   });
 }

@@ -10,7 +10,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as credentialService from "../../services/credentialService.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import { logEvent } from "./events.js";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
@@ -45,21 +45,21 @@ const TestSchema = z.object({
 });
 
 // GET /credentials — any authenticated session may list (secrets masked)
-router.get("/", async (_req, res, next) => {
+router.get("/", requirePermission("credentials", "read"), async (_req, res, next) => {
   try {
     res.json(await credentialService.listCredentials());
   } catch (err) { next(err); }
 });
 
 // GET /credentials/:id
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", requirePermission("credentials", "read"), async (req, res, next) => {
   try {
     res.json(await credentialService.getCredential(req.params.id as string));
   } catch (err) { next(err); }
 });
 
 // POST /credentials
-router.post("/", requireAdmin, async (req, res, next) => {
+router.post("/", requirePermission("credentials", "write"), async (req, res, next) => {
   try {
     const input = CreateSchema.parse(req.body);
     const saved = await credentialService.createCredential({
@@ -80,7 +80,7 @@ router.post("/", requireAdmin, async (req, res, next) => {
 });
 
 // PUT /credentials/:id
-router.put("/:id", requireAdmin, async (req, res, next) => {
+router.put("/:id", requirePermission("credentials", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const input = UpdateSchema.parse(req.body);
@@ -105,7 +105,7 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
 // is set, masked secrets in `config` are merged from the stored credential so
 // the operator doesn't have to retype the password on edit. Returns the same
 // shape as a probe: { success, responseTimeMs, error?, host }.
-router.post("/test", requireAdmin, async (req, res, next) => {
+router.post("/test", requirePermission("credentials", "write"), async (req, res, next) => {
   try {
     const input = TestSchema.parse(req.body);
 
@@ -167,7 +167,7 @@ router.post("/test", requireAdmin, async (req, res, next) => {
 });
 
 // DELETE /credentials/:id
-router.delete("/:id", requireAdmin, async (req, res, next) => {
+router.delete("/:id", requirePermission("credentials", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const existing = await credentialService.getCredential(id);

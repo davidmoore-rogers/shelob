@@ -1,9 +1,10 @@
 /**
- * src/api/routes/apiTokens.ts — Admin CRUD for bearer-token API access.
+ * src/api/routes/apiTokens.ts — CRUD for bearer-token API access.
  *
- * Mounted at /api/v1/api-tokens with `requireAdmin` applied at router.ts.
- * Tokens grant scoped access to specific endpoints (e.g. quarantine);
- * the raw token value is shown ONCE on creation and never recoverable.
+ * Mounted at /api/v1/api-tokens with `requirePermission("apiTokens","read")`
+ * at router.ts; writes here escalate to `apiTokens=write`. Tokens grant
+ * scoped access to specific endpoints (e.g. quarantine); the raw token
+ * value is shown ONCE on creation and never recoverable.
  */
 
 import { Router } from "express";
@@ -18,6 +19,7 @@ import {
   revokeToken,
 } from "../../services/apiTokenService.js";
 import { logEvent } from "./events.js";
+import { requirePermission } from "../middleware/permissions.js";
 
 const router = Router();
 
@@ -61,7 +63,7 @@ router.get("/", async (_req, res, next) => {
   }
 });
 
-router.post("/", async (req, res, next) => {
+router.post("/", requirePermission("apiTokens", "write"), async (req, res, next) => {
   try {
     const input = CreateTokenSchema.parse(req.body);
     const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
@@ -90,7 +92,7 @@ router.post("/", async (req, res, next) => {
   }
 });
 
-router.post("/:id/revoke", async (req, res, next) => {
+router.post("/:id/revoke", requirePermission("apiTokens", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     await revokeToken(id, req.session?.username || "unknown");
@@ -108,7 +110,7 @@ router.post("/:id/revoke", async (req, res, next) => {
   }
 });
 
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", requirePermission("apiTokens", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     await deleteToken(id);

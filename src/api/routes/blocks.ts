@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as blockService from "../../services/blockService.js";
-import { requireNetworkAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import { logEvent, buildChanges } from "./events.js";
 
 const router = Router();
@@ -27,7 +27,7 @@ const UpdateBlockSchema = z.object({
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
-router.get("/", async (req, res, next) => {
+router.get("/", requirePermission("ipBlocks", "read"), async (req, res, next) => {
   try {
     const { ipVersion, tag } = req.query as Record<string, string>;
     res.json(await blockService.listBlocks({ ipVersion: ipVersion as any, tag }));
@@ -36,7 +36,7 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", requirePermission("ipBlocks", "read"), async (req, res, next) => {
   try {
     res.json(await blockService.getBlock(req.params.id as string));
   } catch (err) {
@@ -44,7 +44,7 @@ router.get("/:id", async (req, res, next) => {
   }
 });
 
-router.post("/", requireNetworkAdmin, async (req, res, next) => {
+router.post("/", requirePermission("ipBlocks", "write"), async (req, res, next) => {
   try {
     const input = CreateBlockSchema.parse(req.body);
     const block = await blockService.createBlock(input);
@@ -55,7 +55,7 @@ router.post("/", requireNetworkAdmin, async (req, res, next) => {
   }
 });
 
-router.put("/:id", requireNetworkAdmin, async (req, res, next) => {
+router.put("/:id", requirePermission("ipBlocks", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const input = UpdateBlockSchema.parse(req.body);
@@ -72,7 +72,7 @@ router.put("/:id", requireNetworkAdmin, async (req, res, next) => {
   }
 });
 
-router.delete("/:id", requireNetworkAdmin, async (req, res, next) => {
+router.delete("/:id", requirePermission("ipBlocks", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     await blockService.deleteBlock(id);

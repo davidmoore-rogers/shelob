@@ -1,15 +1,19 @@
 /**
  * src/api/routes/mapRegions.ts
  *
- * CRUD for operator-drawn map regions. All routes are guarded by
- * requireNetworkAdmin (mounted in src/api/router.ts) — non-admins never need
- * region data because regions are only rendered while editing.
+ * CRUD for operator-drawn map regions. /map/regions is mounted with the
+ * `mapRegions=read` gate (router.ts), so any role with mapRegions read or
+ * higher can list them; per-route writes below escalate to mapRegions=write.
+ * The read-time access exists so callers that need to *consume* the region
+ * registry (e.g. the user/role region-tag picker) can do so without holding
+ * the write capability.
  */
 
 import { Router } from "express";
 import { z } from "zod";
 import * as service from "../../services/mapRegionService.js";
 import { logEvent } from "./events.js";
+import { requirePermission } from "../middleware/permissions.js";
 
 const router = Router();
 
@@ -38,7 +42,7 @@ router.get("/", async (_req, res, next) => {
 });
 
 // POST /map/regions
-router.post("/", async (req, res, next) => {
+router.post("/", requirePermission("mapRegions", "write"), async (req, res, next) => {
   try {
     const input = CreateRegionSchema.parse(req.body);
     const created = await service.createRegion({
@@ -73,7 +77,7 @@ router.post("/", async (req, res, next) => {
 });
 
 // PUT /map/regions/:id
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", requirePermission("mapRegions", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const input = UpdateRegionSchema.parse(req.body);
@@ -118,7 +122,7 @@ router.put("/:id", async (req, res, next) => {
 });
 
 // DELETE /map/regions/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", requirePermission("mapRegions", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const removed = await service.deleteRegion(id);

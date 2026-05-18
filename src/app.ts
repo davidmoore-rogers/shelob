@@ -46,6 +46,7 @@ import "./jobs/renameMonitorClassKeys.js";
 import "./jobs/migrateRetentionTiers.js";
 import "./jobs/consolidateSampleRetention.js";
 import "./jobs/migrateMonitorStatusRename.js";
+import "./jobs/migrateAutoMonitorInterfacesShape.js";
 import "./jobs/backfillAssetSources.js";
 import "./jobs/flagStaleReservations.js";
 import "./jobs/capacityWatch.js";
@@ -381,7 +382,19 @@ app.use((req, res, next) => {
 
 // Protect dashboard pages — redirect unauthenticated users to login
 const protectedPages = ["/", "/index.html", "/ipam.html", "/blocks.html", "/subnets.html", "/reservations.html", "/users.html", "/integrations.html", "/assets.html", "/events.html", "/server-settings.html", "/map.html"];
-const adminOnlyPages = ["/users.html", "/integrations.html", "/server-settings.html"];
+
+// Page-level gating — each protected page requires at least `read` on the
+// matching function key. Maps to the same matrix the API guards use, so
+// hiding a page also hides the API surface it consumes. A user without
+// the requisite permission bounces to "/". Pages not in the map are
+// reachable to any authenticated user (the per-tile cards / API requests
+// handle their own permission state).
+const pageRequiredPermission: Record<string, { key: string; level: "read" | "write" }> = {
+  "/users.html":           { key: "users",                level: "read" },
+  "/integrations.html":    { key: "integrations",         level: "read" },
+  "/server-settings.html": { key: "serverSettingsSystem", level: "read" },
+};
+const PERM_RANK = { none: 0, read: 1, write: 2, fullwrite: 3 } as const;
 app.use(async (req, res, next) => {
   if (!protectedPages.includes(req.path)) return next();
   if (!req.session?.userId) {
@@ -394,8 +407,13 @@ app.use(async (req, res, next) => {
     }
     return res.redirect("/login.html");
   }
-  if (adminOnlyPages.includes(req.path) && req.session.role !== "admin") {
-    return res.redirect("/");
+  const required = pageRequiredPermission[req.path];
+  if (required) {
+    const perms = req.session.roleSnapshot?.permissions ?? {};
+    const actual = (perms as Record<string, "none" | "read" | "write" | "fullwrite">)[required.key] ?? "none";
+    if (PERM_RANK[actual] < PERM_RANK[required.level]) {
+      return res.redirect("/");
+    }
   }
   return next();
 });

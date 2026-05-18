@@ -1,5 +1,16 @@
 /**
  * src/api/routes/users.ts — User management (list, create, reset password, delete)
+ *
+ * Role identity is referenced by `roleId` (FK → Role). Every user-returning
+ * response includes `role: { id, name }` so the frontend renders the badge
+ * from a single field. Role assignment goes through PUT /:id/role with
+ * `{ roleId }`. Region tag assignment goes through PUT /:id/regions with
+ * `{ regionTags }` (admin operator-driven; effective region set for a
+ * session is union(role.regionTags, user.regionTags)).
+ *
+ * `lastAdminEquivalent` invariant: any operation that would leave Polaris
+ * with zero users holding an admin-equivalent role (`users=fullwrite` AND
+ * `roles=fullwrite`) is refused with 409.
  */
 
 import { Router } from "express";
@@ -8,6 +19,12 @@ import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
 import { hashPassword } from "../../utils/password.js";
 import { clearLockout } from "../../utils/loginLockout.js";
+import {
+  countAdminEquivalentUsers,
+  isAdminEquivalentRole,
+} from "../../services/roleService.js";
+import { requirePermission } from "../middleware/permissions.js";
+import { logEvent } from "./events.js";
 
 const router = Router();
 
@@ -18,10 +35,13 @@ const passwordSchema = z.string()
   .regex(/[0-9]/, "Password must contain a number")
   .regex(/[^a-zA-Z0-9]/, "Password must contain a special character");
 
+const RegionTagsSchema = z.array(z.string().max(64)).max(64);
+
 const CreateUserSchema = z.object({
   username: z.string().min(1).max(64),
   password: passwordSchema,
-  role:     z.enum(["admin", "networkadmin", "assetsadmin", "user", "readonly"]).optional(),
+  roleId:   z.string().uuid("roleId must be a UUID"),
+  regionTags: RegionTagsSchema.optional(),
 });
 
 const ResetPasswordSchema = z.object({
@@ -29,8 +49,27 @@ const ResetPasswordSchema = z.object({
 });
 
 const UpdateRoleSchema = z.object({
-  role: z.enum(["admin", "networkadmin", "assetsadmin", "user", "readonly"]),
+  roleId: z.string().uuid("roleId must be a UUID"),
 });
+
+const UpdateRegionsSchema = z.object({
+  regionTags: RegionTagsSchema,
+});
+
+const USER_LIST_SELECT = {
+  id: true,
+  username: true,
+  authProvider: true,
+  displayName: true,
+  email: true,
+  lastLogin: true,
+  createdAt: true,
+  updatedAt: true,
+  totpEnabledAt: true,
+  needsRoleReview: true,
+  regionTags: true,
+  role: { select: { id: true, name: true, isProtected: true, isBuiltIn: true } },
+} as const;
 
 // GET /api/v1/users/role-review-notifications — sidebar badge feed
 // Lists users whose `needsRoleReview` flag is currently set (i.e. completed
@@ -41,10 +80,7 @@ router.get("/role-review-notifications", async (_req, res, next) => {
   try {
     const rows = await prisma.user.findMany({
       where: { needsRoleReview: true },
-      select: {
-        id: true, username: true, role: true, displayName: true,
-        authProvider: true, email: true, lastLogin: true, createdAt: true,
-      },
+      select: USER_LIST_SELECT,
       orderBy: { lastLogin: "asc" },
     });
     res.json({ users: rows, count: rows.length });
@@ -54,7 +90,7 @@ router.get("/role-review-notifications", async (_req, res, next) => {
 });
 
 // DELETE /api/v1/users/:id/role-review — dismiss the notification for one user
-router.delete("/:id/role-review", async (req, res, next) => {
+router.delete("/:id/role-review", requirePermission("users", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const user = await prisma.user.findUnique({
@@ -76,12 +112,7 @@ router.get("/", async (_req, res, next) => {
   try {
     const [users, onlineUserIds] = await Promise.all([
       prisma.user.findMany({
-        select: {
-          id: true, username: true, role: true, authProvider: true,
-          displayName: true, email: true, lastLogin: true,
-          createdAt: true, updatedAt: true,
-          totpEnabledAt: true,
-        },
+        select: USER_LIST_SELECT,
         orderBy: { username: "asc" },
       }),
       getOnlineUserIds(),
@@ -115,17 +146,35 @@ async function getOnlineUserIds(): Promise<Set<string>> {
 }
 
 // POST /api/v1/users
-router.post("/", async (req, res, next) => {
+router.post("/", requirePermission("users", "write"), async (req, res, next) => {
   try {
-    const { username, password, role } = CreateUserSchema.parse(req.body);
+    const { username, password, roleId, regionTags } = CreateUserSchema.parse(req.body);
 
-    const existing = await prisma.user.findUnique({ where: { username } });
+    const [existing, role] = await Promise.all([
+      prisma.user.findUnique({ where: { username } }),
+      prisma.role.findUnique({ where: { id: roleId } }),
+    ]);
     if (existing) throw new AppError(409, `User "${username}" already exists`);
+    if (!role) throw new AppError(400, `Role ${roleId} not found`);
 
     const passwordHash = await hashPassword(password);
     const user = await prisma.user.create({
-      data: { username, passwordHash, role: role || "readonly", authProvider: "local" },
-      select: { id: true, username: true, role: true, authProvider: true, createdAt: true },
+      data: {
+        username,
+        passwordHash,
+        roleId: role.id,
+        authProvider: "local",
+        regionTags: regionTags ?? [],
+      },
+      select: USER_LIST_SELECT,
+    });
+    logEvent({
+      action: "user.created",
+      resourceType: "user",
+      resourceId: user.id,
+      resourceName: user.username,
+      actor: req.session?.username,
+      message: `User "${user.username}" created with role "${role.name}"`,
     });
     res.status(201).json(user);
   } catch (err) {
@@ -134,7 +183,7 @@ router.post("/", async (req, res, next) => {
 });
 
 // PUT /api/v1/users/:id/password
-router.put("/:id/password", async (req, res, next) => {
+router.put("/:id/password", requirePermission("users", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const { password } = ResetPasswordSchema.parse(req.body);
@@ -154,24 +203,86 @@ router.put("/:id/password", async (req, res, next) => {
   }
 });
 
-// PUT /api/v1/users/:id/role
-router.put("/:id/role", async (req, res, next) => {
+// PUT /api/v1/users/:id/role — assign a new role
+router.put("/:id/role", requirePermission("users", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
-    const { role } = UpdateRoleSchema.parse(req.body);
-    const user = await prisma.user.findUnique({ where: { id } });
+    const { roleId } = UpdateRoleSchema.parse(req.body);
+    const [user, role] = await Promise.all([
+      prisma.user.findUnique({ where: { id }, include: { role: true } }),
+      prisma.role.findUnique({ where: { id: roleId } }),
+    ]);
     if (!user) throw new AppError(404, "User not found");
+    if (!role) throw new AppError(400, `Role ${roleId} not found`);
 
     // Prevent demoting yourself
     if (req.session?.userId === user.id) {
       throw new AppError(400, "You cannot change your own role");
     }
 
-    await prisma.user.update({
+    // lastAdminEquivalent invariant: refuse to move the last admin-equiv
+    // user into a non-admin-equiv role.
+    if (await isAdminEquivalentRole(user.roleId) && !(await isAdminEquivalentRole(role.id))) {
+      const remaining = await countAdminEquivalentUsers(user.id);
+      if (remaining === 0) {
+        throw new AppError(409, "Cannot reassign — this is the last admin-equivalent account. Promote another user first.");
+      }
+    }
+
+    const updated = await prisma.user.update({
       where: { id },
-      data: { role, needsRoleReview: false },
+      data: { roleId: role.id, needsRoleReview: false },
+      select: USER_LIST_SELECT,
     });
-    res.json({ ok: true, role });
+    logEvent({
+      action: "user.role_changed",
+      resourceType: "user",
+      resourceId: user.id,
+      resourceName: user.username,
+      actor: req.session?.username,
+      message: `Role for "${user.username}" changed from "${user.role.name}" to "${role.name}"`,
+      details: { from: user.role.name, to: role.name },
+    });
+    res.json({ ok: true, user: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/v1/users/:id/regions — set the user's region scope (additive on
+// top of their role's regionTags). Empty array clears.
+router.put("/:id/regions", requirePermission("users", "write"), async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const { regionTags } = UpdateRegionsSchema.parse(req.body);
+    // Normalize: trim, drop empties, dedupe case-insensitive.
+    const seen = new Set<string>();
+    const cleaned: string[] = [];
+    for (const raw of regionTags) {
+      const t = String(raw).trim();
+      if (!t) continue;
+      const key = t.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cleaned.push(t);
+    }
+    const before = await prisma.user.findUnique({ where: { id }, select: { id: true, username: true, regionTags: true } });
+    if (!before) throw new AppError(404, "User not found");
+    const updated = await prisma.user.update({
+      where: { id },
+      data: { regionTags: cleaned },
+      select: USER_LIST_SELECT,
+    });
+    logEvent({
+      action: "user.regions_updated",
+      resourceType: "user",
+      resourceId: updated.id,
+      resourceName: updated.username,
+      actor: req.session?.username,
+      message: `Region tags for "${updated.username}" set to ${cleaned.length === 0 ? "(unrestricted)" : cleaned.join(", ")}`,
+      details: { from: before.regionTags, to: cleaned },
+    });
+    res.json({ ok: true, user: updated });
   } catch (err) {
     next(err);
   }
@@ -180,7 +291,7 @@ router.put("/:id/role", async (req, res, next) => {
 // DELETE /api/v1/users/:id/totp — admin-initiated TOTP reset
 // Used when a user lost their device and can't produce a backup code.
 // Clears the secret + backup codes so the user can re-enroll on next login.
-router.delete("/:id/totp", async (req, res, next) => {
+router.delete("/:id/totp", requirePermission("users", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const user = await prisma.user.findUnique({ where: { id } });
@@ -201,10 +312,10 @@ router.delete("/:id/totp", async (req, res, next) => {
 });
 
 // DELETE /api/v1/users/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", requirePermission("users", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
-    const user = await prisma.user.findUnique({ where: { id } });
+    const user = await prisma.user.findUnique({ where: { id }, include: { role: true } });
     if (!user) throw new AppError(404, "User not found");
 
     // Prevent deleting yourself
@@ -212,7 +323,23 @@ router.delete("/:id", async (req, res, next) => {
       throw new AppError(400, "You cannot delete your own account");
     }
 
+    // lastAdminEquivalent invariant
+    if (await isAdminEquivalentRole(user.roleId)) {
+      const remaining = await countAdminEquivalentUsers(user.id);
+      if (remaining === 0) {
+        throw new AppError(409, "Cannot delete — this is the last admin-equivalent account. Promote another user first.");
+      }
+    }
+
     await prisma.user.delete({ where: { id } });
+    logEvent({
+      action: "user.deleted",
+      resourceType: "user",
+      resourceId: user.id,
+      resourceName: user.username,
+      actor: req.session?.username,
+      message: `User "${user.username}" deleted (was role "${user.role.name}")`,
+    });
     res.status(204).send();
   } catch (err) {
     next(err);

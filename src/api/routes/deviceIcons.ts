@@ -15,7 +15,8 @@ import {
   deleteIcon,
 } from "../../services/deviceIconService.js";
 import { logEvent } from "./events.js";
-import { requireAdmin, requireAuth } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import { AppError } from "../../utils/errors.js";
 
 const router = Router();
@@ -28,7 +29,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 256
 
 // GET /device-icons — list. Hashes are not returned (they don't exist),
 // just the metadata + a thumbnail URL the UI uses for previews.
-router.get("/", requireAdmin, async (_req, res, next) => {
+router.get("/", requirePermission("deviceIcons", "read"), async (_req, res, next) => {
   try {
     const icons = await listIcons();
     res.json(
@@ -53,7 +54,7 @@ router.get("/", requireAdmin, async (_req, res, next) => {
 //                     scope=manufacturer-type, free text when
 //                     scope=manufacturer-model)
 // Re-uploading the same canonical key replaces the existing image.
-router.post("/", requireAdmin, upload.single("file"), async (req, res, next) => {
+router.post("/", requirePermission("deviceIcons", "write"), upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) throw new AppError(400, "Missing 'file' upload");
     const scope = String(req.body?.scope || "");
@@ -85,7 +86,7 @@ router.post("/", requireAdmin, upload.single("file"), async (req, res, next) => 
 });
 
 // DELETE /device-icons/:id
-router.delete("/:id", requireAdmin, async (req, res, next) => {
+router.delete("/:id", requirePermission("deviceIcons", "write"), async (req, res, next) => {
   try {
     const id = String(req.params.id);
     const ok = await deleteIcon(id);

@@ -8,7 +8,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as templateService from "../../services/allocationTemplateService.js";
-import { requireNetworkAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import { logEvent } from "./events.js";
 
 const router = Router();
@@ -29,7 +29,7 @@ const SaveTemplateSchema = z.object({
 });
 
 // GET /allocation-templates — any authenticated caller can list templates
-router.get("/", async (_req, res, next) => {
+router.get("/", requirePermission("allocationTemplates", "read"), async (_req, res, next) => {
   try {
     res.json(await templateService.listTemplates());
   } catch (err) {
@@ -38,7 +38,7 @@ router.get("/", async (_req, res, next) => {
 });
 
 // POST /allocation-templates
-router.post("/", requireNetworkAdmin, async (req, res, next) => {
+router.post("/", requirePermission("allocationTemplates", "write"), async (req, res, next) => {
   try {
     const input = SaveTemplateSchema.parse(req.body);
     const saved = await templateService.saveTemplate(input);
@@ -57,7 +57,7 @@ router.post("/", requireNetworkAdmin, async (req, res, next) => {
 });
 
 // PUT /allocation-templates/:id
-router.put("/:id", requireNetworkAdmin, async (req, res, next) => {
+router.put("/:id", requirePermission("allocationTemplates", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const input = SaveTemplateSchema.parse(req.body);
@@ -77,7 +77,7 @@ router.put("/:id", requireNetworkAdmin, async (req, res, next) => {
 });
 
 // DELETE /allocation-templates/:id
-router.delete("/:id", requireNetworkAdmin, async (req, res, next) => {
+router.delete("/:id", requirePermission("allocationTemplates", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     await templateService.deleteTemplate(id);

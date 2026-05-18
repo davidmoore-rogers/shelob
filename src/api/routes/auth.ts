@@ -16,7 +16,8 @@ import {
   buildEnrollment,
 } from "../../services/totpService.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requirePermission, snapshotFromRole } from "../middleware/permissions.js";
 import {
   isAzureSsoConfiguredAsync,
   generateRelayState,
@@ -68,7 +69,7 @@ router.post("/login", async (req, res, next) => {
       );
     }
 
-    const user = await prisma.user.findUnique({ where: { username } });
+    const user = await prisma.user.findUnique({ where: { username }, include: { role: true } });
 
     // Constant-time verify: passing null stored hash still runs a dummy
     // argon2 verify so response time is identical for unknown usernames.
@@ -140,7 +141,9 @@ router.post("/login", async (req, res, next) => {
     await regenerateSession(req);
     req.session.userId = user.id;
     req.session.username = user.username;
-    req.session.role = user.role;
+    req.session.roleId = user.roleId;
+    req.session.roleSnapshot = snapshotFromRole(user.role);
+    req.session.role = user.role.name;
     req.session.authProvider = user.authProvider || "local";
     req.session.mfaVerified = false;
     req.session.lastActivity = Date.now();
@@ -155,7 +158,7 @@ router.post("/login", async (req, res, next) => {
       details: { ip: req.ip, userAgent: req.get("user-agent") || undefined, rehashed: needsRehash || undefined },
     });
 
-    res.json({ ok: true, username: user.username, role: user.role });
+    res.json({ ok: true, username: user.username, role: user.role.name });
   } catch (err) {
     next(err);
   }
@@ -198,7 +201,7 @@ router.post("/login/totp", async (req, res, next) => {
       );
     }
 
-    const user = await prisma.user.findUnique({ where: { id: pending.userId } });
+    const user = await prisma.user.findUnique({ where: { id: pending.userId }, include: { role: true } });
     if (!user || !user.totpSecret || !user.totpEnabledAt) {
       // User or their TOTP config disappeared between steps — fail closed.
       mfaPending.consume(pendingToken);
@@ -249,7 +252,9 @@ router.post("/login/totp", async (req, res, next) => {
     await regenerateSession(req);
     req.session.userId = user.id;
     req.session.username = user.username;
-    req.session.role = user.role;
+    req.session.roleId = user.roleId;
+    req.session.roleSnapshot = snapshotFromRole(user.role);
+    req.session.role = user.role.name;
     req.session.authProvider = user.authProvider || "local";
     req.session.mfaVerified = true;
     req.session.lastActivity = Date.now();
@@ -284,17 +289,53 @@ router.post("/logout", (req, res, next) => {
   });
 });
 
-// GET /api/v1/auth/me
-router.get("/me", (req, res) => {
-  if (req.session?.userId) {
+// GET /api/v1/auth/me — returns the caller's identity + the full role
+// snapshot (id, name, isProtected, permissions matrix) plus the effective
+// region tag set (union of role.regionTags and user.regionTags). The
+// frontend uses the snapshot to gate menu items / buttons without per-call
+// API checks. Returns 200 + `authenticated: false` for unauthenticated
+// callers — never 401 — so the login page can probe state.
+router.get("/me", async (req, res, next) => {
+  try {
+    if (!req.session?.userId) {
+      return res.json({ authenticated: false });
+    }
+    const snapshot = req.session.roleSnapshot ?? null;
+    // Load the user's own regionTags (and re-load role.regionTags from DB
+    // so a recent role edit is reflected without waiting for the snapshot
+    // version-cache refresh path). One indexed PK lookup per /auth/me
+    // call — same cost as the legacy implementation.
+    const u = await prisma.user.findUnique({
+      where: { id: req.session.userId },
+      include: { role: true },
+    });
+    if (!u) {
+      // User row deleted out from under the session — fall back to a
+      // best-effort response so the frontend can re-login cleanly.
+      return res.json({ authenticated: false });
+    }
+    const userRegions = Array.isArray(u.regionTags) ? u.regionTags : [];
+    const roleRegions = Array.isArray(u.role.regionTags) ? u.role.regionTags : [];
+    const effectiveRegions = Array.from(new Set([...roleRegions, ...userRegions])).sort();
     res.json({
       authenticated: true,
       username: req.session.username,
-      role: req.session.role,
       authProvider: req.session.authProvider || "local",
+      role: snapshot ?? {
+        id: u.role.id,
+        name: u.role.name,
+        isProtected: u.role.isProtected,
+        permissions: u.role.permissions ?? {},
+        updatedAt: u.role.updatedAt.toISOString(),
+      },
+      regionTags: {
+        user: userRegions,
+        role: roleRegions,
+        effective: effectiveRegions,
+      },
     });
-  } else {
-    res.json({ authenticated: false });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -355,7 +396,9 @@ router.post("/azure/callback", async (req, res) => {
     await regenerateSession(req);
     req.session.userId = user.id;
     req.session.username = user.username;
-    req.session.role = user.role;
+    req.session.roleId = user.roleId;
+    req.session.roleSnapshot = snapshotFromRole(user.role);
+    req.session.role = user.role.name;
     req.session.authProvider = "azure";
     // IdP is responsible for MFA on Azure SAML users; their session is
     // implicitly "mfa-verified" as far as Polaris is concerned.
@@ -411,7 +454,7 @@ router.post("/azure/logout", requireAuth, async (req, res) => {
 });
 
 // POST /api/v1/auth/azure/test — validate SAML config (admin only)
-router.post("/azure/test", requireAuth, requireAdmin, async (_req, res, next) => {
+router.post("/azure/test", requireAuth, requirePermission("serverSettingsSystem", "write"), async (_req, res, next) => {
   try {
     const settings = await getSsoSettings();
     const results: { certificate: any; idpLoginUrl: any } = {
@@ -493,7 +536,7 @@ router.post("/azure/test", requireAuth, requireAdmin, async (_req, res, next) =>
 });
 
 // GET /api/v1/auth/azure/settings — admin only
-router.get("/azure/settings", requireAuth, requireAdmin, async (_req, res, next) => {
+router.get("/azure/settings", requireAuth, requirePermission("serverSettingsSystem", "write"), async (_req, res, next) => {
   try {
     const settings = await getSsoSettings();
     res.json(settings);
@@ -503,7 +546,7 @@ router.get("/azure/settings", requireAuth, requireAdmin, async (_req, res, next)
 });
 
 // PUT /api/v1/auth/azure/settings — admin only
-router.put("/azure/settings", requireAuth, requireAdmin, async (req, res, next) => {
+router.put("/azure/settings", requireAuth, requirePermission("serverSettingsSystem", "write"), async (req, res, next) => {
   try {
     const settings = await updateSsoSettings(req.body);
     res.json(settings);
@@ -514,14 +557,14 @@ router.put("/azure/settings", requireAuth, requireAdmin, async (req, res, next) 
 
 // ─── OIDC Settings ──────────────────────────────────────────────────────────
 
-router.get("/oidc/settings", requireAuth, requireAdmin, async (_req, res, next) => {
+router.get("/oidc/settings", requireAuth, requirePermission("serverSettingsSystem", "write"), async (_req, res, next) => {
   try {
     const row = await prisma.setting.findUnique({ where: { key: "oidc" } });
     res.json(row?.value ?? { enabled: false, discoveryUrl: "", clientId: "", clientSecret: "", scopes: "openid profile email" });
   } catch (err) { next(err); }
 });
 
-router.put("/oidc/settings", requireAuth, requireAdmin, async (req, res, next) => {
+router.put("/oidc/settings", requireAuth, requirePermission("serverSettingsSystem", "write"), async (req, res, next) => {
   try {
     const value = {
       enabled: !!req.body.enabled,
@@ -541,7 +584,7 @@ router.put("/oidc/settings", requireAuth, requireAdmin, async (req, res, next) =
 
 // ─── LDAP Settings ──────────────────────────────────────────────────────────
 
-router.get("/ldap/settings", requireAuth, requireAdmin, async (_req, res, next) => {
+router.get("/ldap/settings", requireAuth, requirePermission("serverSettingsSystem", "write"), async (_req, res, next) => {
   try {
     const row = await prisma.setting.findUnique({ where: { key: "ldap" } });
     const val: any = row?.value ?? {};
@@ -559,7 +602,7 @@ router.get("/ldap/settings", requireAuth, requireAdmin, async (_req, res, next) 
   } catch (err) { next(err); }
 });
 
-router.put("/ldap/settings", requireAuth, requireAdmin, async (req, res, next) => {
+router.put("/ldap/settings", requireAuth, requirePermission("serverSettingsSystem", "write"), async (req, res, next) => {
   try {
     const current = await prisma.setting.findUnique({ where: { key: "ldap" } });
     const cur: any = current?.value ?? {};

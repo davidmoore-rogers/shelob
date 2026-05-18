@@ -4,7 +4,7 @@
 
 import { Router } from "express";
 import { prisma } from "../../db.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import {
   getArchiveSettings,
   updateArchiveSettings,
@@ -24,7 +24,7 @@ const LEVEL_ORDER: Record<string, number> = { info: 0, warning: 1, error: 2 };
 const router = Router();
 
 // GET /api/v1/events — list events (newest first, paginated)
-router.get("/", async (req, res, next) => {
+router.get("/", requirePermission("events", "read"), async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
     const offset = parseInt(req.query.offset as string, 10) || 0;
@@ -74,7 +74,7 @@ router.get("/", async (req, res, next) => {
 
 // GET /api/v1/events/archive-settings — get archive export settings
 // Reveals SSH host/username/path; admin-only even with password masked.
-router.get("/archive-settings", requireAdmin, async (_req, res, next) => {
+router.get("/archive-settings", requirePermission("events", "write"), async (_req, res, next) => {
   try {
     const settings = await getArchiveSettings();
     // Strip password from response
@@ -87,7 +87,7 @@ router.get("/archive-settings", requireAdmin, async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/archive-settings — update archive export settings
-router.put("/archive-settings", requireAdmin, async (req, res, next) => {
+router.put("/archive-settings", requirePermission("events", "write"), async (req, res, next) => {
   try {
     const body = req.body;
     // Don't overwrite password if placeholder was sent back
@@ -102,7 +102,7 @@ router.put("/archive-settings", requireAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/events/archive-test — test SFTP/SCP connection
-router.post("/archive-test", requireAdmin, async (req, res, next) => {
+router.post("/archive-test", requirePermission("events", "write"), async (req, res, next) => {
   try {
     const settings = req.body;
     // If password is placeholder, fetch the real one
@@ -119,7 +119,7 @@ router.post("/archive-test", requireAdmin, async (req, res, next) => {
 
 // GET /api/v1/events/syslog-settings — get syslog forwarding settings
 // Reveals host/port/TLS paths; admin-only.
-router.get("/syslog-settings", requireAdmin, async (_req, res, next) => {
+router.get("/syslog-settings", requirePermission("events", "write"), async (_req, res, next) => {
   try {
     const settings = await getSyslogSettings();
     res.json(settings);
@@ -129,7 +129,7 @@ router.get("/syslog-settings", requireAdmin, async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/syslog-settings — update syslog forwarding settings
-router.put("/syslog-settings", requireAdmin, async (req, res, next) => {
+router.put("/syslog-settings", requirePermission("events", "write"), async (req, res, next) => {
   try {
     const updated = await updateSyslogSettings(req.body);
     res.json(updated);
@@ -139,7 +139,7 @@ router.put("/syslog-settings", requireAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/events/syslog-test — test syslog connection
-router.post("/syslog-test", requireAdmin, async (req, res, next) => {
+router.post("/syslog-test", requirePermission("events", "write"), async (req, res, next) => {
   try {
     const result = await testSyslogConnection(req.body);
     res.json(result);
@@ -149,7 +149,7 @@ router.post("/syslog-test", requireAdmin, async (req, res, next) => {
 });
 
 // GET /api/v1/events/retention-settings
-router.get("/retention-settings", async (_req, res, next) => {
+router.get("/retention-settings", requirePermission("events", "read"), async (_req, res, next) => {
   try {
     res.json(await getRetentionSettings());
   } catch (err) {
@@ -158,7 +158,7 @@ router.get("/retention-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/retention-settings
-router.put("/retention-settings", requireAdmin, async (req, res, next) => {
+router.put("/retention-settings", requirePermission("events", "write"), async (req, res, next) => {
   try {
     res.json(await updateRetentionSettings(req.body));
   } catch (err) {
@@ -167,7 +167,7 @@ router.put("/retention-settings", requireAdmin, async (req, res, next) => {
 });
 
 // GET /api/v1/events/asset-decommission-settings
-router.get("/asset-decommission-settings", async (_req, res, next) => {
+router.get("/asset-decommission-settings", requirePermission("events", "read"), async (_req, res, next) => {
   try {
     res.json(await getAssetDecommissionSettings());
   } catch (err) {
@@ -176,7 +176,7 @@ router.get("/asset-decommission-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/events/asset-decommission-settings
-router.put("/asset-decommission-settings", requireAdmin, async (req, res, next) => {
+router.put("/asset-decommission-settings", requirePermission("events", "write"), async (req, res, next) => {
   try {
     res.json(await updateAssetDecommissionSettings(req.body));
   } catch (err) {

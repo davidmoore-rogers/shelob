@@ -21,7 +21,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { invalidateMonitorSettingsCache } from "../../services/monitoringService.js";
-import { requireAssetsAdmin } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/permissions.js";
 import { logEvent } from "./events.js";
 import { AppError } from "../../utils/errors.js";
 import {
@@ -158,7 +158,7 @@ const MANUAL_SETTING_KEY = "manualMonitorSettings";
 // ─── Manual tier ────────────────────────────────────────────────────────────
 
 /** Read the manual tier (settings for orphan / non-integration-discovered assets). */
-router.get("/manual", async (_req, res, next) => {
+router.get("/manual", requirePermission("assetMonitorSettings", "read"), async (_req, res, next) => {
   try {
     const row = await prisma.setting.findUnique({ where: { key: MANUAL_SETTING_KEY } });
     // null = not yet seeded; the UI shows the hardcoded-floor defaults until
@@ -180,7 +180,7 @@ function stripLegacyRetention<T extends Record<string, unknown>>(input: T): Omit
 }
 
 /** Write the manual tier. Affects every asset with discoveredByIntegrationId = null. */
-router.put("/manual", requireAssetsAdmin, async (req, res, next) => {
+router.put("/manual", requirePermission("assetMonitorSettings", "write"), async (req, res, next) => {
   try {
     const input = stripLegacyRetention(TierSettingsSchema.parse(req.body));
     await prisma.setting.upsert({
@@ -204,7 +204,7 @@ router.put("/manual", requireAssetsAdmin, async (req, res, next) => {
 // ─── Integration tier ───────────────────────────────────────────────────────
 
 /** Read the integration tier (settings stored in Integration.config.monitorSettings). */
-router.get("/integration/:id", async (req, res, next) => {
+router.get("/integration/:id", requirePermission("assetMonitorSettings", "read"), async (req, res, next) => {
   try {
     const integration = await prisma.integration.findUnique({
       where:  { id: req.params.id as string },
@@ -223,7 +223,7 @@ router.get("/integration/:id", async (req, res, next) => {
 });
 
 /** Write the integration tier. Affects every asset discovered by this integration. */
-router.put("/integration/:id", requireAssetsAdmin, async (req, res, next) => {
+router.put("/integration/:id", requirePermission("assetMonitorSettings", "write"), async (req, res, next) => {
   try {
     const input = stripLegacyRetention(TierSettingsSchema.parse(req.body));
     const integrationId = req.params.id as string;
@@ -273,7 +273,7 @@ const ClassUpdateSchema = OverrideSettingsSchema;
  * select manual-tier overrides) and assetType. Returns the integration name
  * + type alongside each row so the UI can render badges without a join.
  */
-router.get("/class-overrides", async (req, res, next) => {
+router.get("/class-overrides", requirePermission("assetMonitorSettings", "read"), async (req, res, next) => {
   try {
     const where: Record<string, unknown> = {};
     const integrationIdParam = req.query.integrationId;
@@ -290,7 +290,7 @@ router.get("/class-overrides", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post("/class-overrides", requireAssetsAdmin, async (req, res, next) => {
+router.post("/class-overrides", requirePermission("assetMonitorSettings", "write"), async (req, res, next) => {
   try {
     const input = ClassCreateSchema.parse(req.body);
     let sourceKind: AssetSourceKind = "manual";
@@ -338,7 +338,7 @@ router.post("/class-overrides", requireAssetsAdmin, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.put("/class-overrides/:id", requireAssetsAdmin, async (req, res, next) => {
+router.put("/class-overrides/:id", requirePermission("assetMonitorSettings", "write"), async (req, res, next) => {
   try {
     const input = stripLegacyRetention(ClassUpdateSchema.parse(req.body));
     const id = req.params.id as string;
@@ -375,7 +375,7 @@ router.put("/class-overrides/:id", requireAssetsAdmin, async (req, res, next) =>
   } catch (err) { next(err); }
 });
 
-router.delete("/class-overrides/:id", requireAssetsAdmin, async (req, res, next) => {
+router.delete("/class-overrides/:id", requirePermission("assetMonitorSettings", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const existing = await prisma.monitorClassOverride.findUnique({
@@ -409,7 +409,7 @@ router.delete("/class-overrides/:id", requireAssetsAdmin, async (req, res, next)
 // assets are individually deviating from the settings inherited at this
 // scope" — and the operator can click through to fix each one.
 
-router.get("/asset-overrides", async (req, res, next) => {
+router.get("/asset-overrides", requirePermission("assetMonitorSettings", "read"), async (req, res, next) => {
   try {
     const integrationIdParam = req.query.integrationId;
     const assetType = typeof req.query.assetType === "string" ? req.query.assetType : undefined;

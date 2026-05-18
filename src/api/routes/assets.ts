@@ -8,7 +8,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
 import { AppError } from "../../utils/errors.js";
-import { requireAdmin, requireAssetsAdmin, requireNetworkAdmin, requireUserOrAbove, requireSessionOrTokenScope } from "../middleware/auth.js";
+import { requirePermission, requireSessionOrTokenPermission } from "../middleware/permissions.js";
 import { logEvent, buildChanges } from "./events.js";
 import { assetMatchesIntegrationFilter } from "../../utils/integrationFilter.js";
 import { getConfiguredResolver } from "../../services/dnsService.js";
@@ -283,7 +283,7 @@ async function buildIpContexts(ips: string[]): Promise<Map<string, IpContext>> {
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // GET /api/v1/assets — list all assets (all authenticated users, paginated)
-router.get("/", async (req, res, next) => {
+router.get("/", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 10000);
     const offset = parseInt(req.query.offset as string, 10) || 0;
@@ -363,7 +363,7 @@ router.get("/", async (req, res, next) => {
 
 // GET /api/v1/assets/ip-history-settings — get history retention settings (all authenticated users)
 // Must be defined before /:id to avoid route shadowing.
-router.get("/ip-history-settings", async (_req, res, next) => {
+router.get("/ip-history-settings", requirePermission("assets", "read"), async (_req, res, next) => {
   try {
     res.json(await getHistorySettings());
   } catch (err) {
@@ -372,7 +372,7 @@ router.get("/ip-history-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/assets/ip-history-settings — update retention settings (assets admin)
-router.put("/ip-history-settings", requireAssetsAdmin, async (req, res, next) => {
+router.put("/ip-history-settings", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const { retentionDays } = z.object({ retentionDays: z.number().int().min(0).max(3650) }).parse(req.body);
     await updateHistorySettings({ retentionDays });
@@ -402,7 +402,7 @@ router.put("/ip-history-settings", requireAssetsAdmin, async (req, res, next) =>
 // fits a heterogeneous batch. Operators picking a method per-asset use the
 // asset edit modal's Monitoring tab.
 // Returns per-id error list for any rejected rows.
-router.post("/bulk-monitor", requireAssetsAdmin, async (req, res, next) => {
+router.post("/bulk-monitor", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const body = z.object({
       ids:                 z.array(z.string().uuid()).min(1),
@@ -462,7 +462,7 @@ router.post("/bulk-monitor", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // GET /api/v1/assets/:id — get single asset (all authenticated users)
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({
       where: { id: req.params.id as string },
@@ -530,7 +530,7 @@ router.get("/:id", async (req, res, next) => {
 // settings for one asset PLUS per-field tier provenance, so the asset edit
 // modal can render "Asset / Class / Integration / Manual" badges next to
 // each field. Read-open to any authenticated caller.
-router.get("/:id/effective-monitor-settings", async (req, res, next) => {
+router.get("/:id/effective-monitor-settings", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
@@ -600,7 +600,7 @@ router.get("/:id/effective-monitor-settings", async (req, res, next) => {
 });
 
 // GET /api/v1/assets/:id/ip-history — IP address history for an asset (all authenticated users)
-router.get("/:id/ip-history", async (req, res, next) => {
+router.get("/:id/ip-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({ where: { id: req.params.id as string }, select: { id: true } });
     if (!asset) throw new AppError(404, "Asset not found");
@@ -611,7 +611,7 @@ router.get("/:id/ip-history", async (req, res, next) => {
 });
 
 // GET /api/v1/assets/:id/monitor-history?range=1h|24h|7d|30d OR ?from=ISO&to=ISO
-router.get("/:id/monitor-history", async (req, res, next) => {
+router.get("/:id/monitor-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const fromQ = req.query.from ? String(req.query.from) : null;
@@ -659,7 +659,7 @@ router.get("/:id/monitor-history", async (req, res, next) => {
 // scheduler to come around. Returns a per-stream status so the UI can tell
 // the operator which streams refreshed and which failed (and why) — silent
 // failures used to leave the System tab stale with no explanation.
-router.post("/:id/probe-now", requireUserOrAbove, async (req, res, next) => {
+router.post("/:id/probe-now", requirePermission("assetsProbe", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
 
@@ -797,7 +797,7 @@ const SnmpWalkSchema = z.object({
   maxRows:      z.number().int().min(1).max(5000).optional().default(500),
 });
 
-router.post("/:id/snmp-walk", requireAdmin, async (req, res, next) => {
+router.post("/:id/snmp-walk", requirePermission("assetsProbe", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const parsed = SnmpWalkSchema.safeParse(req.body);
@@ -885,7 +885,7 @@ function bigIntToNumber(v: bigint | null | undefined): number | null {
 }
 
 // GET /assets/:id/telemetry-history?range=...|from=...&to=... — CPU+memory time series
-router.get("/:id/telemetry-history", async (req, res, next) => {
+router.get("/:id/telemetry-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const { since, until, rangeLabel } = resolveRange(req);
@@ -907,7 +907,7 @@ router.get("/:id/telemetry-history", async (req, res, next) => {
 // every interface row tied to the most-recent system-info scrape timestamp,
 // plus the most-recent telemetry row. Used to populate the System tab grid
 // without requiring the client to make three separate calls.
-router.get("/:id/system-info", async (req, res, next) => {
+router.get("/:id/system-info", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
@@ -1118,7 +1118,7 @@ router.get("/:id/system-info", async (req, res, next) => {
 // recent samples that the gauge / chart / table renderer consumes directly).
 // Empty array when the manufacturer has no widgets or the polling stream is
 // resolved to "disabled" — the frontend hides the tab in that case.
-router.get("/:id/custom-widgets", async (req, res, next) => {
+router.get("/:id/custom-widgets", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
@@ -1208,7 +1208,7 @@ router.get("/:id/custom-widgets", async (req, res, next) => {
 });
 
 // GET /assets/:id/interface-history?ifName=...&range=... — per-interface counters
-router.get("/:id/interface-history", async (req, res, next) => {
+router.get("/:id/interface-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const ifName = req.query.ifName ? String(req.query.ifName) : null;
@@ -1289,7 +1289,7 @@ router.get("/:id/interface-history", async (req, res, next) => {
 const InterfaceCommentSchema = z.object({
   description: z.string().max(255, "Interface Comments may be at most 255 characters").nullable().optional(),
 });
-router.put("/:id/interfaces/:ifName/comment", requireAssetsAdmin, async (req, res, next) => {
+router.put("/:id/interfaces/:ifName/comment", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const ifName = String(req.params.ifName || "");
@@ -1335,7 +1335,7 @@ router.put("/:id/interfaces/:ifName/comment", requireAssetsAdmin, async (req, re
 });
 
 // GET /assets/:id/temperature-history?range=... [&sensorName=...] — per-sensor temperatures
-router.get("/:id/temperature-history", async (req, res, next) => {
+router.get("/:id/temperature-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const sensorName = req.query.sensorName ? String(req.query.sensorName) : null;
@@ -1356,7 +1356,7 @@ router.get("/:id/temperature-history", async (req, res, next) => {
 });
 
 // GET /assets/:id/ipsec-history?tunnelName=...&range=... — per-tunnel state + bytes
-router.get("/:id/ipsec-history", async (req, res, next) => {
+router.get("/:id/ipsec-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const tunnelName = req.query.tunnelName ? String(req.query.tunnelName) : null;
@@ -1377,7 +1377,7 @@ router.get("/:id/ipsec-history", async (req, res, next) => {
 });
 
 // GET /assets/:id/storage-history?mountPath=...&range=... — per-mountpoint usage
-router.get("/:id/storage-history", async (req, res, next) => {
+router.get("/:id/storage-history", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const mountPath = req.query.mountPath ? String(req.query.mountPath) : null;
@@ -1398,7 +1398,7 @@ router.get("/:id/storage-history", async (req, res, next) => {
 });
 
 // POST /api/v1/assets — create (assets admin)
-router.post("/", requireAssetsAdmin, async (req, res, next) => {
+router.post("/", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const input = CreateAssetSchema.parse(req.body);
     const data: Record<string, unknown> = { ...input };
@@ -1420,7 +1420,7 @@ router.post("/", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // PUT /api/v1/assets/:id — update (assets admin)
-router.put("/:id", requireAssetsAdmin, async (req, res, next) => {
+router.put("/:id", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const existing = await prisma.asset.findUnique({
@@ -1518,7 +1518,7 @@ function isPtrExpired(fetchedAt: Date | string | null | undefined, ttlSeconds: n
 }
 
 // POST /api/v1/assets/dns-lookup — bulk PTR lookup; skips IPs whose cached result is within TTL
-router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
+router.post("/dns-lookup", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const now = Date.now();
     const resolver = await getConfiguredResolver();
@@ -1605,7 +1605,7 @@ router.post("/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/assets/:id/dns-lookup — PTR lookup for a single asset; always queries (user-triggered)
-router.post("/:id/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
+router.post("/:id/dns-lookup", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({
       where: { id: req.params.id as string },
@@ -1682,7 +1682,7 @@ router.post("/:id/dns-lookup", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/assets/:id/forward-lookup — A/AAAA lookup from hostname/dnsName → fills ipAddress
-router.post("/:id/forward-lookup", requireAssetsAdmin, async (req, res, next) => {
+router.post("/:id/forward-lookup", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({ where: { id: req.params.id as string } });
     if (!asset) throw new AppError(404, "Asset not found");
@@ -1710,7 +1710,7 @@ router.post("/:id/forward-lookup", requireAssetsAdmin, async (req, res, next) =>
 });
 
 // POST /api/v1/assets/oui-lookup — bulk OUI manufacturer lookup
-router.post("/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
+router.post("/oui-lookup", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const assets = await prisma.asset.findMany({
       where: { macAddress: { not: null }, manufacturer: null, status: { notIn: ["decommissioned", "disabled"] } },
@@ -1744,7 +1744,7 @@ router.post("/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/assets/:id/oui-lookup — OUI manufacturer lookup for a single asset
-router.post("/:id/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
+router.post("/:id/oui-lookup", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const asset = await prisma.asset.findUnique({ where: { id: req.params.id as string } });
     if (!asset) throw new AppError(404, "Asset not found");
@@ -1770,7 +1770,7 @@ router.post("/:id/oui-lookup", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/assets/import — CSV import: backdate createdAt from serial+date rows (assets admin)
-router.post("/import", requireAssetsAdmin, async (req, res, next) => {
+router.post("/import", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const { rows, dryRun } = req.body as { rows?: unknown; dryRun?: boolean };
     if (!Array.isArray(rows) || rows.length === 0) throw new AppError(400, "rows must be a non-empty array");
@@ -1816,7 +1816,7 @@ router.post("/import", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // POST /api/v1/assets/import-pdf — create/update assets from extracted PDF invoice data (assets admin)
-router.post("/import-pdf", requireAssetsAdmin, async (req, res, next) => {
+router.post("/import-pdf", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const { assets: rows, dryRun } = req.body as { assets?: unknown; dryRun?: boolean };
     if (!Array.isArray(rows) || rows.length === 0) throw new AppError(400, "assets must be a non-empty array");
@@ -1877,7 +1877,7 @@ router.post("/import-pdf", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // DELETE /api/v1/assets/:id/macs/:mac — remove a MAC from an asset's history (network admin)
-router.delete("/:id/macs/:mac", requireNetworkAdmin, async (req, res, next) => {
+router.delete("/:id/macs/:mac", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const normalized = String(req.params.mac || "").toUpperCase().replace(/-/g, ":");
@@ -1931,7 +1931,7 @@ router.delete("/:id/macs/:mac", requireNetworkAdmin, async (req, res, next) => {
 });
 
 // DELETE /api/v1/assets — bulk delete (assets admin)
-router.delete("/", requireAssetsAdmin, async (req, res, next) => {
+router.delete("/", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const { ids } = req.body as { ids?: unknown };
     if (!Array.isArray(ids) || ids.length === 0) throw new AppError(400, "ids must be a non-empty array");
@@ -1956,7 +1956,7 @@ router.delete("/", requireAssetsAdmin, async (req, res, next) => {
 });
 
 // DELETE /api/v1/assets/:id — delete (assets admin)
-router.delete("/:id", requireAssetsAdmin, async (req, res, next) => {
+router.delete("/:id", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const existing = await prisma.asset.findUnique({ where: { id } });
@@ -1975,7 +1975,7 @@ router.delete("/:id", requireAssetsAdmin, async (req, res, next) => {
 // ─── Quarantine + sightings ─────────────────────────────────────────────
 
 // GET /api/v1/assets/sighting-settings — current settings
-router.get("/sighting-settings", async (_req, res, next) => {
+router.get("/sighting-settings", requirePermission("assetsQuarantine", "read"), async (_req, res, next) => {
   try {
     res.json(await getSightingSettings());
   } catch (err) {
@@ -1984,7 +1984,7 @@ router.get("/sighting-settings", async (_req, res, next) => {
 });
 
 // PUT /api/v1/assets/sighting-settings — admin or assets admin
-router.put("/sighting-settings", requireAssetsAdmin, async (req, res, next) => {
+router.put("/sighting-settings", requirePermission("assetsQuarantine", "write"), async (req, res, next) => {
   try {
     const Schema = z.object({ sightingMaxAgeDays: z.number().int().min(0).max(3650) });
     const input = Schema.parse(req.body);
@@ -2004,7 +2004,7 @@ router.put("/sighting-settings", requireAssetsAdmin, async (req, res, next) => {
 // Each sighting is decorated with subnet name + VLAN resolved from the stored
 // IP against subnets discovered on the same FortiGate, so the Quarantine tab
 // can show "what was seen and on which VLAN" without a second round-trip.
-router.get("/:id/sightings", async (req, res, next) => {
+router.get("/:id/sightings", requirePermission("assetsQuarantine", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const exists = await prisma.asset.findUnique({ where: { id }, select: { id: true } });
@@ -2050,7 +2050,7 @@ router.get("/:id/sightings", async (req, res, next) => {
 // sorted by sourceKind in a stable presentation order. Drives the "Sources"
 // tab on the asset details modal — operators can see what each integration
 // independently said, side-by-side.
-router.get("/:id/sources", async (req, res, next) => {
+router.get("/:id/sources", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const exists = await prisma.asset.findUnique({ where: { id }, select: { id: true } });
@@ -2124,7 +2124,7 @@ const splitSourceParamsSchema = z.object({
   id: z.string().min(1),
   sourceId: z.string().min(1),
 });
-router.post("/:id/sources/:sourceId/split", requireAdmin, async (req, res, next) => {
+router.post("/:id/sources/:sourceId/split", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const { id, sourceId } = splitSourceParamsSchema.parse(req.params);
     const originalAsset = await prisma.asset.findUnique({ where: { id }, select: { id: true, hostname: true } });
@@ -2269,7 +2269,7 @@ const dependencyOverrideBodySchema = z.object({
   parentAssetIds: z.array(z.string().min(1)).max(20),
 });
 
-router.get("/:id/dependencies", async (req, res, next) => {
+router.get("/:id/dependencies", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
@@ -2491,7 +2491,7 @@ router.get("/:id/dependencies", async (req, res, next) => {
   }
 });
 
-router.put("/:id/dependencies/override", requireAdmin, async (req, res, next) => {
+router.put("/:id/dependencies/override", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const body = dependencyOverrideBodySchema.parse(req.body);
@@ -2600,7 +2600,7 @@ router.put("/:id/dependencies/override", requireAdmin, async (req, res, next) =>
   }
 });
 
-router.delete("/:id/dependencies/override", requireAdmin, async (req, res, next) => {
+router.delete("/:id/dependencies/override", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({ where: { id }, select: { id: true, hostname: true } });
@@ -2648,7 +2648,7 @@ const dependencyTestSchema = z.object({
   durationMinutes: z.number().int().min(1).max(240).default(30),
 });
 
-router.post("/:id/dependency-test", requireAdmin, async (req, res, next) => {
+router.post("/:id/dependency-test", requirePermission("assetsProbe", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const { durationMinutes } = dependencyTestSchema.parse(req.body ?? {});
@@ -2696,7 +2696,7 @@ router.post("/:id/dependency-test", requireAdmin, async (req, res, next) => {
   }
 });
 
-router.delete("/:id/dependency-test", requireAdmin, async (req, res, next) => {
+router.delete("/:id/dependency-test", requirePermission("assetsProbe", "write"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
@@ -2739,7 +2739,7 @@ router.delete("/:id/dependency-test", requireAdmin, async (req, res, next) => {
 // the Device Map topology overlay to dim everything off-path. See
 // connectionPathService for the resolution rules. Open to any authenticated
 // caller (read-only; same scope as the existing /:id/dependencies endpoint).
-router.get("/:id/connection-path", async (req, res, next) => {
+router.get("/:id/connection-path", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const path = await resolveConnectionPath(id);
@@ -2751,7 +2751,7 @@ router.get("/:id/connection-path", async (req, res, next) => {
 });
 
 // GET /api/v1/assets/:id/quarantine-status — current quarantine state + recorded targets
-router.get("/:id/quarantine-status", async (req, res, next) => {
+router.get("/:id/quarantine-status", requirePermission("assetsQuarantine", "read"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const asset = await prisma.asset.findUnique({
@@ -2774,7 +2774,7 @@ router.get("/:id/quarantine-status", async (req, res, next) => {
 });
 
 // POST /api/v1/assets/:id/quarantine — admin, assets admin, or token with assets:quarantine scope
-router.post("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadmin"], "assets:quarantine"), async (req, res, next) => {
+router.post("/:id/quarantine", requireSessionOrTokenPermission("assetsQuarantine", "write", "assets:quarantine"), async (req, res, next) => {
   try {
     const Schema = z.object({ reason: z.string().max(500).optional() });
     const input = Schema.parse(req.body ?? {});
@@ -2793,7 +2793,7 @@ router.post("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadmin
 });
 
 // DELETE /api/v1/assets/:id/quarantine — admin, assets admin, or token with assets:quarantine scope
-router.delete("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadmin"], "assets:quarantine"), async (req, res, next) => {
+router.delete("/:id/quarantine", requireSessionOrTokenPermission("assetsQuarantine", "write", "assets:quarantine"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const actor = req.apiToken ? `api:${req.apiToken.name}` : `user:${req.session?.username || "unknown"}`;
@@ -2809,7 +2809,7 @@ router.delete("/:id/quarantine", requireSessionOrTokenScope(["admin", "assetsadm
 });
 
 // POST /api/v1/assets/:id/quarantine/verify — read-back drift check (admin, assets admin, or token)
-router.post("/:id/quarantine/verify", requireSessionOrTokenScope(["admin", "assetsadmin"], "assets:quarantine"), async (req, res, next) => {
+router.post("/:id/quarantine/verify", requireSessionOrTokenPermission("assetsQuarantine", "write", "assets:quarantine"), async (req, res, next) => {
   try {
     const id = req.params.id as string;
     const verifyResult = await verifyAssetQuarantine(id, req.apiToken?.integrationIds);
@@ -2839,7 +2839,7 @@ router.post("/:id/quarantine/verify", requireSessionOrTokenScope(["admin", "asse
 });
 
 // POST /api/v1/assets/bulk-quarantine — admin, assets admin, or token with assets:quarantine scope
-router.post("/bulk-quarantine", requireSessionOrTokenScope(["admin", "assetsadmin"], "assets:quarantine"), async (req, res, next) => {
+router.post("/bulk-quarantine", requireSessionOrTokenPermission("assetsQuarantine", "write", "assets:quarantine"), async (req, res, next) => {
   try {
     const Schema = z.object({
       ids: z.array(z.string()).min(1),
@@ -2863,7 +2863,7 @@ router.post("/bulk-quarantine", requireSessionOrTokenScope(["admin", "assetsadmi
 });
 
 // POST /api/v1/assets/bulk-quarantine/release — admin, assets admin, or token with assets:quarantine scope
-router.post("/bulk-quarantine/release", requireSessionOrTokenScope(["admin", "assetsadmin"], "assets:quarantine"), async (req, res, next) => {
+router.post("/bulk-quarantine/release", requireSessionOrTokenPermission("assetsQuarantine", "write", "assets:quarantine"), async (req, res, next) => {
   try {
     const Schema = z.object({ ids: z.array(z.string()).min(1) });
     const input = Schema.parse(req.body);
@@ -2899,7 +2899,7 @@ const AgentInstallSchema = z.object({
   arch:         z.enum(["amd64", "arm64"]),
 });
 
-router.get("/:id/agent", async (req, res, next) => {
+router.get("/:id/agent", requirePermission("assets", "read"), async (req, res, next) => {
   try {
     const assetId = req.params.id as string;
     const row = await prisma.managedAgent.findUnique({ where: { assetId } });
@@ -2914,7 +2914,7 @@ router.get("/:id/agent", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => {
+router.post("/:id/agent/install", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const assetId = req.params.id as string;
     const body = AgentInstallSchema.parse(req.body);
@@ -3033,11 +3033,63 @@ router.post("/:id/agent/install", requireAssetsAdmin, async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
+router.post("/:id/agent/retry", requirePermission("assets", "write"), async (req, res, next) => {
+  try {
+    const assetId = req.params.id as string;
+    const actor = req.session?.username || "unknown";
+
+    const row = await prisma.managedAgent.findUnique({ where: { assetId } });
+    if (!row) throw new AppError(404, "No agent row to retry for this asset");
+    if (row.installStatus !== "failed") {
+      throw new AppError(409,
+        `Agent installStatus is "${row.installStatus}"; only failed installs can be retried.`);
+    }
+    if (!row.installCredentialId) {
+      throw new AppError(400,
+        "No install credential on file (credential was deleted). " +
+        "Force-remove the agent and start a fresh install.");
+    }
+
+    // Make sure the credential still exists before we reset the row —
+    // otherwise startInstall would flip us right back to "failed" with
+    // a less actionable error.
+    const cred = await getCredential(row.installCredentialId).catch(() => null);
+    if (!cred) {
+      throw new AppError(400,
+        "Original install credential no longer exists. " +
+        "Force-remove the agent and start a fresh install.");
+    }
+
+    await prisma.managedAgent.update({
+      where: { id: row.id },
+      data:  { installStatus: "pending", installError: null },
+    });
+
+    await logEvent({
+      action:       "agent.install_retry",
+      resourceType: "asset",
+      resourceId:   assetId,
+      actor,
+      level:        "info",
+      message:      `Polaris Agent install retried (${row.osPlatform}/${row.arch})`,
+      details:      { managedAgentId: row.id, credentialId: row.installCredentialId },
+    });
+
+    const { startInstall } = await import("../../services/agentInstallService.js");
+    await startInstall({ managedAgentId: row.id, credentialId: row.installCredentialId });
+
+    res.json({
+      managedAgentId: row.id,
+      installStatus:  "pending",
+    });
+  } catch (err) { next(err); }
+});
+
 const AgentUpgradeSchema = z.object({
   credentialId: z.string().uuid().optional(),
 });
 
-router.post("/:id/agent/upgrade", requireAssetsAdmin, async (req, res, next) => {
+router.post("/:id/agent/upgrade", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const assetId = req.params.id as string;
     const body = AgentUpgradeSchema.parse(req.body ?? {});
@@ -3064,7 +3116,7 @@ router.post("/:id/agent/upgrade", requireAssetsAdmin, async (req, res, next) => 
   } catch (err) { next(err); }
 });
 
-router.delete("/:id/agent", requireAdmin, async (req, res, next) => {
+router.delete("/:id/agent", requirePermission("assets", "write"), async (req, res, next) => {
   try {
     const assetId = req.params.id as string;
     const actor = req.session?.username || "unknown";

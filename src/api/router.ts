@@ -27,7 +27,9 @@ import monitorSettingsRouter from "./routes/monitorSettings.js";
 import apiTokensRouter from "./routes/apiTokens.js";
 import dashboardRouter from "./routes/dashboard.js";
 import { agentsEnrollRouter, agentsRouter, agentsBinaryRouter } from "./routes/agents.js";
-import { requireAuth, requireAdmin, requireNetworkAdmin, attachApiToken } from "./middleware/auth.js";
+import rolesRouter from "./routes/roles.js";
+import { requireAuth, attachApiToken } from "./middleware/auth.js";
+import { requirePermission } from "./middleware/permissions.js";
 
 export const router = Router();
 
@@ -59,8 +61,8 @@ router.use("/agents", agentsRouter);
 
 // Everything below requires an active session OR a valid bearer token.
 // Token callers reach further role gates only when a route opts in via
-// requireSessionOrTokenScope; the legacy session-only guards (requireAdmin
-// etc.) will 403 a token caller because req.session.role is undefined.
+// requireSessionOrTokenPermission; the standard requirePermission(...)
+// middleware 403s token callers because they have no role snapshot.
 router.use(requireAuth);
 router.use("/blocks", blocksRouter);
 router.use("/subnets", subnetsRouter);
@@ -68,34 +70,41 @@ router.use("/allocation-templates", allocationTemplatesRouter);
 router.use("/reservations", reservationsRouter);
 router.use("/utilization", utilizationRouter);
 router.use("/dashboard", dashboardRouter);
-router.use("/users", requireAdmin, usersRouter);
-router.use("/integrations", requireNetworkAdmin, integrationsRouter);
+router.use("/users", requirePermission("users", "read"), usersRouter);
+router.use("/roles", rolesRouter);
+router.use("/integrations", requirePermission("integrations", "read"), integrationsRouter);
 router.use("/assets", assetsRouter);
 router.use("/events", eventsRouter);
 router.use("/search", searchRouter);
 // Region routes are mounted BEFORE /map so Express's first-match routing picks
-// the more-specific path. Region CRUD requires admin/networkadmin (drawing
-// regions); the rest of /map is read-only and open to any authenticated user.
-router.use("/map/regions", requireNetworkAdmin, mapRegionsRouter);
+// the more-specific path. Region CRUD is gated by the mapRegions function key;
+// the rest of /map is read-only and open to any authenticated user with at
+// least deviceMap=read.
+router.use("/map/regions", requirePermission("mapRegions", "read"), mapRegionsRouter);
 router.use("/map", mapRouter);
 router.use("/conflicts", conflictsRouter);
 router.use("/credentials", credentialsRouter);
-router.use("/manufacturer-aliases", requireAdmin, manufacturerAliasesRouter);
+router.use("/manufacturer-aliases", requirePermission("manufacturerAliases", "read"), manufacturerAliasesRouter);
 // monitor-settings: reads open to any auth caller (asset-modal tier badges
-// need them); writes guarded per-route by requireAssetsAdmin.
+// need them); writes guarded per-route by requirePermission(assetMonitorSettings, write).
 router.use("/monitor-settings", monitorSettingsRouter);
-router.use("/api-tokens", requireAdmin, apiTokensRouter);
+router.use("/api-tokens", requirePermission("apiTokens", "read"), apiTokensRouter);
 // MIBs surface mounted BEFORE /server-settings so its per-route guards
-// (admin OR assets-admin on reads, admin-only on writes) take precedence
-// over the blanket requireAdmin on the rest of /server-settings. Express
-// first-match routing handles the rest — any path under /server-settings
-// that doesn't start with /server-settings/mibs falls through to the
-// admin-only serverSettingsRouter below.
+// (mibDatabase read on browse/walk, mibDatabase write on upload/delete)
+// take precedence over the blanket serverSettingsSystem gate on the rest
+// of /server-settings. Express first-match routing handles the rest — any
+// path under /server-settings that doesn't start with /server-settings/mibs
+// falls through to the serverSettingsRouter below.
 router.use("/server-settings/mibs", mibsRouter);
-// Same precedent — admin OR assets-admin on reads, admin-only on writes,
-// enforced per-route inside the router. Mounted before the blanket
-// requireAdmin so the read paths reach assets-admin callers.
+// Same precedent — per-route guards (manufacturerProfiles read on browse,
+// write on edits). Mounted before the blanket so reads reach roles that
+// have manufacturerProfiles=read but not serverSettingsSystem.
 router.use("/server-settings/manufacturer-profiles", manufacturerProfilesRouter);
-router.use("/server-settings", requireAdmin, serverSettingsRouter);
-// device-icons applies its own per-route guards (admin for CRUD, auth for image-serve)
+// Blanket /server-settings gate: requires at least serverSettingsSystem
+// OR serverSettingsData read (today the OR is implicit — every route
+// inside currently uses serverSettingsSystem; a future per-route split
+// can break this into two gates without changing the mount).
+router.use("/server-settings", requirePermission("serverSettingsSystem", "read"), serverSettingsRouter);
+// device-icons applies its own per-route guards (deviceIcons write on CRUD;
+// auth-only for image-serve since the asset details modal embeds icon URLs).
 router.use("/device-icons", deviceIconsRouter);
