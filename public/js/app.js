@@ -1732,14 +1732,23 @@ function initSlideoverResize(panelEl, storageKey) {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async function () {
-  // Render nav immediately from cache so the sidebar doesn't flash on navigation
+  // Render nav immediately from cache so the sidebar doesn't flash on navigation.
+  // Restore the permission matrix + regions alongside the role NAME so the
+  // first `hideAdminOnlyElements()` call gates correctly — without this, every
+  // permission-gated element (Conflicts button, etc.) would be hidden until
+  // the post-fetch re-render and the change-detection branch below skipped
+  // re-rendering when only the matrix shifted.
   var roleBeforeFetch = null;
+  var permsBeforeFetch = null;
   try {
     var cachedUser = JSON.parse(localStorage.getItem("polaris-user") || "null");
     if (cachedUser && cachedUser.role) {
       currentUserRole = cachedUser.role;
       currentUsername = cachedUser.username;
+      currentRolePermissions = cachedUser.permissions || {};
+      currentEffectiveRegions = Array.isArray(cachedUser.regions) ? cachedUser.regions : [];
       roleBeforeFetch = cachedUser.role;
+      permsBeforeFetch = JSON.stringify(currentRolePermissions);
       renderNav();
       hideAdminOnlyElements();
     }
@@ -1747,8 +1756,12 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   await fetchCurrentUser();
 
-  // Re-render if the cache was cold or the role changed (e.g. role was updated by admin)
-  if (!roleBeforeFetch || currentUserRole !== roleBeforeFetch) {
+  // Re-render if the cache was cold OR the role name changed OR the matrix
+  // shifted (an admin edited the role since the last cached snapshot).
+  // Comparing the JSON-serialized matrix is cheap and avoids any
+  // gated element staying hidden when the cold-path snapshot was stale.
+  var permsAfterFetch = JSON.stringify(currentRolePermissions || {});
+  if (!roleBeforeFetch || currentUserRole !== roleBeforeFetch || permsBeforeFetch !== permsAfterFetch) {
     renderNav();
     hideAdminOnlyElements();
   }
