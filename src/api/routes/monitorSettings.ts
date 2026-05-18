@@ -83,6 +83,7 @@ const TierSettingsSchema = z.object({
   temperaturePolling:         PollingMethodEnum.nullable().optional(),
   interfacesPolling:          PollingMethodEnum.nullable().optional(),
   lldpPolling:                PollingMethodEnum.nullable().optional(),
+  storagePolling:             PollingMethodEnum.nullable().optional(),
   // Per-stream MIB IDs stored in the JSON blob ("std:<key>" | uploaded UUID | null)
   responseTimeMibId:          z.string().nullable().optional(),
   cpuMemoryMibId:             z.string().nullable().optional(),
@@ -114,6 +115,7 @@ const OverrideSettingsSchema = z.object({
   temperaturePolling:         PollingMethodEnum.nullable().optional(),
   interfacesPolling:          PollingMethodEnum.nullable().optional(),
   lldpPolling:                PollingMethodEnum.nullable().optional(),
+  storagePolling:             PollingMethodEnum.nullable().optional(),
   // Per-stream credential IDs (FK to Credential, null = inherit)
   responseTimeCredentialId:   z.string().uuid().nullable().optional(),
   cpuMemoryCredentialId:      z.string().uuid().nullable().optional(),
@@ -134,7 +136,7 @@ const OverrideSettingsSchema = z.object({
 // apply on the assets it covers — the resolver would silently fall through
 // and the operator would never see why their setting "didn't take." Manual
 // tier accepts every method (it covers any source).
-const POLLING_FIELDS = ["responseTimePolling", "cpuMemoryPolling", "temperaturePolling", "interfacesPolling", "lldpPolling"] as const;
+const POLLING_FIELDS = ["responseTimePolling", "cpuMemoryPolling", "temperaturePolling", "interfacesPolling", "lldpPolling", "storagePolling"] as const;
 type PollingField = (typeof POLLING_FIELDS)[number];
 
 function assertPollingCompatible(
@@ -429,6 +431,7 @@ router.get("/asset-overrides", requirePermission("assetMonitorSettings", "read")
         { temperaturePolling:     { not: null } },
         { interfacesPolling:      { not: null } },
         { lldpPolling:            { not: null } },
+        { storagePolling:         { not: null } },
       ],
     };
     if (integrationIdParam === "null") where.discoveredByIntegrationId = null;
@@ -455,6 +458,7 @@ router.get("/asset-overrides", requirePermission("assetMonitorSettings", "read")
         temperaturePolling:       true,
         interfacesPolling:        true,
         lldpPolling:              true,
+        storagePolling:           true,
         discoveredByIntegrationId: true,
       },
       orderBy: { hostname: "asc" },

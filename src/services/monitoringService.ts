@@ -192,6 +192,15 @@ export interface MonitorTierSettings {
   interfacesPolling:         PollingMethod | null;
   lldpPolling:               PollingMethod | null;
   /**
+   * Storage stream — SNMP-only when enabled (HOST-RESOURCES-MIB hrStorageTable
+   * plus vendor disk fallbacks). Independent of `interfacesPolling` so
+   * operators can disable storage on FMG/FortiGate firewalls (which don't
+   * expose meaningful mountpoints) without losing interface scrapes. Source
+   * defaults: FMG/FortiGate → "disabled"; every other source → null (= not
+   * delivered). Operators opt in by picking SNMP at any tier.
+   */
+  storagePolling:            PollingMethod | null;
+  /**
    * Per-stream MIB identifier hint. Either `"std:<key>"` referencing a
    * built-in standard MIB (used by the asset-detail SNMP Walk tab UI for
    * symbol resolution; ignored by the telemetry collector), or the UUID of
@@ -256,6 +265,7 @@ const HARDCODED_FLOOR: MonitorTierSettings = {
   temperaturePolling:        null,
   interfacesPolling:         null,
   lldpPolling:               null,
+  storagePolling:            null,
   // MIB ID hints default to null at the floor — vendor profile selection
   // uses the asset's own manufacturer/model when no tier supplies a MIB.
   responseTimeMibId:         null,
@@ -546,6 +556,7 @@ function tierFromJson(v: Record<string, unknown> | null | undefined): MonitorTie
     temperaturePolling:         readPollingFromJson(pollingBlock, "temperature")  ?? readPollingFromJson(flat, "temperaturePolling")  ?? readPollingFromJson(pollingBlock, "telemetry") ?? readPollingFromJson(flat, "telemetryPolling"),
     interfacesPolling:          readPollingFromJson(pollingBlock, "interfaces")   ?? readPollingFromJson(flat, "interfacesPolling"),
     lldpPolling:                readPollingFromJson(pollingBlock, "lldp")         ?? readPollingFromJson(flat, "lldpPolling"),
+    storagePolling:             readPollingFromJson(pollingBlock, "storage")      ?? readPollingFromJson(flat, "storagePolling"),
     responseTimeMibId:          readMibIdFromJson(flat.responseTimeMibId),
     cpuMemoryMibId:             readMibIdFromJson(flat.cpuMemoryMibId)   ?? readMibIdFromJson(flat.telemetryMibId),
     temperatureMibId:           readMibIdFromJson(flat.temperatureMibId) ?? readMibIdFromJson(flat.telemetryMibId),
@@ -593,13 +604,17 @@ function readMibIdFromJson(v: unknown): string | null {
  */
 function defaultPollingForSource(
   source: AssetSourceKind,
-  stream: "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp",
+  stream: "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp" | "storage",
 ): PollingMethod | null {
   if (source === "fortimanager" || source === "fortigate") {
     // FortiOS exposes lldp-neighbors but most fleets don't enable LLDP per
     // interface, so the endpoint returns nothing on every probe. Default
     // off; operators flip to rest_api when their fleet actually has it.
     if (stream === "lldp") return "disabled";
+    // FortiOS appliances don't expose meaningful mountable storage; default
+    // off so the SNMP storage walk doesn't run wasted scrapes against every
+    // FortiGate / FortiSwitch / FortiAP. Operators opt in by picking SNMP.
+    if (stream === "storage") return "disabled";
     return "rest_api";
   }
   if (source === "activedirectory" || source === "entraid" || source === "windowsserver") {
@@ -676,6 +691,7 @@ async function loadClassOverride(
       temperaturePolling:         true,
       interfacesPolling:          true,
       lldpPolling:                true,
+      storagePolling:             true,
       responseTimeMibId:          true,
       cpuMemoryMibId:             true,
       temperatureMibId:           true,
@@ -712,6 +728,7 @@ async function loadClassOverride(
     if (isPollingMethod(row.temperaturePolling))  result.temperaturePolling  = row.temperaturePolling;
     if (isPollingMethod(row.interfacesPolling))   result.interfacesPolling   = row.interfacesPolling;
     if (isPollingMethod(row.lldpPolling))         result.lldpPolling         = row.lldpPolling;
+    if (isPollingMethod(row.storagePolling))      result.storagePolling      = row.storagePolling;
     if (row.responseTimeMibId)                    result.responseTimeMibId   = row.responseTimeMibId;
     if (row.cpuMemoryMibId)                       result.cpuMemoryMibId      = row.cpuMemoryMibId;
     if (row.temperatureMibId)                     result.temperatureMibId    = row.temperatureMibId;
@@ -757,6 +774,7 @@ export interface AssetMonitorContext {
   temperaturePolling?:       string | null;
   interfacesPolling?:        string | null;
   lldpPolling?:              string | null;
+  storagePolling?:           string | null;
   // Per-stream MIB id overrides on the asset itself. null = inherit.
   // Either `"std:<key>"` (UI hint only) or an uploaded MibFile UUID
   // (consumed by `collectCpuMemorySnmp` / `collectTemperatureSnmp` to override
@@ -831,7 +849,7 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
 
   // Per-stream polling resolution — see header comment above for rules.
   function resolveStream(
-    stream: "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp",
+    stream: "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp" | "storage",
     tierVal: PollingMethod | null,
     classVal: PollingMethod | null | undefined,
     assetVal: string | null | undefined,
@@ -878,6 +896,12 @@ export async function resolveMonitorSettings(asset: AssetMonitorContext): Promis
     tier3.lldpPolling,
     classOverride?.lldpPolling ?? null,
     asset.lldpPolling,
+  );
+  merged.storagePolling = resolveStream(
+    "storage",
+    tier3.storagePolling,
+    classOverride?.storagePolling ?? null,
+    asset.storagePolling,
   );
 
   // Per-stream MIB id resolution. Same tier order as polling, but no
@@ -972,6 +996,7 @@ export async function resolveMonitorSettingsWithProvenance(
     temperaturePolling:         tier3Source,
     interfacesPolling:          tier3Source,
     lldpPolling:                tier3Source,
+    storagePolling:             tier3Source,
     responseTimeMibId:          tier3Source,
     cpuMemoryMibId:             tier3Source,
     temperatureMibId:           tier3Source,
@@ -1009,6 +1034,7 @@ export async function resolveMonitorSettingsWithProvenance(
     if (classOverride.temperaturePolling)          { resolved.temperaturePolling  = classOverride.temperaturePolling;  provenance.temperaturePolling  = "class"; }
     if (classOverride.interfacesPolling)           { resolved.interfacesPolling   = classOverride.interfacesPolling;   provenance.interfacesPolling   = "class"; }
     if (classOverride.lldpPolling)                 { resolved.lldpPolling         = classOverride.lldpPolling;         provenance.lldpPolling         = "class"; }
+    if (classOverride.storagePolling)              { resolved.storagePolling      = classOverride.storagePolling;      provenance.storagePolling      = "class"; }
     if (classOverride.responseTimeMibId)           { resolved.responseTimeMibId   = classOverride.responseTimeMibId;   provenance.responseTimeMibId   = "class"; }
     if (classOverride.cpuMemoryMibId)              { resolved.cpuMemoryMibId      = classOverride.cpuMemoryMibId;      provenance.cpuMemoryMibId      = "class"; }
     if (classOverride.temperatureMibId)            { resolved.temperatureMibId    = classOverride.temperatureMibId;    provenance.temperatureMibId    = "class"; }
@@ -1059,7 +1085,7 @@ export async function resolveMonitorSettingsWithProvenance(
   // legacy "rest" or an incompatible value silently falls through to the
   // class/tier value.
   const sourceKindForAsset = assetSourceKindFromIntegrationType(asset.discoveredByIntegrationType ?? null);
-  function takeAssetPolling(stream: keyof Pick<MonitorTierSettings, "responseTimePolling" | "cpuMemoryPolling" | "temperaturePolling" | "interfacesPolling" | "lldpPolling">, raw: string | null | undefined) {
+  function takeAssetPolling(stream: keyof Pick<MonitorTierSettings, "responseTimePolling" | "cpuMemoryPolling" | "temperaturePolling" | "interfacesPolling" | "lldpPolling" | "storagePolling">, raw: string | null | undefined) {
     if (isPollingMethod(raw) && isPollingMethodCompatible(sourceKindForAsset, raw)) {
       resolved[stream] = raw;
       provenance[stream] = "asset";
@@ -1070,6 +1096,7 @@ export async function resolveMonitorSettingsWithProvenance(
   takeAssetPolling("temperaturePolling",  asset.temperaturePolling);
   takeAssetPolling("interfacesPolling",   asset.interfacesPolling);
   takeAssetPolling("lldpPolling",         asset.lldpPolling);
+  takeAssetPolling("storagePolling",      asset.storagePolling);
 
   // Per-asset MIB id overrides. Empty strings are treated as inherit; only
   // non-empty values take effect (matches the resolver's resolveMibId rule).
@@ -2663,7 +2690,12 @@ export async function collectFastFiltered(assetId: string): Promise<CollectionRe
     const wantSt = new Set(wantedStorage);
     const wantTn = new Set(wantedTunnels);
     const interfaces = wantedIfaces.length  ? full.interfaces.filter((i) => wantIf.has(i.ifName)) : [];
-    const storage    = wantedStorage.length ? full.storage.filter((s) => wantSt.has(s.mountPath)) : [];
+    // Storage is its own stream — drop pinned-storage scrapes when the resolved
+    // storagePolling isn't SNMP. Same independence rule as the full systemInfo
+    // pass above.
+    const storage    = (wantedStorage.length && effective.storagePolling === "snmp")
+      ? full.storage.filter((s) => wantSt.has(s.mountPath))
+      : [];
     const ipsecTunnels = (wantedTunnels.length && Array.isArray(full.ipsecTunnels))
       ? full.ipsecTunnels.filter((t) => wantTn.has(t.tunnelName))
       : undefined;
@@ -2875,6 +2907,14 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
           data.lldpNeighbors = neighbors;
           data.lldpSource    = "fortios";
         }
+      }
+      // Storage stream is independent of interfaces. Storage rows only come
+      // from the SNMP path (HOST-RESOURCES-MIB + vendor disk fallback); when
+      // the operator has storage routed anywhere but SNMP — including the
+      // FMG/FortiGate source default of "disabled" — drop the rows the SNMP
+      // walk produced as a side effect of the interfaces query.
+      if (effective.storagePolling !== "snmp") {
+        data.storage = [];
       }
       return { supported: true, data };
     }
@@ -5906,6 +5946,7 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       temperaturePolling:  true,
       interfacesPolling:   true,
       lldpPolling:         true,
+      storagePolling:      true,
       monitoredInterfaces: true,
       monitoredStorage: true,
       monitoredIpsecTunnels: true,
@@ -6033,9 +6074,23 @@ export async function runMonitorPass(opts?: { concurrency?: number; cadences?: M
       eff.cpuMemoryPolling !== "ssh"   &&
       !(eff.cpuMemoryPolling === "rest_api" && a.assetType === "switch");
     // systemInfo is supported for winrm/ssh paths; only exclude the REST API
-    // + managed-switch/AP combination that has no direct endpoint.
+    // + managed-switch/AP combination that has no direct endpoint. Treat the
+    // tick as runnable when ANY of the three streams it carries
+    // (interfaces / lldp / storage) is enabled — collectSystemInfo gates
+    // each stream internally (storage rows are dropped when storagePolling
+    // isn't SNMP; LLDP / interface paths each check their own resolved
+    // method). Today collectSystemInfo still bails when interfacesPolling
+    // is null even if storage/lldp would otherwise pull, so the OR here
+    // is forward-looking — fleets that want storage on SNMP also set
+    // interfacesPolling=snmp in practice, which both source defaults
+    // (FMG/FortiGate → rest_api, AD/Entra/manual → null + operator opt-in)
+    // already converge to.
+    const anySysInfoStream =
+      eff.interfacesPolling !== null ||
+      eff.lldpPolling       !== null ||
+      eff.storagePolling    !== null;
     const canSystemInfo =
-      eff.interfacesPolling !== null &&
+      anySysInfoStream &&
       !(eff.interfacesPolling === "rest_api" && isManagedSwitchOrAp);
 
     // Heavy-cadence suppression. Telemetry / systemInfo / fastFiltered run

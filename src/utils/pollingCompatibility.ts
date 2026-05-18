@@ -31,6 +31,9 @@
  */
 
 export type PollingMethod = "rest_api" | "snmp" | "winrm" | "ssh" | "icmp" | "disabled" | "agent";
+
+/** Streams resolved independently by the four-tier monitor settings hierarchy. */
+export type Stream = "responseTime" | "cpuMemory" | "temperature" | "interfaces" | "lldp" | "storage";
 export type AssetSourceKind =
   | "fortimanager"
   | "fortigate"

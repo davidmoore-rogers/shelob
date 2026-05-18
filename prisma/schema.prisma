@@ -335,6 +335,7 @@ model MonitorClassOverride {
   temperaturePolling        String?
   interfacesPolling         String?
   lldpPolling               String?
+  storagePolling            String?
   customWidgetPolling       String?
   // Per-stream credential overrides (FK to Credential, null = inherit)
   responseTimeCredentialId  String?
@@ -538,6 +539,7 @@ model Asset {
   temperaturePolling  String?
   interfacesPolling   String?
   lldpPolling         String?
+  storagePolling      String?
   // Slice 7 — custom-widget cadence. When the asset's manufacturer has at
   // least one ManufacturerCustomWidget AND this resolves to a non-"disabled"
   // method, collectCustomWidgets fires on the heavy loop. Compatible methods:

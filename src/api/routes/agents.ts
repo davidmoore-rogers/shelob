@@ -323,7 +323,8 @@ agentsRouter.get("/config", async (req, res, next) => {
       asset.cpuMemoryPolling    !== "agent" ||
       asset.temperaturePolling  !== "agent" ||
       asset.interfacesPolling   !== "agent" ||
-      asset.lldpPolling         !== "agent";
+      asset.lldpPolling         !== "agent" ||
+      asset.storagePolling      !== "agent";
     if (drift) {
       const before = {
         responseTimePolling: asset.responseTimePolling,
@@ -331,6 +332,7 @@ agentsRouter.get("/config", async (req, res, next) => {
         temperaturePolling:  asset.temperaturePolling,
         interfacesPolling:   asset.interfacesPolling,
         lldpPolling:         asset.lldpPolling,
+        storagePolling:      asset.storagePolling,
       };
       await prisma.asset.update({
         where: { id: assetId },
@@ -340,6 +342,7 @@ agentsRouter.get("/config", async (req, res, next) => {
           temperaturePolling:  "agent",
           interfacesPolling:   "agent",
           lldpPolling:         "agent",
+          storagePolling:      "agent",
         },
       });
       invalidateMonitorSettingsCache({
@@ -351,6 +354,7 @@ agentsRouter.get("/config", async (req, res, next) => {
       asset.temperaturePolling  = "agent";
       asset.interfacesPolling   = "agent";
       asset.lldpPolling         = "agent";
+      asset.storagePolling      = "agent";
       await logEvent({
         action:       "monitor.polling_overridden_by_agent",
         resourceType: "asset",

@@ -1707,6 +1707,7 @@ function getAssetFormData() {
       data.temperaturePolling  = polling.temperaturePolling;
       data.interfacesPolling   = polling.interfacesPolling;
       data.lldpPolling         = polling.lldpPolling;
+      data.storagePolling      = polling.storagePolling;
     }
     // Per-stream credential overrides. Empty string → null (source default).
     var rtCredEl   = document.getElementById("f-responseTimeCredential");
@@ -1761,6 +1762,7 @@ function assetMonitoringFormHTML(asset, managedAgent) {
     temperaturePolling:  asset && asset.temperaturePolling,
     interfacesPolling:   asset && asset.interfacesPolling,
     lldpPolling:         asset && asset.lldpPolling,
+    storagePolling:      asset && asset.storagePolling,
   };
   // Per-stream credential IDs (null = use source default at runtime).
   var rtCredId   = (asset && asset.responseTimeCredentialId)  || "";
@@ -1812,18 +1814,24 @@ function assetMonitoringFormHTML(asset, managedAgent) {
     var noteHtml    = note
       ? '<div style="font-size:0.72rem;font-weight:normal;color:var(--color-text-tertiary);margin-top:2px">' + escapeHtml(note) + '</div>'
       : '';
+    // Storage has no per-stream MIB column on Asset — HOST-RESOURCES-MIB +
+    // the vendor disk fallback in pickVendorProfileMerged covers it without
+    // operator input. Skip the MIB sub-row when no mibSelectId was passed.
+    var mibSubRow = mibSelectId
+      ? '<div id="' + pollingId + '-mib-wrap" style="display:' + mibDisplay + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
+          '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">MIB</label>' +
+          '<select id="' + mibSelectId + '" data-current-id="' + escapeHtml(currentMibId) + '" data-auto-mib-name="' + escapeHtml(autoMibName || "") + '" data-mib-picker="1" style="flex:1">' +
+            _mibOptionsHTML(currentMibId, autoMibName) +
+          '</select>' +
+        '</div>'
+      : '';
     return '<label style="margin:0">' + escapeHtml(label) + noteHtml + '</label>' +
       _polarisPollingDropdownHTML(pollingId, assetSourceKind, streamName, currentPoll) +
       '<div id="' + pollingId + '-cred-wrap" style="display:' + credDisplay + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
         '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">Credential</label>' +
         '<select id="' + credSelectId + '" data-current-id="' + escapeHtml(currentCredId) + '" style="flex:1"></select>' +
       '</div>' +
-      '<div id="' + pollingId + '-mib-wrap" style="display:' + mibDisplay + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
-        '<label style="margin:0;font-size:0.85rem;color:var(--color-text-secondary)">MIB</label>' +
-        '<select id="' + mibSelectId + '" data-current-id="' + escapeHtml(currentMibId) + '" data-auto-mib-name="' + escapeHtml(autoMibName || "") + '" data-mib-picker="1" style="flex:1">' +
-          _mibOptionsHTML(currentMibId, autoMibName) +
-        '</select>' +
-      '</div>';
+      mibSubRow;
   }
 
   var transportBlockHtml =
@@ -1834,6 +1842,7 @@ function assetMonitoringFormHTML(asset, managedAgent) {
         streamRow("CPU/Memory",     "telemetry",    "f-cpuMemoryPolling",    "f-cpuMemoryCredential",    "f-telemetryMib",    pollingCurrent.cpuMemoryPolling,    telCredId,  telMibId,  _autoMibNames.telemetry) +
         streamRow("Temperature",    "temperature",  "f-temperaturePolling",  "f-temperatureCredential",  "f-temperatureMib",  pollingCurrent.temperaturePolling,  tempCredId, tempMibId, _autoMibNames.temperature) +
         streamRow("Interfaces",     "interfaces",   "f-interfacesPolling",   "f-interfacesCredential",   "f-interfacesMib",   pollingCurrent.interfacesPolling,   ifCredId,   ifMibId,   _autoMibNames.interfaces) +
+        streamRow("Storage",        "storage",      "f-storagePolling",      "f-storageCredential",      null,                pollingCurrent.storagePolling,      "",         "",        null) +
         streamRow("LLDP neighbors", "lldp",         "f-lldpPolling",         "f-lldpCredential",         "f-lldpMib",         pollingCurrent.lldpPolling,         lldpCredId, lldpMibId, _autoMibNames.lldp) +
       '</div>' +
       '<p class="hint" style="margin-top:0.25rem">Per-asset overrides win over class / integration / source-default tiers. When a method needs a credential, "Source default" lets the asset inherit the integration\'s configured credential at runtime.</p>' +
@@ -1992,12 +2001,16 @@ async function _wireMonitorEditTab(asset) {
 
   var transportWrap = document.getElementById("f-transport-wrap");
 
-  // Per-stream selects and their corresponding polling selects.
+  // Per-stream selects and their corresponding polling selects. Storage has
+  // no MIB picker (HOST-RESOURCES-MIB + vendor fallback covers it without
+  // operator input), so mibId is null and the wiring helper below skips the
+  // MIB-show/hide step for that row.
   var streamDefs = [
     { pollId: "f-responseTimePolling", credId: "f-responseTimeCredential", mibId: "f-responseTimeMib" },
     { pollId: "f-cpuMemoryPolling",    credId: "f-cpuMemoryCredential",    mibId: "f-telemetryMib"    },
     { pollId: "f-temperaturePolling",  credId: "f-temperatureCredential",  mibId: "f-temperatureMib"  },
     { pollId: "f-interfacesPolling",   credId: "f-interfacesCredential",   mibId: "f-interfacesMib"   },
+    { pollId: "f-storagePolling",      credId: "f-storageCredential",      mibId: null                },
     { pollId: "f-lldpPolling",         credId: "f-lldpCredential",         mibId: "f-lldpMib"         },
   ];
 
@@ -2018,8 +2031,9 @@ async function _wireMonitorEditTab(asset) {
         credWrap.style.display = "none";
       }
     }
-    // MIB sub-row appears only when the stream is set to SNMP.
-    if (mibWrap) mibWrap.style.display = (method === "snmp") ? "flex" : "none";
+    // MIB sub-row appears only when the stream is set to SNMP. Streams that
+    // don't carry a MIB picker (storage) have no wrap div to toggle.
+    if (mibWrap && streamDef.mibId) mibWrap.style.display = (method === "snmp") ? "flex" : "none";
   }
 
   function refresh() {
@@ -2141,6 +2155,7 @@ async function _populateAssetMonitorTierBadges(asset) {
   updatePollingInheritLabel("f-temperaturePolling",  "temperaturePolling");
   updatePollingInheritLabel("f-interfacesPolling",   "interfacesPolling");
   updatePollingInheritLabel("f-lldpPolling",         "lldpPolling");
+  updatePollingInheritLabel("f-storagePolling",      "storagePolling");
 }
 
 /**
@@ -2897,7 +2912,8 @@ function _assetHasAgentIntent(a, agent) {
   return a.responseTimePolling === "agent" ||
          a.cpuMemoryPolling    === "agent" ||
          a.interfacesPolling   === "agent" ||
-         a.lldpPolling         === "agent";
+         a.lldpPolling         === "agent" ||
+         a.storagePolling      === "agent";
 }
 
 function assetAgentSubpanelHTML(a, agent) {
@@ -6145,6 +6161,7 @@ async function _fetchPollingTransitions(assetId, since, until) {
     cpuMemoryPolling:          "Telemetry polling",
     interfacesPolling:         "Interfaces polling",
     lldpPolling:               "LLDP polling",
+    storagePolling:            "Storage polling",
     monitorCredentialId:       "Credential",
   };
   var params = {
@@ -10382,6 +10399,7 @@ function _monsetOverrideSummary(o) {
     temperaturePolling:        "temp-poll",
     interfacesPolling:         "if-poll",
     lldpPolling:               "lldp-poll",
+    storagePolling:            "storage-poll",
   };
   Object.keys(labels).forEach(function (k) {
     if (o[k] !== null && o[k] !== undefined) parts.push(labels[k] + "=" + o[k]);
@@ -10477,7 +10495,7 @@ function _monsetOpenOverrideEditor(existing) {
 
   // Wire per-stream polling dropdowns to show/hide credential + MIB sub-rows.
   function _refreshOvStreamSubRows() {
-    ["responseTime", "telemetry", "temperature", "interfaces", "lldp"].forEach(function (stream) {
+    ["responseTime", "telemetry", "temperature", "interfaces", "lldp", "storage"].forEach(function (stream) {
       var pollEl    = document.getElementById("monset-ov-" + stream + "Polling");
       var credWrap  = document.getElementById("monset-ov-" + stream + "-cred-wrap");
       var mibWrap   = document.getElementById("monset-ov-" + stream + "-mib-wrap");
@@ -10489,7 +10507,7 @@ function _monsetOpenOverrideEditor(existing) {
     });
   }
   _refreshOvStreamSubRows();
-  ["responseTime", "telemetry", "temperature", "interfaces", "lldp"].forEach(function (stream) {
+  ["responseTime", "telemetry", "temperature", "interfaces", "lldp", "storage"].forEach(function (stream) {
     var pollEl = document.getElementById("monset-ov-" + stream + "Polling");
     if (pollEl) pollEl.addEventListener("change", _refreshOvStreamSubRows);
   });
@@ -10529,7 +10547,7 @@ function _monsetOpenOverrideEditor(existing) {
           _polarisReadMibFourStream("monset-ov-")
         );
         var allowed = _POLLING_COMPAT[kind] || _POLLING_COMPAT.manual;
-        ["responseTimePolling", "cpuMemoryPolling", "temperaturePolling", "interfacesPolling", "lldpPolling"].forEach(function (k) {
+        ["responseTimePolling", "cpuMemoryPolling", "temperaturePolling", "interfacesPolling", "lldpPolling", "storagePolling"].forEach(function (k) {
           if (currentValues[k] && allowed.indexOf(currentValues[k]) === -1) currentValues[k] = null;
         });
         var block = document.getElementById("monset-ov-polling-block");
@@ -10543,7 +10561,7 @@ function _monsetOpenOverrideEditor(existing) {
           });
           _populateUploadedMibsInDropdowns();
           _refreshOvStreamSubRows();
-          ["responseTime", "telemetry", "temperature", "interfaces", "lldp"].forEach(function (stream) {
+          ["responseTime", "telemetry", "temperature", "interfaces", "lldp", "storage"].forEach(function (stream) {
             var pollEl = document.getElementById("monset-ov-" + stream + "Polling");
             if (pollEl) pollEl.addEventListener("change", _refreshOvStreamSubRows);
           });

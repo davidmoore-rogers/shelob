@@ -41,10 +41,13 @@ var _POLLING_COMPAT = {
 function _polarisSourceDefaultPolling(source, stream) {
   if (source === "fortimanager" || source === "fortigate") {
     if (stream === "lldp") return "disabled";
+    // FortiOS appliances don't expose meaningful mountable storage; default
+    // off so operators opt in by picking SNMP at any tier when they need it.
+    if (stream === "storage") return "disabled";
     return "rest_api";
   }
   if (stream === "responseTime") return "icmp";
-  return null; // telemetry/interfaces/lldp not delivered on AD/Entra/Win/Manual by default
+  return null; // telemetry/interfaces/lldp/storage not delivered on AD/Entra/Win/Manual by default
 }
 
 // Builds a polling-method <select>. When `currentValue` is null/empty/missing
@@ -182,6 +185,7 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
     { key: "telemetry",     label: "CPU/Memory",     pollField: "cpuMemoryPolling",     credField: "cpuMemoryCredentialId",     mibField: "cpuMemoryMibId"     },
     { key: "temperature",   label: "Temperature",    pollField: "temperaturePolling",   credField: "temperatureCredentialId",   mibField: "temperatureMibId"  },
     { key: "interfaces",    label: "Interfaces",     pollField: "interfacesPolling",    credField: "interfacesCredentialId",    mibField: "interfacesMibId"    },
+    { key: "storage",       label: "Storage",        pollField: "storagePolling",       credField: "storageCredentialId",       mibField: null,                  noMib: true },
     { key: "lldp",          label: "LLDP neighbors", pollField: "lldpPolling",          credField: "lldpCredentialId",          mibField: "lldpMibId"          },
   ];
 
@@ -189,9 +193,12 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
   streams.forEach(function (s) {
     var pollIsSnmp = (current[s.pollField] === "snmp");
 
-    // Optional per-stream credential sub-row (class override tier).
+    // Optional per-stream credential sub-row (class override tier). Storage
+    // has no dedicated per-stream credential column — the SNMP storage walk
+    // reuses whichever credential the interfaces stream resolved (the same
+    // session pulls hrStorageTable alongside ifTable), so skip the row.
     var credSubRow = "";
-    if (showCredRows) {
+    if (showCredRows && !s.noMib) {
       var currentCredId = credValues[s.credField] || "";
       var credOpts = '<option value="">— Inherit (use integration credential) —</option>';
       credentials.forEach(function (c) {
@@ -204,9 +211,12 @@ function _polarisPollingFourStreamHTML(idPrefix, source, current, opts) {
       '</div>';
     }
 
-    // Optional per-stream MIB sub-row.
+    // Optional per-stream MIB sub-row. Storage has no per-stream MIB column —
+    // the SNMP storage walk hits HOST-RESOURCES-MIB hrStorageTable with a
+    // vendor fallback through pickVendorProfileMerged; there's nothing the
+    // operator can usefully pick from a MIB list, so skip the row entirely.
     var mibSubRow = "";
-    if (showMibRows) {
+    if (showMibRows && !s.noMib && s.mibField) {
       var currentMibId = mibValues[s.mibField] || "";
       var autoMibName  = (opts.autoMibNames || _autoMibNamesForSource(source))[s.key] || "";
       mibSubRow = '<div id="' + idPrefix + s.key + '-mib-wrap" style="display:' + (pollIsSnmp ? "flex" : "none") + ';grid-column:2;align-items:center;gap:0.5rem;margin-top:0.25rem">' +
@@ -239,6 +249,7 @@ function _polarisReadPollingFourStream(idPrefix) {
     temperaturePolling:  _polarisReadPollingDropdown(idPrefix + "temperaturePolling"),
     interfacesPolling:   _polarisReadPollingDropdown(idPrefix + "interfacesPolling"),
     lldpPolling:         _polarisReadPollingDropdown(idPrefix + "lldpPolling"),
+    storagePolling:      _polarisReadPollingDropdown(idPrefix + "storagePolling"),
   };
 }
 
@@ -1408,6 +1419,9 @@ function _syncCredentialPickerVisibility() {
     { pollId: "f-mon-tier-temperaturePolling",  mibWrapId: "f-mon-tier-temperature-mib-wrap"  },
     { pollId: "f-mon-tier-interfacesPolling",   mibWrapId: "f-mon-tier-interfaces-mib-wrap"   },
     { pollId: "f-mon-tier-lldpPolling",         mibWrapId: "f-mon-tier-lldp-mib-wrap"         },
+    // Storage has no per-stream MIB picker (HOST-RESOURCES-MIB + vendor
+    // fallback; nothing for the operator to choose), so mibWrapId is null.
+    { pollId: "f-mon-tier-storagePolling",      mibWrapId: null                                },
   ];
   var anySnmp = false, anySsh = false;
   for (var i = 0; i < streamDefs.length; i++) {
@@ -1415,9 +1429,12 @@ function _syncCredentialPickerVisibility() {
     if (!el) continue;
     if (el.value === "snmp") anySnmp = true;
     if (el.value === "ssh")  anySsh  = true;
-    // Show/hide the per-stream MIB sub-row for this stream.
-    var mibWrap = document.getElementById(streamDefs[i].mibWrapId);
-    if (mibWrap) mibWrap.style.display = (el.value === "snmp") ? "flex" : "none";
+    // Show/hide the per-stream MIB sub-row for this stream. mibWrapId is null
+    // for streams that don't carry a MIB picker (storage).
+    if (streamDefs[i].mibWrapId) {
+      var mibWrap = document.getElementById(streamDefs[i].mibWrapId);
+      if (mibWrap) mibWrap.style.display = (el.value === "snmp") ? "flex" : "none";
+    }
   }
   var snmpRowIds = ["f-mon-credential-row", "f-mon-fortiswitch-credentialId-row", "f-mon-fortiap-credentialId-row"];
   var sshRowIds  = ["f-mon-credential-ssh-row", "f-mon-fortiswitch-sshCredentialId-row", "f-mon-fortiap-sshCredentialId-row"];
@@ -1436,7 +1453,7 @@ function _syncCredentialPickerVisibility() {
 // method. Also runs once on initial mount so a freshly-opened modal lands in
 // the correct state.
 function _wireCredentialPickerVisibility() {
-  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-cpuMemoryPolling", "f-mon-tier-temperaturePolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling"];
+  var ids = ["f-mon-tier-responseTimePolling", "f-mon-tier-cpuMemoryPolling", "f-mon-tier-temperaturePolling", "f-mon-tier-interfacesPolling", "f-mon-tier-lldpPolling", "f-mon-tier-storagePolling"];
   var any = false;
   for (var i = 0; i < ids.length; i++) {
     var el = document.getElementById(ids[i]);
