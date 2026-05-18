@@ -1696,7 +1696,11 @@
     // paths know which ones need attention; clean polygons are skipped.
     poly._polarisSavedPolygon = polygonLatLngsToPairs(poly);
     poly._polarisDirty = false;
-    poly.on("editvertex", function () {
+    // leaflet-draw 1.0.4 fires plain "edit" on the polygon at each vertex
+     // drag-end / midpoint-drag-conversion / vertex-deletion. The map gets
+     // "draw:editvertex" (constant L.Draw.Event.EDITVERTEX) — that name does
+     // NOT fire on the polygon itself, so this listener must be "edit".
+    poly.on("edit", function () {
       // Midpoint-drag→vertex conversions add fresh markers; vertex deletions
       // remove them. Either way, re-color so the dot set always matches the
       // region. Deferred so the marker DOM is settled when we walk it.

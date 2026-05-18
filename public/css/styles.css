@@ -224,6 +224,9 @@ code {
   margin-left: auto;
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
+.nav-conflict-dot.nav-conflict-dot--warning {
+  background: var(--color-warning);
+}
 .sidebar-nav {
   list-style: none;
   display: flex;
@@ -832,6 +835,12 @@ code {
 }
 
 /* ─── Buttons ──────────────────────────────────────────────────────────────── */
+/* The user-agent `[hidden] { display: none }` rule has lower specificity
+ * than `.btn { display: inline-flex }`, so `btn.hidden = true` silently
+ * fails to hide .btn buttons. Force the override at the class+attribute
+ * tier so JS setting `hidden` actually hides the button. */
+.btn[hidden] { display: none !important; }
+
 .btn {
   display: inline-flex;
   align-items: center;
