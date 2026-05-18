@@ -274,7 +274,6 @@
       '<div class="dashboard-widget-header">' +
         '<div class="dashboard-widget-title" draggable="true">' + escapeHtml(label) + '</div>' +
         '<button type="button" class="dashboard-widget-action" data-action="gear" title="Configure">⚙</button>' +
-        '<button type="button" class="dashboard-widget-action" data-action="remove" title="Remove">×</button>' +
       '</div>' +
       '<div class="dashboard-widget-body"></div>' +
       '<div class="dashboard-widget-resize" data-action="resize" title="Resize"></div>';
@@ -289,12 +288,9 @@
     });
     titleEl.addEventListener("dragend", function () { article.classList.remove("dragging"); });
 
-    article.querySelector('[data-action="remove"]').addEventListener("click", function () {
-      removeWidget(w.id);
-    });
     article.querySelector('[data-action="gear"]').addEventListener("click", function (ev) {
       ev.stopPropagation();
-      openGearPopover(w, article);
+      openGearPopover(w, ev.currentTarget);
     });
 
     // Resize handle.
@@ -482,13 +478,18 @@
     });
     pop.querySelector('[data-action="close"]').addEventListener("click", closePopover);
 
-    // Position below the anchor, right-aligned to the gear.
+    // Position next to the gear icon — prefer to the left of the gear so the
+    // popover hangs into the widget area; fall back to the right when the
+    // widget hugs the left edge of the viewport.
     var anchorRect = anchorEl.getBoundingClientRect();
-    var top = anchorRect.top + window.scrollY + anchorRect.height + 4;
-    var width = Math.min(320, Math.max(240, anchorRect.width / 2));
+    var width = 260;
     pop.style.width = width + "px";
-    var left = anchorRect.right + window.scrollX - width;
-    if (left < 8) left = 8;
+    var top = anchorRect.top + window.scrollY;
+    var leftSide = anchorRect.left + window.scrollX - width - 6;
+    var rightSide = anchorRect.right + window.scrollX + 6;
+    var left = leftSide >= 8 ? leftSide : rightSide;
+    var viewportRight = window.scrollX + document.documentElement.clientWidth - 8;
+    if (left + width > viewportRight) left = Math.max(8, viewportRight - width);
     pop.style.top = top + "px";
     pop.style.left = left + "px";
 
