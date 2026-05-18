@@ -28,6 +28,7 @@ import { spawn } from "node:child_process";
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import { URL } from "node:url";
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as snmp from "net-snmp";
 import { Client as SshClient } from "ssh2";
 
@@ -1837,6 +1838,44 @@ function mapSnmpPrivProtocol(value: unknown): unknown {
   }
 }
 
+// Per-handler verbose-phase tracing. AsyncLocalStorage stashes the asset /
+// cadence / verbose flag once at the cadence handler entry; every
+// `startPhase(...)` call inside the async chain reads it without needing
+// the flag plumbed through every collector signature. Used to diagnose
+// where time goes inside a systemInfo handler that gets killed at the
+// 300s pg-boss expireInSeconds cap — flip `verboseLogging` on the asset's
+// originating integration and the next burst leaves a paper trail of which
+// phase took 300s.
+//
+// `verbose: false` (the default) makes `startPhase` a no-op closure — zero
+// per-tick allocation when the flag is off.
+interface MonitorPhaseContext {
+  assetId: string;
+  cadence: "probe" | "telemetry" | "systemInfo" | "fastFiltered";
+  verbose: boolean;
+}
+const monitorPhaseStorage = new AsyncLocalStorage<MonitorPhaseContext>();
+
+/**
+ * Open a phase span. Returns a closer that emits one `monitor.phase` log
+ * with elapsed ms + any extras when called. No-op when verbose is off.
+ *
+ * Always pair `startPhase` with calling the returned closer in a finally
+ * block so partial completion (throws mid-phase) still emits.
+ */
+function startPhase(name: string): (extras?: Record<string, unknown>) => void {
+  const ctx = monitorPhaseStorage.getStore();
+  if (!ctx?.verbose) return () => {};
+  const startedAt = Date.now();
+  const { assetId, cadence } = ctx;
+  return (extras?: Record<string, unknown>) => {
+    logger.info(
+      { verbose: true, phase: name, assetId, cadence, elapsedMs: Date.now() - startedAt, ...(extras ?? {}) },
+      "monitor.phase",
+    );
+  };
+}
+
 // Per-SNMP-target serialization gate. Many switch/AP SNMP agents are
 // single-threaded — a heavy walk (IF-MIB + LLDP + storage) running in
 // parallel with a cheap sysUpTime probe pins the agent's request queue
@@ -1856,8 +1895,25 @@ async function withSnmpGate<T>(host: string, port: number, fn: () => Promise<T>)
   const next = new Promise<void>((res) => { release = res; });
   const chained = prev.then(() => next);
   snmpGate.set(key, chained);
+  const enqueuedAt = Date.now();
   try {
     await prev;
+    const waitMs = Date.now() - enqueuedAt;
+    // Always-on warning when a heavy collector is queued behind another
+    // collector on the same SNMP agent for more than 5 seconds. Surfaces
+    // the "wedged systemInfo holds the gate for 300s" hypothesis without
+    // needing verboseLogging enabled. Fires at most once per gate
+    // acquisition. The cheap-probe path resets `start` after the await
+    // (see probeSnmp) so reported response times aren't polluted by wait.
+    if (waitMs > 5000) {
+      logger.warn({ host, port, waitMs }, "SNMP gate wait > 5s");
+    }
+    // Phase tracing for the current handler. Captures the wait portion
+    // separately from the fn() runtime so the operator can tell at a
+    // glance whether the time was spent queued (= upstream walk holding
+    // the agent) or actively walking (= this asset's SNMP agent slow).
+    const endPhase = startPhase("snmp.gate_wait");
+    endPhase({ host, port, waitMs });
     return await fn();
   } finally {
     release();
@@ -2679,17 +2735,21 @@ export async function recordFastFilteredResult(assetId: string, result: Collecti
 }
 
 export async function collectSystemInfo(assetId: string): Promise<CollectionResult<SystemInfoSample>> {
+  const endLoad = startPhase("systeminfo.load_asset");
   const asset = await prisma.asset.findUnique({
     where: { id: assetId },
     include: { monitorCredential: true, interfacesCredential: true, lldpCredential: true, discoveredByIntegration: true },
   });
+  endLoad({ found: !!asset });
   if (!asset)            return { supported: false, error: "Asset not found" };
   if (!asset.monitored)  return { supported: false };
 
+  const endResolve = startPhase("systeminfo.resolve_settings");
   const effective = await resolveMonitorSettings({
     ...asset,
     discoveredByIntegrationType: asset.discoveredByIntegration?.type ?? null,
   });
+  endResolve();
   const interfacesPolling = effective.interfacesPolling;
   const lldpPolling       = effective.lldpPolling;
   // No interfaces stream → no system-info to collect. LLDP-only without an
@@ -2769,6 +2829,7 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
       if (interfacesPolling === "snmp") {
         // SNMP-path interfaces+storage. Fetch LLDP via the same session iff
         // the LLDP polling agrees; otherwise leave it out and overlay below.
+        const endSnmp = startPhase("systeminfo.snmp.session");
         data = await collectSystemInfoSnmp(targetIp, snmpCfg!, {
           includeLldp:  lldpPolling === "snmp",
           timeoutMs:    sysInfoTimeout,
@@ -2777,30 +2838,39 @@ export async function collectSystemInfo(assetId: string): Promise<CollectionResu
           os:           asset.os,
           assetType:    asset.assetType,
         });
+        endSnmp({ interfaces: data.interfaces.length, storage: data.storage.length, lldp: data.lldpNeighbors?.length ?? null });
         if (isFortinetSrc && integration) {
           applyFortiInterfaceFilter(data.interfaces, integration as any);
           // IPsec always via REST when the source is Fortinet — SNMP has no equivalent.
+          const endIpsec = startPhase("systeminfo.snmp.ipsec_overlay_rest");
           const ipsec = await collectIpsecOnlyFortinetSafe(targetIp, integration as any, sysInfoTimeout);
+          endIpsec({ tunnels: ipsec?.length ?? null });
           if (ipsec !== undefined) data.ipsecTunnels = ipsec;
         }
       } else {
         // FortiOS REST path. Skip the FortiOS LLDP call when LLDP is on SNMP.
+        const endRest = startPhase("systeminfo.rest.fortinet");
         data = await collectSystemInfoFortinet(targetIp, integration as any, {
           includeIpsec: true,
           includeLldp:  lldpPolling === "rest_api",
           timeoutMs:    sysInfoTimeout,
         });
+        endRest({ interfaces: data.interfaces.length, ipsec: data.ipsecTunnels?.length ?? null, lldp: data.lldpNeighbors?.length ?? null });
       }
       // Cross-transport LLDP overlay: when the chosen LLDP source differs
       // from the interfaces source we already used above.
       if (lldpPolling === "snmp" && interfacesPolling === "rest_api" && lldpSnmpCfg) {
+        const endOverlay = startPhase("systeminfo.lldp_overlay_snmp");
         const neighbors = await collectLldpOnlySnmp(targetIp, lldpSnmpCfg, sysInfoTimeout).catch(() => undefined);
+        endOverlay({ neighbors: neighbors?.length ?? null });
         if (neighbors !== undefined) {
           data.lldpNeighbors = neighbors;
           data.lldpSource    = "snmp";
         }
       } else if (lldpPolling === "rest_api" && interfacesPolling === "snmp" && isFortinetSrc && integration && !isManagedSwitchOrAp) {
+        const endOverlay = startPhase("systeminfo.lldp_overlay_rest");
         const neighbors = await collectLldpOnlyFortinet(targetIp, integration as any, sysInfoTimeout).catch(() => undefined);
+        endOverlay({ neighbors: neighbors?.length ?? null });
         if (neighbors !== undefined) {
           data.lldpNeighbors = neighbors;
           data.lldpSource    = "fortios";
@@ -2955,19 +3025,32 @@ async function collectSystemInfoFortinet(
   // is captured and only re-thrown if it would have ended up with an empty
   // interfaces[] (matching the prior behavior where monitor failure with
   // no interfaces threw, but partial success returned).
+  const endCmdb = startPhase("systeminfo.rest.cmdb_interface");
   const cmdbInterfacePromise = fgRequest<any>(fg, "GET", "/api/v2/cmdb/system/interface", { query: { vdom: "root" }, timeoutMs })
-    .catch(() => null as any);
+    .catch(() => null as any)
+    .then((res) => { endCmdb({ ok: res != null }); return res; });
+  const endMonitorIf = startPhase("systeminfo.rest.monitor_interface");
   const monitorInterfacePromise = fgRequest<any>(fg, "GET", "/api/v2/monitor/system/interface", {
     query: { scope: "vdom", include_vlan: "true", include_aggregate: "true" },
     timeoutMs,
   })
-    .then((res) => ({ ok: true as const, res }))
-    .catch((err) => ({ ok: false as const, err }));
+    .then((res) => { endMonitorIf({ ok: true }); return { ok: true as const, res }; })
+    .catch((err) => { endMonitorIf({ ok: false }); return { ok: false as const, err }; });
   const ipsecPromise = opts.includeIpsec
-    ? collectIpsecTunnelsFortinet(fg, timeoutMs).catch(() => [] as IpsecTunnelSample[])
+    ? (() => {
+        const endIpsec = startPhase("systeminfo.rest.ipsec");
+        return collectIpsecTunnelsFortinet(fg, timeoutMs)
+          .catch(() => [] as IpsecTunnelSample[])
+          .then((tunnels) => { endIpsec({ tunnels: tunnels.length }); return tunnels; });
+      })()
     : Promise.resolve<IpsecTunnelSample[] | undefined>(undefined);
   const lldpPromise = opts.includeLldp !== false
-    ? collectLldpNeighborsFortinet(fg, timeoutMs).catch(() => undefined)
+    ? (() => {
+        const endLldp = startPhase("systeminfo.rest.lldp");
+        return collectLldpNeighborsFortinet(fg, timeoutMs)
+          .catch(() => undefined)
+          .then((neighbors) => { endLldp({ neighbors: neighbors?.length ?? null }); return neighbors; });
+      })()
     : Promise.resolve<LldpNeighborSample[] | undefined>(undefined);
 
   const [cmdbRes, monitorOutcome, ipsecTunnels, lldpNeighbors] = await Promise.all([
@@ -4153,6 +4236,7 @@ async function collectSystemInfoSnmp(
   return await withSnmpSession(host, config, async (session) => {
     // Storage: walk hrStorage and pick rows tagged as fixed/removable disk.
     const storage: StorageSample[] = [];
+    const endStorage = startPhase("systeminfo.snmp.storage_walk");
     try {
       const types = await snmpWalk(session, OID.hrStorageType);
       const diskIdxs = [...types.entries()].filter(([, v]) => {
@@ -4178,6 +4262,7 @@ async function collectSystemInfoSnmp(
         }
       }
     } catch { /* fall through; storage stays empty */ }
+    endStorage({ disks: storage.length });
 
     // Vendor disk fallback: when HRM returned no disk rows (typical on
     // devices whose SNMP agents don't implement hrStorageTable — FortiSwitches,
@@ -4211,6 +4296,7 @@ async function collectSystemInfoSnmp(
     // ifName / ifHC*Octets / ifHighSpeed when present; otherwise fall back
     // to the legacy 32-bit columns.
     const interfaces: InterfaceSample[] = [];
+    const endIfaces = startPhase("systeminfo.snmp.interfaces_walk");
     try {
       const [
         names, descrs, admin, oper, speeds, hiSpeeds, mac,
@@ -4272,6 +4358,7 @@ async function collectSystemInfoSnmp(
         });
       }
     } catch { /* fall through */ }
+    endIfaces({ interfaces: interfaces.length });
 
     // LLDP-MIB neighbors. Best-effort — devices without LLDP-MIB return empty
     // walks (we treat that as "unsupported" so we don't wipe stored rows on
@@ -4281,9 +4368,11 @@ async function collectSystemInfoSnmp(
     // false lets the caller skip this when the operator routed LLDP to REST.
     let lldpNeighbors: LldpNeighborSample[] | undefined;
     if (opts.includeLldp !== false) {
+      const endLldp = startPhase("systeminfo.snmp.lldp_walk");
       try {
         lldpNeighbors = await collectLldpNeighborsSnmp(session);
       } catch { /* leave undefined; persist layer leaves stored rows alone */ }
+      endLldp({ neighbors: lldpNeighbors?.length ?? null });
     }
 
     // Wireless stations — only attempted on FortiAP assets. fapStationTable
@@ -4293,9 +4382,11 @@ async function collectSystemInfoSnmp(
     // alone, [] wipes them.
     let wirelessStations: WirelessStationSample[] | undefined;
     if (opts.assetType === "access_point") {
+      const endWireless = startPhase("systeminfo.snmp.wireless_walk");
       try {
         wirelessStations = await collectWirelessStationsSnmp(session);
       } catch { /* leave undefined */ }
+      endWireless({ stations: wirelessStations?.length ?? null });
     }
 
     return {
@@ -4743,6 +4834,7 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     const monitorAssocEntries = buildMonitorAssocIpEntries(d.interfaces, now);
     if (monitorAssocEntries.length > 0) {
       const stopWrite = startSampleWriteTimer("asset_associated_ips");
+      const endAssoc = startPhase("systeminfo.persist.assoc_ips_txn");
       await prisma.$transaction([
         prisma.assetAssociatedIp.deleteMany({
           where: { assetId, source: { not: "manual" } },
@@ -4752,6 +4844,7 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
           skipDuplicates: true,
         }),
       ]);
+      endAssoc({ rows: monitorAssocEntries.length });
       stopWrite();
     }
     // LLDP neighbors. `undefined` = the collector didn't run / unsupported
@@ -4759,7 +4852,9 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     // = queried successfully → replace the asset's neighbor set.
     if (Array.isArray(d.lldpNeighbors)) {
       const stopWrite = startSampleWriteTimer("asset_lldp_neighbors");
+      const endLldp = startPhase("systeminfo.persist.lldp");
       await persistLldpNeighbors(assetId, d.lldpNeighbors, now, d.lldpSource ?? "fortios");
+      endLldp({ neighbors: d.lldpNeighbors.length });
       stopWrite();
     }
     // Wireless stations (FortiAP only). Same undefined/[] semantics as LLDP —
@@ -4768,7 +4863,9 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     // design and a missing station means the client roamed or disconnected.
     if (Array.isArray(d.wirelessStations)) {
       const stopWrite = startSampleWriteTimer("asset_wireless_stations");
+      const endWireless = startPhase("systeminfo.persist.wireless");
       await persistWirelessStations(assetId, d.wirelessStations);
+      endWireless({ stations: d.wirelessStations.length });
       stopWrite();
     }
     // Only bump lastSystemInfoAt when the scrape returned interfaces. The
@@ -4783,7 +4880,9 @@ export async function recordSystemInfoResult(assetId: string, result: Collection
     // own latest-row timestamp and are written above unconditionally, so they
     // still refresh on every successful pull.
     if (d.interfaces.length > 0) {
+      const endUpdate = startPhase("systeminfo.persist.update_asset");
       await prisma.asset.update({ where: { id: assetId }, data: { lastSystemInfoAt: now } });
+      endUpdate();
     }
   }
 }
@@ -4805,7 +4904,9 @@ async function persistLldpNeighbors(
   now: Date,
   defaultSource: "fortios" | "snmp" | string,
 ): Promise<void> {
+  const endMatch = startPhase("systeminfo.persist.lldp_match_index");
   const matchIndex = await getLldpAssetMatchIndex();
+  endMatch();
   const matchedFor = (n: LldpNeighborSample): string | null => {
     if (n.managementIp) {
       const m = matchIndex.byIp.get(n.managementIp);
@@ -4858,7 +4959,9 @@ async function persistLldpNeighbors(
 
   // Existing rows for diffing. Keyed the same way the unique index is —
   // (localIfName, chassisId ?? "", portId ?? "") to handle Postgres-distinct nulls.
+  const endFind = startPhase("systeminfo.persist.lldp_find_existing");
   const existing = await prisma.assetLldpNeighbor.findMany({ where: { assetId } });
+  endFind({ rows: existing.length });
   const seen = new Set<string>();
   const keyOf = (li: string, ci: string | null | undefined, pi: string | null | undefined) =>
     `${li}${ci ?? ""}${pi ?? ""}`;
@@ -4930,17 +5033,23 @@ async function persistLldpNeighbors(
   // Order: creates first so a brand-new neighbor is visible before stale
   // siblings on the same port get deleted.
   if (toCreate.length > 0) {
+    const endCreate = startPhase("systeminfo.persist.lldp_createMany");
     await prisma.assetLldpNeighbor.createMany({ data: toCreate as any });
+    endCreate({ rows: toCreate.length });
   }
   if (toUpdate.length > 0) {
+    const endUpdate = startPhase("systeminfo.persist.lldp_update_txn");
     await prisma.$transaction(
       toUpdate.map((u) =>
         prisma.assetLldpNeighbor.update({ where: { id: u.id }, data: u.data as any }),
       ),
     );
+    endUpdate({ rows: toUpdate.length });
   }
   if (toDelete.length > 0) {
+    const endDelete = startPhase("systeminfo.persist.lldp_deleteMany");
     await prisma.assetLldpNeighbor.deleteMany({ where: { id: { in: toDelete } } });
+    endDelete({ rows: toDelete.length });
   }
 }
 
@@ -5128,6 +5237,14 @@ async function buildLldpAssetMatchIndex(): Promise<{
   byMac: Map<string, string>;
   byHostname: Map<string, string>;
 }> {
+  // Always-on logging around the full-fleet findMany: the rebuild fires at
+  // most every 60 s on TTL miss, so log volume is bounded, and "the rebuild
+  // wedged" is one of the leading hypotheses for systemInfo handler stalls
+  // (every concurrent handler awaits the same inflight Promise — if it
+  // never settles, every awaiter times out together). Pair of start +
+  // complete lines gives the operator wall-clock for the rebuild itself.
+  const startedAt = Date.now();
+  logger.info({ phase: "lldp_match_index.rebuild_start" }, "LLDP match index rebuild started");
   const rows = await prisma.asset.findMany({
     select: {
       id: true, ipAddress: true, macAddress: true, hostname: true, dnsName: true,
@@ -5135,6 +5252,10 @@ async function buildLldpAssetMatchIndex(): Promise<{
       macAddressRows:   { select: { mac: true } },
     },
   });
+  logger.info(
+    { phase: "lldp_match_index.rebuild_complete", elapsedMs: Date.now() - startedAt, assets: rows.length },
+    "LLDP match index rebuild complete",
+  );
   const byIp = new Map<string, string>();
   const byMac = new Map<string, string>();
   const byHostname = new Map<string, string>();
@@ -5417,6 +5538,16 @@ export interface WorkItemLabels {
   transport: string;
   /** Asset.assetType (one of the 8 AssetType enum values). */
   assetType: string;
+  /**
+   * Enable verbose per-phase timing logs for this work item. Forwarded from
+   * the pg-boss job payload's `verboseDebug` flag (which is set by the
+   * publisher when the asset's source integration has `config.verboseLogging`
+   * on). Routed through `monitorPhaseStorage.run` at the runFooFor entry
+   * point so every `startPhase` call inside the async chain emits a
+   * `monitor.phase` log line. Never stamped into Prometheus labels —
+   * cardinality stays bounded.
+   */
+  verbose?: boolean;
 }
 
 /**
@@ -5663,27 +5794,38 @@ async function collectAndRecordCustomWidgets(assetId: string): Promise<void> {
  * asset. Same supported / data / failure semantics as telemetry.
  */
 export async function runSystemInfoFor(assetId: string, labels: WorkItemLabels): Promise<CadenceOutcome> {
-  const stopWork = startWorkTimer("systemInfo", labels);
-  try {
-    const sr = await collectSystemInfo(assetId);
-    await recordSystemInfoResult(assetId, sr);
-    if (sr.supported) {
-      if (sr.data) {
+  return monitorPhaseStorage.run(
+    { assetId, cadence: "systemInfo", verbose: !!labels.verbose },
+    async () => {
+      const stopWork = startWorkTimer("systemInfo", labels);
+      const endHandler = startPhase("systeminfo.handler");
+      try {
+        const endCollect = startPhase("systeminfo.collect");
+        const sr = await collectSystemInfo(assetId);
+        endCollect({ supported: sr.supported, hasData: !!sr.data, hasError: !!sr.error });
+        const endPersist = startPhase("systeminfo.persist");
+        await recordSystemInfoResult(assetId, sr);
+        endPersist();
+        if (sr.supported) {
+          if (sr.data) {
+            recordWorkOutcome("systemInfo", "success", labels);
+            return "success";
+          }
+          recordWorkOutcome("systemInfo", "failure", labels);
+          return "failure";
+        }
         recordWorkOutcome("systemInfo", "success", labels);
         return "success";
+      } catch (err) {
+        logger.error({ err, assetId }, "System info collection crashed");
+        recordWorkOutcome("systemInfo", "crash", labels);
+        return "crash";
+      } finally {
+        endHandler();
+        stopWork();
       }
-      recordWorkOutcome("systemInfo", "failure", labels);
-      return "failure";
-    }
-    recordWorkOutcome("systemInfo", "success", labels);
-    return "success";
-  } catch (err) {
-    logger.error({ err, assetId }, "System info collection crashed");
-    recordWorkOutcome("systemInfo", "crash", labels);
-    return "crash";
-  } finally {
-    stopWork();
-  }
+    },
+  );
 }
 
 /**

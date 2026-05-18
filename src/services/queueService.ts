@@ -200,12 +200,15 @@ let slotPools: {
 async function runDedicatedWorker(
   cadence: MonitorCadence,
   job: PgBossJob<MonitorJobPayload>,
-  exec: (assetId: string, labels: { transport: string; assetType: string }) => Promise<unknown>,
+  exec: (assetId: string, labels: { transport: string; assetType: string; verbose?: boolean }) => Promise<unknown>,
 ): Promise<void> {
   const pool = slotPools![cadence];
   const workerSlot = acquireWorkerSlot(pool);
   const { assetId, transport, assetType, verboseDebug } = job.data;
-  const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown" };
+  // `verbose` is read by monitoringService's AsyncLocalStorage phase context
+  // and is intentionally NOT included in the Prometheus work labels — those
+  // stay {asset_type, transport} only to keep label cardinality bounded.
+  const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown", verbose: !!verboseDebug };
   const startedAt = verboseDebug ? Date.now() : 0;
   if (verboseDebug) {
     logger.info(
@@ -669,7 +672,7 @@ async function dispatchFloatingJob(
 ): Promise<void> {
   const queueName = QUEUE_NAMES[cadence];
   const { assetId, transport, assetType, verboseDebug } = job.data;
-  const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown" };
+  const labels = { transport: transport ?? "unknown", assetType: assetType ?? "unknown", verbose: !!verboseDebug };
   // Floating slot acquired separately from the dedicated pools so the
   // operator can tell at a glance whether a job ran via dedicated worker
   // (prefix probe/fast/telemetry/sysinfo) or the floating pool (floating).
