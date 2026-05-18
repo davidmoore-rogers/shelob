@@ -694,6 +694,14 @@ export interface DiscoveredDhcpEntry {
   accessPoint?: string;     // AP name for wireless leases
   ssid?: string;            // SSID for wireless leases
   vci?: string;             // Vendor class identifier (e.g. "FortiSwitch-108F-FPOE")
+  // FortiOS CMDB pointers — populated only for static dhcp-reservation
+  // entries (the live monitor / lease side doesn't carry CMDB ids). Used
+  // by the queued-push fast-path-adopt logic in syncDhcpSubnets: when a
+  // pending Polaris reservation's MAC matches a freshly-discovered static
+  // reservation, we promote in place and pin the device-side row via these
+  // ids so a future unpush hits the exact entry without re-resolving by IP.
+  scopeId?: number;
+  entryId?: number;
   // True when /api/v2/monitor/system/dhcp confirmed this IP is currently
   // being actively leased by a client — set on dhcp-lease entries (always)
   // and on dhcp-reservation entries whose target client is online holding
@@ -1497,6 +1505,8 @@ export async function discoverDhcpSubnets(
               const rIp = entry.ip;
               const rMac = entry.mac || "";
               if (!rIp || rIp === "0.0.0.0") continue;
+              const numericScopeId = typeof server.id === "number" ? server.id : Number(server.id);
+              const numericEntryId = typeof entry.id === "number" ? entry.id : Number(entry.id);
               localDhcpEntries.push({
                 device: deviceName,
                 interfaceName: iface || `dhcp-${serverId}`,
@@ -1504,6 +1514,8 @@ export async function discoverDhcpSubnets(
                 macAddress: rMac,
                 hostname: entry.description || entry.action === 6 ? (entry.description || "") : "",
                 type: "dhcp-reservation",
+                scopeId: Number.isFinite(numericScopeId) ? numericScopeId : undefined,
+                entryId: Number.isFinite(numericEntryId) ? numericEntryId : undefined,
               });
               deviceReservationCount++;
             }

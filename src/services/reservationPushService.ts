@@ -636,3 +636,46 @@ export async function releaseDhcpLease(
   );
   return { released: true };
 }
+
+// ─── Error classification ───────────────────────────────────────────────────
+
+export type PushErrorKind = "permanent" | "transient";
+
+const PERMANENT_502_MESSAGE_FRAGMENTS = [
+  "verify mismatch",
+  "not visible on read-back",
+  "Authentication failed",
+];
+
+/**
+ * Classify a push/update/unpush error as either permanent (operator action
+ * required — collisions, bad inputs, auth failures, device-wedged verify
+ * mismatches) or transient (retry-eligible — FortiGate offline, FMG
+ * unreachable, network timeouts, generic 5xx). Drives both create-time
+ * queue-on-failure semantics in reservationService.createReservation AND the
+ * retry-tick decisions in retryPendingReservations.
+ *
+ * Default for unknown shapes: transient. Erring toward retry keeps the
+ * operator's claim on the IP alive across unexpected error envelopes; the
+ * worst case is a few extra retry ticks that surface a clear permanent
+ * failure the next time the gate is reachable.
+ */
+export function classifyPushError(err: unknown): PushErrorKind {
+  if (err instanceof AppError) {
+    if (err.httpStatus === 400 || err.httpStatus === 404 || err.httpStatus === 409) {
+      return "permanent";
+    }
+    if (err.httpStatus === 502) {
+      for (const frag of PERMANENT_502_MESSAGE_FRAGMENTS) {
+        if (err.message.includes(frag)) return "permanent";
+      }
+      return "transient";
+    }
+    // Any other status (5xx generic, unmapped) — retry.
+    return "transient";
+  }
+  // Native fetch/abort errors, DNS failures, ECONNREFUSED/ETIMEDOUT/etc all
+  // bubble as plain Error or DOMException with the abort-style name. All
+  // transient.
+  return "transient";
+}
