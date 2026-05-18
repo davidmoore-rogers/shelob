@@ -142,11 +142,18 @@ FMG Integration Discovery
 │     └─ Upsert AssetSource(sourceKind="fortigate-endpoint", externalId=MAC)
 │
 ├─ Auto-Monitor Interfaces apply pass (Phase 2c)
-│   For each per-class block whose autoMonitorInterfaces ≠ null:
-│     ├─ mode = "names"     → explicit ifName list
-│     ├─ mode = "wildcard"  → shell patterns (*, ?), optional onlyUp
-│     └─ mode = "type"      → physical / aggregate / vlan / loopback / tunnel
-│   Union resolved set into Asset.monitoredInterfaces (STRICTLY ADDITIVE)
+│   For each per-class block whose autoMonitorInterfaces ≠ null, evaluate
+│   each present block and union the matches into Asset.monitoredInterfaces:
+│     ├─ byNames    → explicit ifName list (always pins, ignores up/down)
+│     ├─ byPatterns → wildcards (* and ?) when regex=false, raw anchor-free
+│     │               regex when regex=true; optional onlyUp filter
+│     ├─ byTypes    → physical / aggregate / vlan / loopback / tunnel; onlyUp
+│     └─ byLldp     → pin where AssetLldpNeighbor.matchedAssetId points at a
+│                     monitored Polaris asset whose assetType is in the set
+│                     (firewall / switch / access_point / server / workstation
+│                     / router / printer / other) — auto-tracks fleet topology
+│   STRICTLY ADDITIVE — never strips operator hand-pins. Each cycle re-applies
+│   from scratch; removing values from the config does not unpin existing pins.
 │
 ├─ DHCP push (writeback — pushReservations toggle)
 │   manual Polaris-created reservation

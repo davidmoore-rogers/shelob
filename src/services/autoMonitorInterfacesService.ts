@@ -9,17 +9,23 @@
  *
  * The selection is stored as JSON inside Integration.config under each
  * existing per-class block (fortigateMonitor / fortiswitchMonitor /
- * fortiapMonitor) and supports three modes:
+ * fortiapMonitor) as a multi-block union — each block is independent and
+ * the resolved pin set is the UNION across whichever blocks are present.
+ * Missing key = block off; `null` selection = whole feature off.
  *
- *   - mode "names":    operator picks specific ifNames from an aggregated list
- *   - mode "wildcard": operator writes shell-style patterns (* and ?)
- *   - mode "type":     operator picks one or more ifTypes (physical/aggregate/...)
+ *   byNames    : explicit ifNames the operator picked from an aggregated list
+ *   byPatterns : pattern strings; regex=false treats them as shell wildcards
+ *                (* and ?), regex=true treats them as raw anchor-free regex
+ *   byTypes    : ifType set (physical / aggregate / vlan / loopback / tunnel)
+ *   byLldp     : neighbor-assetType set; pins any interface whose LLDP
+ *                neighbor matched a monitored Polaris asset of one of the
+ *                selected types
  *
  * Resolution always happens against each asset's latest AssetInterfaceSample
- * rows — no separate inventory table. The apply pass is strictly additive: it
- * never strips existing pins. This is deliberate; Asset.monitoredInterfaces is
- * operator-owned and removing items from it on every discovery would surprise
- * anyone who pinned something by hand.
+ * rows. The apply pass is strictly additive: it never strips existing pins.
+ * This is deliberate; Asset.monitoredInterfaces is operator-owned and removing
+ * items from it on every discovery would surprise anyone who pinned something
+ * by hand.
  */
 
 import { prisma } from "../db.js";
@@ -27,11 +33,38 @@ import { AppError } from "../utils/errors.js";
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-export type AutoMonitorSelection =
-  | { mode: "names"; names: string[] }
-  | { mode: "wildcard"; patterns: string[]; onlyUp: boolean }
-  | { mode: "type"; types: string[]; onlyUp: boolean }
-  | null;
+/** Asset types that By LLDP can match against. Mirrors the AssetType enum. */
+export const LLDP_NEIGHBOR_TYPES = [
+  "firewall",
+  "switch",
+  "access_point",
+  "server",
+  "workstation",
+  "router",
+  "printer",
+  "other",
+] as const;
+export type LldpNeighborType = (typeof LLDP_NEIGHBOR_TYPES)[number];
+
+export const IF_TYPES = ["physical", "aggregate", "vlan", "loopback", "tunnel"] as const;
+export type IfType = (typeof IF_TYPES)[number];
+
+export interface ByNamesBlock    { names: string[] }
+export interface ByPatternsBlock { patterns: string[]; regex: boolean; onlyUp: boolean }
+export interface ByTypesBlock    { types: IfType[]; onlyUp: boolean }
+export interface ByLldpBlock     { neighborTypes: LldpNeighborType[] }
+
+/**
+ * Multi-block selection. Each key is optional; presence = block enabled. A
+ * `null` selection (or an object with all keys missing) is equivalent to the
+ * whole feature being off and produces zero pins.
+ */
+export type AutoMonitorSelection = {
+  byNames?:    ByNamesBlock;
+  byPatterns?: ByPatternsBlock;
+  byTypes?:    ByTypesBlock;
+  byLldp?:     ByLldpBlock;
+} | null;
 
 export type AutoMonitorClass = "fortigate" | "fortiswitch" | "fortiap";
 
@@ -42,13 +75,27 @@ export interface ResolverInterface {
   operStatus: string | null;
 }
 
+/**
+ * Per-asset LLDP info passed alongside ResolverInterface[] when By LLDP is
+ * in play. The resolver only needs the matched neighbor's assetType and
+ * monitored flag — everything else (chassisId, system name, port id, ...)
+ * lives in the AssetLldpNeighbor table but isn't consulted here.
+ */
+export interface LldpNeighborMatch {
+  matchedAssetType: string | null;
+  matchedAssetMonitored: boolean;
+}
+
+/** ifName → list of LLDP matches observed on that local port. */
+export type LldpByIfName = Map<string, LldpNeighborMatch[]>;
+
 const CLASS_TO_ASSET_TYPE: Record<AutoMonitorClass, string> = {
   fortigate: "firewall",
   fortiswitch: "switch",
   fortiap: "access_point",
 };
 
-// ─── Pure helpers ───────────────────────────────────────────────────────────
+// ─── Pattern compilation (wildcard vs regex) ────────────────────────────────
 
 /**
  * Compile a shell-style wildcard ("port4*", "wan?") into an anchored regex.
@@ -74,41 +121,85 @@ export function compileWildcard(pattern: string): RegExp {
 }
 
 /**
- * Apply a selection to an asset's interface list. Pure: no DB, no I/O.
- * Returns the set of ifNames that should be pinned (excluding anything
- * already in Asset.monitoredInterfaces — the caller does the union).
+ * Compile an operator-supplied pattern, dispatching on the `regex` flag.
+ * Wildcards are anchored (existing behavior). Regex is anchor-free — the
+ * operator can include ^ and $ themselves if they want full-string match.
+ * Either way the result is a usable RegExp that the resolver feeds ifNames to.
+ */
+export function compilePattern(pattern: string, regex: boolean): RegExp {
+  if (typeof pattern !== "string" || pattern.length === 0) {
+    throw new AppError(400, "Empty pattern");
+  }
+  if (!regex) return compileWildcard(pattern);
+  try {
+    return new RegExp(pattern);
+  } catch (err: any) {
+    throw new AppError(400, `Invalid regex "${pattern}": ${err?.message || "regex compile failed"}`);
+  }
+}
+
+// ─── Pure resolver ──────────────────────────────────────────────────────────
+
+/**
+ * Returns the set of ifNames a multi-block selection would pin on one asset.
+ * Pure: no DB, no I/O. The set is the UNION across whichever blocks are
+ * present; an empty / null selection produces zero pins. Caller does the
+ * union with the asset's existing Asset.monitoredInterfaces.
+ *
+ * `lldpByIfName` is only consulted when `selection.byLldp` is set. Callers
+ * that don't intend to use By LLDP can skip it; if it's missing AND byLldp
+ * is set, By LLDP contributes nothing (rather than throwing).
  */
 export function resolvePinnedInterfaces(
   selection: AutoMonitorSelection,
   interfaces: ResolverInterface[],
+  lldpByIfName?: LldpByIfName,
 ): string[] {
   if (!selection) return [];
   if (!interfaces || interfaces.length === 0) return [];
 
-  if (selection.mode === "names") {
-    const want = new Set(selection.names);
-    return interfaces.filter((i) => want.has(i.ifName)).map((i) => i.ifName);
+  const picked = new Set<string>();
+
+  // By name — explicit ifNames; up/down state ignored on purpose.
+  if (selection.byNames && selection.byNames.names.length > 0) {
+    const want = new Set(selection.byNames.names);
+    for (const i of interfaces) if (want.has(i.ifName)) picked.add(i.ifName);
   }
 
-  if (selection.mode === "wildcard") {
-    if (selection.patterns.length === 0) return [];
-    const regexes = selection.patterns.map(compileWildcard);
-    const pool = selection.onlyUp ? interfaces.filter((i) => i.operStatus === "up") : interfaces;
-    return pool
-      .filter((i) => regexes.some((r) => r.test(i.ifName)))
-      .map((i) => i.ifName);
+  // By pattern — wildcards or regex per the block's `regex` flag.
+  if (selection.byPatterns && selection.byPatterns.patterns.length > 0) {
+    const regexes = selection.byPatterns.patterns.map((p) => compilePattern(p, selection.byPatterns!.regex));
+    const pool = selection.byPatterns.onlyUp ? interfaces.filter((i) => i.operStatus === "up") : interfaces;
+    for (const i of pool) if (regexes.some((r) => r.test(i.ifName))) picked.add(i.ifName);
   }
 
-  if (selection.mode === "type") {
-    if (selection.types.length === 0) return [];
-    const want = new Set(selection.types);
-    return interfaces
-      .filter((i) => i.ifType !== null && want.has(i.ifType))
-      .filter((i) => !selection.onlyUp || i.operStatus === "up")
-      .map((i) => i.ifName);
+  // By type — ifType ∈ chosen set.
+  if (selection.byTypes && selection.byTypes.types.length > 0) {
+    const want = new Set(selection.byTypes.types);
+    for (const i of interfaces) {
+      if (i.ifType === null) continue;
+      if (!want.has(i.ifType as IfType)) continue;
+      if (selection.byTypes.onlyUp && i.operStatus !== "up") continue;
+      picked.add(i.ifName);
+    }
   }
 
-  return [];
+  // By LLDP — an LLDP neighbor on this port matched a monitored Polaris asset
+  // whose assetType is in the chosen set. Multiple neighbors on the same port
+  // (shared media / aggregate) — any single match is enough to pin.
+  if (selection.byLldp && selection.byLldp.neighborTypes.length > 0 && lldpByIfName && lldpByIfName.size > 0) {
+    const want = new Set(selection.byLldp.neighborTypes);
+    for (const i of interfaces) {
+      const neighbors = lldpByIfName.get(i.ifName);
+      if (!neighbors || neighbors.length === 0) continue;
+      const hit = neighbors.some(
+        (n) => n.matchedAssetMonitored && n.matchedAssetType !== null && want.has(n.matchedAssetType as LldpNeighborType),
+      );
+      if (hit) picked.add(i.ifName);
+    }
+  }
+
+  return Array.from(picked);
 }
 
 // ─── DB-bound functions ─────────────────────────────────────────────────────
@@ -140,6 +231,51 @@ async function loadLatestInterfaces(
     out.get(r.assetId)!.push({ ifName: r.ifName, ifType: r.ifType, operStatus: r.operStatus });
   }
   return out;
+}
+
+/**
+ * Per-asset LLDP neighbor info, grouped by (assetId, localIfName). Joined to
+ * Asset so we know the matched neighbor's assetType + monitored flag. Only
+ * rows with a non-null matchedAssetId are returned — unmatched neighbors
+ * can't satisfy "is an asset of type X" anyway.
+ */
+async function loadLldpByAsset(
+  assetIds: string[],
+): Promise<Map<string, LldpByIfName>> {
+  const out = new Map<string, LldpByIfName>();
+  if (assetIds.length === 0) return out;
+  const rows = await prisma.$queryRaw<Array<{
+    assetId: string;
+    localIfName: string;
+    matchedAssetType: string | null;
+    matchedAssetMonitored: boolean | null;
+  }>>`
+    SELECT
+      n."assetId"                 AS "assetId",
+      n."localIfName"             AS "localIfName",
+      a."assetType"::text         AS "matchedAssetType",
+      a."monitored"               AS "matchedAssetMonitored"
+    FROM asset_lldp_neighbors n
+    LEFT JOIN assets a ON a.id = n."matchedAssetId"
+    WHERE n."assetId" = ANY(${assetIds}::text[])
+      AND n."matchedAssetId" IS NOT NULL
+  `;
+  for (const r of rows) {
+    let perAsset = out.get(r.assetId);
+    if (!perAsset) { perAsset = new Map(); out.set(r.assetId, perAsset); }
+    let list = perAsset.get(r.localIfName);
+    if (!list) { list = []; perAsset.set(r.localIfName, list); }
+    list.push({
+      matchedAssetType: r.matchedAssetType,
+      matchedAssetMonitored: r.matchedAssetMonitored === true,
+    });
+  }
+  return out;
+}
+
+/** True iff the selection mentions byLldp (so the apply path knows to load LLDP). */
+function selectionUsesLldp(sel: AutoMonitorSelection): boolean {
+  return !!sel?.byLldp && sel.byLldp.neighborTypes.length > 0;
 }
 
 export interface AggregateRow {
@@ -216,14 +352,22 @@ export async function previewAutoMonitorForClass(
     select: { id: true, hostname: true },
   });
   if (assets.length === 0) return { deviceCount: 0, interfaceCount: 0, perDeviceMax: 0, sampleDevices: [] };
-  const interfacesByAsset = await loadLatestInterfaces(assets.map((a) => a.id));
+  const ids = assets.map((a) => a.id);
+  const [interfacesByAsset, lldpByAsset] = await Promise.all([
+    loadLatestInterfaces(ids),
+    selectionUsesLldp(selection) ? loadLldpByAsset(ids) : Promise.resolve(new Map<string, LldpByIfName>()),
+  ]);
 
   let deviceCount = 0;
   let interfaceCount = 0;
   let perDeviceMax = 0;
   const matched: Array<{ hostname: string | null; pinNames: string[] }> = [];
   for (const a of assets) {
-    const pin = resolvePinnedInterfaces(selection, interfacesByAsset.get(a.id) ?? []);
+    const pin = resolvePinnedInterfaces(
+      selection,
+      interfacesByAsset.get(a.id) ?? [],
+      lldpByAsset.get(a.id),
+    );
     if (pin.length === 0) continue;
     deviceCount += 1;
     interfaceCount += pin.length;
@@ -260,7 +404,11 @@ export async function applyAutoMonitorForClass(
     select: { id: true, hostname: true, monitoredInterfaces: true },
   });
   if (assets.length === 0) return empty;
-  const interfacesByAsset = await loadLatestInterfaces(assets.map((a) => a.id));
+  const ids = assets.map((a) => a.id);
+  const [interfacesByAsset, lldpByAsset] = await Promise.all([
+    loadLatestInterfaces(ids),
+    selectionUsesLldp(selection) ? loadLldpByAsset(ids) : Promise.resolve(new Map<string, LldpByIfName>()),
+  ]);
 
   let devices = 0;
   let interfacesAdded = 0;
@@ -268,7 +416,11 @@ export async function applyAutoMonitorForClass(
   const sampleDevices: ApplyResult["sampleDevices"] = [];
 
   for (const a of assets) {
-    const computed = resolvePinnedInterfaces(selection, interfacesByAsset.get(a.id) ?? []);
+    const computed = resolvePinnedInterfaces(
+      selection,
+      interfacesByAsset.get(a.id) ?? [],
+      lldpByAsset.get(a.id),
+    );
     if (computed.length === 0) continue;
     const existing = new Set(a.monitoredInterfaces);
     const fresh = computed.filter((n) => !existing.has(n));
@@ -287,4 +439,50 @@ export async function applyAutoMonitorForClass(
   }
 
   return { devices, interfacesAdded, perDeviceMax, sampleDevices };
+}
+
+// ─── Legacy shape coercion ──────────────────────────────────────────────────
+
+/**
+ * Coerce the pre-multi-block discriminated-union shape into the new shape.
+ * Used both by the Zod parser (incoming legacy bodies) and by the one-shot
+ * migration job (existing stored configs).
+ *
+ *   { mode: "names",    names }                  → { byNames:    { names } }
+ *   { mode: "wildcard", patterns, onlyUp }       → { byPatterns: { patterns, regex: false, onlyUp } }
+ *   { mode: "type",     types, onlyUp }          → { byTypes:    { types, onlyUp } }
+ *
+ * Already-new-shape objects pass through. Returns null for null/empty input.
+ */
+export function coerceLegacySelection(input: any): AutoMonitorSelection {
+  if (!input || typeof input !== "object") return null;
+
+  // New-shape: any of the four blocks present.
+  if ("byNames" in input || "byPatterns" in input || "byTypes" in input || "byLldp" in input) {
+    return input as AutoMonitorSelection;
+  }
+
+  // Legacy: { mode, ... }
+  if (input.mode === "names" && Array.isArray(input.names)) {
+    return { byNames: { names: input.names.slice() } };
+  }
+  if (input.mode === "wildcard" && Array.isArray(input.patterns)) {
+    return {
+      byPatterns: {
+        patterns: input.patterns.slice(),
+        regex:    false,
+        onlyUp:   input.onlyUp === true,
+      },
+    };
+  }
+  if (input.mode === "type" && Array.isArray(input.types)) {
+    return {
+      byTypes: {
+        types:  input.types.slice(),
+        onlyUp: input.onlyUp !== false,
+      },
+    };
+  }
+
+  return null;
 }

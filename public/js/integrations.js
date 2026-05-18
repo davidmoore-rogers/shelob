@@ -842,19 +842,37 @@ function _classDirectPollHTML(idPrefix, kindLabel, credentials, currentEnabled, 
 // every ~60s. Tune after observing real DBs.
 var AUTO_MONITOR_INTERFACE_WARN_THRESHOLD = 500;
 
-function _autoMonitorInterfacesHTML(idPrefix, kindLabel, currentSelection, defaultMode, hasIntegrationId) {
-  var sel = currentSelection || null;
-  var mode = sel ? sel.mode : "off";
-  // Card always renders all four mode panels; visibility is toggled on change.
-  function modeRadio(value, label, hint) {
-    var checked = (mode === value) ? " checked" : "";
-    return '<label style="display:block;margin-bottom:0.35rem;font-weight:500">' +
-             '<input type="radio" name="' + idPrefix + 'mode" value="' + value + '"' + checked + ' style="width:auto;margin-right:6px"> ' + escapeHtml(label) +
+// Frontend mirror of services/autoMonitorInterfacesService.ts:coerceLegacySelection.
+// Used when rendering a saved config that hasn't been swept by the one-shot
+// migration job yet — keeps the card in sync with whatever shape is in the DB.
+function _amonCoerceLegacy(sel) {
+  if (!sel || typeof sel !== "object") return null;
+  if ("byNames" in sel || "byPatterns" in sel || "byTypes" in sel || "byLldp" in sel) return sel;
+  if (sel.mode === "names"    && Array.isArray(sel.names))    return { byNames:    { names: sel.names.slice() } };
+  if (sel.mode === "wildcard" && Array.isArray(sel.patterns)) return { byPatterns: { patterns: sel.patterns.slice(), regex: false, onlyUp: sel.onlyUp === true } };
+  if (sel.mode === "type"     && Array.isArray(sel.types))    return { byTypes:    { types: sel.types.slice(), onlyUp: sel.onlyUp !== false } };
+  return null;
+}
+
+function _autoMonitorInterfacesHTML(idPrefix, kindLabel, currentSelection, _defaultMode, hasIntegrationId) {
+  var sel = _amonCoerceLegacy(currentSelection) || {};
+  var byNames    = sel.byNames    || null;
+  var byPatterns = sel.byPatterns || null;
+  var byTypes    = sel.byTypes    || null;
+  var byLldp     = sel.byLldp     || null;
+
+  // Each "block" gets a master checkbox that controls visibility + inclusion.
+  // Independent — operators can mix-and-match modes; the union is what gets
+  // pinned. No "Disabled" toggle anymore: all four off = nothing pinned.
+  function masterBox(value, label, hint, checked) {
+    return '<label style="display:flex;align-items:center;gap:6px;margin-bottom:0.35rem;font-weight:500;cursor:pointer">' +
+             '<input type="checkbox" data-amon-master="1" name="' + idPrefix + 'enable" value="' + value + '"' + (checked ? " checked" : "") + ' style="width:auto"> ' + escapeHtml(label) +
              (hint ? ' <span style="color:var(--color-text-tertiary);font-weight:400;font-size:0.82rem">— ' + escapeHtml(hint) + '</span>' : '') +
            '</label>';
   }
-  // Names panel — populated by /interface-aggregate when first shown.
-  var namesPanel = '<div id="' + idPrefix + 'panel-names" style="display:none;margin-top:0.6rem">' +
+
+  // ─── By name panel ────────────────────────────────────────────────────────
+  var namesPanel = '<div id="' + idPrefix + 'panel-names" style="display:' + (byNames ? '' : 'none') + ';margin:0.35rem 0 0.6rem 1.5rem">' +
     (hasIntegrationId
       ? '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.4rem">' +
           '<button type="button" class="btn btn-secondary" id="' + idPrefix + 'reload" style="font-size:0.78rem;padding:4px 10px">Refresh from latest discovery</button>' +
@@ -862,115 +880,196 @@ function _autoMonitorInterfacesHTML(idPrefix, kindLabel, currentSelection, defau
         '</div>' +
         '<div id="' + idPrefix + 'names-list" style="max-height:280px;overflow:auto;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:0.5rem;background:var(--color-bg-tertiary)">' +
           '<p class="hint" style="margin:0">Loading…</p>' +
-        '</div>'
+        '</div>' +
+        '<p class="hint" style="margin:0.35rem 0 0 0;font-size:0.78rem">Aggregated from interfaces already seen on this integration\'s ' + escapeHtml(kindLabel) + 's. Examples: <code>wan1</code>, <code>port1</code>, <code>FortiLink</code>.</p>'
       : '<p class="hint" style="margin:0;color:var(--color-warning)">Save the integration and run discovery first — interface names are aggregated from already-discovered devices.</p>'
     ) +
   '</div>';
-  // Wildcard panel — textarea + onlyUp checkbox.
-  var wildcardPatterns = (sel && sel.mode === "wildcard") ? sel.patterns.join("\n") : "";
-  var wildcardOnlyUp = (sel && sel.mode === "wildcard") ? sel.onlyUp === true : false;
-  var wildcardPanel = '<div id="' + idPrefix + 'panel-wildcard" style="display:none;margin-top:0.6rem">' +
-    '<div class="form-group" style="margin-bottom:0.6rem">' +
-      '<label>Patterns (one per line — <code>*</code> matches any chars, <code>?</code> matches one)</label>' +
-      '<textarea id="' + idPrefix + 'patterns" rows="4" style="font-family:monospace;font-size:0.85rem;width:100%" placeholder="wan*&#10;port4?">' + escapeHtml(wildcardPatterns) + '</textarea>' +
+
+  // ─── By pattern panel ─────────────────────────────────────────────────────
+  var patternText = byPatterns ? byPatterns.patterns.join("\n") : "";
+  var patternIsRegex = !!(byPatterns && byPatterns.regex === true);
+  var patternOnlyUp  = !!(byPatterns && byPatterns.onlyUp === true);
+  var patternsExample = patternIsRegex ? '^wan\\d+$&#10;^port(1|2)$' : 'wan*&#10;port4?';
+  var patternsPanel = '<div id="' + idPrefix + 'panel-patterns" style="display:' + (byPatterns ? '' : 'none') + ';margin:0.35rem 0 0.6rem 1.5rem">' +
+    '<div style="display:flex;align-items:center;gap:1.25rem;margin-bottom:0.4rem;font-size:0.86rem">' +
+      '<label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer">' +
+        '<input type="radio" name="' + idPrefix + 'patterns-mode" value="wildcard"' + (patternIsRegex ? "" : " checked") + ' style="width:auto"> Wildcard' +
+        ' <span class="hint" style="margin:0;font-size:0.78rem">(<code>*</code> any, <code>?</code> one)</span>' +
+      '</label>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer">' +
+        '<input type="radio" name="' + idPrefix + 'patterns-mode" value="regex"' + (patternIsRegex ? " checked" : "") + ' style="width:auto"> Regex' +
+        ' <span class="hint" style="margin:0;font-size:0.78rem">(anchor with <code>^</code> / <code>$</code> if needed)</span>' +
+      '</label>' +
     '</div>' +
-    '<label style="display:flex;align-items:center;gap:6px;font-size:0.88rem">' +
-      '<input type="checkbox" id="' + idPrefix + 'wildcard-onlyUp"' + (wildcardOnlyUp ? " checked" : "") + ' style="width:auto"> Only currently up' +
-      ' <span class="hint" style="margin:0">(skips administratively-disabled and disconnected ports)</span>' +
-    '</label>' +
+    '<div class="form-group" style="margin-bottom:0.4rem">' +
+      '<textarea id="' + idPrefix + 'patterns" rows="4" style="font-family:monospace;font-size:0.85rem;width:100%" placeholder="' + patternsExample + '">' + escapeHtml(patternText) + '</textarea>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">' +
+      '<label style="display:flex;align-items:center;gap:6px;font-size:0.86rem;margin:0">' +
+        '<input type="checkbox" id="' + idPrefix + 'patterns-onlyUp"' + (patternOnlyUp ? " checked" : "") + ' style="width:auto"> Only currently up' +
+        ' <span class="hint" style="margin:0;font-size:0.78rem">(skips disabled / disconnected ports)</span>' +
+      '</label>' +
+      '<button type="button" class="btn btn-secondary" id="' + idPrefix + 'patterns-test" style="font-size:0.78rem;padding:4px 12px"' +
+        (hasIntegrationId ? '' : ' disabled title="Save the integration first"') + '>Test against fleet</button>' +
+    '</div>' +
+    '<div id="' + idPrefix + 'patterns-test-result" class="hint" style="margin:0.5rem 0 0 0;font-size:0.82rem;display:none;padding:0.45rem 0.6rem;background:var(--color-bg-tertiary);border-radius:var(--radius-sm);border:1px solid var(--color-border)"></div>' +
   '</div>';
-  // Type panel — five fixed checkboxes + onlyUp.
-  var typeSet = (sel && sel.mode === "type") ? new Set(sel.types) : new Set();
-  var typeOnlyUp = (sel && sel.mode === "type") ? sel.onlyUp !== false : true; // default true
+
+  // ─── By interface type panel ──────────────────────────────────────────────
+  var typeSet = byTypes ? new Set(byTypes.types) : new Set();
+  var typeOnlyUp = byTypes ? byTypes.onlyUp !== false : true;
   function typeBox(name) {
     var on = typeSet.has(name) ? " checked" : "";
     return '<label style="display:flex;align-items:center;gap:6px;font-size:0.88rem;margin-bottom:0.25rem">' +
              '<input type="checkbox" data-type-checkbox="1" id="' + idPrefix + 'type-' + name + '" value="' + name + '"' + on + ' style="width:auto"> ' + name +
            '</label>';
   }
-  var typePanel = '<div id="' + idPrefix + 'panel-type" style="display:none;margin-top:0.6rem">' +
+  var typesPanel = '<div id="' + idPrefix + 'panel-types" style="display:' + (byTypes ? '' : 'none') + ';margin:0.35rem 0 0.6rem 1.5rem">' +
     typeBox("physical") + typeBox("aggregate") + typeBox("vlan") + typeBox("loopback") + typeBox("tunnel") +
-    '<label style="display:flex;align-items:center;gap:6px;font-size:0.88rem;margin-top:0.5rem">' +
-      '<input type="checkbox" id="' + idPrefix + 'type-onlyUp"' + (typeOnlyUp ? " checked" : "") + ' style="width:auto"> Only currently up' +
-      ' <span class="hint" style="margin:0">(skips administratively-disabled and disconnected ports)</span>' +
+    '<label style="display:flex;align-items:center;gap:6px;font-size:0.86rem;margin-top:0.5rem">' +
+      '<input type="checkbox" id="' + idPrefix + 'types-onlyUp"' + (typeOnlyUp ? " checked" : "") + ' style="width:auto"> Only currently up' +
+      ' <span class="hint" style="margin:0;font-size:0.78rem">(skips disabled / disconnected ports)</span>' +
     '</label>' +
+    '<p class="hint" style="margin:0.35rem 0 0 0;font-size:0.78rem">Examples: <code>physical</code> matches every Ethernet port; <code>aggregate</code> matches LAG / MCLAG bundles; <code>vlan</code> matches 802.1Q sub-interfaces.</p>' +
   '</div>';
-  // Preview block — filled by the wiring code on every change.
+
+  // ─── By LLDP neighbor panel ───────────────────────────────────────────────
+  var lldpSet = byLldp ? new Set(byLldp.neighborTypes) : new Set();
+  function lldpBox(value, label) {
+    var on = lldpSet.has(value) ? " checked" : "";
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:0.88rem;margin-bottom:0.25rem">' +
+             '<input type="checkbox" data-lldp-checkbox="1" id="' + idPrefix + 'lldp-' + value + '" value="' + value + '"' + on + ' style="width:auto"> ' + escapeHtml(label) +
+           '</label>';
+  }
+  var lldpPanel = '<div id="' + idPrefix + 'panel-lldp" style="display:' + (byLldp ? '' : 'none') + ';margin:0.35rem 0 0.6rem 1.5rem">' +
+    '<p class="hint" style="margin:0 0 0.4rem 0;font-size:0.82rem">Pin any interface whose LLDP neighbor matched a <strong>monitored</strong> Polaris asset of one of the selected types. Updates as fleet topology changes — new uplinks get pinned automatically next discovery.</p>' +
+    lldpBox("firewall",     "Firewall") +
+    lldpBox("switch",       "Switch") +
+    lldpBox("access_point", "Access Point") +
+    lldpBox("server",       "Server") +
+    lldpBox("workstation",  "Workstation") +
+    lldpBox("other",        "Other") +
+  '</div>';
+
+  // ─── Live preview (unioned across enabled blocks) ─────────────────────────
   var previewPanel = '<div id="' + idPrefix + 'preview" class="form-group" style="margin-top:0.8rem;padding:0.5rem 0.7rem;background:var(--color-bg-tertiary);border-radius:var(--radius-sm);border:1px solid var(--color-border);font-size:0.84rem;color:var(--color-text-secondary);min-height:1.4em">' +
-    (hasIntegrationId ? '<em>Pick a mode to preview matches.</em>' : '<em>Preview becomes available after the integration is saved and discovery has run at least once.</em>') +
+    (hasIntegrationId ? '<em>Enable a block to preview matches.</em>' : '<em>Preview becomes available after the integration is saved and discovery has run at least once.</em>') +
   '</div>';
+
   return '<p style="font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--color-text-tertiary);margin-bottom:0.75rem">Auto-monitor interfaces</p>' +
     '<div style="background:rgba(79,195,247,0.06);border:1px solid rgba(79,195,247,0.2);border-radius:var(--radius-md);padding:0.75rem 0.9rem;margin-bottom:1rem">' +
-      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.7rem 0">Pin interfaces on every ' + escapeHtml(kindLabel) + ' discovered by this integration. Selected interfaces are added to each device\'s "Poll 1m" list and scraped on the response-time cadence (~60s). Operator-pinned interfaces on individual assets are preserved.</p>' +
-      '<div class="form-group" style="margin-bottom:0.6rem">' +
-        modeRadio("off",      "Disabled",                       "no auto-pinning") +
-        modeRadio("names",    "By name",                        "aggregated from devices") +
-        modeRadio("wildcard", "By pattern",                     "wildcard match (* and ?)") +
-        modeRadio("type",     "By interface type",              "physical / aggregate / vlan / ...") +
-      '</div>' +
-      namesPanel + wildcardPanel + typePanel + previewPanel +
+      '<p style="font-size:0.82rem;color:var(--color-text-secondary);line-height:1.5;margin:0 0 0.2rem 0">Pin interfaces on every ' + escapeHtml(kindLabel) + ' discovered by this integration. Selected interfaces are added to each device\'s "Poll 1m" list and scraped on the response-time cadence (~60s). Operator-pinned interfaces on individual assets are preserved.</p>' +
+      '<p class="hint" style="margin:0 0 0.6rem 0;font-size:0.78rem">Strictly additive — removing a selection here does <strong>not</strong> unpin interfaces already pinned on existing assets.</p>' +
+      masterBox("names",    "By name",            "explicit ifNames from this integration's devices", !!byNames) +
+      namesPanel +
+      masterBox("patterns", "By pattern",         "wildcard or regex match",                          !!byPatterns) +
+      patternsPanel +
+      masterBox("types",    "By interface type",  "physical / aggregate / vlan / ...",                !!byTypes) +
+      typesPanel +
+      masterBox("lldp",     "By LLDP neighbor",   "pin where an LLDP neighbor is a monitored asset",  !!byLldp) +
+      lldpPanel +
+      previewPanel +
     '</div>' +
     '<hr style="border:none;border-top:1px solid var(--color-border);margin:1rem 0">';
 }
 
-// Reads the auto-monitor card into a server-shaped AutoMonitorSelection or null.
-// Returns undefined when the card didn't render (subtab never opened).
+// Reads the auto-monitor card into a server-shaped AutoMonitorSelection or
+// null. Returns undefined when the card didn't render (subtab never opened).
+// Multi-block: each master checkbox gates its own block; the result is the
+// union. An enabled block with no inner values populated (e.g. patterns
+// master ticked but textarea empty) is dropped — server-side schema would
+// reject it anyway.
 function _readAutoMonitorInterfaces(idPrefix) {
-  var radios = document.getElementsByName(idPrefix + "mode");
-  if (!radios || radios.length === 0) return undefined;
-  var mode = "off";
-  for (var i = 0; i < radios.length; i++) { if (radios[i].checked) { mode = radios[i].value; break; } }
-  if (mode === "off") return null;
-  if (mode === "names") {
+  var masters = document.getElementsByName(idPrefix + "enable");
+  if (!masters || masters.length === 0) return undefined;
+
+  var enabled = { names: false, patterns: false, types: false, lldp: false };
+  for (var m = 0; m < masters.length; m++) {
+    if (masters[m].checked) enabled[masters[m].value] = true;
+  }
+
+  var out = {};
+
+  if (enabled.names) {
     var checks = document.querySelectorAll('input[data-name-checkbox="1"][data-prefix="' + idPrefix + '"]:checked');
     var names = [];
     for (var j = 0; j < checks.length; j++) names.push(checks[j].value);
-    if (names.length === 0) return null;
-    return { mode: "names", names: names };
+    if (names.length > 0) out.byNames = { names: names };
   }
-  if (mode === "wildcard") {
+
+  if (enabled.patterns) {
     var ta = document.getElementById(idPrefix + "patterns");
     var raw = ta ? String(ta.value || "") : "";
     var patterns = raw.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
-    if (patterns.length === 0) return null;
-    var ouEl = document.getElementById(idPrefix + "wildcard-onlyUp");
-    return { mode: "wildcard", patterns: patterns, onlyUp: ouEl ? ouEl.checked === true : false };
+    if (patterns.length > 0) {
+      var modeRadios = document.getElementsByName(idPrefix + "patterns-mode");
+      var isRegex = false;
+      for (var r = 0; r < modeRadios.length; r++) { if (modeRadios[r].checked && modeRadios[r].value === "regex") { isRegex = true; break; } }
+      var ouEl = document.getElementById(idPrefix + "patterns-onlyUp");
+      out.byPatterns = {
+        patterns: patterns,
+        regex:    isRegex,
+        onlyUp:   ouEl ? ouEl.checked === true : false,
+      };
+    }
   }
-  if (mode === "type") {
+
+  if (enabled.types) {
     var typeChecks = document.querySelectorAll('input[data-type-checkbox="1"][id^="' + idPrefix + 'type-"]:checked');
     var types = [];
     for (var k = 0; k < typeChecks.length; k++) {
       var v = typeChecks[k].value;
       if (v === "physical" || v === "aggregate" || v === "vlan" || v === "loopback" || v === "tunnel") types.push(v);
     }
-    if (types.length === 0) return null;
-    var ou2El = document.getElementById(idPrefix + "type-onlyUp");
-    return { mode: "type", types: types, onlyUp: ou2El ? ou2El.checked === true : true };
+    if (types.length > 0) {
+      var ou2El = document.getElementById(idPrefix + "types-onlyUp");
+      out.byTypes = { types: types, onlyUp: ou2El ? ou2El.checked === true : true };
+    }
   }
-  return null;
+
+  if (enabled.lldp) {
+    var lldpChecks = document.querySelectorAll('input[data-lldp-checkbox="1"][id^="' + idPrefix + 'lldp-"]:checked');
+    var neighborTypes = [];
+    var ALLOWED = { firewall:1, "switch":1, access_point:1, server:1, workstation:1, router:1, printer:1, other:1 };
+    for (var l = 0; l < lldpChecks.length; l++) {
+      var t = lldpChecks[l].value;
+      if (ALLOWED[t]) neighborTypes.push(t);
+    }
+    if (neighborTypes.length > 0) out.byLldp = { neighborTypes: neighborTypes };
+  }
+
+  // If nothing usable was captured, persist null (= feature off for this class).
+  if (!out.byNames && !out.byPatterns && !out.byTypes && !out.byLldp) return null;
+  return out;
 }
 
 // Wires change-listeners on a freshly-rendered auto-monitor card. Toggles
-// panel visibility + fetches the aggregate list lazily on first "names" view
-// + debounces a preview call into the preview block. Safe to call after the
-// card's HTML has been inserted into the DOM.
+// panel visibility + fetches the aggregate list lazily on first "By name"
+// expand + debounces a preview call into the preview block. Safe to call
+// after the card's HTML has been inserted into the DOM.
 function _wireAutoMonitorCard(idPrefix, klass, integrationId) {
-  var radios = document.getElementsByName(idPrefix + "mode");
-  if (!radios || radios.length === 0) return;
+  var masters = document.getElementsByName(idPrefix + "enable");
+  if (!masters || masters.length === 0) return;
   var panels = {
     names:    document.getElementById(idPrefix + "panel-names"),
-    wildcard: document.getElementById(idPrefix + "panel-wildcard"),
-    type:     document.getElementById(idPrefix + "panel-type"),
+    patterns: document.getElementById(idPrefix + "panel-patterns"),
+    types:    document.getElementById(idPrefix + "panel-types"),
+    lldp:     document.getElementById(idPrefix + "panel-lldp"),
   };
   var preview = document.getElementById(idPrefix + "preview");
   var namesLoaded = false;
 
-  function showPanel(mode) {
-    panels.names.style.display    = (mode === "names")    ? "" : "none";
-    panels.wildcard.style.display = (mode === "wildcard") ? "" : "none";
-    panels.type.style.display     = (mode === "type")     ? "" : "none";
-    if (mode === "names" && !namesLoaded && integrationId) loadNamesList();
-    schedulePreview();
+  function syncMasterVisibility() {
+    var anyEnabled = false;
+    for (var m = 0; m < masters.length; m++) {
+      var checked = masters[m].checked;
+      var key = masters[m].value;
+      if (panels[key]) panels[key].style.display = checked ? "" : "none";
+      if (checked) anyEnabled = true;
+      if (key === "names" && checked && !namesLoaded && integrationId) loadNamesList();
+    }
+    return anyEnabled;
   }
 
   function loadNamesList(force) {
@@ -1040,7 +1139,7 @@ function _wireAutoMonitorCard(idPrefix, klass, integrationId) {
     }
     var selection = _readAutoMonitorInterfaces(idPrefix);
     if (!selection) {
-      preview.innerHTML = '<em>Pick a mode and at least one value to preview matches.</em>';
+      preview.innerHTML = '<em>Enable a block and add at least one value to preview matches.</em>';
       preview.style.borderColor = "";
       return;
     }
@@ -1064,27 +1163,90 @@ function _wireAutoMonitorCard(idPrefix, klass, integrationId) {
     });
   }
 
-  // Wire mode radios.
-  for (var i = 0; i < radios.length; i++) {
-    radios[i].addEventListener("change", function (e) { showPanel(e.target.value); });
+  // Wire master checkboxes — each one toggles its panel and re-runs preview.
+  for (var i = 0; i < masters.length; i++) {
+    masters[i].addEventListener("change", function () { syncMasterVisibility(); schedulePreview(); });
   }
-  // Wire wildcard + type changes (debounced preview).
-  var wildcardEls = [
+
+  // Patterns block — textarea, regex/wildcard radio, onlyUp.
+  var patternsEls = [
     document.getElementById(idPrefix + "patterns"),
-    document.getElementById(idPrefix + "wildcard-onlyUp"),
-    document.getElementById(idPrefix + "type-onlyUp"),
+    document.getElementById(idPrefix + "patterns-onlyUp"),
   ];
-  wildcardEls.forEach(function (el) { if (el) el.addEventListener("input", schedulePreview); if (el) el.addEventListener("change", schedulePreview); });
+  patternsEls.forEach(function (el) {
+    if (!el) return;
+    el.addEventListener("input", schedulePreview);
+    el.addEventListener("change", schedulePreview);
+  });
+  var patternsModeRadios = document.getElementsByName(idPrefix + "patterns-mode");
+  for (var pm = 0; pm < patternsModeRadios.length; pm++) {
+    patternsModeRadios[pm].addEventListener("change", schedulePreview);
+  }
+
+  // Test button — preview the patterns block in isolation so the operator can
+  // verify their regex without the noise of the other blocks. Hits the same
+  // /interface-aggregate/preview endpoint with just byPatterns populated.
+  var testBtn = document.getElementById(idPrefix + "patterns-test");
+  var testOut = document.getElementById(idPrefix + "patterns-test-result");
+  if (testBtn && testOut) {
+    testBtn.addEventListener("click", function () {
+      if (!integrationId) return;
+      var ta = document.getElementById(idPrefix + "patterns");
+      var raw = ta ? String(ta.value || "") : "";
+      var patterns = raw.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (patterns.length === 0) {
+        testOut.style.display = "";
+        testOut.innerHTML = '<span style="color:var(--color-warning)">Enter at least one pattern to test.</span>';
+        return;
+      }
+      var modeRs = document.getElementsByName(idPrefix + "patterns-mode");
+      var isRegex = false;
+      for (var pr = 0; pr < modeRs.length; pr++) { if (modeRs[pr].checked && modeRs[pr].value === "regex") { isRegex = true; break; } }
+      var ouEl = document.getElementById(idPrefix + "patterns-onlyUp");
+      var selection = { byPatterns: { patterns: patterns, regex: isRegex, onlyUp: ouEl ? ouEl.checked === true : false } };
+      testBtn.disabled = true;
+      var prevLabel = testBtn.textContent;
+      testBtn.textContent = "Testing…";
+      testOut.style.display = "";
+      testOut.innerHTML = '<em>Running…</em>';
+      api.integrations.interfaceAggregatePreview(integrationId, { class: klass, selection: selection }).then(function (r) {
+        var sample = (r.sampleDevices || []).slice(0, 5).map(function (d) {
+          var names = (d.pinNames || []).slice(0, 6).join(", ");
+          if ((d.pinNames || []).length > 6) names += ", …";
+          return escapeHtml(d.hostname || "(unnamed)") + ' <span class="hint" style="margin:0">[' + escapeHtml(names) + ']</span>';
+        }).join("<br>");
+        testOut.innerHTML =
+          '<div><strong>' + r.interfaceCount + '</strong> match' + (r.interfaceCount === 1 ? "" : "es") +
+          ' on <strong>' + r.deviceCount + '</strong> device' + (r.deviceCount === 1 ? "" : "s") +
+          (r.deviceCount > 0 ? ' (max ' + r.perDeviceMax + '/device)' : '') + '</div>' +
+          (sample ? '<div style="margin-top:0.3rem">' + sample + '</div>' : '');
+      }).catch(function (err) {
+        testOut.innerHTML = '<span style="color:var(--color-error)">' + escapeHtml(err.message || "Test failed") + '</span>';
+      }).finally(function () {
+        testBtn.disabled = false;
+        testBtn.textContent = prevLabel;
+      });
+    });
+  }
+
+  // Types block.
   var typeBoxes = document.querySelectorAll('input[data-type-checkbox="1"][id^="' + idPrefix + 'type-"]');
   for (var t = 0; t < typeBoxes.length; t++) typeBoxes[t].addEventListener("change", schedulePreview);
-  // Reload button.
+  var typesOnlyUp = document.getElementById(idPrefix + "types-onlyUp");
+  if (typesOnlyUp) typesOnlyUp.addEventListener("change", schedulePreview);
+
+  // LLDP block.
+  var lldpBoxes = document.querySelectorAll('input[data-lldp-checkbox="1"][id^="' + idPrefix + 'lldp-"]');
+  for (var lb = 0; lb < lldpBoxes.length; lb++) lldpBoxes[lb].addEventListener("change", schedulePreview);
+
+  // Reload (By name).
   var reload = document.getElementById(idPrefix + "reload");
   if (reload) reload.addEventListener("click", function () { namesLoaded = false; loadNamesList(true); });
 
-  // Initial state — show whichever panel matches the current mode.
-  var initialMode = "off";
-  for (var r2 = 0; r2 < radios.length; r2++) { if (radios[r2].checked) { initialMode = radios[r2].value; break; } }
-  showPanel(initialMode);
+  // Initial visibility sync.
+  syncMasterVisibility();
+  // Run initial preview if anything is enabled.
+  schedulePreview();
 }
 
 // FortiGate subtab variant — "Add as Monitored" + the SNMP-sysLocation
@@ -1170,9 +1332,17 @@ function monitorSettingsFormHTML(s, opts) {
 
     // Stash auto-monitor selections for the lazy-loaded checklists.
     if (typeof window !== "undefined") {
-      window["__autoMon_seed_f-mon-fortigate-amon-"]   = (fwFgCfg.autoMonitorInterfaces && fwFgCfg.autoMonitorInterfaces.mode === "names") ? fwFgCfg.autoMonitorInterfaces.names.slice() : [];
-      window["__autoMon_seed_f-mon-fortiswitch-amon-"] = (fwSwCfg.autoMonitorInterfaces && fwSwCfg.autoMonitorInterfaces.mode === "names") ? fwSwCfg.autoMonitorInterfaces.names.slice() : [];
-      window["__autoMon_seed_f-mon-fortiap-amon-"]     = (fwApCfg.autoMonitorInterfaces && fwApCfg.autoMonitorInterfaces.mode === "names") ? fwApCfg.autoMonitorInterfaces.names.slice() : [];
+      // Multi-block reads from .byNames.names; legacy single-mode shape (in
+      // case the integration hasn't been migrated yet) reads from .names.
+      function _amonSeedNames(sel) {
+        if (!sel) return [];
+        if (sel.byNames && Array.isArray(sel.byNames.names)) return sel.byNames.names.slice();
+        if (sel.mode === "names" && Array.isArray(sel.names)) return sel.names.slice();
+        return [];
+      }
+      window["__autoMon_seed_f-mon-fortigate-amon-"]   = _amonSeedNames(fwFgCfg.autoMonitorInterfaces);
+      window["__autoMon_seed_f-mon-fortiswitch-amon-"] = _amonSeedNames(fwSwCfg.autoMonitorInterfaces);
+      window["__autoMon_seed_f-mon-fortiap-amon-"]     = _amonSeedNames(fwApCfg.autoMonitorInterfaces);
     }
 
     var fortigatePanel =
