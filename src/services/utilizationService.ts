@@ -5,6 +5,8 @@
  */
 
 import { prisma } from "../db.js";
+import type { Prisma } from "../generated/prisma/client.js";
+import type { ReservationSourceType } from "../generated/prisma/enums.js";
 import { usableHostCount } from "../utils/cidr.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -163,14 +165,30 @@ export async function getGlobalUtilization(): Promise<GlobalUtilization> {
 
 // ─── Recent manual (user-created) reservations ───────────────────────────────
 //
-// Drives the Dashboard's "Recently Reserved" card. Filters to sourceType=manual
-// so DHCP discoveries / leases / VIP echoes don't crowd out reservations a
-// person actually typed in. Returns hostname + MAC + createdBy so the card
-// can show full attribution without a second fetch.
+// Drives the Dashboard's "Recently Reserved" widget. Default filter is
+// sourceType=manual so DHCP discoveries / leases / VIP echoes don't crowd
+// out reservations a person actually typed in. Callers (the Recently
+// Reserved widget config) can pass an explicit `sourceTypes` array to
+// broaden the filter — e.g. ["manual","dhcp_reservation"] to also include
+// Polaris-pushed DHCP reservations. Pass an empty array to disable the
+// filter entirely. Returns hostname + MAC + createdBy so the card can
+// show full attribution without a second fetch.
 
-export async function getRecentManualReservations(limit = 10): Promise<RecentManualReservation[]> {
+export async function getRecentManualReservations(
+  limit = 10,
+  sourceTypes?: string[],
+): Promise<RecentManualReservation[]> {
+  const where: Prisma.ReservationWhereInput = { status: "active" };
+  if (sourceTypes === undefined) {
+    where.sourceType = { in: ["manual"] };
+  } else if (sourceTypes.length > 0) {
+    // Caller (route layer) validates against the recognized source-type set
+    // before we get here, so this cast is safe at runtime.
+    where.sourceType = { in: sourceTypes as ReservationSourceType[] };
+  }
+  // sourceTypes === [] → no filter (every type returned)
   const rows = await prisma.reservation.findMany({
-    where: { status: "active", sourceType: "manual" },
+    where,
     orderBy: { createdAt: "desc" },
     take: limit,
     include: {

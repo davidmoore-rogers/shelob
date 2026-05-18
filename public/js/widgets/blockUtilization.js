@@ -1,0 +1,83 @@
+/**
+ * widgets/blockUtilization.js — per-block address allocation bars. Sort by
+ * percent (default; busiest blocks float to the top) or by name. Click a
+ * row to drill into IPAM.
+ */
+
+(function () {
+  function fmtAddrs(n) {
+    if (n == null) return null;
+    if (n >= 1048576) return (n / 1048576).toFixed(1).replace(/\.0$/, "") + "M";
+    if (n >= 1024)    return Math.round(n / 1024) + "K";
+    return String(n);
+  }
+
+  function renderRows(el, rows, config) {
+    if (!rows.length) { el.innerHTML = '<p class="empty-state">No blocks yet</p>'; return; }
+    var sorted = rows.slice();
+    if ((config && config.sortBy) === "name") {
+      sorted.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    } else {
+      sorted.sort(function (a, b) { return (b.usedPercent || 0) - (a.usedPercent || 0); });
+    }
+    var rowLimit = (config && config.rowLimit) || 10;
+    sorted = sorted.slice(0, rowLimit);
+    el.innerHTML = sorted.map(function (b) {
+      var pct = b.usedPercent != null ? b.usedPercent : 0;
+      var color = pct > 75 ? "#ff1744" : pct > 50 ? "#ffd600" : "#4fc3f7";
+      var addrLabel = (b.blockAddresses != null)
+        ? fmtAddrs(b.allocatedAddresses) + ' / ' + fmtAddrs(b.blockAddresses) + ' IPs'
+        : b.totalSubnets + ' subnets';
+      var nav = "/ipam.html#tab=networks&block=" + encodeURIComponent(b.id);
+      return '<a class="block-util-item block-util-link" href="' + nav + '">' +
+        '<div class="block-util-header"><div class="block-util-name"><span>' + escapeHtml(b.name) + '</span><code>' + escapeHtml(b.cidr) + '</code></div><span class="block-util-count">' + addrLabel + '</span></div>' +
+        '<div class="util-row"><div class="util-bar-track"><div class="util-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div><span style="font-size:0.82rem;color:var(--color-text-secondary);min-width:32px;text-align:right">' + pct + '%</span></div>' +
+      '</a>';
+    }).join("");
+  }
+
+  PolarisWidgets.register({
+    type: "blockUtilization",
+    label: "Block utilization",
+    description: "IP block address-space utilization. Busiest blocks float to the top by default.",
+    defaultSize: { width: 6, height: 1 },
+    minSize: { width: 4, height: 1 },
+    defaultConfig: { rowLimit: 10, sortBy: "percent" },
+
+    fetchData: function (_config, summary) {
+      return Promise.resolve((summary && summary.blockUtilization) || []);
+    },
+
+    renderInstance: function (el, config, data) {
+      renderRows(el, data || [], config);
+    },
+
+    renderPreview: function (el) {
+      var mock = [
+        { id: "p1", name: "Branch HQ",  cidr: "10.4.0.0/16",    blockAddresses: 65536, allocatedAddresses: 51200, usedPercent: 78, totalSubnets: 14 },
+        { id: "p2", name: "DMZ",        cidr: "172.16.0.0/22",  blockAddresses: 1024,  allocatedAddresses: 410,  usedPercent: 40, totalSubnets: 4 },
+        { id: "p3", name: "Mfg floor",  cidr: "10.10.0.0/20",   blockAddresses: 4096,  allocatedAddresses: 820,  usedPercent: 20, totalSubnets: 6 },
+      ];
+      renderRows(el, mock, { rowLimit: 3, sortBy: "percent" });
+    },
+
+    renderConfig: function (el, config, onChange) {
+      el.innerHTML =
+        '<label>Sort by</label>' +
+        '<select data-k="sortBy">' +
+          '<option value="percent"' + ((config.sortBy || "percent") === "percent" ? " selected" : "") + '>Utilization %</option>' +
+          '<option value="name"' + (config.sortBy === "name" ? " selected" : "") + '>Name</option>' +
+        '</select>' +
+        '<label>Row limit</label>' +
+        '<select data-k="rowLimit">' +
+          [5, 10, 20].map(function (n) { return '<option value="' + n + '"' + (config.rowLimit === n ? " selected" : "") + '>' + n + '</option>'; }).join("") +
+        '</select>';
+      el.querySelectorAll("[data-k]").forEach(function (s) {
+        s.addEventListener("change", function () {
+          var k = s.getAttribute("data-k");
+          onChange(k, k === "rowLimit" ? parseInt(s.value, 10) : s.value);
+        });
+      });
+    },
+  });
+})();

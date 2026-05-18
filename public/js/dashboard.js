@@ -1,222 +1,508 @@
 /**
- * public/js/dashboard.js — new home dashboard with four cards:
+ * public/js/dashboard.js — Dashboard orchestrator.
  *
- *   ┌─ Monitor alerts ────┬─ Recently reserved ─┐
- *   ├─ Assets by type ────┼─ Block utilization ─┤
+ * Owns the layout state (widget list + per-widget positions/sizes/config),
+ * mounts each widget module into the 12-col canvas, and handles:
+ *   - drag from the +Widget slide-in onto the canvas
+ *   - drag within the canvas to reorder (insertion-shift via reflow)
+ *   - resize via the bottom-right grip (snaps to width 3/4/6/12 × height 1/2)
+ *   - per-widget gear popover with widget-module-supplied config inputs
+ *   - debounced PUT /me/dashboard on every state change
  *
- * Click behaviour:
- *   - Monitor alert row    → /assets.html#search=<hostname>
- *   - Recently reserved    → /ipam.html#tab=networks&subnet=<id>&focusReservation=<id>
- *   - Asset-type pie slice → /assets.html#type=<assetType>
- *   - Block util row       → /ipam.html#tab=networks&block=<id>
- *
- * Single fetch (/dashboard/summary) backs all four cards.
+ * Layout state shape mirrors the server: { version: 1, widgets: [...] }.
+ * Widget order in the array is the canonical placement order; col/row are
+ * derived by reflow() on every state change. This keeps the model simple
+ * — drag/resize/remove all just rewrite the ordered list and reflow.
  */
 
-// Keep these in sync with assets.js — duplicated here because dashboard.js
-// loads on the index page where assets.js isn't included.
-var DASH_ASSET_TYPE_LABELS = {
-  server: "Server", switch: "Switch", router: "Router", firewall: "Firewall",
-  workstation: "Workstation", printer: "Printer", access_point: "AP", other: "Other",
-};
-// Match the legend feel of the rest of the app — these come from the existing
-// asset type icon set; cycling through them for slices keeps the pie readable
-// against dark and light themes.
-var DASH_ASSET_TYPE_COLORS = {
-  server: "#4fc3f7", switch: "#26c6da", router: "#7e57c2", firewall: "#ef5350",
-  workstation: "#66bb6a", printer: "#ffa726", access_point: "#ab47bc", other: "#90a4ae",
-};
+(function () {
+  var GRID_COLS = 12;
+  var ROW_HEIGHT_PX = 280;
+  var GAP_PX = 16;
+  var SAVE_DEBOUNCE_MS = 800;
 
-var _dashTimerHandle = null;
+  var state = {
+    layout: { version: 1, widgets: [] },
+    saving: false,
+    saveTimer: null,
+    summary: null, // cached /dashboard/summary payload (shared by all four built-in widgets)
+    unmounts: {},  // widget instance id → cleanup fn
+  };
 
-document.addEventListener("DOMContentLoaded", function () { loadDashboard(); });
+  var canvasEl = null;
+  var emptyEl = null;
+  var addBtnEl = null;
+  var openPopover = null;
 
-async function loadDashboard() {
-  try {
-    var data = await api.dashboard.summary();
-    renderMonitorAlerts(data.monitorAlerts || [], !!data.monitorAlertsOverflow);
-    renderRecentReservations(data.recentReservations || []);
-    renderAssetTypes(data.assetTypeCounts || []);
-    renderBlockUtil(data.blockUtilization || []);
-    // Re-tick the "how long since the transition" labels every 30s without
-    // re-fetching — the timestamps don't change, only the human-readable diff.
-    if (_dashTimerHandle) clearInterval(_dashTimerHandle);
-    _dashTimerHandle = setInterval(function () {
-      renderMonitorAlerts(data.monitorAlerts || [], !!data.monitorAlertsOverflow);
-    }, 30000);
-  } catch (err) {
-    showToast("Failed to load dashboard: " + (err.message || err), "error");
-  }
-}
+  document.addEventListener("DOMContentLoaded", function () {
+    canvasEl = document.getElementById("dashboard-canvas");
+    emptyEl  = document.getElementById("dashboard-empty-state");
+    addBtnEl = document.getElementById("dashboard-add-widget");
 
-// ─── Monitor alerts ──────────────────────────────────────────────────────────
+    if (!canvasEl || !emptyEl || !addBtnEl) return;
 
-function _statusDot(status) {
-  if (status === "down") return '<span class="dash-alert-dot dash-alert-down" title="Down"></span>';
-  if (status === "warning") return '<span class="dash-alert-dot dash-alert-warning" title="Warning"></span>';
-  return '<span class="dash-alert-dot" title="' + escapeHtml(status) + '"></span>';
-}
-
-function _durationSince(iso) {
-  if (!iso) return "—";
-  var diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff < 60) return diff + "s";
-  if (diff < 3600) {
-    var m = Math.floor(diff / 60);
-    var s = diff % 60;
-    return m + "m " + (s < 10 ? "0" + s : s) + "s";
-  }
-  if (diff < 86400) {
-    var h = Math.floor(diff / 3600);
-    var rm = Math.floor((diff % 3600) / 60);
-    return h + "h " + (rm < 10 ? "0" + rm : rm) + "m";
-  }
-  var d = Math.floor(diff / 86400);
-  var rh = Math.floor((diff % 86400) / 3600);
-  return d + "d " + rh + "h";
-}
-
-function renderMonitorAlerts(alerts, overflow) {
-  var el = document.getElementById("monitor-alerts");
-  if (!el) return;
-  if (!alerts.length) {
-    el.innerHTML = '<p class="empty-state">All monitored assets healthy</p>';
-    return;
-  }
-  var rows = alerts.map(function (a) {
-    var typeLabel = DASH_ASSET_TYPE_LABELS[a.assetType] || a.assetType;
-    var hostname = a.hostname || a.ipAddress || "(unnamed)";
-    var nav = "/assets.html#search=" + encodeURIComponent(hostname);
-    return '<a class="dash-alert-row" href="' + nav + '">' +
-      _statusDot(a.monitorStatus) +
-      '<div class="dash-alert-body">' +
-        '<div class="dash-alert-title">' + escapeHtml(hostname) + '</div>' +
-        '<div class="dash-alert-sub">' + escapeHtml(typeLabel) + ' · ' + escapeHtml(a.monitorStatus) + '</div>' +
-      '</div>' +
-      '<div class="dash-alert-time" data-changed-at="' + (a.monitorStatusChangedAt || "") + '">' + _durationSince(a.monitorStatusChangedAt) + '</div>' +
-    '</a>';
-  }).join("");
-  var footer = overflow ? '<p class="empty-state" style="text-align:left;margin-top:8px">+ more — see <a href="/assets.html">Assets</a></p>' : "";
-  el.innerHTML = rows + footer;
-}
-
-// ─── Recently reserved ───────────────────────────────────────────────────────
-
-function renderRecentReservations(rows) {
-  var el = document.getElementById("recent-reservations");
-  if (!el) return;
-  if (!rows.length) {
-    el.innerHTML = '<p class="empty-state">No manual reservations yet</p>';
-    return;
-  }
-  el.innerHTML = rows.map(function (r) {
-    var ip = r.ipAddress || "(full subnet)";
-    var badges = '<code>' + escapeHtml(r.subnetCidr) + '</code>';
-    if (r.vlan != null) badges += ' <span class="badge badge-vlan">VLAN ' + r.vlan + '</span>';
-    var meta = [];
-    if (r.hostname) meta.push(escapeHtml(r.hostname));
-    if (r.owner) meta.push(escapeHtml(r.owner));
-    if (r.createdBy) meta.push("by " + escapeHtml(r.createdBy));
-    if (r.macAddress) meta.push('<code>' + escapeHtml(r.macAddress) + '</code>');
-    var nav = "/ipam.html#tab=networks&subnet=" + encodeURIComponent(r.subnetId) + "&focusReservation=" + encodeURIComponent(r.id);
-    return '<a class="recent-item recent-item-link" href="' + nav + '"><div>' +
-      '<div class="recent-item-title"><span>' + escapeHtml(ip) + '</span>' + badges + '</div>' +
-      '<div class="recent-item-meta"><span>' + escapeHtml(r.subnetName || "") + '</span>' +
-      (meta.length ? '<span style="color:var(--color-text-tertiary)">·</span><span>' + meta.join(' · ') + '</span>' : '') +
-      '</div>' +
-      '</div><span class="recent-item-time">' + timeAgo(r.createdAt) + '</span></a>';
-  }).join("");
-}
-
-// ─── Assets by type (SVG pie) ────────────────────────────────────────────────
-//
-// In-house SVG — keeps the bundle small and matches the rest of the app's
-// chart aesthetic (response-time, telemetry, etc. are all hand-rolled SVG).
-// Hover highlights the slice; click navigates to the assets list filtered by
-// that type.
-
-function renderAssetTypes(rows) {
-  var el = document.getElementById("asset-types");
-  if (!el) return;
-  var total = rows.reduce(function (s, r) { return s + r.count; }, 0);
-  if (!total) {
-    el.innerHTML = '<p class="empty-state">No assets yet</p>';
-    return;
-  }
-  // Stable display order keyed off DASH_ASSET_TYPE_LABELS so legend ordering
-  // is predictable regardless of how the DB grouped the result.
-  var ordered = Object.keys(DASH_ASSET_TYPE_LABELS).map(function (k) {
-    var hit = rows.find(function (r) { return r.assetType === k; });
-    return { assetType: k, count: hit ? hit.count : 0 };
-  }).filter(function (r) { return r.count > 0; });
-
-  var size = 200, r = 80, cx = size / 2, cy = size / 2;
-  var startAngle = -Math.PI / 2;
-  var slices = ordered.map(function (row) {
-    var frac = row.count / total;
-    var endAngle = startAngle + frac * Math.PI * 2;
-    var x1 = cx + r * Math.cos(startAngle);
-    var y1 = cy + r * Math.sin(startAngle);
-    var x2 = cx + r * Math.cos(endAngle);
-    var y2 = cy + r * Math.sin(endAngle);
-    var largeArc = (endAngle - startAngle) > Math.PI ? 1 : 0;
-    var d = 'M ' + cx + ' ' + cy + ' L ' + x1 + ' ' + y1 + ' A ' + r + ' ' + r + ' 0 ' + largeArc + ' 1 ' + x2 + ' ' + y2 + ' Z';
-    var color = DASH_ASSET_TYPE_COLORS[row.assetType] || "#9e9e9e";
-    var label = DASH_ASSET_TYPE_LABELS[row.assetType] || row.assetType;
-    startAngle = endAngle;
-    return { d: d, color: color, label: label, assetType: row.assetType, count: row.count, pct: Math.round(frac * 100) };
-  });
-
-  var svg = '<svg viewBox="0 0 ' + size + ' ' + size + '" width="100%" style="max-width:200px;display:block;margin:0 auto">' +
-    slices.map(function (s) {
-      return '<path d="' + s.d + '" fill="' + s.color + '" stroke="var(--color-bg)" stroke-width="2" class="dash-pie-slice" data-type="' + escapeHtml(s.assetType) + '"><title>' + escapeHtml(s.label) + ' — ' + s.count + ' (' + s.pct + '%)</title></path>';
-    }).join("") +
-    '</svg>';
-
-  var legend = '<div class="dash-pie-legend">' + slices.map(function (s) {
-    var nav = "/assets.html#type=" + encodeURIComponent(s.assetType);
-    return '<a class="dash-pie-legend-item" href="' + nav + '" data-type="' + escapeHtml(s.assetType) + '">' +
-      '<span class="legend-dot" style="background:' + s.color + '"></span>' +
-      '<span class="dash-pie-legend-label">' + escapeHtml(s.label) + '</span>' +
-      '<span class="dash-pie-legend-count">' + s.count + '</span>' +
-    '</a>';
-  }).join("") + '</div>';
-
-  el.innerHTML = '<div class="dash-pie-wrap">' + svg + legend + '</div>';
-
-  // Click on the SVG slice navigates the same way the legend link does.
-  Array.prototype.forEach.call(el.querySelectorAll(".dash-pie-slice"), function (path) {
-    path.addEventListener("click", function () {
-      window.location.href = "/assets.html#type=" + encodeURIComponent(path.getAttribute("data-type"));
+    addBtnEl.addEventListener("click", function () {
+      WidgetLibrary.open(handleTapToAdd);
     });
+
+    // Wire drag-from-slide-in onto the canvas.
+    canvasEl.addEventListener("dragover", onCanvasDragOver);
+    canvasEl.addEventListener("dragleave", onCanvasDragLeave);
+    canvasEl.addEventListener("drop", onCanvasDrop);
+
+    // Close popover on outside-click.
+    document.addEventListener("click", function (e) {
+      if (!openPopover) return;
+      if (openPopover.el.contains(e.target)) return;
+      if (e.target.closest && e.target.closest(".dashboard-widget-action[data-action='gear']")) return;
+      closePopover();
+    });
+
+    bootstrap();
   });
-}
 
-// ─── Block utilization ───────────────────────────────────────────────────────
+  // ─── Bootstrap ──────────────────────────────────────────────────────────
 
-function _fmtAddrs(n) {
-  if (n >= 1048576) return (n / 1048576).toFixed(1).replace(/\.0$/, "") + "M";
-  if (n >= 1024)    return Math.round(n / 1024) + "K";
-  return String(n);
-}
-
-function renderBlockUtil(rows) {
-  var el = document.getElementById("block-util");
-  if (!el) return;
-  if (!rows.length) {
-    el.innerHTML = '<p class="empty-state">No blocks yet</p>';
-    return;
+  async function bootstrap() {
+    try {
+      var data = await api.me.dashboard.get();
+      state.layout = data && data.widgets ? data : { version: 1, widgets: [] };
+    } catch (_err) {
+      state.layout = { version: 1, widgets: [] };
+    }
+    if (state.layout.widgets.length === 0) {
+      showEmpty();
+    } else {
+      hideEmpty();
+      await refetchSummaryIfNeeded();
+      reflow(state.layout.widgets);
+      renderCanvas();
+    }
   }
-  el.innerHTML = rows.map(function (b) {
-    var pct = b.usedPercent != null ? b.usedPercent : 0;
-    var color = pct > 75 ? "#ff1744" : pct > 50 ? "#ffd600" : "#4fc3f7";
-    var addrLabel = (b.blockAddresses != null)
-      ? _fmtAddrs(b.allocatedAddresses) + ' / ' + _fmtAddrs(b.blockAddresses) + ' IPs'
-      : b.totalSubnets + ' subnets';
-    var nav = "/ipam.html#tab=networks&block=" + encodeURIComponent(b.id);
-    return '<a class="block-util-item block-util-link" href="' + nav + '">' +
-      '<div class="block-util-header"><div class="block-util-name"><span>' + escapeHtml(b.name) + '</span><code>' + escapeHtml(b.cidr) + '</code></div><span class="block-util-count">' + addrLabel + '</span></div>' +
-      '<div class="util-row"><div class="util-bar-track"><div class="util-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div><span style="font-size:0.82rem;color:var(--color-text-secondary);min-width:32px;text-align:right">' + pct + '%</span></div>' +
-    '</a>';
-  }).join("");
-}
+
+  function showEmpty() {
+    emptyEl.hidden = false;
+    canvasEl.hidden = true;
+    canvasEl.innerHTML = "";
+    unmountAll();
+  }
+  function hideEmpty() {
+    emptyEl.hidden = true;
+    canvasEl.hidden = false;
+  }
+
+  // ─── Layout maths ───────────────────────────────────────────────────────
+
+  // Row-major packer. For each widget in order, find the leftmost-topmost
+  // free slot that fits its width × height and place it there. Mutates
+  // each widget's col/row in place.
+  function reflow(widgets) {
+    var occupied = {}; // "row,col" → true
+    function rowKey(r) { return r; }
+    function isFree(r, c, w, h) {
+      for (var rr = r; rr < r + h; rr++) {
+        for (var cc = c; cc < c + w; cc++) {
+          if (cc >= GRID_COLS) return false;
+          if (occupied[rr + "," + cc]) return false;
+        }
+      }
+      return true;
+    }
+    function mark(r, c, w, h) {
+      for (var rr = r; rr < r + h; rr++) {
+        for (var cc = c; cc < c + w; cc++) {
+          occupied[rr + "," + cc] = true;
+        }
+      }
+    }
+    widgets.forEach(function (w) {
+      // Clamp width to grid.
+      if (w.width > GRID_COLS) w.width = GRID_COLS;
+      var placed = false;
+      for (var r = 0; !placed; r++) {
+        for (var c = 0; c <= GRID_COLS - w.width; c++) {
+          if (isFree(r, c, w.width, w.height)) {
+            w.col = c;
+            w.row = r;
+            mark(r, c, w.width, w.height);
+            placed = true;
+            break;
+          }
+        }
+      }
+    });
+  }
+
+  // Insertion-index from cursor pixel position. Returns the index in the
+  // ordered widget array where a new widget should be inserted to land at
+  // the cursor's grid cell. Walks widgets in order and finds the first one
+  // whose row-major position is *strictly after* the cursor's cell.
+  function insertIndexFromCursor(clientX, clientY) {
+    var rect = canvasEl.getBoundingClientRect();
+    var x = Math.max(0, clientX - rect.left);
+    var y = Math.max(0, clientY - rect.top);
+    var colWidth = (rect.width - GAP_PX * (GRID_COLS - 1)) / GRID_COLS;
+    var col = Math.max(0, Math.min(GRID_COLS - 1, Math.floor(x / (colWidth + GAP_PX))));
+    var row = Math.max(0, Math.floor(y / (ROW_HEIGHT_PX + GAP_PX)));
+    var widgets = state.layout.widgets;
+    for (var i = 0; i < widgets.length; i++) {
+      var w = widgets[i];
+      // "Strictly after" in row-major terms.
+      if (w.row > row || (w.row === row && w.col > col)) return i;
+    }
+    return widgets.length;
+  }
+
+  // ─── State mutations ────────────────────────────────────────────────────
+
+  function applyChange(mutator) {
+    mutator();
+    reflow(state.layout.widgets);
+    renderCanvas();
+    queueSave();
+  }
+
+  function queueSave() {
+    if (state.saveTimer) clearTimeout(state.saveTimer);
+    state.saveTimer = setTimeout(saveNow, SAVE_DEBOUNCE_MS);
+  }
+  async function saveNow() {
+    state.saveTimer = null;
+    state.saving = true;
+    try {
+      await api.me.dashboard.put(state.layout);
+    } catch (err) {
+      if (typeof showToast === "function") showToast("Failed to save dashboard: " + (err.message || err), "error");
+    } finally {
+      state.saving = false;
+    }
+  }
+
+  function addWidget(type, atIndex) {
+    var module = PolarisWidgets.getByType(type);
+    if (!module) return;
+    var instance = {
+      id:    PolarisWidgets.uuid(),
+      type:  module.type,
+      col:   0,
+      row:   0,
+      width: module.defaultSize.width,
+      height: module.defaultSize.height,
+      config: Object.assign({}, module.defaultConfig || {}),
+    };
+    var idx = (atIndex == null || atIndex < 0) ? state.layout.widgets.length : atIndex;
+    state.layout.widgets.splice(idx, 0, instance);
+    reflow(state.layout.widgets);
+    hideEmpty();
+    // Refetch the shared summary BEFORE rendering so any built-in widgets
+    // (existing or newly added) get fresh data; non-summary widgets fetch
+    // their own data inside renderWidget anyway.
+    refetchSummaryIfNeeded().then(renderCanvas);
+    queueSave();
+  }
+
+  function removeWidget(id) {
+    applyChange(function () {
+      state.layout.widgets = state.layout.widgets.filter(function (w) { return w.id !== id; });
+    });
+    if (state.layout.widgets.length === 0) showEmpty();
+  }
+
+  function moveWidget(id, toIndex) {
+    applyChange(function () {
+      var widgets = state.layout.widgets;
+      var fromIdx = widgets.findIndex(function (w) { return w.id === id; });
+      if (fromIdx === -1) return;
+      var moved = widgets.splice(fromIdx, 1)[0];
+      // After removal, adjust toIndex when the source was before the target.
+      var insertAt = toIndex;
+      if (fromIdx < toIndex) insertAt = Math.max(0, toIndex - 1);
+      widgets.splice(insertAt, 0, moved);
+    });
+  }
+
+  function resizeWidget(id, width, height) {
+    var w = state.layout.widgets.find(function (x) { return x.id === id; });
+    if (!w) return;
+    if (w.width === width && w.height === height) return;
+    applyChange(function () {
+      w.width = width;
+      w.height = height;
+    });
+  }
+
+  function updateConfig(id, key, value) {
+    var w = state.layout.widgets.find(function (x) { return x.id === id; });
+    if (!w) return;
+    w.config = Object.assign({}, w.config || {}, { [key]: value });
+    queueSave();
+    // Re-render that one widget with the new config.
+    renderWidget(w);
+  }
+
+  // ─── Render ─────────────────────────────────────────────────────────────
+
+  function unmountAll() {
+    Object.keys(state.unmounts).forEach(function (id) {
+      try { state.unmounts[id](); } catch (_) {}
+    });
+    state.unmounts = {};
+  }
+
+  function renderCanvas() {
+    unmountAll();
+    canvasEl.innerHTML = "";
+    state.layout.widgets.forEach(function (w) {
+      var el = mountWidgetShell(w);
+      canvasEl.appendChild(el);
+      renderWidget(w);
+    });
+  }
+
+  function mountWidgetShell(w) {
+    var module = PolarisWidgets.getByType(w.type);
+    // Even unknown widgets get a placeholder so the operator can remove them.
+    var label = module ? module.label : (w.type + " (unknown widget)");
+    var article = document.createElement("article");
+    article.className = "dashboard-widget";
+    article.setAttribute("data-id", w.id);
+    article.setAttribute("data-type", w.type);
+    article.style.gridColumn = (w.col + 1) + " / span " + w.width;
+    article.style.gridRow    = (w.row + 1) + " / span " + w.height;
+
+    article.innerHTML =
+      '<div class="dashboard-widget-header">' +
+        '<div class="dashboard-widget-title" draggable="true">' + escapeHtml(label) + '</div>' +
+        '<button type="button" class="dashboard-widget-action" data-action="gear" title="Configure">⚙</button>' +
+        '<button type="button" class="dashboard-widget-action" data-action="remove" title="Remove">×</button>' +
+      '</div>' +
+      '<div class="dashboard-widget-body"></div>' +
+      '<div class="dashboard-widget-resize" data-action="resize" title="Resize"></div>';
+
+    // Drag this widget to reorder.
+    var titleEl = article.querySelector(".dashboard-widget-title");
+    titleEl.addEventListener("dragstart", function (e) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("application/x-polaris-widget-move", w.id);
+      e.dataTransfer.setData("text/plain", w.id);
+      article.classList.add("dragging");
+    });
+    titleEl.addEventListener("dragend", function () { article.classList.remove("dragging"); });
+
+    article.querySelector('[data-action="remove"]').addEventListener("click", function () {
+      removeWidget(w.id);
+    });
+    article.querySelector('[data-action="gear"]').addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      openGearPopover(w, article);
+    });
+
+    // Resize handle.
+    var resizeEl = article.querySelector('[data-action="resize"]');
+    resizeEl.addEventListener("pointerdown", function (ev) { startResize(ev, w, article); });
+
+    return article;
+  }
+
+  function renderWidget(w) {
+    var article = canvasEl.querySelector('.dashboard-widget[data-id="' + cssEscape(w.id) + '"]');
+    if (!article) return;
+    var body = article.querySelector(".dashboard-widget-body");
+    body.innerHTML = "";
+
+    // Cleanup previous timers etc.
+    if (state.unmounts[w.id]) {
+      try { state.unmounts[w.id](); } catch (_) {}
+      delete state.unmounts[w.id];
+    }
+    var unmountFns = [];
+    var ctx = {
+      summary: state.summary,
+      onUnmount: function (fn) { unmountFns.push(fn); },
+    };
+
+    var module = PolarisWidgets.getByType(w.type);
+    if (!module) {
+      body.innerHTML = '<p class="empty-state">Unknown widget: ' + escapeHtml(w.type) + '</p>';
+      return;
+    }
+    var dataPromise;
+    try {
+      dataPromise = module.fetchData ? module.fetchData(w.config || {}, state.summary) : Promise.resolve(null);
+    } catch (err) {
+      dataPromise = Promise.reject(err);
+    }
+    Promise.resolve(dataPromise).then(function (data) {
+      try {
+        module.renderInstance(body, w.config || {}, data, ctx);
+      } catch (err) {
+        body.innerHTML = '<p class="empty-state" style="color:#ef5350">Render failed: ' + escapeHtml(err.message || String(err)) + '</p>';
+      }
+    }).catch(function (err) {
+      body.innerHTML = '<p class="empty-state" style="color:#ef5350">' + escapeHtml(err.message || "Fetch failed") + '</p>';
+    });
+    state.unmounts[w.id] = function () { unmountFns.forEach(function (fn) { try { fn(); } catch (_) {} }); };
+  }
+
+  async function refetchSummaryIfNeeded() {
+    // Only the four built-in widgets read the shared /dashboard/summary
+    // payload; others have their own fetchData. If any built-in widget is
+    // present we fetch once and share.
+    var needsSummary = state.layout.widgets.some(function (w) {
+      return ["monitorAlerts", "recentReservations", "assetTypes", "blockUtilization"].indexOf(w.type) !== -1;
+    });
+    if (!needsSummary) { state.summary = null; return; }
+    try {
+      state.summary = await api.dashboard.summary();
+    } catch (_err) {
+      state.summary = null;
+    }
+  }
+
+  // ─── Drag handlers (canvas) ─────────────────────────────────────────────
+
+  function onCanvasDragOver(ev) {
+    var types = ev.dataTransfer ? ev.dataTransfer.types : null;
+    if (!types) return;
+    var isAdd  = types.indexOf("application/x-polaris-widget") !== -1;
+    var isMove = types.indexOf("application/x-polaris-widget-move") !== -1;
+    if (!isAdd && !isMove) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = isAdd ? "copy" : "move";
+    canvasEl.classList.add("drop-target");
+  }
+
+  function onCanvasDragLeave(ev) {
+    if (ev.relatedTarget && canvasEl.contains(ev.relatedTarget)) return;
+    canvasEl.classList.remove("drop-target");
+  }
+
+  function onCanvasDrop(ev) {
+    canvasEl.classList.remove("drop-target");
+    var addType  = ev.dataTransfer.getData("application/x-polaris-widget");
+    var moveId   = ev.dataTransfer.getData("application/x-polaris-widget-move");
+    if (!addType && !moveId) return;
+    ev.preventDefault();
+    var idx = insertIndexFromCursor(ev.clientX, ev.clientY);
+    if (addType) {
+      addWidget(addType, idx);
+      WidgetLibrary.close();
+    } else if (moveId) {
+      moveWidget(moveId, idx);
+    }
+  }
+
+  function handleTapToAdd(type) {
+    // Tap-to-add fallback (used on small viewports / touch): append at end.
+    addWidget(type, state.layout.widgets.length);
+  }
+
+  // ─── Resize ─────────────────────────────────────────────────────────────
+
+  function startResize(ev, w, article) {
+    ev.preventDefault();
+    var rect = article.getBoundingClientRect();
+    var canvasRect = canvasEl.getBoundingClientRect();
+    var colWidth = (canvasRect.width - GAP_PX * (GRID_COLS - 1)) / GRID_COLS;
+    var startW = w.width;
+    var startH = w.height;
+    var widthSteps = [3, 4, 6, 12];
+    var heightSteps = [1, 2];
+
+    function pickClosest(target, steps) {
+      var best = steps[0], bestDist = Infinity;
+      steps.forEach(function (s) {
+        var d = Math.abs(target - s);
+        if (d < bestDist) { bestDist = d; best = s; }
+      });
+      return best;
+    }
+
+    function onMove(mv) {
+      var newPxW = mv.clientX - rect.left;
+      var newPxH = mv.clientY - rect.top;
+      var newColW = (newPxW + GAP_PX) / (colWidth + GAP_PX);
+      var newRowH = (newPxH + GAP_PX) / (ROW_HEIGHT_PX + GAP_PX);
+      var targetW = pickClosest(newColW, widthSteps);
+      var targetH = pickClosest(newRowH, heightSteps);
+      var module = PolarisWidgets.getByType(w.type);
+      var minW = (module && module.minSize && module.minSize.width) || 3;
+      var minH = (module && module.minSize && module.minSize.height) || 1;
+      if (targetW < minW) targetW = minW;
+      if (targetH < minH) targetH = minH;
+      // Live-preview without committing reflow.
+      article.style.gridColumn = (w.col + 1) + " / span " + targetW;
+      article.style.gridRow    = (w.row + 1) + " / span " + targetH;
+      article.setAttribute("data-preview-w", targetW);
+      article.setAttribute("data-preview-h", targetH);
+    }
+    function onUp() {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      var finalW = parseInt(article.getAttribute("data-preview-w") || startW, 10);
+      var finalH = parseInt(article.getAttribute("data-preview-h") || startH, 10);
+      article.removeAttribute("data-preview-w");
+      article.removeAttribute("data-preview-h");
+      resizeWidget(w.id, finalW, finalH);
+    }
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+  }
+
+  // ─── Gear popover ───────────────────────────────────────────────────────
+
+  function openGearPopover(w, anchorEl) {
+    closePopover();
+    var module = PolarisWidgets.getByType(w.type);
+    if (!module) return;
+    var pop = document.createElement("div");
+    pop.className = "widget-config-popover";
+    pop.innerHTML = '<h4>' + escapeHtml(module.label) + '</h4><div class="widget-config-fields"></div>' +
+      '<div class="widget-config-popover-footer">' +
+        '<button type="button" class="btn btn-icon" data-action="remove">Remove widget</button>' +
+        '<button type="button" class="btn btn-primary" data-action="close">Done</button>' +
+      '</div>';
+    document.body.appendChild(pop);
+
+    var fieldsEl = pop.querySelector(".widget-config-fields");
+    if (module.renderConfig) {
+      try {
+        module.renderConfig(fieldsEl, w.config || {}, function (key, value) {
+          updateConfig(w.id, key, value);
+        });
+      } catch (err) {
+        fieldsEl.innerHTML = '<p class="empty-state">Config failed to render.</p>';
+      }
+    } else {
+      fieldsEl.innerHTML = '<p style="font-size:0.82rem;color:var(--color-text-secondary)">This widget has no configurable options.</p>';
+    }
+    pop.querySelector('[data-action="remove"]').addEventListener("click", function () {
+      closePopover();
+      removeWidget(w.id);
+    });
+    pop.querySelector('[data-action="close"]').addEventListener("click", closePopover);
+
+    // Position below the anchor, right-aligned to the gear.
+    var anchorRect = anchorEl.getBoundingClientRect();
+    var top = anchorRect.top + window.scrollY + anchorRect.height + 4;
+    var width = Math.min(320, Math.max(240, anchorRect.width / 2));
+    pop.style.width = width + "px";
+    var left = anchorRect.right + window.scrollX - width;
+    if (left < 8) left = 8;
+    pop.style.top = top + "px";
+    pop.style.left = left + "px";
+
+    openPopover = { el: pop, widgetId: w.id };
+  }
+  function closePopover() {
+    if (!openPopover) return;
+    try { document.body.removeChild(openPopover.el); } catch (_) {}
+    openPopover = null;
+  }
+
+  // CSS.escape polyfill — old browsers + safe escape for our use case.
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, function (c) { return "\\" + c; });
+  }
+})();
