@@ -2965,8 +2965,13 @@ function assetAgentSubpanelHTML(a, agent) {
         '<button type="button" class="btn btn-secondary" id="btn-agent-upgrade" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Upgrade…</button>' +
         ' <button type="button" class="btn btn-secondary" id="btn-agent-uninstall" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Uninstall</button>';
     } else if (agent.installStatus === "failed") {
+      // Retry uses the credential + os/arch stored on the row, so the
+      // operator doesn't have to re-pick them in a modal. When the row
+      // has no installCredentialId on file (credential was deleted),
+      // fall back to the full install modal so they can choose a new one.
+      var retryId = agent.installCredentialId ? "btn-agent-install-retry" : "btn-agent-install";
       actions =
-        '<button type="button" class="btn btn-primary" id="btn-agent-install" data-asset-id="' + escapeHtml(a.id) + '">Retry Install…</button>' +
+        '<button type="button" class="btn btn-primary" id="' + retryId + '" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Retry Install…</button>' +
         ' <button type="button" class="btn btn-secondary" id="btn-agent-force-remove" data-managed-agent-id="' + escapeHtml(agent.id) + '" data-asset-id="' + escapeHtml(a.id) + '">Force Remove</button>';
     } else if (agent.installStatus === "upgrade_failed") {
       actions =
@@ -3023,6 +3028,13 @@ function _wireAgentSubpanel(a, agent) {
     installBtn.addEventListener("click", function () { _openInstallAgentModal(a); });
   }
 
+  var retryBtn = document.getElementById("btn-agent-install-retry");
+  if (retryBtn) {
+    retryBtn.addEventListener("click", function () {
+      _confirmRetryInstallAgent(a, agent);
+    });
+  }
+
   var uninstallBtn = document.getElementById("btn-agent-uninstall");
   if (uninstallBtn) {
     uninstallBtn.addEventListener("click", function () {
@@ -3050,6 +3062,27 @@ function _wireAgentSubpanel(a, agent) {
   if (agent && _isTransientAgentState(agent.installStatus)) {
     _startAgentPoll(a);
   }
+}
+
+function _confirmRetryInstallAgent(a, agent) {
+  // Retry reuses the credential + os/arch stored on the row at the
+  // original install — no modal. Shows a confirm so a misclick can
+  // back out, since this will re-attempt SSH/WinRM against the host.
+  var prompt =
+    "Retry the Polaris Agent install on " + (a.hostname || a.ipAddress || "this asset") + "?\n\n" +
+    "Polaris will reconnect over " + (agent && agent.osPlatform === "windows" ? "WinRM" : "SSH") +
+    " using the same credential as the previous attempt, re-upload the agent binary, and run the installer.";
+  showConfirm(prompt).then(function (ok) {
+    if (!ok) return;
+    api.assets.retryInstallAgent(a.id).then(function () {
+      showToast("Retry started — watch progress in the Agent panel", "success");
+      api.assets.agent(a.id).then(function (ag) {
+        _rerenderAgentSubpanel(a, ag);
+      });
+    }).catch(function (err) {
+      showToast("Retry failed: " + err.message, "error");
+    });
+  });
 }
 
 function _confirmUpgradeAgent(a, agent) {
