@@ -42,6 +42,16 @@
   color: var(--color-text-tertiary);
 }
 
+/* Save Regions + Discard Changes group sits on the right edge of the toolbar.
+ * `margin-left: auto` consumes any free horizontal space ahead of it so the
+ * group anchors right regardless of how long the status text is. */
+.map-edit-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 /* ─── Region edit-mode overlay ──────────────────────────────────────────────
    Polygons are NOT rendered on the default map view — they appear only when
    the operator clicks "Edit regions". Styles target the leaflet-draw layers
