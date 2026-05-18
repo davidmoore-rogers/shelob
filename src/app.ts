@@ -55,6 +55,7 @@ import "./jobs/resolveStaleReservationConflicts.js";
 import "./jobs/scrubLegacySidGuidTags.js";
 import "./jobs/backfillFortigateEndpointSources.js";
 import "./jobs/fixInfraAssetTypes.js";
+import "./jobs/mergeFortiswitchEndpointGhosts.js";
 import "./jobs/backfillDependencyTree.js";
 import "./jobs/backfillMonitorStatusChangedAt.js";
 import "./jobs/rasterizeStoredSvgIcons.js";

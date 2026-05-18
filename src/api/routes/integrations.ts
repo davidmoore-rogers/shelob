@@ -2064,7 +2064,7 @@ async function upsertFortigateFirewallAssetSource(
 // per-source JSON shape sketched in CLAUDE.md ("Per-source observed shapes
 // / sourceKind: fortiswitch"). Companion to the firewall blob above.
 function buildFortiswitchObservedBlob(
-  sw: { device?: string; name?: string; serial?: string; ipAddress?: string; fgtInterface?: string; osVersion?: string; joinTime?: number; state?: string; connected?: boolean },
+  sw: { device?: string; name?: string; serial?: string; ipAddress?: string; fgtInterface?: string; osVersion?: string; joinTime?: number; state?: string; connected?: boolean; baseMac?: string },
   syncedAt: Date,
 ): Record<string, unknown> {
   return {
@@ -2075,6 +2075,10 @@ function buildFortiswitchObservedBlob(
     model: "FortiSwitch",
     osVersion: sw.osVersion || null,
     mgmtIp: sw.ipAddress || null,
+    // Management MAC of the switch (FortiLink-peer interface). Cross-joined
+    // at discovery time from the detected-device MAC table. Cleared to null
+    // when the switch wasn't represented in any is_fortilink_peer row.
+    baseMac: sw.baseMac || null,
     controllerFortigate: sw.device || null,
     uplinkInterface: sw.fgtInterface || null,
     state: sw.state || null,
@@ -3326,8 +3330,19 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
     const swJoinDate = sw.joinTime && Number.isFinite(sw.joinTime) && sw.joinTime > 0
       ? new Date(sw.joinTime * 1000) : null;
     const swNotes = `Auto-discovered from FortiGate ${sw.device}${sw.fgtInterface ? ` via ${sw.fgtInterface}` : ""} via ${integrationLabel}`;
+    // Management MAC cross-joined from the detected-device fortilink-peer
+    // rows at discovery time. Used for the orphan-endpoint dedup lookup
+    // below and to seed Asset.macAddress / macAddressRows on create.
+    const normalizedSwMac = sw.baseMac ? sw.baseMac.toUpperCase().replace(/-/g, ":") : null;
     try {
       let existingAsset: any = sw.serial ? assetIdx.findBySerial(sw.serial) : null;
+      // MAC fallback before name/IP fallback — adopts an orphan
+      // "fortigate-endpoint" asset that was created by the DHCP/ARP/MAC-table
+      // pathway at this switch's mgmt IP before FortiSwitch discovery linked
+      // it up. The inline retype-and-sweep block below converts the
+      // adopted asset to assetType="switch" and removes the stale
+      // fortigate-endpoint source row.
+      if (!existingAsset && normalizedSwMac) existingAsset = assetIdx.findByMac(normalizedSwMac);
       if (!existingAsset && sw.name) existingAsset = assetIdx.findByEntry(undefined, sw.name, sw.ipAddress || undefined);
 
       const swTopology = {
@@ -3398,8 +3413,33 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
           updateData.ipAddress = swProjected.ipAddress;
           updateData.ipSource = sw.device || integrationType;
         }
+        // Backfill macAddress + AssetMacAddress when we know the switch's
+        // management MAC from this discovery and the existing asset doesn't
+        // carry it yet. Mirrors the merge pattern Phase 7 uses for endpoints
+        // (lines 4626-4648 + 4660-4662) so the next discovery cycle's
+        // MAC-keyed dedup finds this switch. Idempotent — when the MAC is
+        // already in macList, only its lastSeen + source are bumped.
+        let swMacListForReconcile: MacJsonEntry[] | null = null;
+        if (normalizedSwMac) {
+          const macList: MacJsonEntry[] = Array.isArray(existingAsset.macAddresses) ? [...(existingAsset.macAddresses as any)] : [];
+          const existingMacEntry = macList.find((m) => m.mac === normalizedSwMac);
+          if (existingMacEntry) {
+            existingMacEntry.lastSeen = now;
+            existingMacEntry.source = "fmg-discovery";
+            if (sw.device) existingMacEntry.device = sw.device;
+          } else {
+            macList.push({ mac: normalizedSwMac, lastSeen: now, source: "fmg-discovery", ...(sw.device ? { device: sw.device } : {}) });
+          }
+          macList.sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+          if (!existingAsset.macAddress) updateData.macAddress = macList[0].mac;
+          existingAsset.macAddresses = macList;
+          swMacListForReconcile = macList;
+        }
         clampAcquiredToLastSeen(updateData, existingAsset);
         await prisma.asset.update({ where: { id: existingAsset.id }, data: updateData });
+        if (swMacListForReconcile) {
+          await reconcileMacAddresses(existingAsset.id, swMacListForReconcile);
+        }
         if (sw.ipAddress) existingAsset.ipAddress = sw.ipAddress;
         if (reactivate) existingAsset.status = swStatus;
         assetIdx.reindex(existingAsset);
@@ -3414,6 +3454,15 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
         const createData: Record<string, unknown> = {
           ipAddress: swCreateProjected.ipAddress,
           ...(swCreateProjected.ipAddress ? { ipSource: sw.device || integrationType } : {}),
+          // Management MAC from the detected-device fortilink-peer cross-join.
+          // Seeded here so the next discovery cycle's MAC-keyed dedup
+          // (Phase 7 device-inventory, Phase 7.5 MAC-table enrichment, and
+          // the new MAC-fallback lookup above) recognizes this switch and
+          // doesn't spawn a phantom fortigate-endpoint asset alongside it.
+          macAddress: normalizedSwMac,
+          ...(normalizedSwMac
+            ? { macAddressRows: { create: buildMacRowsForCreate([{ mac: normalizedSwMac, lastSeen: now, source: "fmg-discovery" }]) } }
+            : {}),
           hostname: swCreateProjected.hostname,
           serialNumber: swCreateProjected.serialNumber,
           manufacturer: swCreateProjected.manufacturer || "Fortinet",

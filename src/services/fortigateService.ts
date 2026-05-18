@@ -674,6 +674,10 @@ export async function discoverDhcpSubnets(
     });
     if (Array.isArray(detected)) {
       const macMap = new Map<string, { switchId: string; portName: string; vlan?: number }>();
+      // FortiLink-peer rows carry each managed FortiSwitch's own
+      // management MAC, keyed on switch_id. Used below to stamp baseMac
+      // onto every DiscoveredFortiSwitch in fortiSwitches.
+      const switchMacByName = new Map<string, string>();
       for (const d of detected) {
         const mac = String(d.mac || "").toUpperCase().replace(/-/g, ":");
         if (!mac) continue;
@@ -681,6 +685,9 @@ export async function discoverDhcpSubnets(
         const portName = String(d.port_name || "");
         const vlanId = Number.isFinite(d.vlan_id) ? Number(d.vlan_id) : undefined;
         const isFortilinkPeer = d.is_fortilink_peer === true || d.is_fortilink_peer === 1;
+        if (isFortilinkPeer && switchId && !switchMacByName.has(switchId)) {
+          switchMacByName.set(switchId, mac);
+        }
         // Surface every learned MAC to the sync layer for endpoint-asset
         // attribution (mirrors the fortimanagerService implementation).
         switchMacTable.push({
@@ -725,6 +732,24 @@ export async function discoverDhcpSubnets(
       }
       const totalResolved = pairedCount + lldpAlreadyCount;
       log("discover.ap-uplinks", "info", `${deviceHostname}: Resolved ${totalResolved}/${fortiAps.length} AP→switch-port uplinks (${lldpAlreadyCount} via LLDP, ${pairedCount} via detected-device)`, deviceHostname);
+
+      // Stamp each managed FortiSwitch's management MAC onto its
+      // DiscoveredFortiSwitch entry using the FortiLink-peer rows
+      // collected above. Lets the sync layer dedup against
+      // DHCP/ARP-discovered orphan endpoint assets at the switch's
+      // mgmt IP.
+      let switchMacResolved = 0;
+      for (const sw of fortiSwitches) {
+        if (sw.device !== deviceName || !sw.name) continue;
+        const mac = switchMacByName.get(sw.name);
+        if (mac) {
+          sw.baseMac = mac;
+          switchMacResolved++;
+        }
+      }
+      if (switchMacByName.size > 0) {
+        log("discover.fortiswitches.mac", "info", `${deviceHostname}: Resolved ${switchMacResolved} FortiSwitch base MAC(s) from detected-device fortilink-peer rows`, deviceHostname);
+      }
     }
   } catch (err: any) {
     const isNotFound = err instanceof AppError && err.httpStatus === 404;

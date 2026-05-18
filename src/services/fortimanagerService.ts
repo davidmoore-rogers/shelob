@@ -738,6 +738,14 @@ export interface DiscoveredFortiSwitch {
   joinTime?: number;    // join_time (Unix timestamp — when first authorized)
   state: string;        // "Authorized" | "Unauthorized"
   connected: boolean;   // status === "Connected"
+  // Management MAC of the switch's FortiLink-peer interface, normalized to
+  // colon-uppercase. Cross-joined from the detected-device MAC table where
+  // `is_fortilink_peer===true` and `switch_id === <this switch's switch-id>`.
+  // Used by the sync layer to dedup against DHCP/ARP-discovered orphan
+  // endpoint assets at the switch's mgmt IP — without it, the switch's own
+  // management MAC creates a phantom "fortigate-endpoint" asset alongside
+  // the authoritative "fortiswitch" asset.
+  baseMac?: string;
 }
 
 export interface DiscoveredFortiAP {
@@ -1912,6 +1920,10 @@ export async function discoverDhcpSubnets(
       const detResults = detEntry?.response?.results;
       if (detStatus === 0 && Array.isArray(detResults)) {
         const macMap = new Map<string, { switchId: string; portName: string; vlan?: number }>();
+        // FortiLink-peer rows carry each managed FortiSwitch's own
+        // management MAC, keyed on switch_id. Used below to stamp baseMac
+        // onto every DiscoveredFortiSwitch in localSwitches.
+        const switchMacByName = new Map<string, string>();
         for (const d of detResults) {
           const mac = String(d.mac || "").toUpperCase().replace(/-/g, ":");
           if (!mac) continue;
@@ -1919,6 +1931,9 @@ export async function discoverDhcpSubnets(
           const portName = String(d.port_name || "");
           const vlanId = Number.isFinite(d.vlan_id) ? Number(d.vlan_id) : undefined;
           const isFortilinkPeer = d.is_fortilink_peer === true || d.is_fortilink_peer === 1;
+          if (isFortilinkPeer && switchId && !switchMacByName.has(switchId)) {
+            switchMacByName.set(switchId, mac);
+          }
           // Surface every learned MAC to the sync layer for endpoint-asset
           // attribution. FortiLink-peer rows are flagged so the consumer
           // can skip the FortiGate's own MAC seen on managed-switch uplinks.
@@ -1968,6 +1983,24 @@ export async function discoverDhcpSubnets(
         }
         const totalResolved = pairedCount + lldpAlreadyCount;
         log("discover.ap-uplinks", "info", `${deviceName}: Resolved ${totalResolved}/${localAps.length} AP→switch-port uplinks (${lldpAlreadyCount} via LLDP, ${pairedCount} via detected-device)`, deviceName);
+
+        // Stamp each managed FortiSwitch's management MAC onto its
+        // DiscoveredFortiSwitch entry using the FortiLink-peer rows
+        // collected above. Lets the sync layer dedup against
+        // DHCP/ARP-discovered orphan endpoint assets at the switch's
+        // mgmt IP.
+        let switchMacResolved = 0;
+        for (const sw of localSwitches) {
+          if (sw.device !== deviceName || !sw.name) continue;
+          const mac = switchMacByName.get(sw.name);
+          if (mac) {
+            sw.baseMac = mac;
+            switchMacResolved++;
+          }
+        }
+        if (switchMacByName.size > 0) {
+          log("discover.fortiswitches.mac", "info", `${deviceName}: Resolved ${switchMacResolved} FortiSwitch base MAC(s) from detected-device fortilink-peer rows`, deviceName);
+        }
       }
     } catch (err: any) {
       log("discover.ap-uplinks", "info", `${deviceName}: detected-device query skipped — ${err.message || "Unknown error"}`, deviceName);
