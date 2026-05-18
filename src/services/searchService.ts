@@ -257,17 +257,7 @@ async function searchReservations(like: string, ipExact: string | null) {
 }
 
 async function searchAssets(like: string, mac: string | null) {
-  // Exclude pinned firewalls (assetType=firewall with lat/lng) — they're
-  // queried separately as `sites` so each group gets its own row budget.
-  return runAssetSearch(like, mac, {
-    NOT: {
-      AND: [
-        { assetType: "firewall" },
-        { latitude: { not: null } },
-        { longitude: { not: null } },
-      ],
-    },
-  });
+  return runAssetSearch(like, mac, {});
 }
 
 async function searchPinnedFirewalls(like: string, mac: string | null) {
