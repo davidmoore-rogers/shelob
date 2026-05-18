@@ -937,9 +937,12 @@ function getAlertsFormData() {
       } else {
         badge.style.display = "none";
       }
-      // Refresh the sidebar Networks dot in lockstep so the Alerts button
-      // and the global indicator never disagree after an operator action.
+      // Refresh both sidebar dots in lockstep so the Alerts button and the
+      // global indicators never disagree after an operator action: the IPAM
+      // dot tracks stale-reservation alerts, the Events dot tracks the push
+      // queue (alongside discovery conflicts).
       if (typeof window.refreshAlertsDot === "function") window.refreshAlertsDot();
+      if (typeof window.refreshConflictDot === "function") window.refreshConflictDot();
     } catch (_) { /* badge stays hidden if request fails */ }
   }
   refreshBadge();

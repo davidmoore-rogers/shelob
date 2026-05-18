@@ -261,38 +261,39 @@ function renderNav() {
   renderGlobalSearch();
   renderUserBadge();
 
-  // Conflict dot — poll every 30 s; also exposed so events.js can refresh on resolve
+  // Events dot — poll every 30 s; also exposed so events.js can refresh on
+  // resolve. Combines two Events-page signals: discovery conflicts AND the
+  // reservation push queue (whose Alerts-panel filter view also lives on
+  // Events). Either signal alone is operator-actionable.
   async function refreshConflictDot() {
     var dot = document.getElementById("nav-conflict-dot");
-    if (!dot || !canReviewConflicts()) return;
+    if (!dot) return;
     try {
-      var data = await api.conflicts.count();
-      dot.style.display = (data.count > 0) ? "inline-block" : "none";
+      var both = await Promise.all([
+        canReviewConflicts()
+          ? api.conflicts.count().catch(function () { return { count: 0 }; })
+          : Promise.resolve({ count: 0 }),
+        api.reservations.pushQueueCount().catch(function () { return { count: 0 }; }),
+      ]);
+      var total = ((both[0] && both[0].count) || 0) + ((both[1] && both[1].count) || 0);
+      dot.style.display = total > 0 ? "inline-block" : "none";
     } catch (_) {}
   }
   refreshConflictDot();
   setInterval(refreshConflictDot, 30000);
   window.refreshConflictDot = refreshConflictDot;
 
-  // Alerts dot on Networks — same 30 s polling, same flashing-red pattern
-  // as the conflict dot. Sources from /reservations/alerts/count which
-  // returns just the active (non-ignored, non-snoozed) stale-reservation
-  // count. Exposed on window so the Events page Alerts panel can refresh
-  // it immediately after Snooze / Free / Ignore / Un-ignore actions.
+  // Alerts dot on IPAM — same 30 s polling, same flashing-red pattern as
+  // the Events dot. Sources from /reservations/alerts/count which returns
+  // just the active (non-ignored, non-snoozed) stale-reservation count.
+  // Exposed on window so the Events page Alerts panel can refresh it
+  // immediately after Snooze / Free / Ignore / Un-ignore actions.
   async function refreshAlertsDot() {
     var dot = document.getElementById("nav-alerts-dot");
     if (!dot) return;
     try {
-      // Sidebar dot reflects every Reservations-alerts subsystem combined:
-      // stale-reservation alerts AND queued-push reservations. Either signal
-      // alone is operator-actionable; the Events page Alerts panel surfaces
-      // them under separate filter tabs.
-      var both = await Promise.all([
-        api.reservations.alertsCount().catch(function () { return { count: 0 }; }),
-        api.reservations.pushQueueCount().catch(function () { return { count: 0 }; }),
-      ]);
-      var total = ((both[0] && both[0].count) || 0) + ((both[1] && both[1].count) || 0);
-      dot.style.display = total > 0 ? "inline-block" : "none";
+      var data = await api.reservations.alertsCount();
+      dot.style.display = (data && data.count > 0) ? "inline-block" : "none";
     } catch (_) {}
   }
   refreshAlertsDot();
