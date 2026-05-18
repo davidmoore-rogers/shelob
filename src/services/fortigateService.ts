@@ -390,6 +390,8 @@ export async function discoverDhcpSubnets(
             const rIp = entry.ip;
             const rMac = entry.mac || "";
             if (!rIp || rIp === "0.0.0.0") continue;
+            const numericScopeId = typeof server.id === "number" ? server.id : Number(server.id);
+            const numericEntryId = typeof entry.id === "number" ? entry.id : Number(entry.id);
             dhcpEntries.push({
               device: deviceName,
               interfaceName: iface || `dhcp-${serverId}`,
@@ -397,6 +399,8 @@ export async function discoverDhcpSubnets(
               macAddress: rMac,
               hostname: entry.description || "",
               type: "dhcp-reservation",
+              scopeId: Number.isFinite(numericScopeId) ? numericScopeId : undefined,
+              entryId: Number.isFinite(numericEntryId) ? numericEntryId : undefined,
             });
             deviceReservationCount++;
           }

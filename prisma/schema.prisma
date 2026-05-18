@@ -130,16 +130,30 @@ model Reservation {
   // reservations are MAC→IP). pushedScopeId / pushedEntryId pin the row on the
   // FortiGate so unpush hits the exact entry without re-resolving by IP.
   // pushStatus values: "synced" (verified on device), "drift" (was synced,
-  // missing on rediscovery). On create-time push failure the entire reservation
-  // create aborts and no row is persisted, so "failed" is not a stored state.
-  macAddress    String?
-  pushedToId    String?
-  pushedTo      Integration? @relation("ReservationPushedTo", fields: [pushedToId], references: [id], onDelete: SetNull)
-  pushedScopeId Int?
-  pushedEntryId Int?
-  pushStatus    String?
-  pushedAt      DateTime?
-  pushError     String?      @db.Text
+  // missing on rediscovery), "pending" (transient device-side failure at
+  // create or retry time — Polaris row persists, retry job will keep trying
+  // until the gate is reachable; sourceType stays "manual" until the push
+  // actually lands), "failed_permanent" (terminal — push hit a 4xx/verify
+  // mismatch / lost an IP-collision race against discovery; operator must
+  // release or retry-now after fixing the cause). Permanent create-time
+  // failures still abort + roll back the Polaris row (no stored state for
+  // those — the row simply doesn't exist).
+  // pushQueuedAt / pushAttempts / pushLastAttemptAt drive the retry tick: a
+  // monitored firewall whose Asset.monitorStatus="up" retries on every tick;
+  // an unmonitored or down firewall backs off exponentially (60s → 30 min
+  // cap) keyed on pushLastAttemptAt + pushAttempts. No TTL — queued rows
+  // live forever until success, release, or operator-triggered retry-now.
+  macAddress        String?
+  pushedToId        String?
+  pushedTo          Integration? @relation("ReservationPushedTo", fields: [pushedToId], references: [id], onDelete: SetNull)
+  pushedScopeId     Int?
+  pushedEntryId     Int?
+  pushStatus        String?
+  pushedAt          DateTime?
+  pushError         String?      @db.Text
+  pushQueuedAt      DateTime?
+  pushAttempts      Int          @default(0)
+  pushLastAttemptAt DateTime?
 
   // Stale-reservation detection. lastSeenLeased is bumped during DHCP
   // discovery whenever /api/v2/monitor/system/dhcp confirms the reservation's
@@ -177,6 +191,7 @@ model Reservation {
   @@index([expiresAt])
   @@index([createdBy])
   @@index([pushedToId])
+  @@index([pushStatus, pushQueuedAt])
   @@map("reservations")
 }
 

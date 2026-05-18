@@ -923,8 +923,14 @@ function getAlertsFormData() {
 
   async function refreshBadge() {
     try {
-      var data = await api.reservations.alertsCount();
-      var n = (data && data.count) || 0;
+      // Combined badge: stale-reservation alerts + queued-push count.
+      // Either signal is operator-actionable; the panel switches between
+      // the three views via its filter dropdown.
+      var both = await Promise.all([
+        api.reservations.alertsCount().catch(function () { return { count: 0 }; }),
+        api.reservations.pushQueueCount().catch(function () { return { count: 0 }; }),
+      ]);
+      var n = ((both[0] && both[0].count) || 0) + ((both[1] && both[1].count) || 0);
       if (n > 0) {
         badge.textContent = n > 99 ? "99+" : String(n);
         badge.style.display = "block";
@@ -954,7 +960,62 @@ function getAlertsFormData() {
 
   async function loadAlerts() {
     body.innerHTML = '<div class="empty-state" style="padding:2rem">Loading...</div>';
-    var show = (filterSel && filterSel.value === "ignored") ? "ignored" : "active";
+    var filterVal = filterSel && filterSel.value;
+    var show = filterVal === "ignored" ? "ignored"
+      : filterVal === "push-queue" ? "push-queue"
+      : "active";
+    if (show === "push-queue") {
+      try {
+        var data = await api.reservations.listPushQueue();
+        var rows = (data && data.reservations) || [];
+        countEl.textContent = rows.length + " queued push" + (rows.length !== 1 ? "es" : "");
+        if (!rows.length) {
+          body.innerHTML = '<div class="empty-state" style="padding:2rem">'
+            + 'No push-queued reservations.<br>'
+            + '<span style="color:var(--color-text-tertiary);font-size:0.85rem">'
+            + 'When you reserve an IP on a push-eligible network and the FortiGate is unreachable, '
+            + 'the reservation is saved here and retried automatically when the gate recovers.'
+            + '</span></div>';
+          return;
+        }
+        body.innerHTML = rows.map(renderPushQueueCard).join("");
+        body.querySelectorAll("[data-pq-action]").forEach(function (el) {
+          el.addEventListener("click", async function () {
+            var id = el.getAttribute("data-pq-id");
+            var action = el.getAttribute("data-pq-action");
+            var name = el.getAttribute("data-pq-name") || id;
+            el.disabled = true;
+            try {
+              if (action === "retry") {
+                var result = await api.reservations.retryPush(id);
+                var outcome = result && result.outcome;
+                var msg;
+                if (outcome === "synced") msg = "Pushed to FortiGate";
+                else if (outcome === "transient") msg = "FortiGate still unreachable — kept queued";
+                else if (outcome === "permanent") msg = "Push hit a permanent error — see reservation for details";
+                else if (outcome === "superseded") msg = "Another row already has this IP — release this one to free the queue";
+                else if (outcome === "cancelled") msg = "Subnet config changed — queue cleared, reservation kept as manual";
+                else msg = "Retry: " + (outcome || "no change");
+                showToast(msg, outcome === "synced" ? "success" : outcome === "transient" ? "info" : "error");
+              } else if (action === "free") {
+                var ok = await showConfirm("Release reservation " + name + "? If it was pushed to a FortiGate, the device entry will also be removed.");
+                if (!ok) { el.disabled = false; return; }
+                await api.reservations.release(id);
+                showToast("Reservation released");
+              }
+              await loadAlerts();
+              refreshBadge();
+            } catch (err) {
+              showToast(err.message, "error");
+              el.disabled = false;
+            }
+          });
+        });
+      } catch (err) {
+        body.innerHTML = '<div class="empty-state" style="padding:2rem;color:var(--color-danger)">' + escapeHtml(err.message) + '</div>';
+      }
+      return;
+    }
     try {
       // Pull settings alongside the list so the Snooze button label can show
       // the actual snooze duration ("Snooze 60d") rather than a generic verb.
@@ -1069,6 +1130,65 @@ function getAlertsFormData() {
         lastSeen +
         '<div><strong>Created:</strong> ' + new Date(a.createdAt).toLocaleString() + '</div>' +
         sinceLine +
+      '</div>' +
+      '<div class="conflict-card-actions">' + actions + '</div>' +
+    '</div>';
+  }
+
+  // Push-queue card: same visual language as the stale-alert card so the
+  // Alerts panel reads consistently. Two action buttons — Retry (operator
+  // override of the readiness gates; works on both pending and
+  // failed_permanent rows) and Free (release the reservation entirely).
+  function renderPushQueueCard(r) {
+    var ip = r.ipAddress || "(no IP)";
+    var hostname = r.hostname || "(no hostname)";
+    var mac = r.macAddress || "—";
+    var subnetName = r.subnet && r.subnet.name ? r.subnet.name : "";
+    var subnetCidr = r.subnet && r.subnet.cidr ? r.subnet.cidr : "";
+    var subnet = (subnetName ? escapeHtml(subnetName) + " — " : "") + escapeHtml(subnetCidr);
+    var device = r.subnet && r.subnet.fortigateDevice
+      ? '<div><strong>Target FortiGate:</strong> ' + escapeHtml(r.subnet.fortigateDevice) + '</div>'
+      : "";
+    var integrationName = r.pushedTo && r.pushedTo.name ? r.pushedTo.name : null;
+    var integration = integrationName
+      ? '<div><strong>Pushed via:</strong> ' + escapeHtml(integrationName)
+        + (r.pushedTo && r.pushedTo.enabled === false ? ' <span style="color:var(--color-danger)">(disabled)</span>' : '')
+        + '</div>'
+      : "";
+    var queuedAt = r.pushQueuedAt
+      ? '<div><strong>Queued:</strong> ' + new Date(r.pushQueuedAt).toLocaleString() + '</div>'
+      : "";
+    var attempts = typeof r.pushAttempts === "number"
+      ? '<div><strong>Attempts:</strong> ' + r.pushAttempts + '</div>'
+      : "";
+    var lastError = r.pushError
+      ? '<div style="margin-top:6px;padding:6px 8px;background:var(--color-bg-subtle, rgba(0,0,0,0.04));border-radius:4px;font-family:var(--font-mono, monospace);font-size:0.78rem">'
+        + escapeHtml(r.pushError) + '</div>'
+      : "";
+    var isPermanent = r.pushStatus === "failed_permanent";
+    var statusBadge = isPermanent
+      ? '<span class="badge" style="background:var(--color-danger);color:#fff">Push failed</span>'
+      : '<span class="badge" style="background:var(--color-warning, #ffc107);color:#000">Queued for push</span>';
+    var borderColor = isPermanent ? "var(--color-danger)" : "var(--color-warning, #ffc107)";
+    var labelName = (r.hostname || ip).replace(/"/g, "&quot;");
+    var actions =
+      '<button class="btn btn-sm btn-secondary" data-pq-action="retry" data-pq-id="' + escapeHtml(r.id) + '" data-pq-name="' + escapeHtml(labelName) + '" title="Retry pushing this reservation to the FortiGate now (bypasses the readiness gate)">Retry</button>' +
+      ' <button class="btn btn-sm btn-danger" data-pq-action="free" data-pq-id="' + escapeHtml(r.id) + '" data-pq-name="' + escapeHtml(labelName) + '" title="Release this reservation entirely">Free</button>';
+    return '<div class="conflict-card" style="border-left:4px solid ' + borderColor + '">' +
+      '<div class="conflict-card-header">' +
+        '<div>' +
+          '<div style="font-weight:600">' + escapeHtml(ip) + ' &mdash; ' + escapeHtml(hostname) + '</div>' +
+          '<div style="color:var(--color-text-tertiary);font-size:0.82rem">' + subnet + '</div>' +
+        '</div>' +
+        statusBadge +
+      '</div>' +
+      '<div class="conflict-card-body" style="font-size:0.85rem;line-height:1.6">' +
+        '<div><strong>MAC:</strong> ' + escapeHtml(mac) + '</div>' +
+        device +
+        integration +
+        queuedAt +
+        attempts +
+        lastError +
       '</div>' +
       '<div class="conflict-card-actions">' + actions + '</div>' +
     '</div>';

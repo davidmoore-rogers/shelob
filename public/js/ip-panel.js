@@ -282,6 +282,25 @@ function _renderIpList(data) {
       dotClass = "ip-dot-conflict";
       statusLabel = "Conflict";
       statusTooltip = r.conflictMessage;
+    } else if (r && r.status === "active" && r.pushStatus === "pending") {
+      // Push-queued: the operator claimed this IP, but the FortiGate (or
+      // FortiManager) was unreachable at create time. Retry job pushes when
+      // the gate comes back.
+      dotClass = "ip-dot-active";
+      statusLabel = "Queued for push";
+      var qAttempts = typeof r.pushAttempts === "number" ? r.pushAttempts : 0;
+      var qSince = r.pushQueuedAt ? _ipPanelTimeAgoVerbose(r.pushQueuedAt) : null;
+      statusTooltip = "Polaris has reserved this IP but hasn't been able to write it to the FortiGate yet."
+        + (qSince ? " Queued " + qSince + "." : "")
+        + (qAttempts > 0 ? " Retry attempts: " + qAttempts + "." : "")
+        + (r.pushError ? " Last error: " + r.pushError : "");
+    } else if (r && r.status === "active" && r.pushStatus === "failed_permanent") {
+      // Permanent failure — operator must release, edit, or retry-now after
+      // fixing what's wrong on the device (usually a collision against a
+      // discovered entry, or a verify mismatch).
+      dotClass = "ip-dot-conflict";
+      statusLabel = "Push failed";
+      statusTooltip = (r.pushError || "Push hit a permanent error. Release the reservation, fix the underlying issue, or retry manually.");
     } else if (r && r.status === "active" && (r.sourceType === "dhcp_reservation" || r.owner === "dhcp-reservation")) {
       dotClass = "ip-dot-dhcp-reservation";
       statusLabel = "DHCP Reservation";
@@ -349,6 +368,11 @@ function _renderIpList(data) {
     // unavailable button is skipped, but the visible buttons stay in that
     // sequence so the column scans cleanly down the table.
     var editBtn = canEditThis && r ? '<button class="btn btn-sm btn-secondary ip-edit-btn" data-rid="' + r.id + '" title="Edit">Edit</button>' : '';
+    // Retry-now button for queued rows. Both pending (still trying) and
+    // failed_permanent (operator-action-required) get it — failed_permanent
+    // covers the "I fixed the gate-side collision, push it now" path.
+    var canRetry = canEditThis && r && (r.pushStatus === "pending" || r.pushStatus === "failed_permanent");
+    var retryBtn = canRetry ? '<button class="btn btn-sm btn-secondary ip-retry-btn" data-rid="' + r.id + '" title="Retry push to FortiGate now">Retry</button>' : '';
     // Lease rows say "Revoke" (the FortiGate forgets the current lease but
     // the same client can re-acquire it); everything else says "Release"
     // (the reservation is given up).
@@ -379,7 +403,7 @@ function _renderIpList(data) {
         : '';
       actions = vipReserveBtn + assetBtn + editBtn;
     } else if (r && r.status === "active") {
-      actions = freeBtn + assetBtn + editBtn;
+      actions = retryBtn + freeBtn + assetBtn + editBtn;
     } else if (r && r.status === "expired") {
       actions = assetBtn + editBtn;
     } else if (!r && canReserveIps()) {
@@ -500,6 +524,31 @@ function _renderIpList(data) {
   body.querySelectorAll(".ip-vip-reserve-btn").forEach(function (btn) {
     btn.addEventListener("click", function () {
       _openVipReserveModal(btn.getAttribute("data-rid"));
+    });
+  });
+  body.querySelectorAll(".ip-retry-btn").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      var rid = btn.getAttribute("data-rid");
+      btn.disabled = true;
+      btn.textContent = "Retrying…";
+      try {
+        var result = await api.reservations.retryPush(rid);
+        var outcome = result && result.outcome;
+        var msg;
+        if (outcome === "synced") msg = "Pushed to FortiGate";
+        else if (outcome === "transient") msg = "FortiGate still unreachable — kept queued";
+        else if (outcome === "permanent") msg = "Push hit a permanent error — see reservation for details";
+        else if (outcome === "superseded") msg = "Another row already has this IP — release this one to free the queue";
+        else if (outcome === "cancelled") msg = "Subnet config changed — queue cleared, reservation kept as manual";
+        else msg = "Retry: " + (outcome || "no change");
+        showToast(msg, outcome === "synced" ? "success" : outcome === "transient" ? "info" : "error");
+        _ipPanelDirty = true;
+        _fetchIpPage();
+      } catch (err) {
+        showToast(err.message, "error");
+        btn.disabled = false;
+        btn.textContent = "Retry";
+      }
     });
   });
   body.querySelectorAll(".ip-asset-btn").forEach(function (btn) {
@@ -700,10 +749,11 @@ function _openAutoAllocateModal(subnetId) {
       };
       var reservation = await api.reservations.nextAvailable(input);
       closeModal();
-      var pushed = reservation && reservation.pushStatus === "synced";
-      showToast(pushed
-        ? ("Reserved " + reservation.ipAddress + " and pushed to FortiGate")
-        : ("Reserved " + reservation.ipAddress));
+      var pushStatus = reservation && reservation.pushStatus;
+      var msg = "Reserved " + reservation.ipAddress;
+      if (pushStatus === "synced") msg += " and pushed to FortiGate";
+      else if (pushStatus === "pending") msg += " — queued for push (FortiGate unreachable; will retry automatically)";
+      showToast(msg);
       _ipPanelDirty = true;
       _fetchIpPage();
     } catch (err) {
@@ -856,8 +906,11 @@ function _openReserveModal(subnetId, ipAddress) {
       };
       var reservation = await api.reservations.create(input);
       closeModal();
-      var pushed = reservation && reservation.pushStatus === "synced";
-      showToast(pushed ? "Reservation created and pushed to FortiGate" : "Reservation created");
+      var pushStatus = reservation && reservation.pushStatus;
+      var msg = "Reservation created";
+      if (pushStatus === "synced") msg = "Reservation created and pushed to FortiGate";
+      else if (pushStatus === "pending") msg = "Reservation created — queued for push (FortiGate unreachable; will retry automatically)";
+      showToast(msg);
       _ipPanelDirty = true;
       _fetchIpPage();
     } catch (err) {
@@ -933,8 +986,11 @@ function _openLeaseReserveModal(subnetId, ipAddress, leaseId, prefillMac, prefil
     try {
       await api.reservations.release(leaseId);
       var reservation = await api.reservations.create(input);
-      var pushed = reservation && reservation.pushStatus === "synced";
-      showToast(pushed ? "Reservation created and pushed to FortiGate" : "Reservation created");
+      var pushStatus = reservation && reservation.pushStatus;
+      var msg = "Reservation created";
+      if (pushStatus === "synced") msg = "Reservation created and pushed to FortiGate";
+      else if (pushStatus === "pending") msg = "Reservation created — queued for push (FortiGate unreachable; will retry automatically)";
+      showToast(msg);
       _ipPanelDirty = true;
       _fetchIpPage();
     } catch (err) {

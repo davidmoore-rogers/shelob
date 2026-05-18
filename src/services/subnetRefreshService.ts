@@ -181,6 +181,10 @@ export async function refreshSubnet(
     mac: string | null;
     hostname: string | null;
     sourceType: "dhcp_reservation" | "dhcp_lease";
+    // CMDB entry id for dhcp_reservation entries — needed to fast-path adopt
+    // a queued Polaris row by stamping its pushedScopeId/pushedEntryId
+    // pointers. Leases don't have CMDB ids; this stays undefined for them.
+    entryId?: number;
   }
   const fresh = new Map<string, Fresh>();
   for (const r of cmdb) {
@@ -190,6 +194,7 @@ export async function refreshSubnet(
       mac: r.mac ? normalizeMac(r.mac) : null,
       hostname: r.description ? extractHostnameFromDescription(r.description) : null,
       sourceType: "dhcp_reservation",
+      entryId: r.id,
     });
   }
   for (const l of leases) {
@@ -209,16 +214,40 @@ export async function refreshSubnet(
       r.ipAddress &&
       (r.sourceType === "dhcp_reservation" || r.sourceType === "dhcp_lease"),
   );
+  // Pending push-queued rows on this subnet. These have sourceType="manual"
+  // and pushStatus="pending" — they reserve an IP in Polaris but haven't been
+  // written to the device yet. Collide them against the fresh discovery view:
+  // - same IP + same MAC + fresh is dhcp_reservation → fast-path adopt:
+  //   promote the pending row in place to synced + stamp pushedScopeId/entryId.
+  // - same IP but mismatched MAC, OR fresh is dhcp_lease → hard collision:
+  //   flip the pending row to pushStatus="failed_permanent" so the operator
+  //   can see what won the IP and either release or pick a different IP.
+  //   The pending row stays status="active" so the @@unique constraint keeps
+  //   blocking a duplicate discovery create on this IP; the discovery sync
+  //   skips this IP (same as manualByIp) until the operator acts.
+  const pendingByIp = new Map<string, (typeof subnet.reservations)[number]>();
+  for (const r of subnet.reservations) {
+    if (
+      r.status === "active" &&
+      r.ipAddress &&
+      r.pushStatus === "pending"
+    ) {
+      pendingByIp.set(r.ipAddress, r);
+    }
+  }
   // Active manual / vip rows on this subnet — we leave these alone and skip
   // creating a competing dhcp_* row on the same IP. The next full discovery
-  // is where conflict detection (upsertConflict) runs.
+  // is where conflict detection (upsertConflict) runs. Pending push-queued
+  // rows are filtered out here so they don't double-count under manualByIp;
+  // they're handled by pendingByIp above.
   const manualByIp = new Map<string, (typeof subnet.reservations)[number]>();
   for (const r of subnet.reservations) {
     if (
       r.status === "active" &&
       r.ipAddress &&
       r.sourceType !== "dhcp_reservation" &&
-      r.sourceType !== "dhcp_lease"
+      r.sourceType !== "dhcp_lease" &&
+      r.pushStatus !== "pending"
     ) {
       manualByIp.set(r.ipAddress, r);
     }
@@ -231,6 +260,83 @@ export async function refreshSubnet(
 
   // Upsert each fresh entry.
   for (const [ip, f] of fresh) {
+    const pending = pendingByIp.get(ip);
+    if (pending) {
+      const pendingMac = pending.macAddress ? normalizeMac(pending.macAddress) : null;
+      const macsMatch = !!pendingMac && !!f.mac && pendingMac === f.mac;
+      if (f.sourceType === "dhcp_reservation" && macsMatch && f.entryId !== undefined) {
+        // Fast-path adopt — operator added the entry on the device while we
+        // were waiting, or the previous retry succeeded but Polaris missed
+        // the response. Promote in place to synced; preserves operator-typed
+        // hostname / notes / owner.
+        await prisma.reservation.update({
+          where: { id: pending.id },
+          data: {
+            sourceType: "dhcp_reservation",
+            pushedToId: subnet.discoveredBy,
+            pushedScopeId: scopeId,
+            pushedEntryId: f.entryId,
+            pushStatus: "synced",
+            pushedAt: new Date(),
+            pushError: null,
+            pushQueuedAt: null,
+            pushAttempts: 0,
+            pushLastAttemptAt: null,
+            lastSeenLeased: new Date(),
+            ...(f.hostname && pending.hostname !== f.hostname ? { hostname: f.hostname } : {}),
+          },
+        });
+        await logEvent({
+          level: "info",
+          action: "reservation.push.queued.adopted",
+          resourceType: "reservation",
+          resourceId: pending.id,
+          resourceName: pending.hostname || ip,
+          actor: actor || undefined,
+          message: `Queued reservation adopted by discovery — entry already present on FortiGate "${subnet.fortigateDevice}" (scope ${scopeId}, entry ${f.entryId})`,
+          details: {
+            deviceName: subnet.fortigateDevice,
+            scopeId,
+            entryId: f.entryId,
+            ip,
+            mac: pendingMac,
+          },
+        });
+        updated++;
+        continue;
+      }
+      // Hard collision: pending row exists but discovery sees a different MAC
+      // or a dhcp_lease. Flag the pending row permanently and skip the
+      // discovery create on this IP — the @@unique constraint would block it
+      // anyway. Operator must release the pending row to free the IP.
+      const errMsg = `IP collided during queue — discovered ${f.sourceType}${f.mac ? ` by ${f.mac}` : ""}`;
+      await prisma.reservation.update({
+        where: { id: pending.id },
+        data: {
+          pushStatus: "failed_permanent",
+          pushError: errMsg,
+          pushLastAttemptAt: new Date(),
+        },
+      });
+      await logEvent({
+        level: "warning",
+        action: "reservation.push.queued.collided",
+        resourceType: "reservation",
+        resourceId: pending.id,
+        resourceName: pending.hostname || ip,
+        actor: actor || undefined,
+        message: `Queued push for ${ip} aborted — ${errMsg}. Release the reservation or pick a different IP.`,
+        details: {
+          deviceName: subnet.fortigateDevice,
+          ip,
+          pendingMac,
+          discoveredSourceType: f.sourceType,
+          discoveredMac: f.mac,
+        },
+      });
+      skipped++;
+      continue;
+    }
     if (manualByIp.has(ip)) {
       skipped++;
       continue;

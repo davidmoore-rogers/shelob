@@ -283,8 +283,16 @@ function renderNav() {
     var dot = document.getElementById("nav-alerts-dot");
     if (!dot) return;
     try {
-      var data = await api.reservations.alertsCount();
-      dot.style.display = (data && data.count > 0) ? "inline-block" : "none";
+      // Sidebar dot reflects every Reservations-alerts subsystem combined:
+      // stale-reservation alerts AND queued-push reservations. Either signal
+      // alone is operator-actionable; the Events page Alerts panel surfaces
+      // them under separate filter tabs.
+      var both = await Promise.all([
+        api.reservations.alertsCount().catch(function () { return { count: 0 }; }),
+        api.reservations.pushQueueCount().catch(function () { return { count: 0 }; }),
+      ]);
+      var total = ((both[0] && both[0].count) || 0) + ((both[1] && both[1].count) || 0);
+      dot.style.display = total > 0 ? "inline-block" : "none";
     } catch (_) {}
   }
   refreshAlertsDot();

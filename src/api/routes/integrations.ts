@@ -3880,6 +3880,109 @@ async function syncDhcpSubnets(integrationId: string, integrationName: string, i
 
       const existingRes = activeResMap.get(key);
       if (existingRes) {
+        // Queued push-row collision handling — runs BEFORE the manual /
+        // Polaris-pushed branches because a pending row has sourceType
+        // "manual" and a pushedToId stamp (we set both at queue time so the
+        // queue view knows the intended target). Without this guard the
+        // existing logic would silently flip the pending row to
+        // dhcp_reservation as if it were our own echo — but nothing has
+        // actually been written to the device yet.
+        if (existingRes.sourceType === "manual" && existingRes.pushStatus === "pending") {
+          const pendingMac = existingRes.macAddress
+            ? existingRes.macAddress.toUpperCase().replace(/-/g, ":")
+            : null;
+          const freshMac = entry.macAddress
+            ? entry.macAddress.toUpperCase().replace(/-/g, ":")
+            : null;
+          const macsMatch = !!pendingMac && !!freshMac && pendingMac === freshMac;
+          if (
+            isDhcpReservation &&
+            macsMatch &&
+            typeof entry.scopeId === "number" &&
+            typeof entry.entryId === "number"
+          ) {
+            // Fast-path adopt — operator added the entry on the device
+            // (or a previous retry succeeded but Polaris missed the reply)
+            // while we were queued. Promote in place to synced.
+            await prisma.reservation.update({
+              where: { id: existingRes.id },
+              data: {
+                sourceType: "dhcp_reservation",
+                pushedToId: integrationId,
+                pushedScopeId: entry.scopeId,
+                pushedEntryId: entry.entryId,
+                pushStatus: "synced",
+                pushedAt: new Date(),
+                pushError: null,
+                pushQueuedAt: null,
+                pushAttempts: 0,
+                pushLastAttemptAt: null,
+                ...(entry.seenLeased
+                  ? { lastSeenLeased: new Date(), staleNotifiedAt: null, staleSnoozedUntil: null }
+                  : {}),
+              },
+            });
+            await prisma.conflict.updateMany({
+              where: { reservationId: existingRes.id, status: "pending" },
+              data: { status: "rejected", resolvedBy: "auto", resolvedAt: new Date() },
+            });
+            existingRes.sourceType = "dhcp_reservation";
+            existingRes.pushStatus = "synced";
+            logEvent({
+              action: "reservation.push.queued.adopted",
+              level: "info",
+              resourceType: "reservation",
+              resourceId: existingRes.id,
+              resourceName: existingRes.hostname || entry.ipAddress,
+              actor,
+              message: `Queued reservation adopted by discovery — entry already on FortiGate "${entry.device}" (scope ${entry.scopeId}, entry ${entry.entryId})`,
+              details: {
+                integrationId,
+                integrationName,
+                deviceName: entry.device,
+                scopeId: entry.scopeId,
+                entryId: entry.entryId,
+                ip: entry.ipAddress,
+                mac: pendingMac,
+              },
+            });
+            continue;
+          }
+          // Hard collision: pending row at this IP, but discovery sees a
+          // different MAC or a dhcp_lease. Flip to failed_permanent so the
+          // operator can see what won the IP, and skip the discovery create
+          // on this IP — the unique-on-active constraint would block it
+          // anyway.
+          const errMsg = `IP collided during queue — discovered ${proposedSourceType}${freshMac ? ` by ${freshMac}` : ""}`;
+          await prisma.reservation.update({
+            where: { id: existingRes.id },
+            data: {
+              pushStatus: "failed_permanent",
+              pushError: errMsg,
+              pushLastAttemptAt: new Date(),
+            },
+          });
+          existingRes.pushStatus = "failed_permanent";
+          logEvent({
+            action: "reservation.push.queued.collided",
+            level: "warning",
+            resourceType: "reservation",
+            resourceId: existingRes.id,
+            resourceName: existingRes.hostname || entry.ipAddress,
+            actor,
+            message: `Queued push for ${entry.ipAddress} aborted — ${errMsg}. Release the reservation or pick a different IP.`,
+            details: {
+              integrationId,
+              integrationName,
+              deviceName: entry.device,
+              ip: entry.ipAddress,
+              pendingMac,
+              discoveredSourceType: proposedSourceType,
+              discoveredMac: freshMac,
+            },
+          });
+          continue;
+        }
         if (existingRes.sourceType === "manual") {
           if (existingRes.pushedToId) {
             // Polaris-pushed manual reservation — discovery is just seeing

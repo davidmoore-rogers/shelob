@@ -428,37 +428,62 @@ build auto-prune + boot-time auto-build are layered on top.
 
 ## cross-cutting/reservation-push-lifecycle
 
-**What it is:** Two-way DHCP reservation ↔ FortiGate sync via pushReservations toggle on FMG/FortiGate integrations, sourceType flip (manual → dhcp_reservation on success), pushedScopeId/pushedEntryId tracking, and lease-release on free.
+**What it is:** Two-way DHCP reservation ↔ FortiGate sync via pushReservations toggle on FMG/FortiGate integrations, sourceType flip (manual → dhcp_reservation on success), pushedScopeId/pushedEntryId tracking, and lease-release on free. **Transient device-side failures (FortiGate offline / FMG unreachable) at create time put the Polaris row in `pushStatus="pending"` and a 60s retry job + `monitor.status_changed → up` hook drive it to `synced` once the gate recovers.** Permanent failures (4xx, verify mismatch, auth) still abort-and-rollback the create.
 
 **Writers** (files that mutate or emit this state):
-- `src/services/reservationPushService.ts:65-200` — buildTransportForIntegration() + pushReservationEntry() upsert / read-back verify on FortiOS
-- `src/services/reservationService.ts:245` — On successful push, set sourceType = "dhcp_reservation", pushedToId, pushedScopeId, pushedEntryId, pushedAt
-- `src/services/reservationService.ts:340-390` — releaseReservation() unpushes using pushedScopeId/pushedEntryId, then lease-releases (dhcp_lease rows) if integration has pushReservations=true
-- `src/api/routes/integrations.ts:2559,2733,2783,2847,2919` — upsertConflict() bypass when existingRes.sourceType === "manual" (don't conflict-flag pre-existing manual reservations)
+- `src/services/reservationPushService.ts:classifyPushError` — Single source of truth for permanent (400/404/409, 502 with "verify mismatch" / "not visible on read-back" / "Authentication failed") vs transient (everything else — defaults to retry-eligible). Used by both create-time and retry-tick paths.
+- `src/services/reservationPushService.ts:pushReservation`/`updatePushedReservation`/`unpushReservation` — buildTransportForIntegration() + create / update / delete + read-back verify on FortiOS.
+- `src/services/reservationService.ts:createReservation` push branch — Pre-flight: when the firewall Asset is monitored AND `monitorStatus="down"`, skip the transport attempt entirely and queue with `pushStatus="pending"`/`pushQueuedAt=now`/`pushAttempts=0`. On transport attempt: success → stamp `sourceType="dhcp_reservation"`/`pushStatus="synced"`/push pointers + clear queue cols. Transient failure → keep row, stamp `pushStatus="pending"`/`pushQueuedAt`/`pushAttempts=1`/`pushLastAttemptAt`. Permanent failure → existing rollback.
+- `src/services/reservationService.ts:updateReservation` — When `pushStatus="pending"`, skip `updatePushedReservation` entirely; just rewrite the queued payload (MAC, hostname, notes, ...). Retry tick picks up the new values on its next attempt.
+- `src/services/reservationService.ts:releaseReservation` — When `pushStatus="pending"`, skip `unpushReservation` AND `releaseDhcpLease`; clear queue cols + flip to `released`; emit `reservation.push.queued.released` instead of the `reservation.unpush.failed` warning the old path would have logged.
+- `src/services/reservationService.ts:retryPendingReservations` — 60s retry-tick entry. Eligibility re-check (subnet drift, integration deleted/disabled, pushReservations flipped off, no fortigateDevice) → `pushStatus=null` + emit `reservation.push.queued.cancelled`. Discovery-supersede check (another active row at same IP) → `pushStatus="failed_permanent"` + emit `reservation.push.queued.collided`. Readiness gates (monitored gate must be `monitorStatus="up"`; unmonitored uses exponential backoff `min(60 * 2^(attempts-1), 1800)`s) → skip without attempt increment. Otherwise increment attempts, push, classify, stamp synced / failed_permanent / leave pending. Emits `reservation.push.queued.{succeeded,retry_failed,failed_permanent}` per outcome.
+- `src/services/reservationService.ts:retryReservationNow` — Operator-triggered single-row retry from the IP panel "Retry" button + Events page push-queue panel. Bypasses readiness gates; bumps `failed_permanent` rows back to `pending` first. Emits `reservation.push.queued.retry_manual`.
+- `src/services/reservationService.ts:triggerRetryAfterStatusChange` — Called from `monitoringService.recordProbeResult` when a firewall asset transitions to `up`. Count-gated (zero-pending = early return) so most up-transitions cost one indexed COUNT(*).
+- `src/jobs/retryQueuedReservationPushes.ts` — 60s tick wrapping `retryPendingReservations` via `runInstrumentedJob`. Independent `running` guard. First tick delayed 60s after boot.
+- `src/services/monitoringService.ts:5381` — After `propagateAfterStatusChange`, fires `triggerRetryAfterStatusChange` only when `nextStatus === "up"`.
+- `src/services/subnetRefreshService.ts` — Per-subnet Refresh action: fast-path adopt pending rows whose MAC matches a discovered dhcp_reservation (uses CMDB entry id from `listReservedAddresses` in-scope); hard-collide pending rows whose MAC mismatches (flip to `failed_permanent`).
+- `src/api/routes/integrations.ts:syncDhcpSubnets` — Same fast-path adopt + hard-collide logic for full-discovery flows. Reads `entry.scopeId` / `entry.entryId` from the DiscoveredDhcpEntry shape (populated by fortimanagerService + fortigateService at extraction time from `server.id` / `entry.id`).
 - `src/api/routes/integrations.ts:syncDhcpSubnets` Phase 5b — Releases active `dhcp_reservation` rows (including ex-Polaris-pushed-manual rows that flipped to `dhcp_reservation` on first sight) whose CMDB query succeeded this cycle but whose `(subnetId, ip)` isn't in `result.dhcpEntries`. Clears `pushedToId`/`pushedScopeId`/`pushedEntryId`/`pushStatus`. Gated to `subnet.discoveredBy === integrationId` so other integrations' rows are never touched. Auto-rejects pending conflicts on the released row. Writes `reservation.dhcp_reservation.released` Event.
-- `public/js/assets.js` — Quarantine/release UI buttons (quarantine push separate from reservation push)
+- `src/api/routes/reservations.ts:POST /:id/retry-push` — Operator-facing route, ownership-gated (own rows for `write`, all for `fullwrite`). Wraps `retryReservationNow`. Allowed on `pushStatus IN ("pending", "failed_permanent")`.
+- `src/api/routes/reservations.ts:GET /push-queue` + `GET /push-queue/count` — Read-everyone; powers the Events-page Alerts panel "Push queue" filter view and the combined sidebar badge.
 
 **Readers** (files that consume it):
-- `src/services/reservationService.ts` — Lease release reads dhcp_lease sourceType rows and filters to those pushed by this integration
+- `src/services/reservationService.ts:listReservations` — Decorator no-op'd to pass through `pushStatus`/`pushQueuedAt`/`pushAttempts`/`pushError` to every reservation row.
+- `src/services/reservationService.ts:listPushQueue`/`countPushQueue` — Filters `pushStatus IN ("pending","failed_permanent") AND status="active"`; joins subnet + pushedTo for the queue view.
+- `src/api/routes/reservations.ts` — Success-toast suffix uses `pushStatus`: synced → "and pushed to FortiGate"; pending → "queued for push (FortiGate unreachable; will retry automatically)"; null → "".
+- `public/js/ip-panel.js` — Reservation row status pill: pending → amber "Queued for push" + tooltip (queued-ago, attempts, last error); failed_permanent → red "Push failed" + tooltip with error. Retry button rendered for both pushStatus values when caller has write-ownership.
+- `public/js/events.js` — Alerts panel filter "Push queue" calls `listPushQueue` + renders cards with Retry / Free buttons. Combined badge count = stale alerts + push queue.
+- `public/js/app.js:refreshAlertsDot` — Sidebar Networks alert dot displays when stale-count + queue-count > 0.
 - `src/api/routes/integrations.ts` — Discovery sync reads pushReservations toggle to gate DHCP reservation creation
-- `src/api/routes/integrations.ts` — upsertDhcpReservation() checks if existingRes.sourceType==="manual"; if so, calls upsertConflict() instead of auto-updating
-- `public/js/assets.js` — UI shows pushStatus ("synced" / "drift") + pushedAt timestamp on manual reservation rows that have pushedToId set
+- `src/api/routes/integrations.ts:syncDhcpSubnets` upsert loop — Checks `existingRes.pushStatus === "pending"` BEFORE the legacy `existingRes.pushedToId` branch so a queued row isn't silently flipped to dhcp_reservation as if it were our own echo.
+- `src/services/fortimanagerService.ts:DiscoveredDhcpEntry` + `localDhcpEntries.push` in CMDB read — Populates `scopeId` (from `server.id`) and `entryId` (from `entry.id`) so the integration sync's fast-path adopt has device-side pointers in hand without a second REST call.
+- `src/services/fortigateService.ts` — Same `scopeId`/`entryId` population at the standalone-FortiGate dhcp reservation read site.
 
 **Invariants:**
 - DHCP reservations are MAC→IP pairs; only per-IP (not full-subnet) manual reservations are push-eligible.
 - pushedScopeId + pushedEntryId are resolved AT PUSH TIME and pinned; used at unpush without re-querying the FortiGate.
-- sourceType flip to "dhcp_reservation" is ONLY set on successful push; if push fails, no Polaris row is created (fail-on-failure semantics).
-- Lease release happens ONLY for dhcp_lease sourceType rows where the originating integration's pushReservations=true.
-- pushStatus ∈ {"synced", "drift"}; "synced" = verified on device. "drift" is reserved by the schema but is no longer the path for "missing on re-discovery" — Phase 5b now RELEASES rather than drift-flags such rows (the gate is authoritative for DHCP reservations; an operator-deleted entry should disappear from Polaris, not linger with a drift indicator).
-- upsertConflict() bypass (sourceType==="manual" check) prevents false conflicts when discovery touches a manual reservation (operator created it before this integration, now discovery found it too).
+- sourceType flip to "dhcp_reservation" is ONLY set on successful push. While `pushStatus="pending"` the row stays `sourceType="manual"` because nothing's on the device yet.
+- Lease release happens ONLY for dhcp_lease sourceType rows where the originating integration's pushReservations=true AND the row is not pending (queued rows have no device-side state to release).
+- pushStatus ∈ {"synced", "drift", "pending", "failed_permanent"}; "synced" = verified on device, "pending" = queued for retry, "failed_permanent" = terminal error (operator must release or retry-now after fixing the root cause), "drift" is reserved by the schema but is no longer the path for "missing on re-discovery" — Phase 5b now RELEASES rather than drift-flags such rows.
+- Queue cols (`pushQueuedAt`, `pushAttempts`, `pushLastAttemptAt`, `pushError`) are reset to defaults on every successful push (synced) and on every release.
+- Retry tick is idempotent: re-runs cancel rows where eligibility dropped, skip rows where readiness gates aren't met, and only push rows where every gate clears.
+- No TTL on queued rows — they live forever until success, release, or operator-triggered retry-now (operator decision per the plan).
+- Operator-triggered `retryReservationNow` bypasses readiness gates but still respects eligibility re-check (subnet drift → cancel) and discovery-supersede (collision → failed_permanent).
+- The `monitor.status_changed → up` hook fires `triggerRetryAfterStatusChange` only on the up edge; down / warning / recovering transitions don't kick the retry job.
 
 **When changing this:**
 - Verify pushedScopeId/pushedEntryId survive across restarts: create a reservation, restart the app, release it; confirm unpush hits the exact device-side entry.
 - Test sourceType flip: create a manual reservation, push succeeds; verify sourceType is now "dhcp_reservation" and pushedToId is set to the integration.
+- Verify the queued-flow round-trip: take the FortiGate offline, create a reservation on a push-eligible subnet, confirm the row persists with `pushStatus="pending"` + `reservation.push.queued` Event. Bring the gate back, verify within one cadence tick the row flips to `pushStatus="synced"` + `reservation.push.queued.succeeded` Event.
+- Verify the monitored-down pre-flight: same as above but on a monitored gate that's already `monitorStatus="down"`; confirm the create returns near-instantly (no 15s+ transport timeout) and the row is queued.
+- Verify drift cancellation: queue a row, then flip `pushReservations=false` on the integration. On next retry tick, confirm the row goes to `pushStatus=null` + `reservation.push.queued.cancelled` + Polaris row stays as a plain `manual` reservation.
+- Verify discovery collision: queue a row, then have discovery ingest a different MAC at the same IP. Confirm the queued row goes to `pushStatus="failed_permanent"` + `reservation.push.queued.collided` and the discovery row is BLOCKED by the unique-on-active constraint (operator must release the failed_permanent row to free the IP).
+- Verify fast-path adopt: queue a row, then have the operator add the matching MAC at the same IP on the device directly. On next discovery, confirm the pending row flips to `synced` with `pushedScopeId`/`pushedEntryId` stamped from the discovered entry + `reservation.push.queued.adopted` Event.
+- Test edit/release while queued: update MAC on a queued row → no device contact, new MAC stashed. Release queued row → no `unpush.failed` warning, clean `reservation.push.queued.released` audit Event.
 - Check conflict bypass: create a manual reservation, add an integration that discovers the same IP; verify conflict is raised only for non-manual priors.
 - Lease-release cadence: toggle pushReservations off mid-deployment, release a dhcp_lease row; confirm unpush is skipped but the Polaris row is freed.
-- Verify read-back verify: FortiGate DHCP create succeeds but the verify read fails (transient device timeout); confirm the push is retried or fails cleanly.
-- Test gate-deleted-on-device release: push a manual reservation (sourceType flips to dhcp_reservation on first discovery), then delete the reserved-address entry on the FortiGate, then re-run discovery. Confirm Phase 5b releases the Polaris row, clears the push pointers, and emits `reservation.dhcp_reservation.released`. Verify a parallel run with the same FortiGate's CMDB query FAILING (network blip) leaves the row alone.
+- Verify read-back verify: FortiGate DHCP create succeeds but the verify read fails (transient device timeout); confirm `classifyPushError` returns "permanent" for the verify-mismatch wording and the row rolls back (NOT queued).
+- Test gate-deleted-on-device release: push a manual reservation (sourceType flips to dhcp_reservation on first discovery), then delete the reserved-address entry on the FortiGate, then re-run discovery. Confirm Phase 5b releases the Polaris row, clears the push pointers, and emits `reservation.dhcp_reservation.released`.
 
 ---
 

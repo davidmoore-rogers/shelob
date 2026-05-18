@@ -79,6 +79,7 @@ import {
   assetSourceKindFromIntegrationType,
 } from "../utils/pollingCompatibility.js";
 import { propagateAfterStatusChange } from "./dependencyTreeService.js";
+import { triggerRetryAfterStatusChange } from "./reservationService.js";
 
 export interface ProbeResult {
   success: boolean;
@@ -5500,6 +5501,14 @@ export async function recordProbeResult(
     // of truth; this just shortens the worst-case lag from ~60s to one
     // probe-tick on the parent.
     void propagateAfterStatusChange(assetId);
+    // When a firewall comes back up, kick the queued-reservation retry job
+    // so pending DHCP reservations on its subnets push immediately instead
+    // of waiting for the next 60s retryQueuedReservationPushes tick. The
+    // helper short-circuits to zero work when nothing is queued, so this is
+    // cheap even on every up-transition.
+    if (nextStatus === "up") {
+      void triggerRetryAfterStatusChange(assetId);
+    }
   }
 }
 

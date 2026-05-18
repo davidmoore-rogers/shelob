@@ -12,6 +12,7 @@ import {
   updatePushedReservation,
   releaseDhcpLease,
   normalizeMac,
+  classifyPushError,
   type PushReservationResult,
 } from "./reservationPushService.js";
 import { logEvent } from "../api/routes/events.js";
@@ -262,11 +263,70 @@ export async function createReservation(input: CreateReservationInput) {
     return reservation;
   }
 
-  // 6. Push to FortiGate. On any failure we delete the Polaris row so the
-  //    create reads as atomic from the operator's perspective. We accept the
-  //    rare case where the FortiOS write succeeded but verify failed (the
-  //    push function throws inside verify) — those orphans on the device
-  //    will be reconciled by the next discovery run via Drift detection.
+  // 6. Push to FortiGate. Three outcomes:
+  //    - Success: stamp pushed pointers + flip sourceType to dhcp_reservation.
+  //    - Permanent failure (4xx, verify mismatch, auth fail): roll back the
+  //      Polaris row so the create reads as atomic from the operator's
+  //      perspective and they see the underlying error.
+  //    - Transient failure (FortiGate offline, FMG unreachable, timeout):
+  //      KEEP the Polaris row, stamp pushStatus="pending" + queue cols, and
+  //      let the retry job push it when the gate comes back. Operator's
+  //      claim on the IP survives the outage.
+  //
+  //    Pre-flight: if the originating FortiGate's firewall Asset is monitored
+  //    and currently down, skip the transport attempt entirely — we already
+  //    know it will fail, and the 15s+ transport timeout is wasted UI latency
+  //    on the create critical path.
+  let firewallKnownDown = false;
+  try {
+    const firewallAsset = await prisma.asset.findFirst({
+      where: {
+        hostname: push.deviceName,
+        assetType: "firewall",
+        discoveredByIntegrationId: push.integration.id,
+      },
+      select: { monitored: true, monitorStatus: true },
+    });
+    firewallKnownDown =
+      !!firewallAsset?.monitored && firewallAsset.monitorStatus === "down";
+  } catch {
+    // Best-effort. If the asset lookup fails, fall through to the normal push
+    // attempt — the transport will surface the real error.
+  }
+
+  if (firewallKnownDown) {
+    const stamped = await prisma.reservation.update({
+      where: { id: reservation.id },
+      data: {
+        // Keep sourceType="manual" until the push actually lands. pushedToId
+        // is stamped now as the target identity so the retry tick + queue UI
+        // can render it before the first device write.
+        pushedToId: subnet.discoveredBy,
+        pushStatus: "pending",
+        pushQueuedAt: new Date(),
+        pushAttempts: 0,
+        pushLastAttemptAt: null,
+        pushError: `FortiGate "${push.deviceName}" is currently down — queued without attempting transport`,
+      },
+    });
+    void logEvent({
+      action: "reservation.push.queued",
+      level: "info",
+      resourceType: "reservation",
+      resourceId: stamped.id,
+      resourceName: stamped.hostname || stamped.ipAddress || undefined,
+      actor: input.createdBy ?? undefined,
+      message: `Reservation queued for push to FortiGate "${push.deviceName}" — gate is down, will retry when it recovers`,
+      details: {
+        deviceName: push.deviceName,
+        ip: input.ipAddress,
+        mac: macClean,
+        reason: "firewall_down",
+      },
+    });
+    return stamped;
+  }
+
   try {
     const pushed: PushReservationResult = await pushReservation({
       reservationId: reservation.id,
@@ -296,6 +356,11 @@ export async function createReservation(input: CreateReservationInput) {
         pushStatus: "synced",
         pushedAt: new Date(),
         pushError: null,
+        // Clear any stale queue cols (relevant when the retry tick is the
+        // caller — see retryPendingReservations / retryReservationNow).
+        pushQueuedAt: null,
+        pushAttempts: 0,
+        pushLastAttemptAt: null,
       },
     });
 
@@ -319,7 +384,40 @@ export async function createReservation(input: CreateReservationInput) {
 
     return stamped;
   } catch (err: any) {
-    // Roll back: push failed (or verify failed). Don't leave a Polaris ghost.
+    const kind = classifyPushError(err);
+    if (kind === "transient") {
+      // Persist the Polaris row in pending state. Retry job will push when
+      // the gate is reachable. sourceType stays "manual" because nothing is
+      // on the device yet.
+      const stamped = await prisma.reservation.update({
+        where: { id: reservation.id },
+        data: {
+          pushedToId: subnet.discoveredBy,
+          pushStatus: "pending",
+          pushQueuedAt: new Date(),
+          pushAttempts: 1,
+          pushLastAttemptAt: new Date(),
+          pushError: err?.message || String(err),
+        },
+      });
+      void logEvent({
+        action: "reservation.push.queued",
+        level: "info",
+        resourceType: "reservation",
+        resourceId: stamped.id,
+        resourceName: stamped.hostname || stamped.ipAddress || undefined,
+        actor: input.createdBy ?? undefined,
+        message: `Reservation queued for push to FortiGate "${push.deviceName}" — ${err?.message || "transient transport failure"}; will retry automatically`,
+        details: {
+          deviceName: push.deviceName,
+          ip: input.ipAddress,
+          mac: macClean,
+          error: err?.message || String(err),
+        },
+      });
+      return stamped;
+    }
+    // Permanent failure: roll back. Don't leave a Polaris ghost.
     try {
       await prisma.reservation.delete({ where: { id: reservation.id } });
     } catch {
@@ -408,7 +506,23 @@ export async function updateReservation(
     pushError: null;
   } | null = null;
 
-  if (macChanged && pushEligible) {
+  // A "pending" row hasn't been written to the device yet, so updating it
+  // doesn't need device-side coordination — just rewrite the queued payload
+  // and the retry tick will use the new values on its next attempt. The
+  // MAC-clear rule still applies on push-eligible subnets: clearing it would
+  // lock the row in pending forever since DHCP reservations require a MAC.
+  const isQueued = reservation.pushStatus === "pending";
+
+  if (macChanged && pushEligible && isQueued) {
+    if (!normalizedNewMac) {
+      throw new AppError(
+        400,
+        "Cannot clear MAC on a queued push-eligible reservation — the FortiGate write will require it. Release the reservation instead.",
+      );
+    }
+    // No device contact while queued; just stash the new MAC. The retry tick
+    // will push with this value on its next attempt.
+  } else if (macChanged && pushEligible) {
     if (!normalizedNewMac) {
       throw new AppError(
         400,
@@ -501,12 +615,36 @@ export async function releaseReservation(id: string) {
   if (reservation.status !== "active")
     throw new AppError(409, `Reservation is already ${reservation.status}`);
 
+  // Queued rows haven't written anything to the device yet, so there's
+  // nothing to unpush and no DHCP lease to release. Skip the device-contact
+  // blocks entirely and emit a cleaner audit Event than the
+  // unpush-fails-then-release path would.
+  const isQueued = reservation.pushStatus === "pending";
+  if (isQueued) {
+    void logEvent({
+      action: "reservation.push.queued.released",
+      level: "info",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: reservation.hostname || reservation.ipAddress || undefined,
+      message: `Queued reservation released without device contact — nothing was pushed yet${reservation.subnet.fortigateDevice ? ` (target was FortiGate "${reservation.subnet.fortigateDevice}")` : ""}`,
+      details: {
+        deviceName: reservation.subnet.fortigateDevice || null,
+        ip: reservation.ipAddress,
+        mac: reservation.macAddress,
+        queuedAt: reservation.pushQueuedAt,
+        attempts: reservation.pushAttempts,
+      },
+    });
+  }
+
   // Best-effort unpush from the FortiGate before flipping Polaris state.
   // We tolerate device-side failures (offline, missing entry, etc.) so an
   // unreachable FortiGate doesn't block the operator from releasing — but
   // we surface the failure as a `reservation.unpush.failed` Event so the
   // orphan is auditable.
   if (
+    !isQueued &&
     reservation.pushedTo &&
     reservation.pushedScopeId !== null &&
     reservation.pushedEntryId !== null
@@ -568,6 +706,7 @@ export async function releaseReservation(id: string) {
   const integrationConfig =
     (reservation.subnet.integration?.config as { pushReservations?: boolean } | null) || null;
   if (
+    !isQueued &&
     reservation.sourceType === "dhcp_lease" &&
     reservation.ipAddress &&
     reservation.subnet.integration &&
@@ -627,11 +766,17 @@ export async function releaseReservation(id: string) {
         status: "released",
         // Clear push pointers — the device entry is gone (or orphaned and
         // logged) and a future re-reservation should make its own push.
+        // Queue cols (pushQueuedAt/Attempts/LastAttemptAt/Error) cleared too
+        // so a queued row that's released leaves a clean audit row.
         pushedToId: null,
         pushedScopeId: null,
         pushedEntryId: null,
         pushStatus: null,
         pushedAt: null,
+        pushQueuedAt: null,
+        pushAttempts: 0,
+        pushLastAttemptAt: null,
+        pushError: null,
       },
     });
 
@@ -709,4 +854,479 @@ export async function expireStaleReservations(): Promise<number> {
     data: { status: "expired" },
   });
   return result.count;
+}
+
+// ─── Queued Push Queue View ──────────────────────────────────────────────────
+
+/**
+ * List every reservation currently in the queued-push state — pending
+ * (awaiting a recovered FortiGate) or failed_permanent (terminal error that
+ * needs operator action). Drives the global queue view page under Reservations
+ * alerts. Joined with subnet + pushedTo so the UI can render hostname/IP/MAC
+ * alongside the target integration name without N+1 fetches. Sorted by
+ * pushQueuedAt asc (oldest first).
+ */
+export async function listPushQueue() {
+  return prisma.reservation.findMany({
+    where: {
+      status: "active",
+      pushStatus: { in: ["pending", "failed_permanent"] },
+    },
+    include: {
+      subnet: {
+        select: {
+          id: true,
+          cidr: true,
+          name: true,
+          vlan: true,
+          fortigateDevice: true,
+        },
+      },
+      pushedTo: { select: { id: true, name: true, type: true, enabled: true } },
+    },
+    orderBy: { pushQueuedAt: "asc" },
+  });
+}
+
+export async function countPushQueue(): Promise<number> {
+  return prisma.reservation.count({
+    where: {
+      status: "active",
+      pushStatus: { in: ["pending", "failed_permanent"] },
+    },
+  });
+}
+
+// ─── Queued Push Retry ───────────────────────────────────────────────────────
+
+const BACKOFF_BASE_SECONDS = 60;
+const BACKOFF_CAP_SECONDS = 1800;
+
+/**
+ * Exponential backoff window for unmonitored FortiGates (or gates without an
+ * Asset row). `min(60 * 2^(attempts-1), 1800)` seconds. attempts ≤ 0 → 30s,
+ * 1 → 60s, 2 → 120s, … 6+ → 1800s (cap). Monitored gates bypass this — they
+ * gate on `monitorStatus="up"` instead.
+ */
+function backoffSecondsFor(attempts: number): number {
+  if (attempts <= 0) return BACKOFF_BASE_SECONDS / 2;
+  const candidate = BACKOFF_BASE_SECONDS * Math.pow(2, attempts - 1);
+  return Math.min(candidate, BACKOFF_CAP_SECONDS);
+}
+
+export type RetryOutcome =
+  | "synced"
+  | "transient"
+  | "permanent"
+  | "cancelled"
+  | "superseded"
+  | "skipped-monitored-down"
+  | "skipped-backoff";
+
+interface QueuedReservationRow {
+  id: string;
+  subnetId: string;
+  ipAddress: string | null;
+  hostname: string | null;
+  notes: string | null;
+  createdBy: string | null;
+  macAddress: string | null;
+  pushStatus: string | null;
+  pushQueuedAt: Date | null;
+  pushAttempts: number;
+  pushLastAttemptAt: Date | null;
+  subnet: {
+    cidr: string;
+    status: string;
+    fortigateDevice: string | null;
+    discoveredBy: string | null;
+    integration:
+      | {
+          id: string;
+          type: string;
+          enabled: boolean;
+          config: unknown;
+        }
+      | null;
+  };
+}
+
+/**
+ * Core per-row push attempt used by both the retry-tick (batch) and the
+ * operator-triggered retry-now (single row) paths. Returns the outcome so the
+ * caller can roll up counts and the route handler can return the fresh row.
+ */
+async function attemptQueuedPush(
+  reservation: QueuedReservationRow,
+  opts: { bypassReadinessGates: boolean; actor?: string | null },
+): Promise<RetryOutcome> {
+  const id = reservation.id;
+  const integration = reservation.subnet.integration;
+  const integrationConfig = (integration?.config ?? {}) as Record<string, unknown>;
+  const cancelReason = (reason: string): "cancelled" => {
+    void prisma.reservation
+      .update({
+        where: { id },
+        data: {
+          pushStatus: null,
+          pushQueuedAt: null,
+          pushAttempts: 0,
+          pushLastAttemptAt: null,
+          pushError: null,
+          pushedToId: null,
+        },
+      })
+      .catch(() => {/* best-effort */});
+    void logEvent({
+      action: "reservation.push.queued.cancelled",
+      level: "info",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: reservation.hostname || reservation.ipAddress || undefined,
+      actor: opts.actor ?? undefined,
+      message: `Queued push cancelled — ${reason}; reservation kept as manual`,
+      details: {
+        reason,
+        deviceName: reservation.subnet.fortigateDevice || null,
+        ip: reservation.ipAddress,
+      },
+    });
+    return "cancelled";
+  };
+
+  // 1. Eligibility re-check (Phase 5 drift).
+  if (reservation.subnet.status === "deprecated") return cancelReason("subnet_deprecated");
+  if (!reservation.subnet.fortigateDevice) return cancelReason("subnet_no_fortigateDevice");
+  if (!reservation.ipAddress) return cancelReason("reservation_no_ip");
+  if (!reservation.macAddress) return cancelReason("reservation_no_mac");
+  if (!integration) return cancelReason("integration_deleted");
+  if (!integration.enabled) return cancelReason("integration_disabled");
+  if (integration.type !== "fortimanager" && integration.type !== "fortigate") {
+    return cancelReason(`integration_type_${integration.type}_not_pushable`);
+  }
+  if (integrationConfig.pushReservations !== true) {
+    return cancelReason("pushReservations_disabled");
+  }
+
+  // 2. Discovery-supersede: did a discovery cycle land a different row at our
+  //    target IP while we were queued? If so, the device is authoritative —
+  //    flip to failed_permanent so the operator can sort it out.
+  const collider = await prisma.reservation.findFirst({
+    where: {
+      id: { not: id },
+      subnetId: reservation.subnetId,
+      ipAddress: reservation.ipAddress,
+      status: "active",
+    },
+    select: { id: true, sourceType: true, macAddress: true },
+  });
+  if (collider) {
+    const errMsg = `IP collided during queue — discovered ${collider.sourceType}${collider.macAddress ? ` by ${collider.macAddress}` : ""}`;
+    await prisma.reservation.update({
+      where: { id },
+      data: {
+        pushStatus: "failed_permanent",
+        pushError: errMsg,
+        pushLastAttemptAt: new Date(),
+      },
+    });
+    void logEvent({
+      action: "reservation.push.queued.collided",
+      level: "warning",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: reservation.hostname || reservation.ipAddress || undefined,
+      actor: opts.actor ?? undefined,
+      message: `Queued push for ${reservation.ipAddress} aborted — ${errMsg}. Operator must release or pick a different IP.`,
+      details: {
+        ip: reservation.ipAddress,
+        deviceName: reservation.subnet.fortigateDevice,
+        colliderReservationId: collider.id,
+        colliderSourceType: collider.sourceType,
+        colliderMac: collider.macAddress,
+      },
+    });
+    return "superseded";
+  }
+
+  // 3. Readiness gates (skipped on operator-triggered retry-now).
+  if (!opts.bypassReadinessGates) {
+    const firewallAsset = await prisma.asset.findFirst({
+      where: {
+        hostname: reservation.subnet.fortigateDevice!,
+        assetType: "firewall",
+        discoveredByIntegrationId: integration.id,
+      },
+      select: { monitored: true, monitorStatus: true },
+    });
+    if (firewallAsset?.monitored && firewallAsset.monitorStatus !== "up") {
+      return "skipped-monitored-down";
+    }
+    if (!firewallAsset?.monitored) {
+      // Unmonitored or no Asset row → exponential backoff keyed on attempts.
+      if (reservation.pushLastAttemptAt) {
+        const ageMs = Date.now() - reservation.pushLastAttemptAt.getTime();
+        const windowMs = backoffSecondsFor(reservation.pushAttempts) * 1000;
+        if (ageMs < windowMs) {
+          return "skipped-backoff";
+        }
+      }
+    }
+  }
+
+  // 4. Attempt the push.
+  await prisma.reservation.update({
+    where: { id },
+    data: {
+      pushAttempts: { increment: 1 },
+      pushLastAttemptAt: new Date(),
+    },
+  });
+
+  try {
+    const pushed: PushReservationResult = await pushReservation({
+      reservationId: id,
+      subnetCidr: reservation.subnet.cidr,
+      ip: reservation.ipAddress!,
+      mac: reservation.macAddress!,
+      hostname: reservation.hostname ?? null,
+      notes: reservation.notes ?? null,
+      createdBy: reservation.createdBy ?? null,
+      integration: { id: integration.id, type: integration.type, config: integration.config },
+      deviceName: reservation.subnet.fortigateDevice!,
+    });
+    await prisma.reservation.update({
+      where: { id },
+      data: {
+        sourceType: "dhcp_reservation",
+        pushedToId: integration.id,
+        pushedScopeId: pushed.scopeId,
+        pushedEntryId: pushed.entryId,
+        pushStatus: "synced",
+        pushedAt: new Date(),
+        pushError: null,
+        pushQueuedAt: null,
+        pushAttempts: 0,
+        pushLastAttemptAt: null,
+      },
+    });
+    void logEvent({
+      action: "reservation.push.queued.succeeded",
+      level: "info",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: reservation.hostname || reservation.ipAddress || undefined,
+      actor: opts.actor ?? undefined,
+      message: `Queued reservation pushed to FortiGate "${reservation.subnet.fortigateDevice}" (scope ${pushed.scopeId}, entry ${pushed.entryId})`,
+      details: {
+        deviceName: reservation.subnet.fortigateDevice,
+        scopeId: pushed.scopeId,
+        entryId: pushed.entryId,
+        ip: reservation.ipAddress,
+        mac: reservation.macAddress,
+      },
+    });
+    return "synced";
+  } catch (err: any) {
+    const kind = classifyPushError(err);
+    if (kind === "transient") {
+      await prisma.reservation.update({
+        where: { id },
+        data: { pushError: err?.message || String(err) },
+      });
+      void logEvent({
+        action: "reservation.push.queued.retry_failed",
+        level: "info", // intentionally info — sustained outages would spam warning
+        resourceType: "reservation",
+        resourceId: id,
+        resourceName: reservation.hostname || reservation.ipAddress || undefined,
+        actor: opts.actor ?? undefined,
+        message: `Retry push to FortiGate "${reservation.subnet.fortigateDevice}" failed (still queued): ${err?.message || "Unknown error"}`,
+        details: {
+          deviceName: reservation.subnet.fortigateDevice,
+          ip: reservation.ipAddress,
+          mac: reservation.macAddress,
+          error: err?.message || String(err),
+        },
+      });
+      return "transient";
+    }
+    await prisma.reservation.update({
+      where: { id },
+      data: {
+        pushStatus: "failed_permanent",
+        pushError: err?.message || String(err),
+      },
+    });
+    void logEvent({
+      action: "reservation.push.queued.failed_permanent",
+      level: "warning",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: reservation.hostname || reservation.ipAddress || undefined,
+      actor: opts.actor ?? undefined,
+      message: `Queued push to FortiGate "${reservation.subnet.fortigateDevice}" hit a permanent error: ${err?.message || "Unknown error"}. Operator action required.`,
+      details: {
+        deviceName: reservation.subnet.fortigateDevice,
+        ip: reservation.ipAddress,
+        mac: reservation.macAddress,
+        error: err?.message || String(err),
+      },
+    });
+    return "permanent";
+  }
+}
+
+const QUEUED_RESERVATION_INCLUDE = {
+  subnet: {
+    select: {
+      cidr: true,
+      status: true,
+      fortigateDevice: true,
+      discoveredBy: true,
+      integration: {
+        select: { id: true, type: true, enabled: true, config: true },
+      },
+    },
+  },
+} as const;
+
+/**
+ * Scan all `pushStatus="pending"` rows and try to push each one. Drives the
+ * 60s background tick + the `monitor.status_changed → up` hook.
+ */
+export async function retryPendingReservations(): Promise<{
+  attempted: number;
+  succeeded: number;
+  transient: number;
+  permanent: number;
+  cancelled: number;
+  superseded: number;
+  skippedMonitoredDown: number;
+  skippedBackoff: number;
+}> {
+  const rows = await prisma.reservation.findMany({
+    where: { pushStatus: "pending", status: "active" },
+    orderBy: { pushQueuedAt: "asc" },
+    include: QUEUED_RESERVATION_INCLUDE,
+  });
+  const counts = {
+    attempted: 0,
+    succeeded: 0,
+    transient: 0,
+    permanent: 0,
+    cancelled: 0,
+    superseded: 0,
+    skippedMonitoredDown: 0,
+    skippedBackoff: 0,
+  };
+  for (const row of rows) {
+    counts.attempted += 1;
+    const outcome = await attemptQueuedPush(row as QueuedReservationRow, {
+      bypassReadinessGates: false,
+    });
+    if (outcome === "synced") counts.succeeded += 1;
+    else if (outcome === "transient") counts.transient += 1;
+    else if (outcome === "permanent") counts.permanent += 1;
+    else if (outcome === "cancelled") counts.cancelled += 1;
+    else if (outcome === "superseded") counts.superseded += 1;
+    else if (outcome === "skipped-monitored-down") counts.skippedMonitoredDown += 1;
+    else if (outcome === "skipped-backoff") counts.skippedBackoff += 1;
+  }
+  return counts;
+}
+
+/**
+ * Operator-triggered single-row retry. Bypasses both the
+ * `monitorStatus="up"` gate and the unmonitored-backoff window. Used by the
+ * IP-panel "Retry now" button and the global push-queue page's per-row
+ * action. Allowed on `pushStatus IN ("pending", "failed_permanent")` so an
+ * operator can recover a `failed_permanent` row after fixing whatever the
+ * permanent error called out (e.g. removing a colliding entry on the device).
+ */
+export async function retryReservationNow(
+  id: string,
+  actor: string | null | undefined,
+): Promise<{ outcome: RetryOutcome; reservation: Awaited<ReturnType<typeof getReservation>> }> {
+  const row = await prisma.reservation.findUnique({
+    where: { id },
+    include: QUEUED_RESERVATION_INCLUDE,
+  });
+  if (!row) throw new AppError(404, `Reservation ${id} not found`);
+  if (row.status !== "active") throw new AppError(409, `Cannot retry a ${row.status} reservation`);
+  if (row.pushStatus !== "pending" && row.pushStatus !== "failed_permanent") {
+    throw new AppError(
+      409,
+      `Reservation ${id} is not queued (pushStatus=${row.pushStatus ?? "null"})`,
+    );
+  }
+  // Flip failed_permanent back to pending so the retry path treats it
+  // uniformly and the row joins the queue scan again.
+  if (row.pushStatus === "failed_permanent") {
+    await prisma.reservation.update({
+      where: { id },
+      data: {
+        pushStatus: "pending",
+        pushQueuedAt: row.pushQueuedAt ?? new Date(),
+        pushError: row.pushError,
+      },
+    });
+    void logEvent({
+      action: "reservation.push.queued.retry_manual",
+      level: "info",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: row.hostname || row.ipAddress || undefined,
+      actor: actor ?? undefined,
+      message: `Operator-triggered retry on a permanently-failed reservation — re-queued`,
+      details: { ip: row.ipAddress, deviceName: row.subnet?.fortigateDevice ?? null },
+    });
+  } else {
+    void logEvent({
+      action: "reservation.push.queued.retry_manual",
+      level: "info",
+      resourceType: "reservation",
+      resourceId: id,
+      resourceName: row.hostname || row.ipAddress || undefined,
+      actor: actor ?? undefined,
+      message: `Operator-triggered retry of queued reservation`,
+      details: { ip: row.ipAddress, deviceName: row.subnet?.fortigateDevice ?? null },
+    });
+  }
+  const outcome = await attemptQueuedPush(row as QueuedReservationRow, {
+    bypassReadinessGates: true,
+    actor: actor ?? undefined,
+  });
+  const reservation = await getReservation(id);
+  return { outcome, reservation };
+}
+
+/**
+ * Called from the monitor `status_changed → up` hook. Cheaply checks whether
+ * any pending reservations exist for the recovered FortiGate's subnets and
+ * triggers a retry tick only if there are. Most up-transitions affect zero
+ * queued rows, so the count gate keeps the hot status-change path cheap.
+ */
+export async function triggerRetryAfterStatusChange(assetId: string): Promise<void> {
+  const asset = await prisma.asset.findUnique({
+    where: { id: assetId },
+    select: { hostname: true, assetType: true, discoveredByIntegrationId: true },
+  });
+  if (!asset || asset.assetType !== "firewall" || !asset.hostname || !asset.discoveredByIntegrationId) return;
+  // Count pending reservations on any subnet this FortiGate owns through the
+  // same integration. Cheap — uses the (pushStatus, pushQueuedAt) index plus
+  // a subnet filter.
+  const count = await prisma.reservation.count({
+    where: {
+      pushStatus: "pending",
+      status: "active",
+      subnet: {
+        fortigateDevice: asset.hostname,
+        discoveredBy: asset.discoveredByIntegrationId,
+      },
+    },
+  });
+  if (count === 0) return;
+  // Fire and forget — outcome is logged per-row by attemptQueuedPush.
+  void retryPendingReservations().catch(() => {/* logged inside */});
 }

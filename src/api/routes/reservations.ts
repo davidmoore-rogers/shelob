@@ -170,6 +170,45 @@ router.delete("/:id/stale-ignore", requirePermission("staleReservations", "write
   } catch (err) { next(err); }
 });
 
+// GET /reservations/push-queue  (must come before /:id)
+// Lists every reservation in the queued-push state — either still waiting on
+// a transient FortiGate / FMG recovery (pushStatus="pending") or permanently
+// stuck after a 4xx / verify-mismatch / collision (pushStatus="failed_permanent").
+// Drives the global queue view page under Reservations alerts. Open to any
+// auth role with `reservations:read` so operators can see what Polaris owes
+// the network even when they can't act on it themselves.
+router.get("/push-queue", requirePermission("reservations", "read"), async (_req, res, next) => {
+  try {
+    const rows = await reservationService.listPushQueue();
+    res.json({ reservations: rows, count: rows.length });
+  } catch (err) { next(err); }
+});
+
+router.get("/push-queue/count", requirePermission("reservations", "read"), async (_req, res, next) => {
+  try {
+    const count = await reservationService.countPushQueue();
+    res.json({ count });
+  } catch (err) { next(err); }
+});
+
+// POST /reservations/:id/retry-push — operator-triggered single-row retry of
+// a queued push. Bypasses the monitored-gate gate and the unmonitored backoff
+// window. Allowed for `pushStatus IN ("pending", "failed_permanent")` so an
+// operator can recover a permanently-failed row after fixing whatever the
+// permanent error called out. Uses requireOwnership so a `user` role can
+// retry their own queued rows and an admin (fullwrite) can retry anyone's.
+router.post("/:id/retry-push", requireOwnership("reservations"), async (req, res, next) => {
+  try {
+    const id = req.params.id as string;
+    const before = await reservationService.getReservation(id);
+    if (req.permissionLevel !== "fullwrite" && before.createdBy !== req.session?.username) {
+      throw new AppError(403, "Forbidden — you can only retry reservations you created");
+    }
+    const { outcome, reservation } = await reservationService.retryReservationNow(id, req.session?.username ?? null);
+    res.json({ outcome, reservation });
+  } catch (err) { next(err); }
+});
+
 // POST /reservations/next-available  (must come before /:id)
 router.post("/next-available", requireOwnership("reservations"), async (req, res, next) => {
   try {
@@ -180,7 +219,9 @@ router.post("/next-available", requireOwnership("reservations"), async (req, res
     });
     const pushedSuffix = reservation.pushStatus === "synced"
       ? ` and pushed to FortiGate`
-      : "";
+      : reservation.pushStatus === "pending"
+        ? ` — queued for push (FortiGate unreachable; will retry automatically)`
+        : "";
     logEvent({ action: "reservation.created", resourceType: "reservation", resourceId: reservation.id, resourceName: reservation.hostname || reservation.ipAddress || undefined, actor: req.session?.username, message: `Reservation auto-allocated for ${reservation.ipAddress} (${input.owner || "no owner"})${pushedSuffix}` });
     res.status(201).json(reservation);
   } catch (err) {
@@ -223,7 +264,9 @@ router.post("/", requireOwnership("reservations"), async (req, res, next) => {
     });
     const pushedSuffix = reservation.pushStatus === "synced"
       ? ` and pushed to FortiGate`
-      : "";
+      : reservation.pushStatus === "pending"
+        ? ` — queued for push (FortiGate unreachable; will retry automatically)`
+        : "";
     logEvent({ action: "reservation.created", resourceType: "reservation", resourceId: reservation.id, resourceName: input.hostname || input.ipAddress, actor: req.session?.username, message: `Reservation created for ${input.ipAddress || "subnet"} (${input.owner})${pushedSuffix}` });
     res.status(201).json(reservation);
   } catch (err) {

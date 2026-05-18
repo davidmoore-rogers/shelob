@@ -180,6 +180,11 @@ const api = {
     snoozeAlert:         (id)    => request("POST", `/reservations/${id}/snooze`),
     ignoreAlert:         (id)    => request("POST", `/reservations/${id}/stale-ignore`),
     unignoreAlert:       (id)    => request("DELETE", `/reservations/${id}/stale-ignore`),
+    // Queued-push view + retry. listPushQueue is read-everyone; retryPush is
+    // ownership-gated server-side (user-or-above for own rows, fullwrite for all).
+    listPushQueue:       ()      => request("GET", "/reservations/push-queue"),
+    pushQueueCount:      ()      => request("GET", "/reservations/push-queue/count"),
+    retryPush:           (id)    => request("POST", `/reservations/${id}/retry-push`),
   },
   utilization: {
     global:  ()   => request("GET", "/utilization"),
