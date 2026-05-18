@@ -48,13 +48,9 @@ enum ConflictStatus {
   rejected
 }
 
-enum UserRole {
-  admin
-  networkadmin
-  assetsadmin
-  user
-  readonly
-}
+// UserRole enum retired — replaced by the Role table below. Role identity
+// + permission matrix now live in `Role` and are joined into User via
+// `User.roleId`. See "Roles / RBAC" in CLAUDE.md for the access semantics.
 
 // ─── Models ───────────────────────────────────────────────────────────────────
 
@@ -1403,7 +1399,14 @@ model User {
   id           String    @id @default(uuid())
   username     String    @unique
   passwordHash String    @map("password_hash")
-  role         UserRole  @default(readonly)
+  roleId       String    @map("role_id")
+  role         Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  // Per-user region scope. Empty = unrestricted (matches pre-cutover default
+  // so existing accounts aren't suddenly locked out). Effective regions for
+  // a session are `union(role.regionTags, user.regionTags)`. Storage only —
+  // the consumer (asset / subnet / reservation list filters; map view) lives
+  // in a separate change.
+  regionTags   String[]  @default([]) @map("region_tags")
   authProvider String    @default("local") @map("auth_provider") // "local" or "azure"
   azureOid     String?   @unique @map("azure_oid") // Azure AD Object ID
   displayName  String?   @map("display_name")
@@ -1426,7 +1429,39 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([roleId])
   @@map("users")
+}
+
+// Role: identity + permission matrix consulted by the per-route
+// `requirePermission(functionKey, level)` middleware. The five seeded
+// rows (admin / readonly / networkadmin / assetsadmin / user) reproduce
+// the pre-cutover hardcoded UserRole enum's access. `admin` and
+// `readonly` are protected (no edit/delete/rename) and hidden from the
+// editable list in the UI; the other built-ins are editable. Custom
+// roles are operator-created with isBuiltIn = false. Permission shape:
+//   { [functionKey]: "none" | "read" | "write" | "fullwrite" }
+// See "Roles / RBAC" in CLAUDE.md for the function-key catalogue + the
+// access-level ordering. `updatedAt` doubles as the cache-version
+// stamp the session snapshot compares against on each request.
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  permissions Json     @default("{}")
+  // Region scope inherited by every user holding this role. Empty =
+  // unrestricted. Effective regions for a session are
+  // `union(role.regionTags, user.regionTags)`. Storage only; consumers
+  // live in a separate change.
+  regionTags  String[] @default([]) @map("region_tags")
+  isBuiltIn   Boolean  @default(false) @map("is_built_in")
+  isProtected Boolean  @default(false) @map("is_protected")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+
+  @@map("roles")
 }
 
 model Setting {
