@@ -275,8 +275,11 @@ function renderNav() {
           : Promise.resolve({ count: 0 }),
         api.reservations.pushQueueCount().catch(function () { return { count: 0 }; }),
       ]);
-      var total = ((both[0] && both[0].count) || 0) + ((both[1] && both[1].count) || 0);
+      var conflictCount = (both[0] && both[0].count) || 0;
+      var queueCount = (both[1] && both[1].count) || 0;
+      var total = conflictCount + queueCount;
       dot.style.display = total > 0 ? "inline-block" : "none";
+      dot.classList.toggle("nav-conflict-dot--warning", conflictCount === 0 && queueCount > 0);
     } catch (_) {}
   }
   refreshConflictDot();
