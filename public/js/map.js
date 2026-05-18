@@ -94,6 +94,40 @@
       iconCreateFunction: clusterIcon,
     });
     map.addLayer(markerCluster);
+
+    attachRightClickPan();
+  }
+
+  // Right-click drag pans the map. Useful when left-click is captured by
+  // another tool (e.g. drawing a region polygon with leaflet-draw — the
+  // first vertex placement would otherwise start a polygon you can't abort).
+  // Active everywhere on the map page; suppresses the context menu inside
+  // the map container only.
+  function attachRightClickPan() {
+    var container = map.getContainer();
+    var state = { active: false, lastX: 0, lastY: 0 };
+    container.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+    container.addEventListener("mousedown", function (e) {
+      if (e.button !== 2) return;
+      state.active = true;
+      state.lastX = e.clientX;
+      state.lastY = e.clientY;
+      container.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", function (e) {
+      if (!state.active) return;
+      var dx = e.clientX - state.lastX;
+      var dy = e.clientY - state.lastY;
+      state.lastX = e.clientX;
+      state.lastY = e.clientY;
+      map.panBy([-dx, -dy], { animate: false });
+    });
+    window.addEventListener("mouseup", function (e) {
+      if (e.button !== 2 || !state.active) return;
+      state.active = false;
+      container.style.cursor = "";
+    });
   }
 
   // Active basemap tile layer; swapped in place when the map theme
@@ -1509,23 +1543,22 @@
       draw: {
         polygon: { allowIntersection: false, showArea: false, shapeOptions: { className: "map-region-polygon" } },
         polyline: false, rectangle: false, circle: false, marker: false, circlemarker: false
-      },
-      edit: { featureGroup: regionState.layer, remove: false } // delete is a polygon-popup action so we can confirm
+      }
+      // No `edit` config — vertex editing is always on per polygon (see
+      // enablePolygonVertexEdit). Delete stays in the polygon-click popup.
     });
     map.addControl(regionState.drawControl);
 
     map.on(L.Draw.Event.CREATED, onRegionCreated);
-    map.on(L.Draw.Event.EDITED, onRegionEdited);
 
     var btn = document.getElementById("map-edit-regions");
     if (btn) btn.textContent = "Done editing";
-    setStatus("Editing regions: draw a polygon, click an existing region to rename/delete, or click \"Done editing\" to hide.");
+    setStatus("Editing regions: draw a polygon, drag any vertex to reshape, click an existing region to rename/delete, or right-click-drag to pan. Click \"Done editing\" to hide.");
   }
 
   function exitRegionEditMode() {
     regionState.editing = false;
     map.off(L.Draw.Event.CREATED, onRegionCreated);
-    map.off(L.Draw.Event.EDITED, onRegionEdited);
     if (regionState.drawControl) { map.removeControl(regionState.drawControl); regionState.drawControl = null; }
     if (regionState.layer) { map.removeLayer(regionState.layer); regionState.layer = null; }
     regionState.polygonsByRegionId = {};
@@ -1543,6 +1576,34 @@
     poly.on("click", function () { openRegionActionsPopup(poly); });
     regionState.layer.addLayer(poly);
     regionState.polygonsByRegionId[region.id] = poly;
+    enablePolygonVertexEdit(poly);
+  }
+
+  // Turns on leaflet-draw's per-polygon vertex/midpoint handles immediately
+  // (no Edit-toolbar round-trip). Every vertex drag fires `editvertex` on the
+  // polygon; we debounce-save 800ms after the last change so a rapid sequence
+  // of drags becomes a single PUT. Failures restore the prior shape so the
+  // map matches the server.
+  function enablePolygonVertexEdit(poly) {
+    if (!poly || !poly.editing) return;
+    poly.editing.enable();
+    var saveTimer = null;
+    var savedPolygon = polygonLatLngsToPairs(poly);
+    poly.on("editvertex", function () {
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(function () {
+        saveTimer = null;
+        var pairs = polygonLatLngsToPairs(poly);
+        api.mapRegions.update(poly._polarisRegionId, { polygon: pairs }).then(function () {
+          savedPolygon = pairs;
+          setStatus("Region \"" + (poly._polarisRegionName || "") + "\" updated.");
+        }).catch(function (err) {
+          window.alert("Failed to update region: " + (err && err.message ? err.message : err));
+          poly.setLatLngs(savedPolygon);
+          if (poly.editing) { poly.editing.disable(); poly.editing.enable(); }
+        });
+      }, 800);
+    });
   }
 
   function polygonLatLngsToPairs(poly) {
@@ -1572,24 +1633,6 @@
     } catch (err) {
       window.alert("Failed to save region: " + (err && err.message ? err.message : err));
     }
-  }
-
-  async function onRegionEdited(e) {
-    var layers = e.layers;
-    if (!layers) return;
-    var edits = [];
-    layers.eachLayer(function (layer) {
-      if (!layer._polarisRegionId) return;
-      edits.push({ id: layer._polarisRegionId, polygon: polygonLatLngsToPairs(layer) });
-    });
-    for (var i = 0; i < edits.length; i++) {
-      try {
-        await api.mapRegions.update(edits[i].id, { polygon: edits[i].polygon });
-      } catch (err) {
-        window.alert("Failed to update region: " + (err && err.message ? err.message : err));
-      }
-    }
-    if (edits.length > 0) setStatus(edits.length + " region" + (edits.length === 1 ? "" : "s") + " updated.");
   }
 
   function openRegionActionsPopup(poly) {
